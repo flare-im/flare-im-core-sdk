@@ -55,16 +55,16 @@ use std::time::Duration;
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     // 1. 创建配置
-    let config = ClientConfig::builder()
-        .server_url("wss://im.example.com")
-        .media_base_url("https://media.example.com")
-        .protocols(vec![
-            TransportProtocol::QUIC,      // 优先级1（最快）
-            TransportProtocol::WebSocket,  // 优先级2（备用）
-        ])
-        .race_timeout(Duration::from_secs(5))
-        .user_id("user_123")
-        .device_id("device_456")
+let config = ClientConfig::builder()
+    .server_url("wss://im.example.com")
+    .media_base_url("https://media.example.com")
+    .protocols(vec![
+        TransportProtocol::QUIC,      // 优先级1（最快）
+        TransportProtocol::WebSocket,  // 优先级2（备用）
+    ])
+    .race_timeout(Duration::from_secs(5))
+    .user_id("user_123")
+    .device_id("device_456")
         .token("your_token")
         .build()?;
 

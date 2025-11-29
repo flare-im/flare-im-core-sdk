@@ -525,14 +525,48 @@ async fn handle_incoming_messages(
                         if let Some(message) = messages.iter().find(|m| m.id == *message_id) {
                             // 检查是否是来自聊天对象的消息（不是自己发送的）
                             if message.sender_id != my_user_id {
+                                // 过滤掉 Typing 消息，不显示
+                                if message.message_type == flare_proto::MessageType::Typing as i32 {
+                                    debug!("收到 Typing 消息，跳过显示: message_id={}", message_id);
+                                    continue;
+                                }
+                                
                                 // 显示接收到的消息
                                 if let Some(content) = &message.content {
                                     match &content.content {
                                         Some(flare_proto::flare::common::v1::message_content::Content::Text(text_content)) => {
+                                            // 清理文本内容：移除控制字符（如 \x08 退格字符）和无效字符
+                                            // 保留可打印字符和空白字符（空格、换行、制表符等）
+                                            let cleaned_text: String = text_content.text
+                                                .chars()
+                                                .filter(|c| {
+                                                    // 保留空白字符（空格、换行、制表符等）
+                                                    if c.is_whitespace() {
+                                                        true
+                                                    } else {
+                                                        // 过滤掉所有控制字符（包括 \x08 退格字符）
+                                                        !c.is_control()
+                                                    }
+                                                })
+                                                .collect();
+                                            
+                                            // 去除首尾空白
+                                            let cleaned_text = cleaned_text.trim();
+                                            
+                                            // 如果清理后的文本为空，跳过显示
+                                            if cleaned_text.is_empty() {
+                                                debug!("收到空文本消息，跳过显示: message_id={}", message_id);
+                                                continue;
+                                            }
+                                            
                                             info!("");
                                             info!("📨 收到新消息 [{}]:", message.sender_id);
-                                            info!("   {}", text_content.text);
+                                            info!("   {}", cleaned_text);
                                             info!("");
+                                        }
+                                        Some(flare_proto::flare::common::v1::message_content::Content::Typing(_)) => {
+                                            // Typing 消息不显示
+                                            debug!("收到 Typing 消息，跳过显示: message_id={}", message_id);
                                         }
                                         _ => {
                                             info!("📨 收到新消息 [{}]: (非文本消息)", message.sender_id);

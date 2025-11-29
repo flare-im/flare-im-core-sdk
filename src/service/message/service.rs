@@ -264,28 +264,16 @@ impl MessageService {
         content: ProtoMessageContent,
     ) -> Result<String> {
         let message_id = new_message_id();
-        let mut message = Message::default();
-        message.id = message_id.clone();
-        message.session_id = session_id.to_string();
-        message.sender_id = self.user_id.read().await.clone();
-        message.message_type = Self::message_type_from_content(&content);
-        message.status = MessageStatus::Created as i32;
-        message.source = MessageSource::User as i32;
-        message.content = Some(content);
-        message.timestamp = Some(Timestamp {
-            seconds: chrono::Utc::now().timestamp(),
-            nanos: 0,
-        });
-        // 补全单聊必要字段
-        message.business_type = "chat".to_string();
-        if let Ok(s) = self.session_service.get_session(session_id).await {
-            if let Some(peer) = s.metadata.get("peer_id") {
-                message.session_type = "single".to_string();
-                message.receiver_id = peer.clone();
-                message.receiver_ids = Vec::new();
-                message.group_id = String::new();
-            }
-        }
+        
+        // 构建完整的 Message 对象
+        let mut message = self.build_complete_message(
+            message_id.clone(),
+            session_id,
+            content,
+            &SendOptions::default(),
+        ).await?;
+        
+        // 添加回复属性
         message.attributes.insert("reply_to".to_string(), reply_to_message_id.to_string());
 
         let mut message_bytes = Vec::new();
@@ -334,18 +322,16 @@ impl MessageService {
         content: ProtoMessageContent,
     ) -> Result<String> {
         let message_id = new_message_id();
-        let mut message = Message::default();
-        message.id = message_id.clone();
-        message.session_id = session_id.to_string();
-        message.sender_id = self.user_id.read().await.clone();
-        message.message_type = Self::message_type_from_content(&content);
-        message.status = MessageStatus::Created as i32;
-        message.source = MessageSource::User as i32;
-        message.content = Some(content);
-        message.timestamp = Some(Timestamp {
-            seconds: chrono::Utc::now().timestamp(),
-            nanos: 0,
-        });
+        
+        // 构建完整的 Message 对象
+        let mut message = self.build_complete_message(
+            message_id.clone(),
+            session_id,
+            content,
+            &SendOptions::default(),
+        ).await?;
+        
+        // 添加线程回复属性
         message.attributes.insert("thread_id".to_string(), thread_id.to_string());
 
         let mut message_bytes = Vec::new();
@@ -387,22 +373,27 @@ impl MessageService {
         Ok(message_id)
     }
 
-    pub async fn send_message_with_options(
+    /// 构建完整的 Message 对象（内部辅助方法）
+    /// 
+    /// 确保所有必要字段都被正确设置，包括：
+    /// - 基本字段：id、session_id、sender_id、message_type、status、source、content、timestamp
+    /// - 业务字段：business_type、session_type、receiver_id（如果是单聊）
+    /// - 扩展字段：priority（如果提供）
+    async fn build_complete_message(
         &self,
+        message_id: String,
         session_id: &str,
         content: ProtoMessageContent,
-        options: SendOptions,
-    ) -> Result<String> {
-        // 1. 生成消息 ID
-        let message_id = new_message_id();
-        
-        // 2. 构建消息（优化：减少锁持有时间）
+        options: &SendOptions,
+    ) -> Result<Message> {
         let user_id = {
             let guard = self.user_id.read().await;
             guard.clone()
         };
+        
         let mut message = Message::default();
-        message.id = message_id.clone();
+        // 基本字段
+        message.id = message_id;
         message.session_id = session_id.to_string();
         message.sender_id = user_id;
         message.message_type = Self::message_type_from_content(&content);
@@ -413,9 +404,63 @@ impl MessageService {
             seconds: chrono::Utc::now().timestamp(),
             nanos: 0,
         });
-        if let Some(p) = options.priority {
-            message.extra.insert("priority".to_string(), p.to_string());
+        
+        // 业务字段：默认值
+        message.business_type = "chat".to_string();
+        
+        // 从会话信息中获取 session_type 和 receiver_id（如果是单聊）
+        if let Ok(session) = self.session_service.get_session(session_id).await {
+            // 使用 session_type 判断会话类型
+            match session.session_type.as_str() {
+                "single" => {
+                    // 单聊：从 metadata 获取 peer_id
+                    if let Some(peer_id) = session.metadata.get("peer_id") {
+                        message.session_type = "single".to_string();
+                        message.receiver_id = peer_id.clone();
+                        message.receiver_ids = Vec::new();
+                        message.group_id = String::new();
+                    }
+                }
+                "group" | "channel" => {
+                    // 群聊：session_id 通常就是 group_id，或者从 metadata 获取
+                    message.session_type = session.session_type.clone();
+                    message.group_id = session.metadata.get("group_id")
+                        .cloned()
+                        .unwrap_or_else(|| session_id.to_string());
+                    message.receiver_id = String::new();
+                    message.receiver_ids = Vec::new();
+                }
+                _ => {
+                    // 其他类型：保持默认值
+                    message.session_type = session.session_type.clone();
+                }
+            }
         }
+        
+        // 扩展字段
+        if let Some(priority) = options.priority {
+            message.extra.insert("priority".to_string(), priority.to_string());
+        }
+        
+        Ok(message)
+    }
+
+    pub async fn send_message_with_options(
+        &self,
+        session_id: &str,
+        content: ProtoMessageContent,
+        options: SendOptions,
+    ) -> Result<String> {
+        // 1. 生成消息 ID
+        let message_id = new_message_id();
+        
+        // 2. 构建完整的 Message 对象
+        let message = self.build_complete_message(
+            message_id.clone(),
+            session_id,
+            content,
+            &options,
+        ).await?;
         
         let mut message_bytes = Vec::new();
         message.encode(&mut message_bytes)
@@ -462,7 +507,7 @@ impl MessageService {
         let frame_clone = frame.clone();
         let circuit_breaker_clone = Arc::clone(&self.circuit_breaker);
         
-        let send_result = self.error_recovery.execute_with_retry(|| {
+        self.error_recovery.execute_with_retry(|| {
             let conn = Arc::clone(&connection_clone);
             let f = frame_clone.clone();
             let cb = Arc::clone(&circuit_breaker_clone);
@@ -490,7 +535,12 @@ impl MessageService {
         
         save_result.context("Failed to save message to local storage")?;
         
-        // 6. 发布消息发送事件（优化：使用引用避免额外克隆）
+        // 6. 更新消息状态为 Sent（发送成功）
+        // 注意：这里更新为 Sent 而不是 Created，因为消息已经成功发送到服务器
+        self.update_message_status(&message_id, MessageStatus::Sent).await
+            .context("Failed to update message status to Sent")?;
+        
+        // 7. 发布消息发送事件（优化：使用引用避免额外克隆）
         self.event_bus.publish(Event::Message(MessageEvent::MessageSent {
             message_id: message_id.clone(),
             session_id: session_id.to_string(),
@@ -550,6 +600,9 @@ impl MessageService {
         // 优化：使用 Arc<Message> 减少克隆
         let message_arc = Arc::new(message);
         
+        eprintln!("[MessageService] on_message_received: message_id={}, session_id={}, sender_id={}", 
+            message_arc.id, message_arc.session_id, message_arc.sender_id);
+        
         info!(
             message_id = %message_arc.id,
             session_id = %message_arc.session_id,
@@ -568,11 +621,17 @@ impl MessageService {
             ).await;
         }
         
-        // 1. 保存到本地存储
-        self.storage.save_message(message_arc.as_ref()).await
+        // 1. 确保收到的消息状态为 Delivered（已送达），而不是 Created（发送中）
+        let mut message_to_save = (*message_arc).clone();
+        if message_to_save.status == MessageStatus::Created as i32 {
+            message_to_save.status = MessageStatus::Delivered as i32;
+        }
+        
+        // 2. 保存到本地存储
+        self.storage.save_message(&message_to_save).await
             .context("Failed to save received message to local storage")?;
         
-        // 2. 更新消息状态（已接收）
+        // 3. 更新消息状态（已接收）
         let state = MessageState::new();
         let user_id = {
             let guard = self.user_id.read().await;
@@ -631,10 +690,12 @@ impl MessageService {
         let session_id = message_arc.session_id.clone();
         
         // 4. 发布消息接收事件
+        eprintln!("[MessageService] 发布 MessageReceived 事件: message_id={}, session_id={}", message_id, session_id);
         self.event_bus.publish(Event::Message(MessageEvent::MessageReceived {
             message_id,
             session_id,
         }));
+        eprintln!("[MessageService] MessageReceived 事件已发布");
         
         Ok(())
     }

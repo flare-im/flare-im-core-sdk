@@ -136,10 +136,9 @@ impl SyncTaskExecutor for MessageSyncTask {
         let start_time = Instant::now();
         let task_id = format!("message-sync-{}-{}", self.session_id, uuid::Uuid::new_v4());
         
-        // 直接调用消息同步，避免任务系统循环
-        // 注意：这里需要直接调用内部方法，但为了简化，我们暂时调用公共方法
-        // 实际应该通过 SyncService 提供内部方法访问
-        match self.sync_service.sync_messages(&self.session_id, self.after_seq).await {
+        // 直接调用内部方法，避免任务系统循环调用
+        // 注意：不能调用 sync_messages，因为它会检查任务系统并再次调用 sync_messages_via_task
+        match self.sync_service.sync_messages_internal(&self.session_id, self.after_seq).await {
             Ok(result) => {
                 let duration_ms = start_time.elapsed().as_millis() as u64;
                 Ok(TaskResult::success(
@@ -210,8 +209,9 @@ impl SyncTaskExecutor for SessionSyncTask {
         let start_time = Instant::now();
         let task_id = format!("session-sync-{}", uuid::Uuid::new_v4());
         
-        // 直接调用会话同步，避免任务系统循环
-        match self.sync_service.sync_sessions(self.cursor.clone()).await {
+        // 直接调用内部方法，避免任务系统循环调用
+        // 注意：不能调用 sync_sessions，因为它会检查任务系统并再次调用 sync_sessions_via_task
+        match self.sync_service.sync_sessions_internal(self.cursor.clone()).await {
             Ok(result) => {
                 let duration_ms = start_time.elapsed().as_millis() as u64;
                 Ok(TaskResult::success(

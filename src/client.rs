@@ -18,7 +18,7 @@ use crate::storage::{StorageBackend, SessionFilter};
 use anyhow::{Context, Result};
 use std::sync::Arc;
  
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 use tokio::sync::RwLock;
 #[cfg(target_arch = "wasm32")]
 use tokio::task::spawn_local as tokio_spawn;
@@ -519,13 +519,35 @@ impl FlareIMClient {
             }
         );
         
-        // 5. 启动重连同步监听器（使用默认策略，但不立即同步）
-        // 注意：不在登录时立即同步，让用户连接成功后直接进入消息页面
+        // 5. 启用任务系统（用于管理同步任务）
+        self.sync_service.enable_tasks(true).await;
+        info!("Task system enabled for sync operations");
+        
+        // 6. 登录后立即同步会话列表（使用任务系统，异步执行，不阻塞登录）
+        // 这是用户登录后最需要的操作，应该立即执行
+        let sync_service_clone = Arc::clone(&self.sync_service);
+        tokio_spawn(async move {
+            // 等待一小段时间，确保连接完全稳定
+            tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+            
+            info!("Starting session sync after login");
+            match sync_service_clone.sync_sessions(None).await {
+                Ok(result) => {
+                    info!(
+                        session_count = result.count,
+                        has_more = result.has_more,
+                        "Session sync completed after login"
+                    );
+                }
+                Err(e) => {
+                    warn!(error = %e, "Session sync failed after login (non-blocking)");
+                }
+            }
+        });
+        
+        // 7. 启动重连同步监听器（使用默认策略）
         self.sync_service.start_reconnect_sync_listener(None).await
             .context("Failed to start reconnect sync listener")?;
-        
-        // 6. 不在登录时启动全量同步，让用户连接成功后直接进入消息页面
-        // 同步可以在用户进入消息页面后按需触发
         
         info!(elapsed_ms = login_start.elapsed().as_millis(), "Login completed");
         
@@ -666,19 +688,55 @@ impl FlareIMClient {
             .context("Failed to edit message")
     }
 
-    /// 获取会话列表
+    /// 获取会话列表（自动同步）
+    /// 
+    /// 此方法会自动检查本地会话列表是否最新，如果需要更新，会自动从服务器同步。
+    /// 用户无需手动调用 `sync_sessions`，SDK 会自动处理同步逻辑。
     /// 
     /// # 参数
     /// - `filter`: 会话过滤条件
     /// 
     /// # 返回
     /// - `Result<Vec<SessionSummary>>`: 会话列表
+    /// 
+    /// # 自动同步策略
+    /// - 如果本地会话列表为空，自动同步会话列表
+    /// - 如果连接未建立，只返回本地会话（不触发同步）
+    /// - 首次调用时自动同步，后续调用根据实际情况决定
+    /// 
+    /// # 示例
+    /// ```rust,no_run
+    /// // 用户只需要调用 get_sessions，SDK 会自动同步
+    /// let sessions = client.get_sessions(SessionFilter::default()).await?;
+    /// ```
     pub async fn get_sessions(
         &self,
         filter: SessionFilter,
     ) -> Result<Vec<SessionSummary>> {
-        self.session_service.get_sessions(filter).await
-            .context("Failed to get sessions")
+        // 1. 先尝试从本地获取会话
+        let local_sessions = self.session_service.get_sessions(filter.clone()).await
+            .context("Failed to get local sessions")?;
+        
+        // 2. 检查是否需要自动同步
+        // 策略：如果本地会话为空，且连接已建立，自动同步
+        let should_sync = local_sessions.is_empty() && 
+            self.connection.is_connected().await;
+        
+        if should_sync {
+            // 3. 自动同步会话列表（通过任务系统，异步执行，不阻塞）
+            let sync_service = Arc::clone(&self.sync_service);
+            
+            // 通过任务系统异步同步（不阻塞当前请求）
+            // 任务系统会自动管理同步任务，支持优先级、重试等
+            tokio_spawn(async move {
+                if let Err(e) = sync_service.sync_sessions(None).await {
+                    debug!(error = %e, "Auto-sync sessions failed (non-blocking)");
+                }
+            });
+        }
+        
+        // 4. 返回本地会话（即使同步正在进行，也先返回本地已有的会话）
+        Ok(local_sessions)
     }
     
     /// 获取会话列表（带扩展信息）
@@ -719,7 +777,10 @@ impl FlareIMClient {
             .context("Failed to get session with extensions")
     }
 
-    /// 获取会话消息
+    /// 获取会话消息（自动同步）
+    /// 
+    /// 此方法会自动检查本地消息是否足够，如果不足或需要更新，会自动从服务器同步。
+    /// 用户无需手动调用 `sync_messages`，SDK 会自动处理同步逻辑。
     /// 
     /// # 参数
     /// - `session_id`: 会话 ID
@@ -728,14 +789,56 @@ impl FlareIMClient {
     /// 
     /// # 返回
     /// - `Result<Vec<Message>>`: 消息列表
+    /// 
+    /// # 自动同步策略
+    /// - 如果本地消息数量不足（少于 `limit`），自动同步最近消息
+    /// - 如果本地没有消息，自动同步最近消息
+    /// - 如果连接未建立，只返回本地消息（不触发同步）
+    /// 
+    /// # 示例
+    /// ```rust,no_run
+    /// // 用户只需要调用 get_messages，SDK 会自动同步
+    /// let messages = client.get_messages("session_123", 50, None).await?;
+    /// ```
     pub async fn get_messages(
         &self,
         session_id: &str,
         limit: usize,
         cursor: Option<String>,
     ) -> Result<Vec<Message>> {
-        self.message_service.get_local_messages(session_id, limit, cursor).await
-            .context("Failed to get messages")
+        // 1. 先尝试从本地获取消息
+        let local_messages = self.message_service.get_local_messages(session_id, limit, cursor.clone()).await
+            .context("Failed to get local messages")?;
+        
+        // 2. 检查是否需要自动同步
+        // 策略：如果本地消息不足，且连接已建立，自动同步
+        let should_sync = local_messages.len() < limit.min(50) && // 如果本地消息不足（至少需要50条或limit）
+            self.connection.is_connected().await; // 且连接已建立
+        
+        if should_sync {
+            // 3. 自动同步最近消息（静默同步，不阻塞）
+            // 注意：同步是异步的，会触发 MessageReceived 事件，前端会自动更新
+            let sync_service = Arc::clone(&self.sync_service);
+            let session_id_clone = session_id.to_string();
+            
+            // 获取本地最大 seq，从该 seq 之后同步
+            let after_seq = if let Ok(Some(max_seq)) = self.storage.get_max_seq(session_id).await {
+                Some(max_seq)
+            } else {
+                None
+            };
+            
+            // 通过任务系统异步同步（不阻塞当前请求）
+            // 任务系统会自动管理同步任务，支持优先级、重试等
+            tokio_spawn(async move {
+                if let Err(e) = sync_service.sync_messages(&session_id_clone, after_seq).await {
+                    debug!(error = %e, session_id = %session_id_clone, "Auto-sync messages failed (non-blocking)");
+                }
+            });
+        }
+        
+        // 4. 返回本地消息（即使同步正在进行，也先返回本地已有的消息）
+        Ok(local_messages)
     }
     
     /// 获取消息列表（带扩展信息）

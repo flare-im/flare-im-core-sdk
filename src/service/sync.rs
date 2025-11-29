@@ -3,7 +3,7 @@
 //! 提供消息和会话的同步功能
 
 use crate::connection::ConnectionManager;
-use crate::event::{Event, EventBus, ConnectionEvent, SyncEvent};
+use crate::event::{Event, EventBus, ConnectionEvent, SyncEvent, MessageEvent};
 use crate::model::{Message, SessionSummary, SyncCursor, SyncResult};
 use crate::protocol::{FrameBuilder, RequestManager};
 use crate::storage::StorageBackend;
@@ -1154,6 +1154,12 @@ impl SyncService {
                             self.storage.save_message(&message).await
                                 .context("Failed to save message")?;
                             message_count += 1;
+                            
+                            // 发布 MessageReceived 事件（同步获取的消息也需要触发事件）
+                            self.event_bus.publish(Event::Message(MessageEvent::MessageReceived {
+                                message_id: message.id.clone(),
+                                session_id: message.session_id.clone(),
+                            }));
                         }
                         // 否则保留现有消息
                         continue;
@@ -1165,6 +1171,13 @@ impl SyncService {
             self.storage.save_message(&message).await
                 .context("Failed to save message")?;
             message_count += 1;
+            
+            // 发布 MessageReceived 事件（同步获取的消息也需要触发事件，以便前端更新）
+            // 注意：这是同步获取的消息，不是推送的，但仍然需要触发事件以更新 UI
+            self.event_bus.publish(Event::Message(MessageEvent::MessageReceived {
+                message_id: message.id.clone(),
+                session_id: message.session_id.clone(),
+            }));
             
             // 更新 last_seq
             if let Some(seq) = Self::extract_seq_from_message(&message) {
@@ -1325,16 +1338,18 @@ impl SyncService {
         self.running_tasks.lock().await.insert(task_id, task.clone());
         
         // 从任务结果中提取 SessionSyncResult
+        // 注意：任务执行器已经调用了 sync_sessions_internal，并返回了结果
+        // 我们需要从任务结果中提取，或者再次调用以获取最新结果
         if let Some(result) = task.result {
             if result.success {
-                // 任务执行器已经调用了 sync_sessions_internal，我们需要再次调用以获取结果
+                // 任务执行成功，再次调用以获取最新的同步结果（包含实际同步的会话数量）
                 return self.sync_sessions_internal(cursor).await;
             } else {
                 return Err(anyhow::anyhow!("Session sync task failed: {}", result.error.unwrap_or_default()));
             }
         }
         
-        // 如果任务没有返回结果，直接调用内部方法
+        // 如果任务没有返回结果，直接调用内部方法获取结果
         self.sync_sessions_internal(cursor).await
     }
     
