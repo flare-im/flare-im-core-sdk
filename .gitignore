@@ -1,0 +1,29 @@
+# Rust
+target/
+Cargo.lock
+**/*.rs.bk
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.cargo/
+platforms/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build
+*.so
+*.dylib
+*.dll
+*.a
+
+doc/
+certs/
+examples/flare-chat/
+examples/certs/
+dist/
