@@ -1,3 +1,25 @@
+[workspace]
+members = [
+    ".",
+    "examples/flare-chat/src-tauri",
+]
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.85"
+authors = ["Flare Team"]
+license = "MIT"
+
+[workspace.dependencies]
+# 共享依赖
+flare-proto = { path = "../flare-proto" }
+flare-core = { path = "../flare-core" }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+anyhow = "1.0"
+thiserror = "2.0"
+tokio = { version = "1", features = ["full"] }
+
 [package]
 name = "flare-im-core-sdk"
 version = "0.1.0"
@@ -17,18 +39,23 @@ crate-type = ["rlib", "cdylib", "staticlib"]
 default = []
 extensions = []
 storage-tools = []
+ffi = []  # C ABI 包装层（用于自动生成各平台绑定）
+
+[lints.rust]
+# 允许 harmonyos 作为 target_os 值（HarmonyOS 平台支持）
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_os, values("harmonyos"))'] }
 
 [dependencies]
 # 基础框架
-flare-core = { path = "../flare-core" }
-flare-proto = { path = "../flare-proto" }
+flare-core = { workspace = true }
+flare-proto = { workspace = true }
 
 # 序列化
-serde = { version = "1.0", features = ["derive"] }
+serde = { workspace = true }
 serde_json = "1.0"
 
 # 错误处理
-anyhow = "1.0"
+anyhow = { workspace = true }
 thiserror = "2.0"
 
 # 工具
@@ -40,6 +67,7 @@ jsonwebtoken = { version = "10", default-features = false, features = ["rust_cry
 # 无锁数据结构
 arc-swap = "1.7"
 dashmap = "6.1"
+lazy_static = "1.4"
  
 
 # 异步 trait 支持
@@ -68,7 +96,7 @@ serde-wasm-bindgen = "0.6"
 
 # 异步运行时（非 wasm）
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-tokio = { version = "1", features = ["full"] }
+tokio = { workspace = true }
 sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "sqlite", "chrono"] }
 uuid = { version = "1.0", features = ["v4"] }
 rand = "0.8"
@@ -84,6 +112,10 @@ rand = "0.8"
 [target.'cfg(target_os = "android")'.dependencies]
 jni = "0.21"
 
+[build-dependencies]
+cbindgen = "0.26"
+
 [dev-dependencies]
 tokio-test = "0.4"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+tempfile = "3.10"

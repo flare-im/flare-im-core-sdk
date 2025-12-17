@@ -2,6 +2,23 @@
 //!
 //! 跨平台的即时通讯客户端SDK，支持Web、PC桌面、Android、iOS、鸿蒙等平台。
 //!
+//! ## 安全性说明
+//!
+//! FFI 模块（`ffi`）包含 C ABI 代码，虽然使用了 `#[no_mangle]` 和原始指针，
+//! 但所有公共 API 都是安全的。所有 unsafe 操作都封装在安全包装层中。
+
+#![allow(unsafe_code)] // FFI 模块需要 unsafe，但已封装在安全包装层中
+//!
+//! ## 架构设计
+//!
+//! SDK 采用分层架构设计，参考顶级 IM SDK（Telegram、微信、WhatsApp）：
+//!
+//! - **API 层** (`api/`): 对外统一 API
+//! - **应用层** (`application/`): 业务编排
+//! - **领域层** (`domain/`): 核心业务逻辑
+//! - **基础设施层** (`infrastructure/`): 技术实现
+//! - **共享层** (`shared/`): 跨层共享功能
+//!
 //! ## 快速开始
 //!
 //! ```rust,no_run
@@ -51,47 +68,48 @@
 //! }
 //! ```
 
-pub mod client;
-pub mod config;
-pub mod connection;
-pub mod protocol;
-pub mod service;
-pub mod storage;
-pub mod model;
-pub mod event;
-pub mod handler;
-pub mod observer;
-pub mod task;
-pub mod error;
-pub mod lifecycle;
-pub mod platform;
+// 分层架构模块
+pub mod api;
+pub mod application;
+pub mod domain;
+pub mod infrastructure;
+pub mod shared;
+
+// C ABI 包装层（用于自动生成各平台绑定）
+#[cfg(feature = "ffi")]
+pub mod ffi;
+
+// 重新导出公共 API
+pub use api::{FlareIMClient, LoginResult};
 #[cfg(feature = "extensions")]
-pub mod extension;
-pub use client::{FlareIMClient, LoginResult};
-pub use config::{ClientConfig, ClientConfigBuilder, DevicePlatform};
-pub use model::{
-    Message, ExtendedMessage,
-    SessionSummary, ExtendedSessionSummary,
-    SyncCursor, SyncResult,
-    MessageBuilder,
-    MessageExtension, MessageLocalState,
-    SessionExtension,
+pub use domain::extension::{
+    ExtensionCache, ExtensionProvider, MessageExtension, MessageLocalState, SessionExtension,
     UserExtension,
-    ExtensionProvider, ExtensionCache,
 };
+// ExtendedMessage 已删除，使用 DomainMessage + Extension 替代
+// #[cfg(feature = "extensions")]
+// pub use domain::message::ExtendedMessage;
+pub use domain::message::Message;
+// 使用 domain 层的 MessageBuilder（支持构建完整 Message）
+pub use domain::MessageBuilder;
+// SessionBuilder 暂时保留在 application 层（逐步迁移到 domain 层）
+// pub use application::session::SessionBuilder; // 暂时注释，等待迁移完成
+#[cfg(feature = "extensions")]
+pub use domain::session::ExtendedSessionSummary;
+pub use domain::session::SessionSummary;
+pub use domain::sync::{SyncCursor, SyncResult};
+pub use shared::config::{ClientConfig, ClientConfigBuilder, DevicePlatform};
 
 #[cfg(feature = "extensions")]
-pub use extension::{
-    ExtensionInfoManager,
+pub use shared::extension::{
+    ExtensionInfoManager, MemoryExtensionCache, MemoryExtensionProvider, StorageExtensionCache,
     StorageExtensionProvider,
-    MemoryExtensionProvider,
-    StorageExtensionCache,
-    MemoryExtensionCache,
 };
-pub use event::{Event, EventBus, ConnectionEvent, MessageEvent, SessionEvent, SyncEvent};
-pub use storage::{StorageBackend, SessionFilter, SessionUpdate, MessageState};
-pub use service::message::SendOptions;
-pub use service::message::MessagePriority;
-pub use service::crypto::{CryptoService, NoopCrypto, AesCrypto};
-pub use observer::{MessageObserver, ArcMessageObserver};
-pub use error::{SDKError, SDKResult};
+
+pub use application::{AesCrypto, CryptoService, NoopCrypto};
+pub use infrastructure::event::{
+    ConnectionEvent, Event, EventBus, MessageEvent, SessionEvent, SyncEvent,
+};
+pub use infrastructure::storage::{MessageState, SessionFilter, SessionUpdate, StorageBackend};
+pub use shared::error::{SDKError, SDKResult};
+pub use shared::observer::{ArcMessageObserver, MessageObserver};
