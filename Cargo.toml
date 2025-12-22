@@ -62,12 +62,11 @@ thiserror = "2.0"
 uuid = { version = "1.0" }
 chrono = { version = "0.4", features = ["serde"] }
 base64 = { version = "0.22", default-features = false, features = ["alloc", "std"] }
-jsonwebtoken = { version = "10", default-features = false, features = ["rust_crypto"] }
-
 # 无锁数据结构
 arc-swap = "1.7"
 dashmap = "6.1"
 lazy_static = "1.4"
+once_cell = "1.20"
  
 
 # 异步 trait 支持
@@ -83,9 +82,6 @@ reqwest = { version = "0.12", features = ["multipart", "stream", "json"] }
 prost = "0.14"
 prost-types = "0.14"
 
-# 加密
-aes-gcm = { version = "0.10", features = ["aes"] }
-
 # Web 平台（IndexedDB 存储）
 wasm-bindgen = { version = "0.2", features = ["serde-serialize"] }
 wasm-bindgen-futures = "0.4"
@@ -94,8 +90,10 @@ js-sys = "0.3"
 console_error_panic_hook = "0.1"
 serde-wasm-bindgen = "0.6"
 
-# 异步运行时（非 wasm）
+# 非 wasm32 平台依赖
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+jsonwebtoken = { version = "10", default-features = false, features = ["rust_crypto"] }
+aes-gcm = { version = "0.10", features = ["aes"] }
 tokio = { workspace = true }
 sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "sqlite", "chrono"] }
 uuid = { version = "1.0", features = ["v4"] }
@@ -107,6 +105,7 @@ tokio = { version = "1", default-features = false, features = ["macros", "sync",
 reqwest = { version = "0.12", default-features = false, features = ["json"] }
 getrandom_compat = { package = "getrandom", version = "0.2", features = ["js"] }
 rand = "0.8"
+base64 = "0.22"
 
 # Android 平台（JNI 绑定）
 [target.'cfg(target_os = "android")'.dependencies]
@@ -119,3 +118,4 @@ cbindgen = "0.26"
 tokio-test = "0.4"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 tempfile = "3.10"
+tokio-tungstenite = { version = "0.24", features = ["native-tls"] }

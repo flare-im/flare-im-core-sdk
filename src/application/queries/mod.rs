@@ -1,12 +1,12 @@
-//! 查询定义（CQRS 读侧）
+//! 查询定义（Query DTOs）
 //!
-//! 定义所有读操作的数据结构，遵循 CQRS 原则
+//! 职责：定义所有读操作的查询数据结构
+//! 不包含业务逻辑，只包含数据
 
-pub mod message;
-pub mod session;
-pub mod sync;
+mod message_query;
+mod conversation_query;
+mod session_query;
 
-// 重新导出
-pub use message::*;
-pub use session::*;
-pub use sync::*;
+pub use message_query::*;
+pub use conversation_query::*;
+pub use session_query::*;

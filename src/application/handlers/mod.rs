@@ -1,20 +1,30 @@
-//! 命令和查询处理器
+//! CQRS Handler（编排层）
 //!
-//! 负责处理命令和查询，协调领域服务和基础设施
+//! 职责：编排领域服务，处理应用层逻辑
+//! 不包含业务逻辑，只负责编排
 
-pub mod connection_command_handler;
-pub mod message_command_handler;
-pub mod message_query_handler;
-pub mod session_command_handler;
-pub mod session_query_handler;
-pub mod sync_command_handler;
-pub mod sync_query_handler;
+mod command_handler;
+mod query_handler;
+mod message_command_handler;
+mod conversation_command_handler;
+mod session_command_handler;
+mod message_query_handler;
+mod conversation_query_handler;
+mod session_query_handler;
+mod sync_handler;
+mod conversation_sync_handler;
+mod custom_data_handler;
+mod network_message_dispatcher;
 
-// 重新导出
-pub use connection_command_handler::ConnectionCommandHandler;
+pub use command_handler::CommandHandler;
+pub use query_handler::QueryHandler;
 pub use message_command_handler::MessageCommandHandler;
-pub use message_query_handler::MessageQueryHandler;
+pub use conversation_command_handler::ConversationCommandHandler;
 pub use session_command_handler::SessionCommandHandler;
+pub use message_query_handler::MessageQueryHandler;
+pub use conversation_query_handler::ConversationQueryHandler;
 pub use session_query_handler::SessionQueryHandler;
-pub use sync_command_handler::SyncCommandHandler;
-pub use sync_query_handler::SyncQueryHandler;
+pub use sync_handler::SyncHandler;
+pub use conversation_sync_handler::ConversationSyncHandler;
+pub use custom_data_handler::CustomDataHandler;
+pub use network_message_dispatcher::NetworkMessageDispatcher;

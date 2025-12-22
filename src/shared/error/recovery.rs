@@ -75,7 +75,7 @@ impl Default for RetryStrategy {
                     jitter_ratio: 0.1,
                 }
             }
-            Platform::Android | Platform::IOS | Platform::HarmonyOS => {
+            Platform::Android | Platform::IOS | Platform::HarmonyOS | Platform::Mobile => {
                 // 移动端：考虑网络切换和电池优化，适中的重试策略
                 Self::ExponentialBackoffWithJitter {
                     max_attempts: 3,
@@ -277,7 +277,7 @@ impl CircuitBreaker {
                 // 桌面端：标准熔断策略
                 Self::new(5, 3, Duration::from_secs(30))
             }
-            Platform::Android | Platform::IOS | Platform::HarmonyOS => {
+            Platform::Android | Platform::IOS | Platform::HarmonyOS | Platform::Mobile => {
                 // 移动端：考虑网络切换，适中的熔断策略
                 Self::new(5, 3, Duration::from_secs(15))
             }

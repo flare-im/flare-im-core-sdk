@@ -1,14 +1,12 @@
-//! 命令定义（CQRS 写侧）
+//! 命令定义（Command DTOs）
 //!
-//! 定义所有写操作的数据结构，遵循 CQRS 原则
+//! 职责：定义所有写操作的命令数据结构
+//! 不包含业务逻辑，只包含数据
 
-pub mod connection;
-pub mod message;
-pub mod session;
-pub mod sync;
+mod message_command;
+mod conversation_command;
+mod session_command;
 
-// 重新导出
-pub use connection::*;
-pub use message::*;
-pub use session::*;
-pub use sync::*;
+pub use message_command::*;
+pub use conversation_command::*;
+pub use session_command::*;

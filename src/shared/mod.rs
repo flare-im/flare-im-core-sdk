@@ -2,6 +2,7 @@
 //!
 //! 跨层共享的通用功能
 
+pub mod capability;
 pub mod config;
 pub mod error;
 #[cfg(feature = "extensions")]
@@ -13,6 +14,7 @@ pub mod platform;
 pub mod utils;
 pub mod validation;
 
+pub use capability::*;
 pub use config::*;
 pub use error::*;
 #[cfg(feature = "extensions")]

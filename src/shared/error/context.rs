@@ -1,5 +1,15 @@
-//! 错误上下文
-//!
-//! 提供错误的上下文信息，用于调试和问题追踪
+//! 错误上下文（占位）
 
-// ErrorContext 已在 sdk_error.rs 中定义，通过 mod.rs 导出
+use serde::{Deserialize, Serialize};
+
+/// 错误上下文
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ErrorContext {
+    pub message: String,
+}
+
+impl ErrorContext {
+    pub fn new(message: String) -> Self {
+        Self { message }
+    }
+}

@@ -1,115 +1,101 @@
-//! Flare IM Client SDK
+//! Flare IM Core SDK
 //!
-//! 跨平台的即时通讯客户端SDK，支持Web、PC桌面、Android、iOS、鸿蒙等平台。
+//! 全端统一 IM Core SDK，基于 DDD + CQRS + FSM + Unified Sync + Storage Layer 架构
 //!
-//! ## 安全性说明
+//! ## 架构层次
 //!
-//! FFI 模块（`ffi`）包含 C ABI 代码，虽然使用了 `#[no_mangle]` 和原始指针，
-//! 但所有公共 API 都是安全的。所有 unsafe 操作都封装在安全包装层中。
-
-#![allow(unsafe_code)] // FFI 模块需要 unsafe，但已封装在安全包装层中
-//!
-//! ## 架构设计
-//!
-//! SDK 采用分层架构设计，参考顶级 IM SDK（Telegram、微信、WhatsApp）：
-//!
-//! - **API 层** (`api/`): 对外统一 API
-//! - **应用层** (`application/`): 业务编排
-//! - **领域层** (`domain/`): 核心业务逻辑
-//! - **基础设施层** (`infrastructure/`): 技术实现
-//! - **共享层** (`shared/`): 跨层共享功能
-//!
-//! ## 快速开始
-//!
-//! ```rust,no_run
-//! use flare_im_core_sdk::{FlareIMClient, ClientConfig, ClientConfigBuilder};
-//! use flare_core::common::config_types::TransportProtocol;
-//!
-//! #[tokio::main]
-//! async fn main() -> anyhow::Result<()> {
-//!     // 创建客户端配置
-//!     let config = ClientConfig::builder()
-//!         .server_url("wss://im.example.com")
-//!         .user_id("user_123")
-//!         .device_id("device_456")
-//!         .token("your_token")
-//!         .protocols(vec![
-//!             TransportProtocol::QUIC,
-//!             TransportProtocol::WebSocket,
-//!         ])
-//!         .build()?;
-//!
-//!     // 创建客户端
-//!     let client = FlareIMClient::new(config).await?;
-//!
-//!     // 登录
-//!     let login_result = client.login("user_123", "your_token").await?;
-//!     println!("登录成功: {:?}", login_result);
-//!
-//!     // 发送消息
-//!     let message_id = client.send_message(
-//!         "session_123",
-//!         flare_proto::MessageContent {
-//!             content: Some(flare_proto::flare::common::v1::message_content::Content::Text(
-//!                 flare_proto::TextContent {
-//!                     text: "Hello, World!".to_string(),
-//!                     mentions: vec![],
-//!                 }
-//!             )),
-//!         },
-//!     ).await?;
-//!     println!("消息已发送: {}", message_id);
-//!
-//!     // 获取会话列表
-//!     let sessions = client.get_sessions(flare_im_core_sdk::SessionFilter::default()).await?;
-//!     println!("会话数量: {}", sessions.len());
-//!
-//!     Ok(())
-//! }
 //! ```
+//! Application / UI
+//!        ↓
+//! SDK Application Layer
+//! (Facade / CommandBus / QueryBus / FSM / Sync Coordinator)
+//!        ↓
+//! Domain Layer (DDD)
+//! (Aggregate / Entity / Domain Event)
+//!        ↓
+//! Infrastructure Layer
+//! (LocalStore / Network / Clock)
+//! ```
+//!
+//! ## Core Bounded Context
+//!
+//! - **Session**: 登录态 / Token
+//! - **Connection**: 长连接 / 心跳
+//! - **Sync**: 统一同步引擎
+//! - **Message**: 消息生命周期
+//! - **Conversation**: 会话 / 未读数
+//!
+//! ## 设计原则
+//!
+//! 1. 状态是第一公民
+//! 2. 所有写操作必须可回放
+//! 3. 读写物理隔离（CQRS）
+//! 4. FSM 是唯一状态迁移入口
+//! 5. 存储层不包含业务逻辑
 
-// 分层架构模块
-pub mod api;
-pub mod application;
-pub mod domain;
-pub mod infrastructure;
+// 共享模块
 pub mod shared;
 
 // C ABI 包装层（用于自动生成各平台绑定）
 #[cfg(feature = "ffi")]
 pub mod ffi;
 
-// 重新导出公共 API
-pub use api::{FlareIMClient, LoginResult};
-#[cfg(feature = "extensions")]
-pub use domain::extension::{
-    ExtensionCache, ExtensionProvider, MessageExtension, MessageLocalState, SessionExtension,
-    UserExtension,
-};
-// ExtendedMessage 已删除，使用 DomainMessage + Extension 替代
-// #[cfg(feature = "extensions")]
-// pub use domain::message::ExtendedMessage;
-pub use domain::message::Message;
-// 使用 domain 层的 MessageBuilder（支持构建完整 Message）
-pub use domain::MessageBuilder;
-// SessionBuilder 暂时保留在 application 层（逐步迁移到 domain 层）
-// pub use application::session::SessionBuilder; // 暂时注释，等待迁移完成
-#[cfg(feature = "extensions")]
-pub use domain::session::ExtendedSessionSummary;
-pub use domain::session::SessionSummary;
-pub use domain::sync::{SyncCursor, SyncResult};
-pub use shared::config::{ClientConfig, ClientConfigBuilder, DevicePlatform};
+// ============================================================================
+// Core SDK 架构模块
+// ============================================================================
 
-#[cfg(feature = "extensions")]
-pub use shared::extension::{
-    ExtensionInfoManager, MemoryExtensionCache, MemoryExtensionProvider, StorageExtensionCache,
-    StorageExtensionProvider,
-};
+// 配置模块
+pub mod config;
 
-pub use application::{AesCrypto, CryptoService, NoopCrypto};
-pub use infrastructure::event::{
-    ConnectionEvent, Event, EventBus, MessageEvent, SessionEvent, SyncEvent,
-};
-pub use infrastructure::storage::{MessageState, SessionFilter, SessionUpdate, StorageBackend};
-pub use shared::error::{SDKError, SDKResult};
-pub use shared::observer::{ArcMessageObserver, MessageObserver};
+// Domain Layer - 领域层
+pub mod domain {
+    pub mod session;
+    pub mod connection;
+    pub mod message;
+    pub mod conversation;
+    pub mod sync;
+    
+    // 领域事件
+    pub mod event;
+    
+    // 领域服务
+    pub mod service;
+    
+    // 仓储接口（Port）
+    pub mod repository;
+    
+    // 常量定义
+    pub mod constants;
+    
+    // 消息队列
+    pub mod message_queue;
+}
+
+// Application Layer - 应用层
+// 使用 application/mod.rs 中定义的结构
+pub mod application;
+
+// Infrastructure Layer - 基础设施层
+pub mod infrastructure;
+
+// Interface Layer - 接口层
+pub mod interface;
+
+// Extension 模块（可选）
+#[cfg(feature = "extensions")]
+pub mod extensions;
+
+// 预导出常用类型
+pub mod prelude {
+    pub use crate::application::fsm::*;
+    pub use crate::application::sync_coordinator::*;
+    pub use crate::domain::event::*;
+    pub use crate::domain::repository::*;
+    pub use crate::infrastructure::storage::*;
+    pub use crate::interface::facade::*;
+    pub use crate::interface::event::*;
+    pub use crate::shared::error::*;
+    
+    #[cfg(feature = "extensions")]
+    pub use crate::extensions::*;
+}

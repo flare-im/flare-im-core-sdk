@@ -1,65 +1,27 @@
-//! 应用服务层（Application Layer）
+//! Application Layer - 应用层
 //!
-//! ## 架构设计（DDD + CQRS）
-//!
-//! 应用层负责业务编排，协调领域服务和基础设施，不包含业务逻辑。
-//!
-//! ### 目录结构
-//!
-//! ```
-//! application/
-//! ├── commands/          # 命令定义（CQRS 写侧）
-//! ├── queries/           # 查询定义（CQRS 读侧）
-//! ├── handlers/          # 命令和查询处理器
-//! ├── services/          # 应用服务（业务编排）
-//! ├── receivers/         # 服务端消息/命令接收处理
-//! └── crypto.rs          # 加密服务
-//! ```
-//!
-//! ### 设计原则
-//!
-//! 1. **CQRS 严格分离**：命令（写）和查询（读）完全分离
-//! 2. **薄应用层**：只负责编排，不包含业务逻辑
-//! 3. **无状态设计**：所有服务都是无状态的，可并发使用
-//! 4. **事件驱动**：通过事件总线解耦各模块
-//!
-//! ### 数据流向
-//!
-//! **写操作（Command）**：
-//! API 层 → Command → CommandHandler → DomainService → Repository → Storage
-//!
-//! **读操作（Query）**：
-//! API 层 → Query → QueryHandler → Repository → Storage → API 层
-//!
-//! **服务端推送**：
-//! Infrastructure → Receiver → DomainService → Repository → EventBus → API 层
+//! 职责：编排领域服务，处理应用层逻辑
+//! 不包含业务逻辑，只负责编排
 
+// FSM 状态机
+pub mod fsm;
+
+// 命令定义（Command DTOs）
 pub mod commands;
-pub mod crypto;
-pub mod handlers;
-// message 模块已删除，media_upload 已移到 infrastructure/storage
+
+// 查询定义（Query DTOs）
 pub mod queries;
-pub mod receivers;
-pub mod services;
-pub mod session;
-pub mod sync;
-pub mod vo;
 
-// 重新导出主要类型
-pub use crypto::{AesCrypto, CryptoService, NoopCrypto};
+// CQRS Handler（编排层）
+pub mod handlers;
 
-// 重新导出命令和查询
-pub use commands::*;
-pub use queries::*;
+// 同步协调器
+pub mod sync_coordinator;
 
-// 重新导出处理器
-pub use handlers::*;
+// Extension 机制
+pub mod extension;
 
-// 重新导出应用服务
-pub use services::*;
+// 注意：旧的 command 和 query 模块已删除，请使用新的 handlers
 
-// 重新导出接收器
-pub use receivers::*;
-
-// 重新导出视图模型
-pub use vo::*;
+// 导出主要的处理器
+pub use handlers::{CommandHandler, QueryHandler};

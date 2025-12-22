@@ -239,7 +239,7 @@ pub extern "C" fn flare_im_client_get_sessions(
         let clients = CLIENTS.lock().await;
         if let Some(client) = clients.get(&handle) {
             // 简化：直接使用默认过滤器（JSON 解析需要 SessionFilter 实现 Deserialize，暂时跳过）
-            let filter = crate::infrastructure::storage::SessionFilter::new();
+            let filter = crate::infrastructure::repository::SessionFilter::new();
 
             match client.get_sessions(filter).await {
                 Ok(sessions) => {
