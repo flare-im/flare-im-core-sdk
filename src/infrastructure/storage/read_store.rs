@@ -9,6 +9,48 @@ use crate::domain::message::Message;
 use crate::domain::conversation::Conversation;
 use serde_json;
 
+/// 辅助函数：从 protobuf 编码的 content 中提取文本内容，并添加到 Message 的 extra 字段中
+fn extract_text_to_extra(message_json: &mut serde_json::Value) {
+    use crate::domain::message::text_processor::TextContentProcessor;
+    
+    // 检查是否是文本消息（通过 content_type 字段判断）
+    let is_plain_text = message_json.get("content_type")
+        .and_then(|v| v.as_str())
+        .map(|s| s == "PlainText")
+        .unwrap_or(false);
+    
+    if is_plain_text {
+        // 尝试从 content 中提取文本
+        if let Some(content) = message_json.get("content")
+            .and_then(|v| v.as_array())
+            .map(|arr| arr.iter().filter_map(|v| v.as_u64().map(|u| u as u8)).collect::<Vec<u8>>()) {
+            
+            // 尝试解码 protobuf MessageContent
+            use flare_proto::flare::common::v1::MessageContent;
+            use prost::Message;
+            
+            if let Ok(mc) = MessageContent::decode(content.as_slice()) {
+                if let Some(flare_proto::flare::common::v1::message_content::Content::Text(text_content)) = mc.content {
+                    // 使用文本内容处理器处理提取的文本
+                    let processed_text = TextContentProcessor::process(text_content.text);
+                    
+                    // 提取文本成功，添加到 extra 字段
+                    if let Some(extra) = message_json.get_mut("extra") {
+                        if let Some(extra_obj) = extra.as_object_mut() {
+                            extra_obj.insert("content_text".to_string(), serde_json::Value::String(processed_text));
+                        }
+                    } else {
+                        // 如果 extra 不存在，创建它
+                        let mut extra_obj = serde_json::Map::new();
+                        extra_obj.insert("content_text".to_string(), serde_json::Value::String(processed_text));
+                        message_json.as_object_mut().unwrap().insert("extra".to_string(), serde_json::Value::Object(extra_obj));
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// SQLite ReadStore 实现
 #[cfg(not(target_arch = "wasm32"))]
 pub struct SqliteReadStore {
@@ -208,10 +250,15 @@ impl ReadStoreTrait for SqliteReadStore {
                 .fetch_all(&self.pool)
                 .await?;
                 
-                let items: Vec<serde_json::Value> = rows
+                let mut items: Vec<serde_json::Value> = rows
                     .into_iter()
                     .map(|row| serde_json::from_str(&row.data))
                     .collect::<Result<Vec<_>, _>>()?;
+                
+                // 对于文本消息，提取文本内容到 extra 字段
+                for item in &mut items {
+                    extract_text_to_extra(item);
+                }
                 
                 Ok(QueryResult::MessageList {
                     items,
@@ -230,11 +277,14 @@ impl ReadStoreTrait for SqliteReadStore {
                 .fetch_optional(&self.pool)
                 .await?;
                 
-                let item = if let Some(row) = row {
+                let mut item = if let Some(row) = row {
                     serde_json::from_str(&row.data)?
                 } else {
                     serde_json::json!({})
                 };
+                
+                // 对于文本消息，提取文本内容到 extra 字段
+                extract_text_to_extra(&mut item);
                 
                 Ok(QueryResult::MessageDetail { item })
             }
@@ -270,10 +320,15 @@ impl ReadStoreTrait for SqliteReadStore {
                 };
                 
                 let rows = query.fetch_all(&self.pool).await?;
-                let items: Vec<serde_json::Value> = rows
+                let mut items: Vec<serde_json::Value> = rows
                     .into_iter()
                     .map(|row| serde_json::from_str(&row.data))
                     .collect::<Result<Vec<_>, _>>()?;
+                
+                // 对于文本消息，提取文本内容到 extra 字段
+                for item in &mut items {
+                    extract_text_to_extra(item);
+                }
                 
                 Ok(QueryResult::SearchMessages { items })
             }
@@ -320,10 +375,15 @@ impl ReadStoreTrait for SqliteReadStore {
                 .fetch_all(&self.pool)
                 .await?;
                 
-                let items: Vec<serde_json::Value> = rows
+                let mut items: Vec<serde_json::Value> = rows
                     .into_iter()
                     .map(|row| serde_json::from_str(&row.data))
                     .collect::<Result<Vec<_>, _>>()?;
+                
+                // 对于文本消息，提取文本内容到 extra 字段
+                for item in &mut items {
+                    extract_text_to_extra(item);
+                }
                 
                 Ok(QueryResult::FindMessages { items })
             }

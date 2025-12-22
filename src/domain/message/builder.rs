@@ -3,7 +3,6 @@
 //! 提供便捷的消息构建 API，对标微信、Telegram、飞书的生产级别实现
 
 use crate::domain::message::*;
-use chrono::Utc;
 use std::collections::HashMap;
 
 /// 消息构建器
@@ -235,11 +234,15 @@ pub fn build_text_message(
     receiver_id: Option<String>,
 ) -> anyhow::Result<Message> {
     use uuid::Uuid;
+    use crate::domain::message::text_processor::TextContentProcessor;
+    
+    // 使用文本内容处理器过滤控制字符
+    let filtered_text = TextContentProcessor::process(text);
     
     // 构建文本内容
     use flare_proto::flare::common::v1::{MessageContent, message_content::Content};
     let text_content = flare_proto::flare::common::v1::TextContent {
-        text: text.clone(),
+        text: filtered_text,
         mentions: Vec::new(),
     };
     let mut content = MessageContent::default();

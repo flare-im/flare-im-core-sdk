@@ -134,11 +134,11 @@ impl NetworkClient {
                                         
                                         match queue_clone.enqueue(message, priority).await {
                                             true => {
-                                                debug!(
-                                                    message_id = %message_id,
-                                                    conversation_id = %conversation_id,
-                                                    sender_id = %sender_id,
-                                                    "Message enqueued successfully"
+                                            debug!(
+                                                message_id = %message_id,
+                                                conversation_id = %conversation_id,
+                                                sender_id = %sender_id,
+                                                "Message enqueued successfully"
                                                 );
                                             }
                                             false => {
@@ -150,14 +150,14 @@ impl NetworkClient {
                                                         conversation_id = %conversation_id,
                                                         sender_id = %sender_id,
                                                         "Message is duplicate, skipping"
-                                                    );
-                                                } else {
-                                                    warn!(
-                                                        message_id = %message_id,
-                                                        conversation_id = %conversation_id,
-                                                        sender_id = %sender_id,
+                                            );
+                                        } else {
+                                            warn!(
+                                                message_id = %message_id,
+                                                conversation_id = %conversation_id,
+                                                sender_id = %sender_id,
                                                         "Failed to enqueue received message (queue may be full)"
-                                                    );
+                                            );
                                                 }
                                             }
                                         }

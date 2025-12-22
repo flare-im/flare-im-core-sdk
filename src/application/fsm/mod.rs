@@ -8,7 +8,7 @@ use tokio::sync::RwLock;
 use crate::domain::session::{Session, SessionState};
 use crate::domain::connection::{Connection, ConnectionState};
 use crate::domain::sync::{Sync, SyncState};
-use crate::domain::message::{Message, MessageState};
+use crate::domain::message::Message;
 use crate::domain::event::DomainEvent;
 use crate::domain::repository::EventStore;
 
@@ -185,6 +185,8 @@ impl FsmManager {
     }
     
     /// 断开连接（Connection FSM: Online -> Disconnected）
+    ///
+    /// 断开连接时，自动重置 Sync 状态，允许重新连接后重新开始 Bootstrap Sync
     pub async fn connection_disconnect(&self) -> anyhow::Result<()> {
         let mut connection = self.connection.write().await;
         connection.disconnect()?;
@@ -197,6 +199,10 @@ impl FsmManager {
             serde_json::json!({}),
         );
         self.event_store.append(event).await?;
+        
+        // 断开连接时，重置 Sync 状态，允许重新连接后重新开始 Bootstrap Sync
+        // 注意：这里不重置游标，保留历史同步信息
+        self.sync_reset().await?;
         
         Ok(())
     }
@@ -228,7 +234,28 @@ impl FsmManager {
     // Sync FSM
     // ============================================================================
     
+    /// 重置 Sync 状态（Sync FSM: Any -> Idle）
+    ///
+    /// 用于连接断开时重置同步状态，允许重新开始 Bootstrap Sync
+    pub async fn sync_reset(&self) -> anyhow::Result<()> {
+        let mut sync = self.sync.write().await;
+        sync.reset();
+        
+        // 发布领域事件
+        let event = DomainEvent::new(
+            "Sync.Reset",
+            "sync",
+            sync.version,
+            serde_json::json!({}),
+        );
+        self.event_store.append(event).await?;
+        
+        Ok(())
+    }
+    
     /// 开始 Bootstrap Sync（Sync FSM: Idle -> Bootstrapping）
+    ///
+    /// 如果连接已断开后重新连接，允许从 Ready 状态重新开始
     pub async fn sync_start_bootstrap(&self) -> anyhow::Result<()> {
         // 检查 Connection 状态
         let connection_state = self.connection_state().await;
@@ -237,7 +264,9 @@ impl FsmManager {
         }
         
         let mut sync = self.sync.write().await;
-        sync.start_bootstrap()?;
+        // 检查当前状态，如果是 Ready，允许重新开始（连接断开后重新连接的情况）
+        let allow_from_ready = sync.state == crate::domain::sync::SyncState::Ready;
+        sync.start_bootstrap(allow_from_ready)?;
         
         // 发布领域事件
         let event = DomainEvent::new(

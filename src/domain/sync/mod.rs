@@ -56,15 +56,50 @@ impl Sync {
         }
     }
     
-    /// 开始 Bootstrap Sync
-    pub fn start_bootstrap(&mut self) -> anyhow::Result<()> {
-        if self.state != SyncState::Idle {
-            return Err(anyhow::anyhow!("Sync is not in Idle state"));
-        }
-        self.state = SyncState::Bootstrapping;
+    /// 重置 Sync 状态到 Idle
+    ///
+    /// 用于连接断开或重新连接时重置同步状态
+    pub fn reset(&mut self) {
+        self.state = SyncState::Idle;
+        // 注意：不重置游标，保留历史同步信息
+        // 但重置状态，允许重新开始 Bootstrap Sync
         self.version += 1;
         self.updated_at = Utc::now();
-        Ok(())
+    }
+    
+    /// 开始 Bootstrap Sync
+    ///
+    /// 如果当前状态不是 Idle，但连接已断开后重新连接，允许从 Ready 状态重新开始
+    pub fn start_bootstrap(&mut self, allow_from_ready: bool) -> anyhow::Result<()> {
+        match self.state {
+            SyncState::Idle => {
+                // 正常流程：从 Idle 开始
+                self.state = SyncState::Bootstrapping;
+                self.version += 1;
+                self.updated_at = Utc::now();
+                Ok(())
+            }
+            SyncState::Ready if allow_from_ready => {
+                // 允许从 Ready 状态重新开始（连接断开后重新连接的情况）
+                // 先重置状态，然后开始 Bootstrap
+                self.reset();
+                self.state = SyncState::Bootstrapping;
+                self.version += 1;
+                self.updated_at = Utc::now();
+                Ok(())
+            }
+            SyncState::Bootstrapping => {
+                // 如果已经在 Bootstrapping，可能是重复调用，返回错误
+                Err(anyhow::anyhow!("Sync is already in Bootstrapping state"))
+            }
+            SyncState::Syncing => {
+                // 如果正在异步同步，不允许开始 Bootstrap
+                Err(anyhow::anyhow!("Sync is in Syncing state, cannot start bootstrap"))
+            }
+            _ => {
+                Err(anyhow::anyhow!("Sync is not in Idle or Ready state"))
+            }
+        }
     }
     
     /// Bootstrap Sync 完成
@@ -91,7 +126,7 @@ impl Sync {
     }
     
     /// 开始 Async Sync
-    pub fn start_async(&mut self, sync_type: String) -> anyhow::Result<()> {
+    pub fn start_async(&mut self, _sync_type: String) -> anyhow::Result<()> {
         if self.state != SyncState::Ready {
             return Err(anyhow::anyhow!("Sync is not in Ready state"));
         }

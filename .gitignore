@@ -31,3 +31,9 @@ certs/
 examples/flare-chat/
 examples/certs/
 dist/
+
+# Chat data directory (database and logs)
+chat-data/
+
+# Tauri ignore file (for file watching)
+.taurignore

@@ -5,6 +5,7 @@
 
 pub mod builder;
 pub mod operation;
+pub mod text_processor;
 
 use serde::{Deserialize, Serialize};
 use chrono::{DateTime, Utc};
@@ -28,6 +29,7 @@ pub use operation::{
     ReactionAction,
     MarkType,
 };
+pub use text_processor::TextContentProcessor;
 
 /// Message 聚合根
 ///

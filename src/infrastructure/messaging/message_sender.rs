@@ -96,7 +96,7 @@ impl MessageSender {
                     "发送消息或等待响应失败"
                 );
                 return Err(anyhow::anyhow!("发送消息或等待响应失败: {}", e));
-            }
+        }
         };
 
         debug!(
@@ -116,7 +116,7 @@ impl MessageSender {
             status = ?result.status,
             "✅ 收到服务器 ACK"
         );
-
+        
         Ok(result)
     }
     

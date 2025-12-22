@@ -85,7 +85,10 @@ impl MessageCommandHandler {
             self.prepare_media_message(&mut message).await?;
         }
         
-        // 2. 发布 MessageCreated 事件（消息创建时）
+        // 2. 先保存消息到 ReadStore（确保事件触发时消息已可用）
+        self.save_message(&message).await?;
+        
+        // 3. 发布 MessageCreated 事件（消息创建时，此时消息已保存）
         self.publish_message_created_event(&message).await?;
         
         // 3. 通过 FSM 开始发送（领域层状态管理）
@@ -106,6 +109,9 @@ impl MessageCommandHandler {
                         metrics::record_message_send(true, latency_ms).await;
                         self.fsm.message_send_success(&mut message, result.seq).await?;
                         
+                        // 保存更新后的消息状态到 ReadStore
+                        self.save_message(&message).await?;
+                        
                         tracing::info!(
                             message_id = %result.message_id,
                             seq = result.seq,
@@ -123,10 +129,18 @@ impl MessageCommandHandler {
                         } else {
                             format!("服务器返回错误码: {}", result.error_code)
                         };
+                        // 更新消息状态为 Failed
+                        self.fsm.message_send_failed(&mut message, error_msg.clone()).await?;
+                        // 保存更新后的消息状态到 ReadStore
+                        self.save_message(&message).await?;
+                        // 发布 MessageSendFailed 事件
+                        self.publish_message_send_failed_event(&message, &error_msg).await?;
                         self.handle_send_failure(message, result.error_code, error_msg, latency_ms).await
                     }
                     _ => {
                         self.fsm.message_send_success(&mut message, result.seq).await?;
+                        // 保存更新后的消息状态到 ReadStore
+                        self.save_message(&message).await?;
                         self.publish_message_sent_event(&message, is_retry).await?;
                         Ok(())
                     }
@@ -191,8 +205,35 @@ impl MessageCommandHandler {
     
     /// 处理删除消息命令
     pub async fn handle_delete(&self, cmd: DeleteMessageCommand) -> anyhow::Result<()> {
-        let mut message = self.load_message(&cmd.message_id).await?
-            .ok_or_else(|| anyhow::anyhow!("Message not found: {}", cmd.message_id))?;
+        // 尝试加载消息，如果消息不存在，检查是否已经被删除
+        let mut message = match self.load_message(&cmd.message_id).await? {
+            Some(msg) => msg,
+            None => {
+                // 消息不存在，可能是已经被删除或者是硬删除
+                // 对于硬删除，直接返回成功（幂等性）
+                if cmd.delete_type == crate::domain::message::DeleteType::Hard {
+                    tracing::warn!(
+                        message_id = %cmd.message_id,
+                        "Message not found, but hard delete is idempotent, returning success"
+                    );
+                    return Ok(());
+                }
+                // 对于软删除，如果消息不存在，返回错误
+                return Err(anyhow::anyhow!("Message not found: {}", cmd.message_id));
+            }
+        };
+        
+        // 检查消息是否已经被删除
+        if let Some(deleted) = message.extra.get("deleted") {
+            if deleted == "true" || deleted == "hard" {
+                // 消息已经被删除，返回成功（幂等性）
+                tracing::info!(
+                    message_id = %cmd.message_id,
+                    "Message already deleted, returning success (idempotent)"
+                );
+                return Ok(());
+            }
+        }
         
         // 使用领域服务验证是否可以删除
         let can_delete = self.domain_service.can_delete(&message, &cmd.operator_id, cmd.delete_type)?;
@@ -531,10 +572,35 @@ impl MessageCommandHandler {
         
         match self.read_store.query(query).await? {
             QueryResult::MessageDetail { item } => {
-                if item.is_null() || item.get("message_id").is_none() {
+                // 检查 item 是否为空或无效
+                if item.is_null() || item.as_object().map_or(true, |obj| obj.is_empty()) {
                     Ok(None)
                 } else {
-                    Ok(serde_json::from_value::<Message>(item).ok())
+                    // 尝试反序列化为 Message
+                    // Message 结构体使用 "id" 字段，不是 "message_id"
+                    match serde_json::from_value::<Message>(item.clone()) {
+                        Ok(msg) => {
+                            // 验证消息 ID 是否匹配（防止反序列化错误的消息）
+                            if msg.id == message_id {
+                                Ok(Some(msg))
+                            } else {
+                                tracing::warn!(
+                                    expected_id = %message_id,
+                                    actual_id = %msg.id,
+                                    "Message ID mismatch, returning None"
+                                );
+                                Ok(None)
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                message_id = %message_id,
+                                error = %e,
+                                "Failed to deserialize message from ReadStore"
+                            );
+                            Ok(None)
+                        }
+                    }
                 }
             }
             _ => Ok(None),
@@ -580,21 +646,63 @@ impl MessageCommandHandler {
     /// 发布消息创建事件
     async fn publish_message_created_event(&self, message: &Message) -> anyhow::Result<()> {
         use crate::domain::event::{DomainEvent, message_events, MessageCreated};
+        use crate::domain::message::{ContentType, text_processor::TextContentProcessor};
+        
+        // 从 protobuf 编码的 content 中提取文本内容（如果是文本消息）
+        let content_value = if message.content_type == ContentType::PlainText {
+            // 尝试从 protobuf 编码的 content 中提取文本
+            use flare_proto::flare::common::v1::MessageContent;
+            use prost::Message;
+            
+            match MessageContent::decode(message.content.as_slice()) {
+                Ok(mc) => {
+                    if let Some(flare_proto::flare::common::v1::message_content::Content::Text(text_content)) = mc.content {
+                        // 使用文本内容处理器处理提取的文本
+                        let processed_text = TextContentProcessor::process(text_content.text);
+                        serde_json::Value::String(processed_text)
+                    } else {
+                        // 非文本类型的消息内容，保留原始字节数组
+                        serde_json::json!(message.content)
+                    }
+                }
+                Err(e) => {
+                    // protobuf 解码失败，记录警告但保留原始字节数组
+                    tracing::warn!(
+                        message_id = %message.id,
+                        error = %e,
+                        "Failed to decode MessageContent from protobuf, using raw bytes"
+                    );
+                    serde_json::json!(message.content)
+                }
+            }
+        } else {
+            // 非文本消息，保留原始字节数组
+            serde_json::json!(message.content)
+        };
         
         // 构建 MessageCreated 事件数据
         let message_created = MessageCreated {
             message_id: message.id.clone(),
             conversation_id: message.conversation_id.clone(),
             sender_id: message.sender_id.clone(),
-            content: serde_json::json!(message.content), // 将 Vec<u8> 转换为 JSON
+            content: content_value, // 使用提取的文本内容或原始字节数组
         };
+        
+        // 构建事件数据，包含 MessageCreated 和完整的 Message 对象（用于事件投影）
+        let mut event_data = serde_json::to_value(&message_created)?;
+        // 添加完整的消息对象到事件数据中，供事件投影器使用
+        if let Some(obj) = event_data.as_object_mut() {
+            // 将完整的消息对象序列化并添加到事件数据中
+            let message_json = serde_json::to_value(message)?;
+            obj.insert("message".to_string(), message_json);
+        }
         
         // 发布到 EventStore（持久化）
         let event = DomainEvent::new(
             message_events::CREATED,
             &message.id,
             message.version,
-            serde_json::to_value(&message_created)?,
+            event_data.clone(),
         );
         self.event_store.append(event.clone()).await?;
         
@@ -618,6 +726,31 @@ impl MessageCommandHandler {
             &message.id,
             message.version,
             serde_json::to_value(&message_sent)?,
+        );
+        
+        // 发布到 EventStore（持久化）
+        self.event_store.append(event.clone()).await?;
+        
+        // 发布到 EventBus（实时通知 UI 层）
+        self.event_bus.publish(event).await?;
+        
+        Ok(())
+    }
+    
+    async fn publish_message_send_failed_event(&self, message: &Message, error: &str) -> anyhow::Result<()> {
+        use crate::domain::event::{DomainEvent, message_events, MessageSendFailed};
+        
+        // 构建 MessageSendFailed 事件数据
+        let message_send_failed = MessageSendFailed {
+            message_id: message.id.clone(),
+            error: error.to_string(),
+        };
+        
+        let event = DomainEvent::new(
+            message_events::SEND_FAILED,
+            &message.id,
+            message.version,
+            serde_json::to_value(&message_send_failed)?,
         );
         
         // 发布到 EventStore（持久化）
