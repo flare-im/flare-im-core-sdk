@@ -4,9 +4,11 @@
 //! 不包含业务逻辑，只包含数据
 
 mod message_command;
+mod message_operation_command;
 mod conversation_command;
 mod session_command;
 
 pub use message_command::*;
+pub use message_operation_command::*;
 pub use conversation_command::*;
 pub use session_command::*;

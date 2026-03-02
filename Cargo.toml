@@ -1,7 +1,11 @@
 [workspace]
 members = [
     ".",
-    "examples/flare-chat/src-tauri",
+    "bindings/c",
+    "bindings/uniffi",
+    "bindings/tauri",
+    "examples/tauri/src-tauri",
+    "storage/sqlite",
 ]
 
 [workspace.package]
@@ -14,11 +18,31 @@ license = "MIT"
 # 共享依赖
 flare-proto = { path = "../flare-proto" }
 flare-core = { path = "../flare-core" }
+flare-server-core = { path = "../flare-server-core" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 anyhow = "1.0"
 thiserror = "2.0"
 tokio = { version = "1", features = ["full"] }
+async-trait = "0.1"
+chrono = { version = "0.4", features = ["serde"] }
+prost = "0.14"
+prost-types = "0.14"
+sha2 = "0.10"
+hex = "0.4"
+lazy_static = "1.4"
+uuid = { version = "1.0", features = ["v4"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+# SQLite 存储依赖
+sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "sqlite", "chrono", "uuid"] }
+# Tauri 特定依赖
+tauri = { version = "2", features = ["macos-private-api"] }
+# UniFFI 特定依赖
+uniffi = "0.28"
+uniffi_build = "0.28"
+# C ABI FFI 特定依赖
+cbindgen = "0.26"
 
 [package]
 name = "flare-im-core-sdk"
@@ -40,10 +64,12 @@ default = []
 extensions = []
 storage-tools = []
 ffi = []  # C ABI 包装层（用于自动生成各平台绑定）
+integration-tests = []  # 需服务端运行的接口/集成测试
 
 [lints.rust]
 # 允许 harmonyos 作为 target_os 值（HarmonyOS 平台支持）
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_os, values("harmonyos"))'] }
+# 允许 integration-tests feature（用于 interface_api_test 等）
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_os, values("harmonyos"))', 'cfg(feature, values("integration-tests"))'] }
 
 [dependencies]
 # 基础框架
@@ -119,3 +145,7 @@ tokio-test = "0.4"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 tempfile = "3.10"
 tokio-tungstenite = { version = "0.24", features = ["native-tls"] }
+once_cell = "1.20"
+# SQLite 存储实现（用于测试）
+flare-im-core-sdk-storage-sqlite = { path = "storage/sqlite" }
+

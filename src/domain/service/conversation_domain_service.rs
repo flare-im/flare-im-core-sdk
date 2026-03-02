@@ -21,7 +21,7 @@ impl ConversationDomainService {
     pub fn mark_as_read(
         &self,
         conversation: &mut Conversation,
-        user_id: &str,
+        _user_id: &str,
     ) -> Result<()> {
         conversation.clear_unread();
         Ok(())
@@ -68,13 +68,22 @@ impl ConversationDomainService {
         Ok(())
     }
     
-    /// 设置会话静音
+    /// 设置会话静音（完整流程：应用业务逻辑）
     pub fn set_muted(
         &self,
         conversation: &mut Conversation,
         muted: bool,
+        mute_until: Option<chrono::DateTime<chrono::Utc>>,
     ) -> Result<()> {
         conversation.set_muted(muted);
+        // 统一处理 mute_until（业务逻辑在领域层）
+        if muted {
+            conversation.mute_until = mute_until;
+        } else {
+            conversation.mute_until = None;
+        }
+        conversation.version += 1;
+        conversation.updated_at = chrono::Utc::now();
         Ok(())
     }
     
@@ -114,21 +123,40 @@ impl ConversationDomainService {
         avatar_url: Option<String>,
         description: Option<String>,
         announcement: Option<String>,
+        updated_by: Option<String>,
     ) -> Result<()> {
         if let Some(name) = display_name {
             conversation.display_name = name;
+            conversation.version += 1;
+            conversation.updated_at = chrono::Utc::now();
         }
         if let Some(avatar) = avatar_url {
             conversation.avatar_url = Some(avatar);
+            conversation.version += 1;
+            conversation.updated_at = chrono::Utc::now();
         }
         if let Some(desc) = description {
             conversation.description = Some(desc);
+            conversation.version += 1;
+            conversation.updated_at = chrono::Utc::now();
         }
         if let Some(announce) = announcement {
             // update_announcement 需要两个参数：announcement 和 updated_by
-            // 这里使用占位符，实际应该从上下文获取 user_id
-            conversation.update_announcement(announce, "system".to_string());
+            conversation.update_announcement(announce, updated_by.unwrap_or_else(|| "system".to_string()));
         }
+        Ok(())
+    }
+    
+    /// 清空会话消息（仅更新会话状态，不删除实际消息）
+    pub fn clear_messages(
+        &self,
+        conversation: &mut Conversation,
+    ) -> Result<()> {
+        // 重置最后消息和未读数
+        conversation.last_message = None;
+        conversation.clear_unread();
+        conversation.max_seq = 0;
+        conversation.last_read_seq = 0;
         Ok(())
     }
     
@@ -208,20 +236,53 @@ impl ConversationDomainService {
         &self,
         message: &crate::domain::message::Message,
     ) -> Result<Conversation> {
-        use crate::domain::conversation::{ConversationVisibility, ConversationLifecycleState, MessagePreview};
+        use crate::domain::conversation::{ConversationVisibility, ConversationLifecycleState, MessagePreview, ConversationParticipant};
+        use crate::domain::message::ConversationType;
         
         // 构建最后一条消息预览
         let last_message = MessagePreview {
-            message_id: message.id.clone(),
+            message_id: message.server_id.clone().unwrap_or_else(|| message.client_msg_id.clone()),
             sender_id: message.sender_id.clone(),
             message_type: format!("{:?}", message.message_type),
             text: self.extract_message_preview_text(message),
             time: message.timestamp,
         };
         
+        // 构建参与者列表
+        let mut participants = vec![];
+        
+        // 对于单聊，尝试从消息中提取参与者
+        if message.conversation_type == ConversationType::Single {
+            // 添加发送者
+            participants.push(ConversationParticipant {
+                user_id: message.sender_id.clone(),
+                roles: vec![],
+                muted: false,
+                pinned: false,
+                attributes: std::collections::HashMap::new(),
+                joined_at: chrono::Utc::now(),
+                nickname: None,
+            });
+            
+            // 添加接收者（如果存在且不同于发送者）
+            if let Some(receiver_id) = &message.receiver_id {
+                if receiver_id != &message.sender_id {
+                    participants.push(ConversationParticipant {
+                        user_id: receiver_id.clone(),
+                        roles: vec![],
+                        muted: false,
+                        pinned: false,
+                        attributes: std::collections::HashMap::new(),
+                        joined_at: chrono::Utc::now(),
+                        nickname: None,
+                    });
+                }
+            }
+        }
+        
         // 创建新会话
         let conversation = Conversation {
-            conversation_id: message.conversation_id.clone(),
+            conversation_id: message.conversation_id.clone().unwrap_or_default(),
             conversation_type: format!("{:?}", message.conversation_type),
             business_type: message.business_type.clone(),
             display_name: String::new(), // 需要从其他服务获取
@@ -237,7 +298,7 @@ impl ConversationDomainService {
             visibility: ConversationVisibility::Public,
             lifecycle_state: ConversationLifecycleState::Active,
             attributes: std::collections::HashMap::new(),
-            participants: vec![],
+            participants,
             policy: None,
             presence: None,
             announcement: None,
@@ -269,7 +330,7 @@ impl ConversationDomainService {
         
         // 构建消息预览
         let last_message = MessagePreview {
-            message_id: message.id.clone(),
+            message_id: message.server_id.clone().unwrap_or_else(|| message.client_msg_id.clone()),
             sender_id: message.sender_id.clone(),
             message_type: format!("{:?}", message.message_type),
             text: self.extract_message_preview_text(message),
@@ -292,9 +353,26 @@ impl ConversationDomainService {
         use crate::domain::message::MessageType;
         
         match message.message_type {
+            MessageType::Operation => {
+                // 操作消息预览：根据操作类型生成预览文本
+                "[操作消息]".to_string()
+            }
             MessageType::Text => {
-                // 尝试从 content 解析文本
-                String::from_utf8_lossy(&message.content).to_string()
+                // 使用统一的解码方法从 protobuf 解码文本内容
+                match flare_proto::decode_message_content(&message.content) {
+                    Ok(decoded_content) => {
+                        if let Some(flare_proto::flare::common::v1::message_content::Content::Text(text_content)) = decoded_content.content {
+                            text_content.text
+                        } else {
+                            // 如果不是文本内容，则返回默认文本
+                            "[文本消息]".to_string()
+                        }
+                    }
+                    Err(_) => {
+                        // 如果解码失败，返回默认文本
+                        "[文本消息]".to_string()
+                    }
+                }
             }
             MessageType::Image => "[图片]".to_string(),
             MessageType::Video => "[视频]".to_string(),

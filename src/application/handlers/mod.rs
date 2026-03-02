@@ -2,6 +2,12 @@
 //!
 //! 职责：编排领域服务，处理应用层逻辑
 //! 不包含业务逻辑，只负责编排
+//! 
+//! 架构模式：
+//! - Command Handlers: 处理写操作，委托给领域服务
+//! - Query Handlers: 处理读操作，委托给仓储层
+//! - Network Message Dispatcher: 处理网络消息分发
+//! - Sync Handlers: 处理同步逻辑
 
 mod command_handler;
 mod query_handler;

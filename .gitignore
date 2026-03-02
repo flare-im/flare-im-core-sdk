@@ -28,7 +28,7 @@ Thumbs.db
 
 doc/
 certs/
-examples/flare-chat/
+examples/tauri/
 examples/certs/
 dist/
 

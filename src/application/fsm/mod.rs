@@ -1,8 +1,3 @@
-//! FSM 状态机系统
-//!
-//! 所有状态变化必须经过 FSM
-//! FSM 位于 Application Layer
-
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use crate::domain::session::{Session, SessionState};
@@ -12,7 +7,6 @@ use crate::domain::message::Message;
 use crate::domain::event::DomainEvent;
 use crate::domain::repository::EventStore;
 
-/// FSM 管理器
 pub struct FsmManager {
     session: Arc<RwLock<Session>>,
     connection: Arc<RwLock<Connection>>,
@@ -35,16 +29,10 @@ impl FsmManager {
         }
     }
     
-    // ============================================================================
-    // Session FSM
-    // ============================================================================
-    
-    /// 开始登录（Session FSM: Idle -> LoggingIn）
     pub async fn session_start_login(&self) -> anyhow::Result<()> {
         let mut session = self.session.write().await;
         session.start_login()?;
         
-        // 发布领域事件
         let event = DomainEvent::new(
             "Session.LoggingIn",
             "session",
@@ -56,7 +44,6 @@ impl FsmManager {
         Ok(())
     }
     
-    /// 登录成功（Session FSM: LoggingIn -> Active）
     pub async fn session_login_success(
         &self,
         user_id: String,
@@ -65,7 +52,6 @@ impl FsmManager {
         let mut session = self.session.write().await;
         session.login_success(user_id.clone(), token.clone())?;
         
-        // 发布领域事件
         let event = DomainEvent::new(
             "Session.LoggedIn",
             "session",
@@ -80,12 +66,10 @@ impl FsmManager {
         Ok(())
     }
     
-    /// 登出（Session FSM: Active -> Idle）
     pub async fn session_logout(&self) -> anyhow::Result<()> {
         let mut session = self.session.write().await;
         session.logout()?;
         
-        // 发布领域事件
         let event = DomainEvent::new(
             "Session.LoggedOut",
             "session",
@@ -97,12 +81,10 @@ impl FsmManager {
         Ok(())
     }
     
-    /// 标记过期（Session FSM: Active -> Expired）
     pub async fn session_expire(&self) -> anyhow::Result<()> {
         let mut session = self.session.write().await;
         session.expire()?;
         
-        // 发布领域事件
         let event = DomainEvent::new(
             "Session.Expired",
             "session",
@@ -114,37 +96,27 @@ impl FsmManager {
         Ok(())
     }
     
-    /// 获取 Session 状态
     pub async fn session_state(&self) -> SessionState {
         let session = self.session.read().await;
         session.state
     }
     
-    /// 获取当前用户ID（如果已登录）
     pub async fn current_user_id(&self) -> Option<String> {
         let session = self.session.read().await;
         session.user_id.clone()
     }
     
-    /// 获取当前Token（如果已登录）
     pub async fn current_token(&self) -> Option<String> {
         let session = self.session.read().await;
         session.token.clone()
     }
     
-    /// 获取Session信息（user_id和token）
     pub async fn session_info(&self) -> (Option<String>, Option<String>) {
         let session = self.session.read().await;
         (session.user_id.clone(), session.token.clone())
     }
     
-    // ============================================================================
-    // Connection FSM
-    // ============================================================================
-    
-    /// 开始连接（Connection FSM: Disconnected -> Connecting）
     pub async fn connection_start_connect(&self) -> anyhow::Result<()> {
-        // 检查 Session 状态
         let session_state = self.session_state().await;
         if session_state != SessionState::Active {
             return Err(anyhow::anyhow!("Session is not Active, cannot connect"));
@@ -401,11 +373,11 @@ impl FsmManager {
         let event_type = if is_retry { "Message.Retry" } else { "Message.Created" };
         let event = DomainEvent::new(
             event_type,
-            &message.id,
+            message.server_id.as_ref().map(|s| s.as_str()).unwrap_or(""),
             message.version,
             serde_json::json!({
-                "message_id": message.id,
-                "conversation_id": message.conversation_id,
+                "message_id": message.server_id.clone().unwrap_or_default(),
+                "conversation_id": message.conversation_id.clone().unwrap_or_default(),
                 "sender_id": message.sender_id,
                 "is_retry": is_retry,
             }),
@@ -416,16 +388,16 @@ impl FsmManager {
     }
     
     /// 消息发送成功（Message FSM: Sending -> Sent）
-    pub async fn message_send_success(&self, message: &mut Message, seq: u64) -> anyhow::Result<()> {
-        message.send_success(seq)?;
+    pub async fn message_send_success(&self, message: &mut Message, seq: u64, server_msg_id: String) -> anyhow::Result<()> {
+        message.send_success(seq,server_msg_id.clone())?;
         
         // 发布领域事件
         let event = DomainEvent::new(
             "Message.Sent",
-            &message.id,
+            &server_msg_id,
             message.version,
             serde_json::json!({
-                "message_id": message.id,
+                "server_msg_id": server_msg_id,
                 "seq": seq,
             }),
         );
@@ -441,10 +413,10 @@ impl FsmManager {
         // 发布领域事件
         let event = DomainEvent::new(
             "Message.SendFailed",
-            &message.id,
+            message.server_id.as_ref().map(|s| s.as_str()).unwrap_or(""),
             message.version,
             serde_json::json!({
-                "message_id": message.id,
+                "message_id": message.server_id.clone().unwrap_or_default(),
                 "error": error,
             }),
         );

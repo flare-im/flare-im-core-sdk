@@ -15,3 +15,5 @@ pub mod converter;
 pub mod metrics;
 pub mod messaging;
 pub mod event_bus;
+pub mod event_stream;
+pub mod operation_event_builder;

@@ -1,61 +1,52 @@
 //! 消息查询处理器
 //!
-//! 职责：处理消息相关的读操作
+//! 职责：处理消息相关的读操作，返回领域模型
 
 use std::sync::Arc;
-use crate::domain::repository::ReadStore;
+use crate::domain::repository::MessageRepository;
+use crate::domain::message::Message;
 use crate::application::queries::*;
+
 
 /// 消息查询处理器
 pub struct MessageQueryHandler {
-    read_store: Arc<dyn ReadStore>,
+    message_repository: Arc<dyn MessageRepository>,
 }
 
 impl MessageQueryHandler {
-    pub fn new(read_store: Arc<dyn ReadStore>) -> Self {
-        Self { read_store }
+    pub fn new(message_repository: Arc<dyn MessageRepository>) -> Self {
+        Self { message_repository }
     }
     
-    /// 处理查询消息列表
-    pub async fn handle_list(&self, query: ListMessagesQuery) -> anyhow::Result<Vec<serde_json::Value>> {
-        use crate::domain::repository::{Query, QueryResult};
-        let q = Query::MessageList {
-            conversation_id: query.conversation_id,
-            limit: query.limit,
-            cursor: query.cursor,
-        };
+    /// 处理查询消息列表，返回领域模型
+    pub async fn handle_list(&self, query: ListMessagesQuery) -> anyhow::Result<Vec<Message>> {
+        let result = self.message_repository
+            .find_by_conversation(
+                &query.conversation_id,
+                query.limit,
+                query.cursor,
+            )
+            .await?;
         
-        match self.read_store.query(q).await? {
-            QueryResult::MessageList { items, .. } => Ok(items),
-            _ => Err(anyhow::anyhow!("Unexpected query result type")),
-        }
+        Ok(result.messages)
     }
     
-    /// 处理查询消息详情
-    pub async fn handle_get(&self, query: GetMessageQuery) -> anyhow::Result<serde_json::Value> {
-        use crate::domain::repository::{Query, QueryResult};
-        let q = Query::MessageDetail {
-            message_id: query.message_id,
-        };
-        
-        match self.read_store.query(q).await? {
-            QueryResult::MessageDetail { item } => Ok(item),
-            _ => Err(anyhow::anyhow!("Unexpected query result type")),
-        }
+    /// 处理查询消息详情，返回领域模型
+    pub async fn handle_get(&self, query: GetMessageQuery) -> anyhow::Result<Message> {
+        self.message_repository
+            .find_by_id(&query.message_id)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("Message not found: {}", query.message_id))
     }
     
-    /// 处理搜索消息
-    pub async fn handle_search(&self, query: SearchMessagesQuery) -> anyhow::Result<Vec<serde_json::Value>> {
-        use crate::domain::repository::{Query, QueryResult};
-        let q = Query::SearchMessages {
-            conversation_id: query.conversation_id,
-            keyword: query.keyword,
-            limit: query.limit,
-        };
-        
-        match self.read_store.query(q).await? {
-            QueryResult::SearchMessages { items } => Ok(items),
-            _ => Err(anyhow::anyhow!("Unexpected query result type")),
-        }
+    /// 处理搜索消息，返回领域模型
+    pub async fn handle_search(&self, query: SearchMessagesQuery) -> anyhow::Result<Vec<Message>> {
+        self.message_repository
+            .search(
+                query.conversation_id.as_deref(),
+                &query.keyword,
+                query.limit,
+            )
+            .await
     }
 }

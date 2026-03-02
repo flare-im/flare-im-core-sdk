@@ -4,12 +4,13 @@
 
 use crate::domain::message::*;
 use std::collections::HashMap;
+use flare_proto::MessageContentExt;
 
 /// 消息构建器
 ///
 /// 提供链式 API 构建消息
 pub struct MessageBuilder {
-    id: Option<String>,
+    server_id: Option<String>,
     client_msg_id: Option<String>,
     conversation_id: Option<String>,
     sender_id: Option<String>,
@@ -22,19 +23,19 @@ pub struct MessageBuilder {
     receiver_id: Option<String>,
     channel_id: Option<String>,
     attachments: Vec<MediaAttachment>,
+    quote: Option<QuoteContent>,
     extra: HashMap<String, String>,
     attributes: HashMap<String, String>,
     is_burn_after_read: bool,
     burn_after_seconds: Option<i32>,
     tags: Vec<String>,
-    tenant: Option<TenantContext>,
 }
 
 impl MessageBuilder {
     /// 创建新的消息构建器
     pub fn new() -> Self {
         Self {
-            id: None,
+            server_id: None,
             client_msg_id: None,
             conversation_id: None,
             sender_id: None,
@@ -47,18 +48,25 @@ impl MessageBuilder {
             receiver_id: None,
             channel_id: None,
             attachments: Vec::new(),
+            quote: None,
             extra: HashMap::new(),
             attributes: HashMap::new(),
             is_burn_after_read: false,
             burn_after_seconds: None,
             tags: Vec::new(),
-            tenant: None,
         }
     }
     
-    /// 设置消息ID
+    /// 设置服务端消息ID
+    pub fn with_server_id(mut self, server_id: String) -> Self {
+        self.server_id = Some(server_id);
+        self
+    }
+    
+    /// 设置消息ID（兼容性方法，内部使用 server_id）
+    #[deprecated(note = "使用 with_server_id 代替")]
     pub fn with_id(mut self, id: String) -> Self {
-        self.id = Some(id);
+        self.server_id = Some(id);
         self
     }
     
@@ -69,8 +77,8 @@ impl MessageBuilder {
     }
     
     /// 设置会话ID
-    pub fn with_conversation_id(mut self, conversation_id: String) -> Self {
-        self.conversation_id = Some(conversation_id);
+    pub fn with_conversation_id(mut self, conversation_id: impl Into<Option<String>>) -> Self {
+        self.conversation_id = conversation_id.into();
         self
     }
     
@@ -134,6 +142,12 @@ impl MessageBuilder {
         self
     }
     
+    /// 设置引用内容
+    pub fn with_quote(mut self, quote: QuoteContent) -> Self {
+        self.quote = Some(quote);
+        self
+    }
+    
     /// 添加扩展字段
     pub fn with_extra(mut self, key: String, value: String) -> Self {
         self.extra.insert(key, value);
@@ -159,36 +173,22 @@ impl MessageBuilder {
         self
     }
     
-    /// 设置租户上下文
-    pub fn with_tenant(mut self, tenant: TenantContext) -> Self {
-        self.tenant = Some(tenant);
-        self
-    }
-    
     /// 构建消息
     pub fn build(self) -> anyhow::Result<Message> {
-        let id = self.id.ok_or_else(|| anyhow::anyhow!("Message ID is required"))?;
         let client_msg_id = self.client_msg_id
             .ok_or_else(|| anyhow::anyhow!("Client message ID is required"))?;
-        let conversation_id = self.conversation_id
-            .ok_or_else(|| anyhow::anyhow!("Conversation ID is required"))?;
         let sender_id = self.sender_id
             .ok_or_else(|| anyhow::anyhow!("Sender ID is required"))?;
         let message_type = self.message_type
             .ok_or_else(|| anyhow::anyhow!("Message type is required"))?;
         let content = self.content
             .ok_or_else(|| anyhow::anyhow!("Message content is required"))?;
-        let tenant = self.tenant
-            .ok_or_else(|| anyhow::anyhow!("Tenant context is required"))?;
-        
         let mut message = Message::new(
-            id,
+            None,
             client_msg_id,
-            conversation_id,
             sender_id,
             message_type,
             content,
-            tenant,
         );
         
         // 设置其他字段
@@ -199,6 +199,7 @@ impl MessageBuilder {
         message.receiver_id = self.receiver_id;
         message.channel_id = self.channel_id;
         message.attachments = self.attachments;
+        message.quote = self.quote;
         message.extra = self.extra;
         message.attributes = self.attributes;
         message.is_burn_after_read = self.is_burn_after_read;
@@ -218,48 +219,45 @@ impl Default for MessageBuilder {
 /// 便捷方法：构建文本消息
 ///
 /// # 参数
-/// * `conversation_id` - 会话 ID
+/// * `conversation_id` - 会话 ID（可选，支持草稿消息）
 /// * `sender_id` - 发送者 ID
 /// * `text` - 消息文本内容
-/// * `tenant` - 租户上下文
 /// * `receiver_id` - 接收者 ID（单聊时必需，群聊时可选）
 ///
 /// # 注意
 /// 对于单聊消息，`receiver_id` 是必需的，Message Orchestrator 会验证此字段
 pub fn build_text_message(
-    conversation_id: String,
+    conversation_id: Option<String>,
     sender_id: String,
     text: String,
-    tenant: TenantContext,
     receiver_id: Option<String>,
 ) -> anyhow::Result<Message> {
     use uuid::Uuid;
-    use crate::domain::message::text_processor::TextContentProcessor;
     
-    // 使用文本内容处理器过滤控制字符
-    let filtered_text = TextContentProcessor::process(text);
-    
-    // 构建文本内容
+    // 构建文本内容（原封不动，不做任何处理）
     use flare_proto::flare::common::v1::{MessageContent, message_content::Content};
     let text_content = flare_proto::flare::common::v1::TextContent {
-        text: filtered_text,
+        text: text,
         mentions: Vec::new(),
     };
     let mut content = MessageContent::default();
     content.content = Some(Content::Text(text_content));
     
-    let mut buf = Vec::new();
-    prost::Message::encode(&content, &mut buf)?;
+    let buf = content.encode_to_bytes()
+        .map_err(|e| anyhow::anyhow!("Failed to encode MessageContent: {}", e))?;
     
     let mut builder = MessageBuilder::new()
-        .with_id(Uuid::new_v4().to_string())
+        .with_server_id(Uuid::new_v4().to_string())
         .with_client_msg_id(Uuid::new_v4().to_string())
-        .with_conversation_id(conversation_id)
         .with_sender_id(sender_id)
         .with_message_type(MessageType::Text)
         .with_content(buf)
-        .with_content_type(ContentType::PlainText)
-        .with_tenant(tenant);
+        .with_content_type(ContentType::PlainText);
+    
+    // 如果提供了 conversation_id，则设置
+    if let Some(conv_id) = conversation_id {
+        builder = builder.with_conversation_id(conv_id);
+    }
     
     // 如果是单聊，设置 receiver_id
     if let Some(recv_id) = receiver_id {
@@ -271,11 +269,10 @@ pub fn build_text_message(
 
 /// 便捷方法：构建图片消息
 pub fn build_image_message(
-    conversation_id: String,
+    conversation_id: Option<String>,
     sender_id: String,
     image_url: String,
     local_path: Option<String>,
-    tenant: TenantContext,
 ) -> anyhow::Result<Message> {
     use uuid::Uuid;
     
@@ -298,17 +295,20 @@ pub fn build_image_message(
     let mut content = MessageContent::default();
     content.content = Some(Content::Image(image_content));
     
-    let mut buf = Vec::new();
-    prost::Message::encode(&content, &mut buf)?;
+    let buf = content.encode_to_bytes()
+        .map_err(|e| anyhow::anyhow!("Failed to encode MessageContent: {}", e))?;
     
     let mut builder = MessageBuilder::new()
-        .with_id(Uuid::new_v4().to_string())
+        .with_server_id(Uuid::new_v4().to_string())
         .with_client_msg_id(Uuid::new_v4().to_string())
-        .with_conversation_id(conversation_id)
         .with_sender_id(sender_id)
         .with_message_type(MessageType::Image)
-        .with_content(buf)
-        .with_tenant(tenant);
+        .with_content(buf);
+    
+    // 如果提供了 conversation_id，则设置
+    if let Some(conv_id) = conversation_id {
+        builder = builder.with_conversation_id(conv_id);
+    }
     
     // 如果有本地路径，添加为附件
     if let Some(path) = local_path {
@@ -336,14 +336,13 @@ pub fn build_image_message(
 
 /// 便捷方法：构建文件消息
 pub fn build_file_message(
-    conversation_id: String,
+    conversation_id: Option<String>,
     sender_id: String,
     file_url: String,
     file_name: String,
     file_size: u64,
     mime_type: String,
     local_path: Option<String>,
-    tenant: TenantContext,
 ) -> anyhow::Result<Message> {
     use uuid::Uuid;
     
@@ -360,17 +359,20 @@ pub fn build_file_message(
     let mut content = MessageContent::default();
     content.content = Some(Content::File(file_content));
     
-    let mut buf = Vec::new();
-    prost::Message::encode(&content, &mut buf)?;
+    let buf = content.encode_to_bytes()
+        .map_err(|e| anyhow::anyhow!("Failed to encode MessageContent: {}", e))?;
     
     let mut builder = MessageBuilder::new()
-        .with_id(Uuid::new_v4().to_string())
+        .with_server_id(Uuid::new_v4().to_string())
         .with_client_msg_id(Uuid::new_v4().to_string())
-        .with_conversation_id(conversation_id)
         .with_sender_id(sender_id)
         .with_message_type(MessageType::File)
-        .with_content(buf)
-        .with_tenant(tenant);
+        .with_content(buf);
+    
+    // 如果提供了 conversation_id，则设置
+    if let Some(conv_id) = conversation_id {
+        builder = builder.with_conversation_id(conv_id);
+    }
     
     // 如果有本地路径，添加为附件
     if let Some(path) = local_path {
@@ -394,14 +396,13 @@ pub fn build_file_message(
 
 /// 便捷方法：构建视频消息
 pub fn build_video_message(
-    conversation_id: String,
+    conversation_id: Option<String>,
     sender_id: String,
     video_url: String,
     local_path: Option<String>,
     duration_ms: u64,
     width: i32,
     height: i32,
-    tenant: TenantContext,
 ) -> anyhow::Result<Message> {
     use uuid::Uuid;
     
@@ -425,17 +426,20 @@ pub fn build_video_message(
     let mut content = MessageContent::default();
     content.content = Some(Content::Video(video_content));
     
-    let mut buf = Vec::new();
-    prost::Message::encode(&content, &mut buf)?;
+    let buf = content.encode_to_bytes()
+        .map_err(|e| anyhow::anyhow!("Failed to encode MessageContent: {}", e))?;
     
     let mut builder = MessageBuilder::new()
-        .with_id(Uuid::new_v4().to_string())
+        .with_server_id(Uuid::new_v4().to_string())
         .with_client_msg_id(Uuid::new_v4().to_string())
-        .with_conversation_id(conversation_id)
         .with_sender_id(sender_id)
         .with_message_type(MessageType::Video)
-        .with_content(buf)
-        .with_tenant(tenant);
+        .with_content(buf);
+    
+    // 如果提供了 conversation_id，则设置
+    if let Some(conv_id) = conversation_id {
+        builder = builder.with_conversation_id(conv_id);
+    }
     
     // 如果有本地路径，添加为附件
     if let Some(path) = local_path {
@@ -463,12 +467,11 @@ pub fn build_video_message(
 
 /// 便捷方法：构建语音消息
 pub fn build_audio_message(
-    conversation_id: String,
+    conversation_id: Option<String>,
     sender_id: String,
     audio_url: String,
     local_path: Option<String>,
     duration_ms: u64,
-    tenant: TenantContext,
 ) -> anyhow::Result<Message> {
     use uuid::Uuid;
     
@@ -489,17 +492,20 @@ pub fn build_audio_message(
     let mut content = MessageContent::default();
     content.content = Some(Content::Audio(audio_content));
     
-    let mut buf = Vec::new();
-    prost::Message::encode(&content, &mut buf)?;
+    let buf = content.encode_to_bytes()
+        .map_err(|e| anyhow::anyhow!("Failed to encode MessageContent: {}", e))?;
     
     let mut builder = MessageBuilder::new()
-        .with_id(Uuid::new_v4().to_string())
+        .with_server_id(Uuid::new_v4().to_string())
         .with_client_msg_id(Uuid::new_v4().to_string())
-        .with_conversation_id(conversation_id)
         .with_sender_id(sender_id)
         .with_message_type(MessageType::Audio)
-        .with_content(buf)
-        .with_tenant(tenant);
+        .with_content(buf);
+    
+    // 如果提供了 conversation_id，则设置
+    if let Some(conv_id) = conversation_id {
+        builder = builder.with_conversation_id(conv_id);
+    }
     
     // 如果有本地路径，添加为附件
     if let Some(path) = local_path {
@@ -526,37 +532,45 @@ pub fn build_audio_message(
 }
 
 /// 便捷方法：构建回复消息
+///
+/// # 参数
+/// * `conversation_id` - 会话 ID（可选，支持草稿消息）
+/// * `sender_id` - 发送者 ID
+/// * `quoted_message_id` - 被引用的消息ID（用于标识回复关系）
+/// * `quoted_sender_id` - 被引用消息的发送者ID（可选）
+/// * `quoted_text_preview` - 引用内容预览（可选）
+/// * `reply_content` - 回复的消息内容（序列化的 MessageContent）
 pub fn build_reply_message(
-    conversation_id: String,
+    conversation_id: Option<String>,
     sender_id: String,
-    reply_to_message_id: String,
+    quoted_message_id: String,
+    quoted_sender_id: Option<String>,
+    quoted_text_preview: Option<String>,
     reply_content: Vec<u8>,
-    tenant: TenantContext,
 ) -> anyhow::Result<Message> {
     use uuid::Uuid;
+    use crate::domain::message::QuoteContent;
     
     // 构建引用内容
-    use flare_proto::flare::common::v1::{MessageContent, message_content::Content, QuoteContent};
-    let quote_content = QuoteContent {
-        quoted_message_id: reply_to_message_id.clone(),
-        quoted_sender_id: String::new(),
-        quoted_text_preview: String::new(),
-        quoted_content: None,
+    let quote = QuoteContent {
+        quoted_message_id: quoted_message_id.clone(),
+        quoted_sender_id: quoted_sender_id.unwrap_or_default(),
+        quoted_text_preview: quoted_text_preview.unwrap_or_default(),
+        quoted_content: None, // 可选：后续可以从原消息中获取完整内容
     };
-    let mut content = MessageContent::default();
-    content.content = Some(Content::Quote(Box::new(quote_content)));
     
-    let mut buf = Vec::new();
-    prost::Message::encode(&content, &mut buf)?;
-    
-    MessageBuilder::new()
-        .with_id(Uuid::new_v4().to_string())
+    let mut builder = MessageBuilder::new()
+        .with_server_id(Uuid::new_v4().to_string())
         .with_client_msg_id(Uuid::new_v4().to_string())
-        .with_conversation_id(conversation_id)
         .with_sender_id(sender_id)
         .with_message_type(MessageType::Text)
         .with_content(reply_content)
-        .with_tenant(tenant)
-        .with_extra("reply_to_message_id".to_string(), reply_to_message_id)
-        .build()
+        .with_quote(quote);
+    
+    // 如果提供了 conversation_id，则设置
+    if let Some(conv_id) = conversation_id {
+        builder = builder.with_conversation_id(conv_id);
+    }
+    
+    builder.build()
 }

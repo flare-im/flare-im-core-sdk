@@ -1,7 +1,12 @@
-//! 网络消息分发器
+//! 网络消息分发器（应用层消息处理器）
 //!
 //! 负责订阅 NetworkMessage 通道，并将不同类型的消息分发给对应的处理器
-//!
+//! 
+//! 架构职责：
+//! - 专门处理来自网络层的消息分发
+//! - 不包含业务逻辑，只负责路由消息到适当的处理器
+//! - 实现应用层与网络层的解耦
+
 //! # 处理流程
 //!
 //! 1. 订阅 NetworkMessage 通道
@@ -20,9 +25,8 @@ use crate::application::handlers::{
     CustomDataHandler,
 };
 use crate::domain::message_queue::MessageQueue;
-use crate::domain::repository::ReadStore;
+use crate::domain::repository::ConversationRepository;
 use crate::infrastructure::event_bus::EventBus;
-use crate::application::fsm::FsmManager;
 use crate::application::extension::ExtensionRegistry;
 use tracing::{info, warn, error, debug};
 
@@ -37,22 +41,18 @@ impl NetworkMessageDispatcher {
     /// 创建新的网络消息分发器
     pub fn new(
         message_queue: Arc<MessageQueue>,
-        read_store: Arc<dyn ReadStore>,
+        conversation_repository: Arc<dyn ConversationRepository>,
         event_bus: Arc<EventBus>,
-        fsm: Arc<FsmManager>,
         extension_registry: Arc<ExtensionRegistry>,
     ) -> Self {
         let sync_handler = Arc::new(SyncHandler::new(
             message_queue.clone(),
-            read_store.clone(),
             event_bus.clone(),
-            fsm.clone(),
         ));
         
         let conversation_sync_handler = Arc::new(ConversationSyncHandler::new(
-            read_store.clone(),
+            conversation_repository.clone(),
             event_bus.clone(),
-            fsm.clone(),
         ));
         
         let custom_data_handler = Arc::new(CustomDataHandler::new(
@@ -76,13 +76,17 @@ impl NetworkMessageDispatcher {
     /// # 返回
     ///
     /// * `tokio::task::JoinHandle` - 后台任务句柄
-    pub fn start(mut self, mut message_rx: mpsc::UnboundedReceiver<NetworkMessage>) -> tokio::task::JoinHandle<()> {
+    pub fn start(self, mut message_rx: mpsc::UnboundedReceiver<NetworkMessage>) -> tokio::task::JoinHandle<()> {
         tokio::spawn(async move {
             info!("NetworkMessageDispatcher started");
             
             while let Some(network_msg) = message_rx.recv().await {
                 // 性能优化：异步处理消息，不阻塞消息接收循环
                 match network_msg {
+                    // EventEnvelope 已在 NetworkClient 中由 EventStreamProcessor 处理，不应到达此处
+                    NetworkMessage::EventEnvelope(_) => {
+                        debug!("EventEnvelope already handled by EventStreamProcessor, skipping");
+                    }
                     // 同步消息响应：由 SyncHandler 处理
                     NetworkMessage::SyncMessages(sync_resp) => {
                         let handler = self.sync_handler.clone();

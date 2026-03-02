@@ -62,7 +62,7 @@
 // 子模块
 mod types;
 mod parser;
-mod packet;
+pub mod packet;
 mod router;
 mod listener;
 mod client;

@@ -1,165 +1,63 @@
-//! 消息转换器
+//! 统一转换层
 //!
-//! 负责 Proto 消息和 Domain 消息之间的转换
+//! 负责所有格式转换：JSON ↔ Domain Model ↔ Protobuf
 //! 对标微信、Telegram、飞书的生产级别实现
+
+mod error;
+mod traits;
+mod registry;
+mod json_domain;
+mod domain_proto;
+mod enum_helpers;
+mod message_operation_converter;
+
+pub use error::ConversionError;
+pub use traits::{Converter, BatchConverter};
+pub use registry::ConverterRegistry;
+pub use json_domain::{MessageJsonConverter, ConversationJsonConverter};
+pub use domain_proto::MessageProtoConverter;
+pub use message_operation_converter::MessageOperationConverter;
 
 use crate::domain::message::*;
 use crate::domain::conversation::*;
-use prost::Message as ProstMessage;
+use enum_helpers::*;
+
 use anyhow::Result;
 use std::collections::HashMap;
+use flare_proto::MessageContentExt;
 
-/// 消息转换器
+/// 消息转换器（保留用于向后兼容，内部使用新的转换器架构）
 pub struct MessageConverter;
 
 impl MessageConverter {
-    /// 从 Proto Message 转换为 Domain Message
+    /// 从 Proto Message 转换为 Domain Message（对齐 flare-proto common/message.proto：created_at 唯一业务时间）
     pub fn from_proto(proto: &flare_proto::flare::common::v1::Message) -> Result<Message> {
-        // 转换消息状态（proto.status 是 i32）
-        use flare_proto::flare::common::v1::MessageStatus;
-        let state = match proto.status {
-            1 => MessageState::Created,  // MESSAGE_STATUS_CREATED
-            2 => MessageState::Sent,     // MESSAGE_STATUS_SENT
-            3 => MessageState::Delivered, // MESSAGE_STATUS_DELIVERED
-            4 => MessageState::Read,     // MESSAGE_STATUS_READ
-            5 => MessageState::Failed,    // MESSAGE_STATUS_FAILED
-            6 => MessageState::Recalled, // MESSAGE_STATUS_RECALLED
-            _ => MessageState::Created,
-        };
-        
-        // 转换消息来源（proto.source 是 i32）
-        use crate::domain::message::MessageSource as DomainMessageSource;
-        let source = match proto.source {
-            1 => DomainMessageSource::User,    // MESSAGE_SOURCE_USER
-            2 => DomainMessageSource::System,  // MESSAGE_SOURCE_SYSTEM
-            3 => DomainMessageSource::Bot,     // MESSAGE_SOURCE_BOT
-            4 => DomainMessageSource::Admin,   // MESSAGE_SOURCE_ADMIN
-            _ => DomainMessageSource::User,
-        };
-        
-        // 转换会话类型（proto.conversation_type 是 i32）
-        let conversation_type = match proto.conversation_type {
-            1 => ConversationType::Single,   // CONVERSATION_TYPE_SINGLE
-            2 => ConversationType::Group,     // CONVERSATION_TYPE_GROUP
-            3 => ConversationType::Channel,  // CONVERSATION_TYPE_CHANNEL
-            _ => ConversationType::Single,
-        };
-        
-        // 转换消息类型（proto.message_type 是 i32）
-        let message_type = match proto.message_type {
-            1 => MessageType::Text,         // MESSAGE_TYPE_TEXT
-            2 => MessageType::Image,        // MESSAGE_TYPE_IMAGE
-            3 => MessageType::Video,        // MESSAGE_TYPE_VIDEO
-            4 => MessageType::Audio,        // MESSAGE_TYPE_AUDIO
-            5 => MessageType::File,         // MESSAGE_TYPE_FILE
-            6 => MessageType::Location,     // MESSAGE_TYPE_LOCATION
-            7 => MessageType::Card,         // MESSAGE_TYPE_CARD
-            100 => MessageType::Custom,     // MESSAGE_TYPE_CUSTOM
-            101 => MessageType::Notification, // MESSAGE_TYPE_NOTIFICATION
-            _ => MessageType::Text,
-        };
-        
-        // 转换内容类型（proto.content_type 是 i32）
-        let content_type = match proto.content_type {
-            1 => ContentType::PlainText,   // CONTENT_TYPE_PLAIN_TEXT
-            2 => ContentType::Markdown,    // CONTENT_TYPE_MARKDOWN
-            3 => ContentType::Html,        // CONTENT_TYPE_HTML
-            4 => ContentType::Json,        // CONTENT_TYPE_JSON
-            _ => ContentType::PlainText,
-        };
-        
-        // 序列化消息内容
+        let mut state = message_state::from_proto(proto.status);
+        if state == MessageState::Created && !proto.server_id.is_empty() {
+            state = MessageState::Sent;
+        }
+        let source = message_source::from_proto(proto.source);
+        let conversation_type = conversation_type::from_proto(proto.conversation_type);
+        let message_type = message_type::from_proto(proto.message_type);
+        let content_type = content_type::from_proto(proto.content_type);
         let content = proto.content.as_ref()
-            .map(|c| {
-                let mut buf = Vec::new();
-                c.encode(&mut buf)?;
-                Ok::<Vec<u8>, anyhow::Error>(buf)
-            })
-            .transpose()?
+            .map(|c| c.encode_to_bytes())
+            .transpose()
+            .map_err(|e| anyhow::anyhow!("Failed to encode MessageContent: {}", e))?
             .unwrap_or_default();
-        
-        // 转换时间线
-        let timeline = if let Some(t) = &proto.timeline {
-            MessageTimeline {
-                created_at: t.created_at.as_ref()
-                    .map(|ts| chrono::DateTime::from_timestamp(ts.seconds, ts.nanos as u32).unwrap_or_default())
-                    .unwrap_or_else(|| chrono::Utc::now()),
-                persisted_at: t.persisted_at.as_ref()
-                    .map(|ts| chrono::DateTime::from_timestamp(ts.seconds, ts.nanos as u32).unwrap_or_default()),
-                delivered_at: t.delivered_at.as_ref()
-                    .map(|ts| chrono::DateTime::from_timestamp(ts.seconds, ts.nanos as u32).unwrap_or_default()),
-                read_at: t.read_at.as_ref()
-                    .map(|ts| chrono::DateTime::from_timestamp(ts.seconds, ts.nanos as u32).unwrap_or_default()),
-            }
-        } else {
-            MessageTimeline {
-                created_at: proto.timestamp.as_ref()
-                    .map(|ts| chrono::DateTime::from_timestamp(ts.seconds, ts.nanos as u32).unwrap_or_default())
-                    .unwrap_or_else(|| chrono::Utc::now()),
-                persisted_at: None,
-                delivered_at: None,
-                read_at: None,
-            }
+        let created_at = proto.created_at.as_ref()
+            .and_then(|ts| chrono::DateTime::from_timestamp(ts.seconds, ts.nanos as u32))
+            .unwrap_or_else(chrono::Utc::now);
+        let timeline = MessageTimeline {
+            created_at,
+            persisted_at: None,
+            delivered_at: None,
+            read_at: None,
         };
-        
-        // 转换已读记录
-        let read_by = proto.read_by.iter()
-            .map(|r| MessageReadRecord {
-                user_id: r.user_id.clone(),
-                read_at: r.read_at.as_ref()
-                    .map(|ts| chrono::DateTime::from_timestamp(ts.seconds, ts.nanos as u32).unwrap_or_default())
-                    .unwrap_or_else(|| chrono::Utc::now()),
-                burned_at: r.burned_at.as_ref()
-                    .map(|ts| chrono::DateTime::from_timestamp(ts.seconds, ts.nanos as u32).unwrap_or_default()),
-            })
-            .collect();
-        
-        // 转换反应
-        let reactions = proto.reactions.iter()
-            .map(|r| Reaction {
-                emoji: r.emoji.clone(),
-                user_ids: r.user_ids.clone(),
-                count: r.count,
-                last_updated: r.last_updated.as_ref()
-                    .map(|ts| chrono::DateTime::from_timestamp(ts.seconds, ts.nanos as u32).unwrap_or_default())
-                    .unwrap_or_else(|| chrono::Utc::now()),
-                created_at: r.created_at.as_ref()
-                    .map(|ts| chrono::DateTime::from_timestamp(ts.seconds, ts.nanos as u32).unwrap_or_default())
-                    .unwrap_or_else(|| chrono::Utc::now()),
-            })
-            .collect();
-        
-        // 转换编辑历史
-        let edit_history = proto.edit_history.iter()
-            .map(|e| {
-                let mut buf = Vec::new();
-                e.content.as_ref().map(|c| c.encode(&mut buf));
-                EditHistory {
-                    edit_version: e.edit_version,
-                    content: buf,
-                    edited_at: e.edited_at.as_ref()
-                        .map(|ts| chrono::DateTime::from_timestamp(ts.seconds, ts.nanos as u32).unwrap_or_default())
-                        .unwrap_or_else(|| chrono::Utc::now()),
-                    editor_id: e.editor_id.clone(),
-                    reason: if e.reason.is_empty() { None } else { Some(e.reason.clone()) },
-                    show_edited_mark: e.show_edited_mark,
-                }
-            })
-            .collect();
-        
-        // 转换租户上下文
-        // 注意：user_id 应该从消息的 sender_id 获取（对于接收到的消息）
-        // 对于发送的消息，user_id 应该在创建消息时设置
-        let tenant = if let Some(t) = &proto.tenant {
-            TenantContext {
-                tenant_id: t.tenant_id.clone(),
-                // 对于接收到的消息，user_id 应该从 sender_id 获取
-                // 但这里暂时使用空字符串，实际使用时应该从 Session 或消息上下文获取
-                user_id: String::new(), // 注意：实际使用时应该从 Session 获取当前用户 ID
-            }
-        } else {
-            return Err(anyhow::anyhow!("Tenant context is required"));
-        };
+        let is_recalled = state == MessageState::Recalled;
+        let read_by: Vec<MessageReadRecord> = Vec::new();
+        let reactions: Vec<Reaction> = Vec::new();
+        let edit_history: Vec<crate::domain::message::EditHistory> = Vec::new();
         
         // 转换审计上下文
         let audit = proto.audit.as_ref().map(|a| {
@@ -190,42 +88,37 @@ impl MessageConverter {
             }
         });
         
-        // 转换时间戳
-        let timestamp = proto.timestamp.as_ref()
-            .map(|ts| chrono::DateTime::from_timestamp(ts.seconds, ts.nanos as u32).unwrap_or_default())
-            .unwrap_or_else(|| chrono::Utc::now());
-        
         Ok(Message {
-            id: proto.id.clone(),
-            conversation_id: proto.conversation_id.clone(),
+            server_id: Some(proto.server_id.clone()),
+            conversation_id: Some(proto.conversation_id.clone()),
             client_msg_id: proto.client_msg_id.clone(),
             sender_id: proto.sender_id.clone(),
             source,
             seq: if proto.seq > 0 { Some(proto.seq) } else { None },
-            timestamp,
+            timestamp: created_at,
             conversation_type,
             message_type,
             business_type: if proto.business_type.is_empty() { None } else { Some(proto.business_type.clone()) },
             receiver_id: if proto.receiver_id.is_empty() { None } else { Some(proto.receiver_id.clone()) },
-            channel_id: if proto.channel_id.is_empty() { None } else { Some(proto.channel_id.clone()) },
+            channel_id: None,
             content,
             content_type,
             attachments: Self::convert_attachments(&proto.attachments)?,
+            quote: Self::convert_quote(&proto.quote)?,
             extra: proto.extra.clone(),
             attributes: proto.attributes.clone(),
             state,
-            is_recalled: proto.is_recalled,
+            is_recalled,
             recalled_at: proto.recalled_at.as_ref()
-                .map(|ts| chrono::DateTime::from_timestamp(ts.seconds, ts.nanos as u32).unwrap_or_default()),
-            recall_reason: if proto.recall_reason.is_empty() { None } else { Some(proto.recall_reason.clone()) },
+                .and_then(|ts| chrono::DateTime::from_timestamp(ts.seconds, ts.nanos as u32)),
+            recall_reason: proto.recall_reason.clone().filter(|s| !s.is_empty()),
             is_burn_after_read: proto.is_burn_after_read,
             burn_after_seconds: if proto.burn_after_seconds > 0 { Some(proto.burn_after_seconds) } else { None },
             timeline: timeline.clone(),
-            visibility: Self::convert_visibility(&proto.visibility)?,
+            visibility: HashMap::new(),
             read_by,
             reactions,
             edit_history,
-            tenant,
             audit,
             tags: proto.tags.clone(),
             offline_push_info: Self::convert_offline_push_info(&proto.offline_push_info)?,
@@ -237,144 +130,30 @@ impl MessageConverter {
     
     /// 从 Domain Message 转换为 Proto Message
     pub fn to_proto(msg: &Message) -> Result<flare_proto::flare::common::v1::Message> {
-        // 转换消息状态（使用枚举值）
-        let status = match msg.state {
-            MessageState::Created => 1,   // MESSAGE_STATUS_CREATED
-            MessageState::Sent => 2,      // MESSAGE_STATUS_SENT
-            MessageState::Delivered => 3,  // MESSAGE_STATUS_DELIVERED
-            MessageState::Read => 4,       // MESSAGE_STATUS_READ
-            MessageState::Failed => 5,     // MESSAGE_STATUS_FAILED
-            MessageState::Recalled => 6,   // MESSAGE_STATUS_RECALLED
-        };
+        // 转换消息状态（使用枚举辅助函数）
+        let status = message_state::to_proto(msg.state);
         
-        // 转换消息来源
-        let source = match msg.source {
-            MessageSource::User => 1,    // MESSAGE_SOURCE_USER
-            MessageSource::System => 2,  // MESSAGE_SOURCE_SYSTEM
-            MessageSource::Bot => 3,     // MESSAGE_SOURCE_BOT
-            MessageSource::Admin => 4,   // MESSAGE_SOURCE_ADMIN
-        };
+        // 转换消息来源（使用枚举辅助函数）
+        let source = message_source::to_proto(msg.source);
         
-        // 转换会话类型
-        let conversation_type = match msg.conversation_type {
-            ConversationType::Single => 1,   // CONVERSATION_TYPE_SINGLE
-            ConversationType::Group => 2,     // CONVERSATION_TYPE_GROUP
-            ConversationType::Channel => 3,   // CONVERSATION_TYPE_CHANNEL
-        };
+        // 转换会话类型（使用枚举辅助函数）
+        let conversation_type = conversation_type::to_proto(msg.conversation_type);
         
-        // 转换消息类型
-        let message_type = match msg.message_type {
-            MessageType::Text => 1,          // MESSAGE_TYPE_TEXT
-            MessageType::Image => 2,         // MESSAGE_TYPE_IMAGE
-            MessageType::Video => 3,         // MESSAGE_TYPE_VIDEO
-            MessageType::Audio => 4,         // MESSAGE_TYPE_AUDIO
-            MessageType::File => 5,          // MESSAGE_TYPE_FILE
-            MessageType::Location => 6,       // MESSAGE_TYPE_LOCATION
-            MessageType::Card => 7,          // MESSAGE_TYPE_CARD
-            MessageType::Custom => 100,      // MESSAGE_TYPE_CUSTOM
-            MessageType::Notification => 101, // MESSAGE_TYPE_NOTIFICATION
-        };
+        // 转换消息类型（使用枚举辅助函数）
+        let message_type = message_type::to_proto(msg.message_type);
         
-        // 转换内容类型
-        let content_type = match msg.content_type {
-            ContentType::PlainText => 1,  // CONTENT_TYPE_PLAIN_TEXT
-            ContentType::Markdown => 2,   // CONTENT_TYPE_MARKDOWN
-            ContentType::Html => 3,       // CONTENT_TYPE_HTML
-            ContentType::Json => 4,       // CONTENT_TYPE_JSON
-        };
+        // 转换内容类型（使用枚举辅助函数）
+        let content_type = content_type::to_proto(msg.content_type);
         
-        // 反序列化消息内容
-        let content = flare_proto::flare::common::v1::MessageContent::decode(msg.content.as_slice())?;
+        let content = flare_proto::decode_message_content(msg.content.as_slice())
+            .map_err(|e| anyhow::anyhow!("Failed to decode MessageContent: {}", e))?;
         
-        // 转换时间戳
-        let timestamp = Some(prost_types::Timestamp {
-            seconds: msg.timestamp.timestamp(),
-            nanos: msg.timestamp.timestamp_subsec_nanos() as i32,
+        let created_at = Some(prost_types::Timestamp {
+            seconds: msg.created_at.timestamp(),
+            nanos: msg.created_at.timestamp_subsec_nanos() as i32,
         });
         
-        // 转换时间线
-        let timeline = Some(flare_proto::flare::common::v1::MessageTimeline {
-            created_at: Some(prost_types::Timestamp {
-                seconds: msg.timeline.created_at.timestamp(),
-                nanos: msg.timeline.created_at.timestamp_subsec_nanos() as i32,
-            }),
-            persisted_at: msg.timeline.persisted_at.map(|dt| prost_types::Timestamp {
-                seconds: dt.timestamp(),
-                nanos: dt.timestamp_subsec_nanos() as i32,
-            }),
-            delivered_at: msg.timeline.delivered_at.map(|dt| prost_types::Timestamp {
-                seconds: dt.timestamp(),
-                nanos: dt.timestamp_subsec_nanos() as i32,
-            }),
-            read_at: msg.timeline.read_at.map(|dt| prost_types::Timestamp {
-                seconds: dt.timestamp(),
-                nanos: dt.timestamp_subsec_nanos() as i32,
-            }),
-        });
-        
-        // 转换已读记录
-        let read_by = msg.read_by.iter()
-            .map(|r| flare_proto::flare::common::v1::MessageReadRecord {
-                user_id: r.user_id.clone(),
-                read_at: Some(prost_types::Timestamp {
-                    seconds: r.read_at.timestamp(),
-                    nanos: r.read_at.timestamp_subsec_nanos() as i32,
-                }),
-                burned_at: r.burned_at.map(|dt| prost_types::Timestamp {
-                    seconds: dt.timestamp(),
-                    nanos: dt.timestamp_subsec_nanos() as i32,
-                }),
-            })
-            .collect();
-        
-        // 转换反应
-        let reactions = msg.reactions.iter()
-            .map(|r| flare_proto::flare::common::v1::Reaction {
-                emoji: r.emoji.clone(),
-                user_ids: r.user_ids.clone(),
-                count: r.count,
-                last_updated: Some(prost_types::Timestamp {
-                    seconds: r.last_updated.timestamp(),
-                    nanos: r.last_updated.timestamp_subsec_nanos() as i32,
-                }),
-                created_at: Some(prost_types::Timestamp {
-                    seconds: r.created_at.timestamp(),
-                    nanos: r.created_at.timestamp_subsec_nanos() as i32,
-                }),
-            })
-            .collect();
-        
-        // 转换编辑历史
-        let edit_history = msg.edit_history.iter()
-            .map(|e| {
-                let content = flare_proto::flare::common::v1::MessageContent::decode(e.content.as_slice())
-                    .unwrap_or_default();
-                flare_proto::flare::common::v1::EditHistory {
-                    edit_version: e.edit_version,
-                    content: Some(content),
-                    edited_at: Some(prost_types::Timestamp {
-                        seconds: e.edited_at.timestamp(),
-                        nanos: e.edited_at.timestamp_subsec_nanos() as i32,
-                    }),
-                    editor_id: e.editor_id.clone(),
-                    reason: e.reason.clone().unwrap_or_default(),
-                    show_edited_mark: e.show_edited_mark,
-                }
-            })
-            .collect();
-        
-        // 转换租户上下文
-        // 注意：business_type、environment、organization_id 应该从配置或消息的 extra 中获取
-        let tenant = Some(flare_proto::flare::common::v1::TenantContext {
-            tenant_id: msg.tenant.tenant_id.clone(),
-            business_type: msg.extra.get("business_type").cloned().unwrap_or_default(),
-            environment: msg.extra.get("environment").cloned().unwrap_or_default(),
-            organization_id: msg.extra.get("organization_id").cloned().unwrap_or_default(),
-            labels: HashMap::new(), // 可以从 msg.extra 中提取
-            attributes: HashMap::new(), // 可以从 msg.attributes 中提取
-        });
-        
-        // 转换审计上下文
+        // 审计上下文
         let audit = msg.audit.as_ref().map(|a| {
             use flare_proto::flare::common::v1::ActorContext;
             flare_proto::flare::common::v1::AuditContext {
@@ -401,42 +180,42 @@ impl MessageConverter {
         });
         
         Ok(flare_proto::flare::common::v1::Message {
-            id: msg.id.clone(),
-            conversation_id: msg.conversation_id.clone(),
+            server_id: msg.server_id.clone().unwrap_or_default(),
+            conversation_id: msg.conversation_id.clone().unwrap_or_default(),
             client_msg_id: msg.client_msg_id.clone(),
             sender_id: msg.sender_id.clone(),
             source,
             seq: msg.seq.unwrap_or(0),
-            timestamp,
+            created_at,
             conversation_type,
             message_type,
             business_type: msg.business_type.clone().unwrap_or_default(),
             receiver_id: msg.receiver_id.clone().unwrap_or_default(),
-            channel_id: msg.channel_id.clone().unwrap_or_default(),
             content: Some(content),
             content_type,
             attachments: Self::convert_attachments_to_proto(&msg.attachments)?,
+            quote: Self::convert_quote_to_proto(&msg.quote)?,
             extra: msg.extra.clone(),
             attributes: msg.attributes.clone(),
             status,
-            is_recalled: msg.is_recalled,
             recalled_at: msg.recalled_at.map(|dt| prost_types::Timestamp {
                 seconds: dt.timestamp(),
                 nanos: dt.timestamp_subsec_nanos() as i32,
             }),
-            recall_reason: msg.recall_reason.clone().unwrap_or_default(),
+            recall_reason: msg.recall_reason.clone(),
             is_burn_after_read: msg.is_burn_after_read,
             burn_after_seconds: msg.burn_after_seconds.unwrap_or(0),
-            timeline,
-            visibility: Self::convert_visibility_to_proto(&msg.visibility),
-            read_by,
-            reactions,
-            edit_history,
-            tenant,
+            current_edit_version: Some(msg.edit_history.len() as i32),
+            last_edited_at: msg.edit_history.last().map(|e| prost_types::Timestamp {
+                seconds: e.edited_at.timestamp(),
+                nanos: e.edited_at.timestamp_subsec_nanos() as i32,
+            }),
             audit,
             tags: msg.tags.clone(),
             offline_push_info: Self::convert_offline_push_info_to_proto(&msg.offline_push_info),
             extensions: Vec::new(),
+            tenant: msg.extra.get("tenant").cloned().unwrap_or_default(),
+            ..Default::default()
         })
     }
     
@@ -483,7 +262,48 @@ impl MessageConverter {
             .collect()
     }
     
-    /// 转换可见性（从 Proto 到 Domain）
+    /// 转换引用内容（从 Proto 到 Domain）
+    fn convert_quote(
+        proto_quote: &Option<flare_proto::common::QuoteContent>,
+    ) -> Result<Option<crate::domain::message::QuoteContent>> {
+        match proto_quote {
+            Some(proto) => Ok(Some(crate::domain::message::QuoteContent {
+                quoted_message_id: proto.quoted_message_id.clone(),
+                quoted_sender_id: proto.quoted_sender_id.clone(),
+                quoted_text_preview: proto.quoted_text_preview.clone(),
+                quoted_content: proto.quoted_content.as_ref()
+                    .map(|c| c.encode_to_bytes())
+                    .transpose()
+                    .map_err(|e| anyhow::anyhow!("Failed to encode quoted MessageContent: {}", e))?,
+            })),
+            None => Ok(None),
+        }
+    }
+    
+    /// 转换引用内容（从 Domain 到 Proto）
+    fn convert_quote_to_proto(
+        quote: &Option<crate::domain::message::QuoteContent>,
+    ) -> Result<Option<flare_proto::common::QuoteContent>> {
+        match quote {
+            Some(q) => {
+                let quoted_content = q.quoted_content.as_ref().map(|bytes| {
+                    flare_proto::decode_message_content(bytes.as_slice())
+                        .map_err(|e| anyhow::anyhow!("Failed to decode quoted_content: {}", e))
+                }).transpose()?;
+                
+                Ok(Some(flare_proto::common::QuoteContent {
+                    quoted_message_id: q.quoted_message_id.clone(),
+                    quoted_sender_id: q.quoted_sender_id.clone(),
+                    quoted_text_preview: q.quoted_text_preview.clone(),
+                    quoted_content,
+                }))
+            },
+            None => Ok(None),
+        }
+    }
+    
+    /// 转换可见性（从 Proto 到 Domain）；Message 瘦身后按需接口使用
+    #[allow(dead_code)]
     fn convert_visibility(
         proto_visibility: &std::collections::HashMap<String, i32>,
     ) -> Result<HashMap<String, VisibilityStatus>> {
@@ -501,7 +321,8 @@ impl MessageConverter {
             .collect()
     }
     
-    /// 转换可见性（从 Domain 到 Proto）
+    /// 转换可见性（从 Domain 到 Proto）；Message 瘦身后按需接口使用
+    #[allow(dead_code)]
     fn convert_visibility_to_proto(
         visibility: &HashMap<String, VisibilityStatus>,
     ) -> HashMap<String, i32> {
@@ -706,5 +527,60 @@ impl ConversationConverter {
             .unwrap_or_else(|| chrono::Utc::now());
         
         Ok(conv)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::domain::message::MessageState;
+
+    #[test]
+    fn test_from_proto_should_fix_created_state_for_synced_messages() {
+        // 构造一个 Proto 消息，模拟从服务端同步下来的消息
+        // status = 1 (Created), server_id = "server-123"
+        let proto_msg = flare_proto::flare::common::v1::Message {
+            server_id: "server-123".to_string(),
+            client_msg_id: "client-123".to_string(),
+            conversation_id: "conv-123".to_string(),
+            sender_id: "user-1".to_string(),
+            status: 1, // Created
+            ..Default::default()
+        };
+
+        // 执行转换
+        let result = MessageConverter::from_proto(&proto_msg);
+
+        // 验证结果
+        assert!(result.is_ok());
+        let msg = result.unwrap();
+        
+        // 验证状态是否被修正为 Sent
+        assert_eq!(msg.state, MessageState::Sent, "Message state should be corrected to Sent for synced messages");
+        assert_eq!(msg.server_id, Some("server-123".to_string()));
+    }
+
+    #[test]
+    fn test_from_proto_should_keep_created_state_if_no_server_id() {
+        // 构造一个 Proto 消息，模拟本地发送并未同步的消息（虽然这种情况很少通过 from_proto 转换）
+        // status = 1 (Created), server_id = ""
+        let proto_msg = flare_proto::flare::common::v1::Message {
+            server_id: "".to_string(),
+            client_msg_id: "client-123".to_string(),
+            conversation_id: "conv-123".to_string(),
+            sender_id: "user-1".to_string(),
+            status: 1, // Created
+            ..Default::default()
+        };
+
+        // 执行转换
+        let result = MessageConverter::from_proto(&proto_msg);
+
+        // 验证结果
+        assert!(result.is_ok());
+        let msg = result.unwrap();
+        
+        // 验证状态保持为 Created
+        assert_eq!(msg.state, MessageState::Created, "Message state should remain Created if no server_id");
     }
 }

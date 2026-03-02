@@ -5,7 +5,7 @@
 use std::sync::Arc;
 use crate::application::handlers::{CommandHandler, QueryHandler};
 use crate::application::sync_coordinator::SyncCoordinator;
-use crate::domain::repository::{EventStore, ReadStore};
+use crate::domain::repository::{EventStore, MessageRepository, ConversationRepository};
 use crate::infrastructure::event_bus::EventBus;
 use crate::application::fsm::FsmManager;
 
@@ -27,8 +27,11 @@ pub struct SdkContext {
     /// 事件存储（用于持久化领域事件）
     pub event_store: Arc<dyn EventStore>,
     
-    /// 读存储（用于查询）
-    pub read_store: Arc<dyn ReadStore>,
+    /// 消息仓储（用于消息查询）
+    pub message_repository: Arc<dyn MessageRepository>,
+    
+    /// 会话仓储（用于会话查询）
+    pub conversation_repository: Arc<dyn ConversationRepository>,
     
     /// 同步协调器（用于同步）
     pub sync_coordinator: Arc<SyncCoordinator>,
@@ -44,7 +47,8 @@ impl SdkContext {
         query_handler: Arc<QueryHandler>,
         event_bus: Arc<EventBus>,
         event_store: Arc<dyn EventStore>,
-        read_store: Arc<dyn ReadStore>,
+        message_repository: Arc<dyn MessageRepository>,
+        conversation_repository: Arc<dyn ConversationRepository>,
         sync_coordinator: Arc<SyncCoordinator>,
         fsm: Arc<FsmManager>,
     ) -> Self {
@@ -53,7 +57,8 @@ impl SdkContext {
             query_handler,
             event_bus,
             event_store,
-            read_store,
+            message_repository,
+            conversation_repository,
             sync_coordinator,
             fsm,
         }

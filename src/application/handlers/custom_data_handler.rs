@@ -13,11 +13,12 @@ use std::sync::Arc;
 use std::collections::HashMap;
 use crate::infrastructure::event_bus::EventBus;
 use crate::application::extension::ExtensionRegistry;
-use tracing::{info, warn, debug, error};
+use tracing::{info, warn, debug};
 
 /// 自定义数据处理器
 pub struct CustomDataHandler {
     event_bus: Arc<EventBus>,
+    #[allow(dead_code)]
     extension_registry: Arc<ExtensionRegistry>,
 }
 

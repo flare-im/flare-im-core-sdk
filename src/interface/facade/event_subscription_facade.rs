@@ -1,86 +1,111 @@
-//! 事件订阅 Facade
+//! Event Subscription Facade
 //!
-//! 提供便捷的事件订阅 API，封装 EventBus 的复杂操作
+//! Provides convenient APIs for event subscription, encapsulating the complexity
+//! of the EventBus. This facade simplifies event subscription for users.
 //!
-//! ## 设计原则
+//! ## Design Principles
 //!
-//! 1. **单一职责**: 只负责事件订阅相关的 API
-//! 2. **便捷性**: 提供多种使用方式，满足不同场景需求
-//! 3. **类型安全**: 编译期保证类型正确
+//! 1. **Single Responsibility**: Only handles event subscription APIs
+//! 2. **Convenience**: Provides multiple usage patterns for different scenarios
+//! 3. **Type Safety**: Compile-time type guarantees
+//!
+//! ## Example
+//!
+//! ```no_run
+//! use flare_im_core_sdk::interface::facade::EventSubscriptionFacade;
+//! use flare_im_core_sdk::interface::event::subscribers::*;
+//! use std::sync::Arc;
+//!
+//! # async fn example(facade: &EventSubscriptionFacade, subscriber: Arc<dyn MessageEventSubscriber>) {
+//! let subscriber_id = facade.subscribe_message(subscriber).await;
+//! # }
+//! ```
 
 use std::sync::Arc;
 use crate::infrastructure::event_bus::{EventBus, SubscriptionStatistics};
 use crate::domain::event::subscribers::*;
 use crate::interface::event::subscriber_builder::SubscriberBuilder;
 
-/// 事件订阅 Facade
+/// Event subscription facade
 ///
-/// 提供便捷的事件订阅 API，封装 EventBus 的复杂操作
+/// Provides convenient APIs for subscribing to domain events, encapsulating
+/// the complexity of the EventBus.
 pub struct EventSubscriptionFacade {
     event_bus: Arc<EventBus>,
 }
 
 impl EventSubscriptionFacade {
-    /// 创建新的事件订阅 Facade
+    /// Creates a new event subscription facade
+    ///
+    /// # Arguments
+    ///
+    /// * `event_bus` - The event bus to use
     pub fn new(event_bus: Arc<EventBus>) -> Self {
         Self { event_bus }
     }
 
-    /// 获取事件总线
+    /// Returns a reference to the event bus
     ///
-    /// 用于直接访问事件总线的底层功能
+    /// Provides direct access to the event bus for advanced use cases.
     ///
-    /// # 示例
+    /// # Example
     ///
-    /// ```rust
-    /// use flare_im_core_sdk::interface::event::subscribers::*;
-    ///
+    /// ```no_run
+    /// # use flare_im_core_sdk::interface::facade::EventSubscriptionFacade;
+    /// # use flare_im_core_sdk::interface::event::subscribers::*;
+    /// # use std::sync::Arc;
+    /// # async fn example(facade: &EventSubscriptionFacade, subscriber: Arc<dyn MessageEventSubscriber>) {
     /// let event_bus = facade.event_bus();
-    /// event_bus.subscribe_message(Arc::new(MyMessageSubscriber)).await;
+    /// event_bus.subscribe_message(subscriber).await;
+    /// # }
     /// ```
     pub fn event_bus(&self) -> &Arc<EventBus> {
         &self.event_bus
     }
 
-    /// 创建事件订阅器构建器
+    /// Creates an event subscriber builder
     ///
-    /// 提供链式 API，方便一次性注册多个订阅者
+    /// Provides a fluent API for registering multiple subscribers at once.
     ///
-    /// # 示例
+    /// # Example
     ///
-    /// ```rust
-    /// use flare_im_core_sdk::interface::event::SubscriberBuilder;
-    ///
+    /// ```no_run
+    /// # use flare_im_core_sdk::interface::facade::EventSubscriptionFacade;
+    /// # use flare_im_core_sdk::interface::event::subscribers::*;
+    /// # use std::sync::Arc;
+    /// # async fn example(facade: &EventSubscriptionFacade, msg_sub: Arc<dyn MessageEventSubscriber>, conn_sub: Arc<dyn ConnectionEventSubscriber>) {
     /// facade.subscribe_events()
-    ///     .message(Arc::new(MyMessageSubscriber))
-    ///     .connection(Arc::new(MyConnectionSubscriber))
+    ///     .message(msg_sub)
+    ///     .connection(conn_sub)
     ///     .build()
     ///     .await;
+    /// # }
     /// ```
     pub fn subscribe_events(&self) -> SubscriberBuilder {
         SubscriberBuilder::new(self.event_bus.clone())
     }
 
-    // ============================================================================
-    // 订阅方法
-    // ============================================================================
-
-    /// 注册 Message 事件订阅者
+    /// Subscribes to message events
     ///
-    /// # 参数
-    /// * `subscriber` - Message 事件订阅者
+    /// # Arguments
     ///
-    /// # 返回
-    /// 返回订阅者 ID，可用于后续取消订阅
+    /// * `subscriber` - The message event subscriber
     ///
-    /// # 示例
+    /// # Returns
     ///
-    /// ```rust
-    /// use flare_im_core_sdk::interface::event::subscribers::*;
+    /// Returns a subscriber ID that can be used to unsubscribe later.
     ///
-    /// let subscriber_id = facade.subscribe_message(Arc::new(MyMessageSubscriber)).await;
-    /// // 后续可以取消订阅
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use flare_im_core_sdk::interface::facade::EventSubscriptionFacade;
+    /// # use flare_im_core_sdk::interface::event::subscribers::*;
+    /// # use std::sync::Arc;
+    /// # async fn example(facade: &EventSubscriptionFacade, subscriber: Arc<dyn MessageEventSubscriber>) {
+    /// let subscriber_id = facade.subscribe_message(subscriber).await;
+    /// // Later, unsubscribe
     /// facade.unsubscribe_message(&subscriber_id).await;
+    /// # }
     /// ```
     pub async fn subscribe_message(
         &self,
@@ -89,13 +114,26 @@ impl EventSubscriptionFacade {
         self.event_bus.subscribe_message(subscriber).await
     }
 
-    /// 注册 Connection 事件订阅者
+    /// Subscribes to connection events
     ///
-    /// # 参数
-    /// * `subscriber` - Connection 事件订阅者
+    /// # Arguments
     ///
-    /// # 返回
-    /// 返回订阅者 ID，可用于后续取消订阅
+    /// * `subscriber` - The connection event subscriber
+    ///
+    /// # Returns
+    ///
+    /// Returns a subscriber ID that can be used to unsubscribe later.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use flare_im_core_sdk::interface::facade::EventSubscriptionFacade;
+    /// # use flare_im_core_sdk::interface::event::subscribers::*;
+    /// # use std::sync::Arc;
+    /// # async fn example(facade: &EventSubscriptionFacade, subscriber: Arc<dyn ConnectionEventSubscriber>) {
+    /// let subscriber_id = facade.subscribe_connection(subscriber).await;
+    /// # }
+    /// ```
     pub async fn subscribe_connection(
         &self,
         subscriber: Arc<dyn ConnectionEventSubscriber>,
@@ -181,14 +219,24 @@ impl EventSubscriptionFacade {
         self.event_bus.unsubscribe_sync(id).await
     }
 
-    // ============================================================================
-    // 统计方法
-    // ============================================================================
-
-    /// 获取事件订阅者统计信息
+    /// Gets subscription statistics
     ///
-    /// # 返回
-    /// 返回各种类型订阅者的数量统计
+    /// Returns statistics about the number of subscribers for each event type.
+    ///
+    /// # Returns
+    ///
+    /// Returns a [`SubscriptionStatistics`] struct containing subscriber counts
+    /// for each event type.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use flare_im_core_sdk::interface::facade::EventSubscriptionFacade;
+    /// # async fn example(facade: &EventSubscriptionFacade) {
+    /// let stats = facade.get_statistics().await;
+    /// println!("Message subscribers: {}", stats.message_count);
+    /// # }
+    /// ```
     pub async fn get_statistics(&self) -> SubscriptionStatistics {
         self.event_bus.get_statistics().await
     }

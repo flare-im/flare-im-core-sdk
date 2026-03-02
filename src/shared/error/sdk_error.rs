@@ -2,11 +2,14 @@
 //!
 //! 基于 flare-core 的错误码，提供 SDK 层面的错误封装
 
-use chrono::{DateTime, Utc};
-use flare_core::common::error::FlareError;
-use flare_core::common::error::code::ErrorCode;
-use std::collections::HashMap;
 use thiserror::Error;
+// use chrono::{DateTime, Utc};
+// use flare_core::common::error::FlareError;
+use flare_core::common::error::code::ErrorCode;
+// use std::fmt;
+// use std::collections::HashMap;
+use super::context::ErrorContext;
+use super::i18n::{LocalizedError, ToLocalizedError};
 
 /// SDK 错误类型
 ///
@@ -129,8 +132,6 @@ impl SDKError {
     }
 
     /// 获取重试延迟（毫秒）
-    ///
-    /// 根据错误类型返回建议的重试延迟
     pub fn retry_after_ms(&self) -> Option<u64> {
         match self.code() {
             Some(ErrorCode::ConnectionTimeout) => Some(1000), // 1秒
@@ -173,156 +174,72 @@ impl SDKError {
 
     /// 创建连接错误
     pub fn connection(code: ErrorCode, message: impl Into<String>) -> Self {
+        let msg = message.into();
         Self::Connection {
             code,
-            message: message.into(),
-            context: ErrorContext::new(),
+            message: msg.clone(),
+            context: ErrorContext::new(msg),
         }
     }
 
     /// 创建认证错误
     pub fn authentication(code: ErrorCode, message: impl Into<String>) -> Self {
+        let msg = message.into();
         Self::Authentication {
             code,
-            message: message.into(),
-            context: ErrorContext::new(),
+            message: msg.clone(),
+            context: ErrorContext::new(msg),
         }
     }
 
     /// 创建消息错误
     pub fn message_error(code: ErrorCode, message: impl Into<String>) -> Self {
+        let msg = message.into();
         Self::Message {
             code,
-            message: message.into(),
-            context: ErrorContext::new(),
-        }
-    }
-
-    /// 创建同步错误
-    pub fn sync(code: ErrorCode, message: impl Into<String>) -> Self {
-        Self::Sync {
-            code,
-            message: message.into(),
-            context: ErrorContext::new(),
-        }
-    }
-
-    /// 创建存储错误
-    pub fn storage(code: ErrorCode, message: impl Into<String>) -> Self {
-        Self::Storage {
-            code,
-            message: message.into(),
-            context: ErrorContext::new(),
-        }
-    }
-
-    /// 创建配置错误
-    pub fn config(message: impl Into<String>) -> Self {
-        Self::Config {
-            message: message.into(),
-            context: ErrorContext::new(),
-        }
-    }
-
-    /// 创建内部错误
-    pub fn internal(message: impl Into<String>) -> Self {
-        Self::Internal {
-            message: message.into(),
-            context: ErrorContext::new(),
+            message: msg.clone(),
+            context: ErrorContext::new(msg),
         }
     }
 }
 
-impl From<FlareError> for SDKError {
-    fn from(err: FlareError) -> Self {
-        match err {
-            FlareError::Localized { code, reason, .. } => {
-                // 根据错误码分类
-                match code {
-                    ErrorCode::ConnectionFailed
-                    | ErrorCode::ConnectionTimeout
-                    | ErrorCode::ConnectionClosed
-                    | ErrorCode::ConnectionRefused
-                    | ErrorCode::NotConnected
-                    | ErrorCode::ConnectionReconnecting => SDKError::connection(code, reason),
-                    ErrorCode::AuthenticationFailed
-                    | ErrorCode::AuthenticationExpired
-                    | ErrorCode::AuthenticationInvalid
-                    | ErrorCode::TokenInvalid
-                    | ErrorCode::TokenExpired => SDKError::authentication(code, reason),
-                    ErrorCode::MessageSendFailed
-                    | ErrorCode::MessageDeliveryFailed
-                    | ErrorCode::MessageNotFound
-                    | ErrorCode::MessageExpired => SDKError::message_error(code, reason),
-                    _ => SDKError::internal(reason),
-                }
-            }
-            FlareError::System(msg) => SDKError::internal(msg),
-            FlareError::Io(msg) => SDKError::storage(ErrorCode::DatabaseError, msg),
+impl ToLocalizedError for SDKError {
+    fn to_localized_error(&self) -> LocalizedError {
+        let code_str = self.code()
+            .map(|c| c.as_str().to_string())
+            .unwrap_or_else(|| "INTERNAL_ERROR".to_string());
+            
+        let message = self.message();
+        let context = self.context();
+        
+        // 生成国际化键值，格式: error.{CODE}
+        // 例如: error.AUTH_001
+        let key = format!("error.{}", code_str);
+        
+        LocalizedError {
+            code: code_str,
+            message,
+            key,
+            params: context.params,
+            debug_info: context.debug_info,
         }
     }
 }
 
 impl From<anyhow::Error> for SDKError {
     fn from(err: anyhow::Error) -> Self {
-        SDKError::Wrapped {
+        // 尝试向下转型为 SDKError
+        if let Some(sdk_error) = err.downcast_ref::<SDKError>() {
+            return sdk_error.clone();
+        }
+        
+        // 默认为内部错误
+        SDKError::Internal {
             message: err.to_string(),
+            context: ErrorContext::new(err.to_string()),
         }
     }
 }
 
-/// 错误上下文
-///
-/// 提供错误的额外上下文信息，用于调试和问题追踪
-#[derive(Debug, Clone, Default)]
-pub struct ErrorContext {
-    /// 操作类型（如 "send_message", "sync_messages"）
-    pub operation: Option<String>,
-
-    /// 相关资源 ID（如 session_id, message_id）
-    pub resource_id: Option<String>,
-
-    /// 额外参数
-    pub params: HashMap<String, String>,
-
-    /// 错误发生时间
-    pub timestamp: DateTime<Utc>,
-
-    /// 错误链路（用于追踪错误传播路径）
-    pub trace: Vec<String>,
-}
-
-impl ErrorContext {
-    pub fn new() -> Self {
-        Self {
-            operation: None,
-            resource_id: None,
-            params: HashMap::new(),
-            timestamp: Utc::now(),
-            trace: Vec::new(),
-        }
-    }
-
-    pub fn with_operation(mut self, operation: impl Into<String>) -> Self {
-        self.operation = Some(operation.into());
-        self
-    }
-
-    pub fn with_resource_id(mut self, resource_id: impl Into<String>) -> Self {
-        self.resource_id = Some(resource_id.into());
-        self
-    }
-
-    pub fn with_param(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
-        self.params.insert(key.into(), value.into());
-        self
-    }
-
-    pub fn add_trace(mut self, trace: impl Into<String>) -> Self {
-        self.trace.push(trace.into());
-        self
-    }
-}
-
-/// Result 类型别名
+/// SDK 结果类型
 pub type SDKResult<T> = Result<T, SDKError>;

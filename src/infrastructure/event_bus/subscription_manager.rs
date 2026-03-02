@@ -245,6 +245,7 @@ impl EventSubscriptionManager {
     /// 辅助函数：统一处理事件分发（Connection）
     /// 
     /// 性能优化：批量处理，减少 spawn 开销
+    #[allow(dead_code)]
     fn dispatch_to_connection_subscribers<F>(
         subscribers: &[ConnectionSubscriptionEntry],
         event: &DomainEvent,
@@ -317,6 +318,7 @@ impl EventSubscriptionManager {
     /// 辅助函数：统一处理事件分发（Message）
     /// 
     /// 性能优化：消息事件是高频事件，使用优化的分发策略
+    #[allow(dead_code)]
     fn dispatch_to_message_subscribers<F>(
         subscribers: &[MessageSubscriptionEntry],
         event: &DomainEvent,
@@ -352,6 +354,7 @@ impl EventSubscriptionManager {
     }
     
     /// 辅助函数：统一处理事件分发（Conversation）
+    #[allow(dead_code)]
     fn dispatch_to_conversation_subscribers<F>(
         subscribers: &[ConversationSubscriptionEntry],
         event: &DomainEvent,

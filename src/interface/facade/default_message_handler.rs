@@ -17,11 +17,10 @@
 use std::sync::Arc;
 use async_trait::async_trait;
 use crate::application::fsm::FsmManager;
-use crate::application::handlers::CommandHandler;
-use crate::domain::message_queue::{MessageQueue, MessageHandler};
-use crate::domain::repository::{EventStore, ReadStore};
+use crate::domain::message_queue::MessageHandler;
+use crate::domain::repository::{EventStore, MessageRepository, ConversationRepository};
 use crate::infrastructure::event_bus::EventBus;
-use tracing::debug;
+use tracing::{info, debug};
 
 /// 默认消息处理器
 ///
@@ -32,28 +31,27 @@ use tracing::debug;
 ///
 /// 对标微信、Telegram、飞书的消息接收处理流程
 pub struct DefaultMessageHandler {
-    command_handler: Arc<CommandHandler>,
-    message_queue: Arc<MessageQueue>,
-    read_store: Arc<dyn ReadStore>,
+    message_repository: Arc<dyn MessageRepository>,
+    conversation_repository: Arc<dyn ConversationRepository>,
+    #[allow(dead_code)]
     event_store: Arc<dyn EventStore>,
     event_bus: Arc<EventBus>,
+    #[allow(dead_code)]
     fsm: Arc<FsmManager>,
 }
 
 impl DefaultMessageHandler {
     /// 创建新的默认消息处理器
     pub fn new(
-        command_handler: Arc<CommandHandler>,
-        message_queue: Arc<MessageQueue>,
-        read_store: Arc<dyn ReadStore>,
+        message_repository: Arc<dyn MessageRepository>,
+        conversation_repository: Arc<dyn ConversationRepository>,
         event_store: Arc<dyn EventStore>,
         event_bus: Arc<EventBus>,
         fsm: Arc<FsmManager>,
     ) -> Self {
         Self {
-            command_handler,
-            message_queue,
-            read_store,
+            message_repository,
+            conversation_repository,
             event_store,
             event_bus,
             fsm,
@@ -64,7 +62,6 @@ impl DefaultMessageHandler {
 #[async_trait]
 impl MessageHandler for DefaultMessageHandler {
     async fn handle_message(&self, message: &crate::domain::message::Message) -> anyhow::Result<()> {
-        use crate::domain::conversation::Conversation;
         use crate::domain::event::{DomainEvent, message_events, conversation_events};
         use crate::domain::service::ConversationDomainService;
         
@@ -74,27 +71,20 @@ impl MessageHandler for DefaultMessageHandler {
             self.fsm.current_user_id(),
             // 2. 并行查询会话（不阻塞消息保存）
             async {
-                let query = crate::domain::repository::Query::ConversationDetail {
-                    conversation_id: message.conversation_id.clone(),
+                // 如果消息没有 conversation_id，直接返回 None
+                let conversation_id = match message.conversation_id.clone() {
+                    Some(id) => id,
+                    None => return None,
                 };
-                match self.read_store.query(query).await {
-                    Ok(crate::domain::repository::QueryResult::ConversationDetail { item }) => {
-                        if !item.is_null() && item.get("conversation_id").is_some() {
-                            serde_json::from_value::<Conversation>(item).ok()
-                        } else {
-                            None
-                        }
-                    }
-                    _ => None,
-                }
+                self.conversation_repository.find_by_id(&conversation_id).await.ok().flatten()
             }
         );
         
-        // 3. 保存消息到 ReadStore（与查询并行，但需要等待完成）
-        self.read_store.write_message(message).await?;
-        
+        // 3. 保存消息到 MessageRepository（与查询并行，但需要等待完成）
+        self.message_repository.save(message).await?;
+        info!("Message saved to repository");
         // 4. 更新会话或创建新会话
-        let mut conversation = if let Some(mut conv) = conversation_opt {
+        let (conversation, is_update) = if let Some(mut conv) = conversation_opt {
             // 更新现有会话
             let domain_service = ConversationDomainService::new();
             domain_service.update_last_message(&mut conv, message)?;
@@ -106,21 +96,25 @@ impl MessageHandler for DefaultMessageHandler {
             conv.max_seq = message.seq.unwrap_or(conv.max_seq);
             conv.updated_at = chrono::Utc::now();
             conv.version += 1;
-            conv
+            (conv, true)
         } else {
             // 创建新会话
             let mut conv = ConversationDomainService::new().create_conversation_from_message(message)?;
             if current_user_id.as_ref().map(|id| id.as_str()) == Some(&message.sender_id) {
                 conv.unread_count = 0;
             }
-            conv
+            (conv, false)
         };
         
-        // 5. 保存会话到 ReadStore
-        self.read_store.write_conversation(&conversation).await?;
-        
+        // 5. 保存会话到 ConversationRepository
+        if is_update {
+            self.conversation_repository.update(&conversation).await?;
+        } else {
+            self.conversation_repository.save(&conversation).await?;
+        }
+        info!("Conversation updated or created");
         // 6. 性能优化：并行发布事件（不阻塞主流程，减少克隆）
-        let message_id = message.id.clone();
+        let message_id = message.server_id.clone().unwrap_or_default();
         let conversation_id = conversation.conversation_id.clone();
         let sender_id = message.sender_id.clone();
         let message_version = message.version;
@@ -155,7 +149,7 @@ impl MessageHandler for DefaultMessageHandler {
             use crate::domain::event::MessageCreated;
             let message_created = MessageCreated {
                 message_id: message_id.clone(),
-                conversation_id: conversation_id.clone(),
+                conversation_id: Some(conversation_id.clone()),
                 sender_id: sender_id.clone(),
                 content: serde_json::json!(message_content), // 使用克隆的消息内容
             };
@@ -205,7 +199,7 @@ impl MessageHandler for DefaultMessageHandler {
         });
         
         debug!(
-            message_id = %message.id,
+            message_id = %message.server_id.as_ref().map(|s| s.as_str()).unwrap_or("<none>"),
             conversation_id = %conversation.conversation_id,
             "Message processed successfully"
         );
@@ -214,7 +208,7 @@ impl MessageHandler for DefaultMessageHandler {
     
     async fn handle_error(&self, message: &crate::domain::message::Message, error: &anyhow::Error) {
         tracing::error!(
-            message_id = %message.id,
+            message_id = %message.server_id.as_ref().map(|s| s.as_str()).unwrap_or("<none>"),
             error = %error,
             "Failed to process received message"
         );

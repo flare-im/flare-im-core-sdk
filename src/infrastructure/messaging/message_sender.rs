@@ -1,208 +1,287 @@
-//! 消息发送服务
-//!
-//! 职责：
-//! 1. 消息转换（Domain -> Proto）
-//! 2. Frame 构建
-//! 3. 网络发送（使用 flare-core 的 send_frame_and_wait）
-//! 4. ACK 响应解析
-
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
 use anyhow::{Result, Context};
-use tracing::{info, warn, error, debug};
-use flare_core::common::protocol::{Frame, Reliability};
+use flare_core::common::protocol::{Reliability, MessageCommand};
+use flare_core::common::protocol::flare::core::commands::command::Type as CommandType;
 use flare_core::common::protocol::builder::*;
+use flare_proto::common::{
+    ClientPacket, ServerPacket,
+    ConversationSyncAllRequest, ConversationSyncAllResponse,
+    SyncConversationsRequest, SyncConversationsResponse,
+    SyncRequest, SyncResponse,
+};
 use prost::Message as ProstMessage;
-use flare_proto::common::SendEnvelopeAck;
-use flare_proto::common::AckStatus;
 
 use crate::domain::message::Message;
 use crate::infrastructure::network::NetworkClient;
 use crate::infrastructure::converter::MessageConverter;
+use crate::application::ports::sync_transport::SyncTransport;
+use async_trait::async_trait;
 
-/// 消息发送结果
 #[derive(Debug, Clone)]
 pub struct SendMessageResult {
-    pub message_id: String,
+    pub server_msg_id: String,
     pub seq: u64,
-    pub status: AckStatus,
+    pub success: bool,
     pub error_code: i32,
     pub error_message: String,
 }
 
-/// 消息发送服务
-///
-/// 基础设施层服务，负责消息的网络发送和 ACK 处理
 pub struct MessageSender {
     network: Arc<Mutex<Option<NetworkClient>>>,
 }
 
 impl MessageSender {
-    /// 创建新的消息发送服务
     pub fn new(network: Arc<Mutex<Option<NetworkClient>>>) -> Self {
         Self { network }
     }
-    
-    /// 发送消息并等待 ACK
-    ///
-    /// # 参数
-    /// * `message` - 要发送的消息
-    /// * `timeout` - 超时时间
-    ///
-    /// # 返回
-    /// * `Ok(SendMessageResult)` - 发送成功，包含 ACK 信息
-    /// * `Err` - 发送失败或超时
+
+    /// 发送 ClientPacket 并等待 ServerPacket 响应
+    async fn send_client_packet_and_wait<T, R>(
+        &self,
+        request: T,
+        wrap_payload: fn(T) -> flare_proto::common::client_packet::Payload,
+        unwrap_payload: fn(flare_proto::common::server_packet::Payload) -> Option<R>,
+        timeout: Duration,
+    ) -> Result<R>
+    where
+        T: ProstMessage,
+        R: ProstMessage + Default,
+    {
+        let client_packet = ClientPacket {
+            payload: Some(wrap_payload(request)),
+        };
+
+        let server_packet = self.send_packet_and_wait(client_packet, timeout).await?;
+        let payload = server_packet
+            .payload
+            .ok_or_else(|| anyhow::anyhow!("ServerPacket.payload is None"))?;
+
+        match payload {
+            flare_proto::common::server_packet::Payload::Error(err_pkt) => Err(anyhow::anyhow!(
+                "Server error (code={}): {}",
+                err_pkt.code,
+                err_pkt.message
+            )),
+            other => unwrap_payload(other)
+                .ok_or_else(|| anyhow::anyhow!("ServerPacket payload mismatch")),
+        }
+    }
+
+    async fn send_packet_and_wait(
+        &self,
+        packet: ClientPacket,
+        timeout: Duration,
+    ) -> Result<ServerPacket> {
+        let mut packet_bytes = Vec::new();
+        packet
+            .encode(&mut packet_bytes)
+            .context("Failed to encode ClientPacket")?;
+
+        let request_id = flare_core::common::protocol::generate_message_id();
+        let msg_cmd = MessageCommand {
+            r#type: flare_core::common::protocol::flare::core::commands::message_command::Type::Data
+                as i32,
+            message_id: request_id.clone(),
+            payload: packet_bytes,
+            metadata: Default::default(),
+            seq: 0,
+        };
+
+        let frame = FrameBuilder::new()
+            .with_command(flare_core::common::protocol::flare::core::commands::Command {
+                r#type: Some(CommandType::Message(msg_cmd)),
+            })
+            .with_message_id(request_id.clone())
+            .with_reliability(Reliability::BestEffort)
+            .build();
+
+        let network_guard = self.network.lock().await;
+        let client = network_guard
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Network client is not connected"))?;
+
+        if !client.is_connected() {
+            return Err(anyhow::anyhow!("Network client is not connected"));
+        }
+
+        let response_frame = client
+            .send_frame_and_wait(&frame, timeout)
+            .await
+            .context("Failed to send frame and wait for response")?;
+
+        let msg_cmd = response_frame
+            .command
+            .as_ref()
+            .and_then(|cmd| {
+                cmd.r#type.as_ref().and_then(|t| match t {
+                    flare_core::common::protocol::flare::core::commands::command::Type::Message(
+                        msg_cmd,
+                    ) => Some(msg_cmd),
+                    _ => None,
+                })
+            })
+            .ok_or_else(|| anyhow::anyhow!("Response frame is not a MessageCommand"))?;
+
+        if msg_cmd.r#type
+            != flare_core::common::protocol::flare::core::commands::message_command::Type::Data
+                as i32
+        {
+            return Err(anyhow::anyhow!(
+                "Expected MessageCommand(Data=2) response, got type={}",
+                msg_cmd.r#type
+            ));
+        }
+
+        if msg_cmd.payload.is_empty() {
+            return Err(anyhow::anyhow!("MessageCommand payload is empty"));
+        }
+
+        ServerPacket::decode(msg_cmd.payload.as_slice()).context("Failed to decode ServerPacket")
+    }
+
+    /// 发送会话增量同步请求
+    pub async fn send_sync_conversations(
+        &self,
+        req: SyncConversationsRequest,
+        timeout: Duration,
+    ) -> Result<SyncConversationsResponse> {
+        self.send_client_packet_and_wait(
+            req,
+            |r| flare_proto::common::client_packet::Payload::SyncConversations(r),
+            |p| match p {
+                flare_proto::common::server_packet::Payload::SyncConversationsResp(r) => Some(r),
+                _ => None,
+            },
+            timeout,
+        )
+        .await
+    }
+
+    /// 发送按会话事件同步请求（长连接线缆：SyncRequest → SyncResponse）
+    pub async fn send_sync_request(
+        &self,
+        req: SyncRequest,
+        timeout: Duration,
+    ) -> Result<SyncResponse> {
+        self.send_client_packet_and_wait(
+            req,
+            |r| flare_proto::common::client_packet::Payload::SyncRequest(r),
+            |p| match p {
+                flare_proto::common::server_packet::Payload::SyncResp(r) => Some(r),
+                _ => None,
+            },
+            timeout,
+        )
+        .await
+    }
+
+    /// 发送全量会话同步请求
+    pub async fn send_sync_conversations_all(
+        &self,
+        req: ConversationSyncAllRequest,
+        timeout: Duration,
+    ) -> Result<ConversationSyncAllResponse> {
+        self.send_client_packet_and_wait(
+            req,
+            |r| flare_proto::common::client_packet::Payload::SyncConversationsAll(r),
+            |p| match p {
+                flare_proto::common::server_packet::Payload::SyncConversationsAllResp(r) => {
+                    Some(r)
+                }
+                _ => None,
+            },
+            timeout,
+        )
+        .await
+    }
+
+    /// 发送单条消息并等待 SendAck（ClientPacket.send_message = Message）
     pub async fn send_message_and_wait_ack(
         &self,
         message: &Message,
         timeout: Duration,
     ) -> Result<SendMessageResult> {
-        // 1. 转换为 Proto Message
         let proto_message = MessageConverter::to_proto(message)
             .context("Failed to convert message to proto")?;
-        
-        // 2. 序列化消息
-        let mut payload = Vec::new();
-        proto_message.encode(&mut payload)
-            .context("Failed to encode proto message")?;
-        
-        // 3. 构建 Frame
-        let frame = self.build_message_frame(message, payload)?;
 
-        // 4. 发送并等待响应（使用 flare-core 的 send_frame_and_wait）
-        let network_guard = self.network.lock().await;
-        let client = network_guard.as_ref()
-            .ok_or_else(|| anyhow::anyhow!("Network client is not connected"))?;
-        
-        if !client.is_connected() {
-            return Err(anyhow::anyhow!("Network client is not connected"));
-        }
-        
-        info!(
-            message_id = %message.id,
-            conversation_id = %message.conversation_id,
-            frame_message_id = frame.message_id.clone(),
-            "📤 发送消息到服务器"
-        );
-
-        // 发送并等待 ACK 响应
-        let response_frame = match client.send_frame_and_wait(&frame, timeout).await {
-            Ok(frame) => frame,
-            Err(e) => {
-                error!(
-                    message_id = %message.id,
-                    error = %e,
-                    "发送消息或等待响应失败"
-                );
-                return Err(anyhow::anyhow!("发送消息或等待响应失败: {}", e));
-        }
+        let packet = ClientPacket {
+            payload: Some(flare_proto::common::client_packet::Payload::SendMessage(
+                proto_message,
+            )),
         };
 
-        debug!(
-            message_id = %message.id,
-            conversation_id = %message.conversation_id,
-            frame_message_id = frame.message_id.clone(),
-            response_message_id = response_frame.message_id.clone(),
-            "📨 收到服务器响应"
-        );
+        let server_packet = self.send_packet_and_wait(packet, timeout).await?;
+        let payload = server_packet
+            .payload
+            .ok_or_else(|| anyhow::anyhow!("ServerPacket.payload is None"))?;
 
-        // 5. 解析 ACK 响应
-        let result = self.parse_ack_response(&response_frame, &message.id)?;
-
-        info!(
-            message_id = %result.message_id,
-            seq = result.seq,
-            status = ?result.status,
-            "✅ 收到服务器 ACK"
-        );
-        
-        Ok(result)
-    }
-    
-    /// 构建消息 Frame
-    fn build_message_frame(&self, message: &Message, payload: Vec<u8>) -> Result<Frame> {
-        // 构建 MessageCommand
-        let mut metadata = std::collections::HashMap::new();
-        // 添加会话 ID 到 metadata（用于路由）
-        metadata.insert("conversation_id".to_string(), message.conversation_id.as_bytes().to_vec());
-        
-        let msg_cmd = send_message( message.id.clone(), payload, Some(metadata), None);
-        // 构建 Frame（使用 AtLeastOnce 可靠性，确保消息不丢失）
-        let frame = frame_with_message_command(msg_cmd, Reliability::AtLeastOnce);
-        
-        Ok(frame)
-    }
-    
-    /// 解析 ACK 响应
-    fn parse_ack_response(&self, frame: &Frame, expected_message_id: &str) -> Result<SendMessageResult> {
-        // 从 Frame 中提取 MessageCommand
-        let msg_cmd = frame.command.as_ref()
-            .and_then(|cmd| {
-                cmd.r#type.as_ref().and_then(|t| {
-                    match t {
-                        flare_core::common::protocol::flare::core::commands::command::Type::Message(msg_cmd) => {
-                            Some(msg_cmd)
-                        }
-                        _ => None,
-                    }
-                })
-            })
-            .ok_or_else(|| anyhow::anyhow!("Frame does not contain MessageCommand"))?;
-        
-        // 检查是否是 ACK（Type::Ack = 1）
-        if msg_cmd.r#type != 1 {
-            return Err(anyhow::anyhow!(
-                "Expected ACK response (type=1), got type={}",
-                msg_cmd.r#type
-            ));
+        match payload {
+            flare_proto::common::server_packet::Payload::SendAck(ack) => Ok(SendMessageResult {
+                server_msg_id: ack.server_msg_id,
+                seq: ack.seq,
+                success: ack.success,
+                error_code: ack.error_code,
+                error_message: ack.error_message,
+            }),
+            flare_proto::common::server_packet::Payload::Error(err_pkt) => Err(anyhow::anyhow!(
+                "Server error (code={}): {}",
+                err_pkt.code,
+                err_pkt.message
+            )),
+            other => Err(anyhow::anyhow!(
+                "Unexpected ServerPacket payload: {:?}",
+                other
+            )),
         }
-        
-        // 解析 SendEnvelopeAck
-        // 注意：ACK 可能包装在 ServerPacket 中，但通常直接是 SendEnvelopeAck
-        // 先尝试直接解析 SendEnvelopeAck，如果失败再尝试解析 ServerPacket
-        let ack = match SendEnvelopeAck::decode(msg_cmd.payload.as_slice()) {
-            Ok(ack) => ack,
-            Err(_) => {
-                // 如果直接解析失败，可能是包装在 ServerPacket 中
-                // 但这种情况很少见，先记录警告
-                warn!(
-                    payload_len = msg_cmd.payload.len(),
-                    "Failed to decode SendEnvelopeAck directly, trying alternative format"
-                );
-                // 直接返回错误，让调用者处理
-                return Err(anyhow::anyhow!("Failed to decode SendEnvelopeAck"));
-            }
+    }
+
+    /// 发送 Event（操作）并等待 OperationAck
+    pub async fn send_event_and_wait_ack(
+        &self,
+        event: flare_proto::common::Event,
+        timeout: Duration,
+    ) -> Result<flare_proto::common::OperationAck> {
+        let packet = ClientPacket {
+            payload: Some(flare_proto::common::client_packet::Payload::SendEvent(event)),
         };
-        
-        // 验证 message_id 匹配
-        if ack.message_id.is_empty() {
-            warn!(
-                expected = expected_message_id,
-                payload_len = msg_cmd.payload.len(),
-                "ACK message_id 为空，使用期望的 message_id"
-            );
-            // 如果 ACK message_id 为空，使用期望的 message_id（可能是服务端 bug）
-            // 但继续处理，不返回错误
-        } else if ack.message_id != expected_message_id {
-            warn!(
-                expected = expected_message_id,
-                actual = %ack.message_id,
-                "ACK message_id 不匹配"
-            );
+        let server_packet = self.send_packet_and_wait(packet, timeout).await?;
+        let payload = server_packet
+            .payload
+            .ok_or_else(|| anyhow::anyhow!("ServerPacket.payload is None"))?;
+        match payload {
+            flare_proto::common::server_packet::Payload::OperationAck(ack) => Ok(ack),
+            flare_proto::common::server_packet::Payload::Error(err_pkt) => Err(anyhow::anyhow!(
+                "Server error (code={}): {}",
+                err_pkt.code,
+                err_pkt.message
+            )),
+            other => Err(anyhow::anyhow!(
+                "Unexpected ServerPacket payload: {:?}",
+                other
+            )),
         }
-        
-        // 转换 AckStatus（使用 TryFrom<i32>）
-        use std::convert::TryFrom;
-        let status = AckStatus::try_from(ack.status)
-            .unwrap_or(AckStatus::Unspecified);
-        
-        Ok(SendMessageResult {
-            message_id: ack.message_id,
-            seq: msg_cmd.seq,
-            status,
-            error_code: ack.error_code,
-            error_message: ack.error_message,
-        })
+    }
+}
+
+#[async_trait]
+impl SyncTransport for MessageSender {
+    async fn sync_conversations_all(
+        &self,
+        req: ConversationSyncAllRequest,
+        timeout: Duration,
+    ) -> anyhow::Result<ConversationSyncAllResponse> {
+        self.send_sync_conversations_all(req, timeout)
+            .await
+            .map_err(Into::into)
+    }
+
+    async fn sync_messages(
+        &self,
+        req: SyncRequest,
+        timeout: Duration,
+    ) -> anyhow::Result<SyncResponse> {
+        self.send_sync_request(req, timeout).await.map_err(Into::into)
     }
 }

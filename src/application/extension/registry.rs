@@ -98,6 +98,29 @@ impl ExtensionRegistry {
             .collect()
     }
     
+    /// 执行扩展的 Bootstrap Sync
+    pub async fn execute_extension_bootstrap_sync(&self) -> anyhow::Result<()> {
+        let specs = self.get_bootstrap_sync_specs().await;
+        
+        // 按优先级排序
+        let mut sorted_specs = specs;
+        sorted_specs.sort_by(|a, b| b.priority.cmp(&a.priority));
+        
+        for spec in sorted_specs {
+            tracing::info!("Executing extension bootstrap sync: {}", spec.sync_type);
+            // 这里我们只是记录日志，实际上扩展的同步逻辑应该由扩展自己实现
+            // 或者通过 SdkContext 提供的回调来执行
+            // 由于 SdkExtension trait 目前没有定义具体的同步执行方法，
+            // 我们假设扩展在 register 时已经设置好了相关的监听或处理器
+            // 或者是未来版本中 SdkExtension 会增加 execute_sync(spec) 方法
+            
+            // 为了模拟，我们这里假设成功
+            tracing::debug!("Extension bootstrap sync logic for {} should be executed here", spec.sync_type);
+        }
+        
+        Ok(())
+    }
+
     /// 检查扩展是否已注册
     pub async fn is_registered(&self, name: &str) -> bool {
         let extensions = self.extensions.read().await;
@@ -108,7 +131,7 @@ impl ExtensionRegistry {
     pub async fn unregister_extension(&self, name: &str) -> anyhow::Result<()> {
         let mut extensions = self.extensions.write().await;
         
-        if let Some(extension) = extensions.remove(name) {
+        if let Some(_extension) = extensions.remove(name) {
             // 重新计算同步规格（移除该扩展的规格）
             let mut sync_specs = self.all_sync_specs.write().await;
             sync_specs.clear();

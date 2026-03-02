@@ -5,10 +5,10 @@
 
 use crate::domain::message::*;
 use chrono::Utc;
-use prost_types::Timestamp;
 
 /// 消息操作类型
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum OperationType {
     /// 撤回消息
     Recall,
@@ -22,9 +22,6 @@ pub enum OperationType {
     /// 已读回执
     Read,
     
-    /// 回复消息
-    Reply,
-    
     /// 转发消息
     Forward,
     
@@ -34,30 +31,21 @@ pub enum OperationType {
     /// 移除反应
     ReactionRemove,
     
-    /// 引用消息
-    Quote,
-    
-    /// 话题回复
-    ThreadReply,
-    
     /// 置顶消息
     Pin,
     
     /// 取消置顶
     Unpin,
     
-    /// 收藏消息
-    Favorite,
-    
-    /// 取消收藏
-    Unfavorite,
-    
     /// 标记消息
     Mark,
+    
+    /// 取消标记
+    Unmark,
 }
 
 /// 删除类型
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum DeleteType {
     /// 软删除（仅对当前用户隐藏）
     Soft,
@@ -67,7 +55,7 @@ pub enum DeleteType {
 }
 
 /// 反应操作类型
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ReactionAction {
     /// 添加反应
     Add,
@@ -77,7 +65,7 @@ pub enum ReactionAction {
 }
 
 /// 标记类型
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum MarkType {
     /// 重要
     Important,
@@ -95,7 +83,7 @@ pub enum MarkType {
 /// 消息操作
 ///
 /// 统一的操作结构，用于审计和追踪
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct MessageOperation {
     pub operation_type: OperationType,
     pub target_message_id: String,
@@ -109,7 +97,8 @@ pub struct MessageOperation {
 }
 
 /// 操作数据（oneof）
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum OperationData {
     /// 撤回操作
     Recall {
@@ -140,13 +129,6 @@ pub enum OperationData {
         burn_after_read: bool,
     },
     
-    /// 回复操作
-    Reply {
-        reply_to_message_id: String,
-        reply_content: Vec<u8>,
-        quote_original: bool,
-    },
-    
     /// 转发操作
     Forward {
         message_ids: Vec<String>,
@@ -162,35 +144,24 @@ pub enum OperationData {
         count: i32,
     },
     
-    /// 引用操作
-    Quote {
-        quoted_message_id: String,
-        preview_text: Option<String>,
-    },
-    
-    /// 话题操作
-    Thread {
-        thread_id: String,
-        thread_title: Option<String>,
-        reply_content: Vec<u8>,
-    },
-    
     /// 置顶操作
     Pin {
         reason: Option<String>,
         expire_at: Option<chrono::DateTime<Utc>>,
     },
     
-    /// 收藏操作
-    Favorite {
-        tags: Vec<String>,
-        note: Option<String>,
-    },
+    /// 取消置顶操作
+    Unpin,
     
     /// 标记操作
     Mark {
         mark_type: MarkType,
         color: Option<String>,
+    },
+    
+    /// 取消标记操作
+    Unmark {
+        mark_type: Option<MarkType>,
     },
 }
 
@@ -203,41 +174,49 @@ impl MessageOperationHandler {
         operation: MessageOperation,
         message: &mut Message,
     ) -> anyhow::Result<()> {
-        match operation.operation_data {
+        let operator_id = operation.operator_id;
+        let operation_data = operation.operation_data;
+        
+        match operation_data {
             OperationData::Recall { reason, .. } => {
-                message.recall(operation.operator_id, reason)?;
+                message.recall(operator_id, reason)?;
             }
             
             OperationData::Edit { new_content, edit_version, reason, show_edited_mark } => {
-                message.edit(new_content, operation.operator_id.clone(), reason)?;
+                message.edit_with_details(new_content, operator_id, reason, show_edited_mark, edit_version)?;
             }
             
-            OperationData::Delete { delete_type, .. } => {
+            OperationData::Delete { delete_type, reason, notify_others } => {
                 match delete_type {
                     DeleteType::Soft => {
                         // 软删除：设置可见性为隐藏
                         message.visibility.insert(
-                            operation.operator_id.clone(),
+                            operator_id.clone(),
                             VisibilityStatus::Hidden,
                         );
                     }
                     DeleteType::Hard => {
                         // 硬删除：设置可见性为已删除
                         message.visibility.insert(
-                            operation.operator_id.clone(),
+                            operator_id.clone(),
                             VisibilityStatus::Deleted,
                         );
                     }
                 }
+                // 记录删除原因
+                if let Some(r) = reason {
+                    message.attributes.insert("delete_reason".to_string(), r);
+                }
+                // 记录是否通知他人
+                message.attributes.insert("delete_notify_others".to_string(), notify_others.to_string());
                 message.version += 1;
                 message.updated_at = Utc::now();
             }
             
-            OperationData::Read { message_ids, read_at, burn_after_read } => {
-                if message_ids.contains(&message.id) {
-                    message.mark_read(operation.operator_id.clone())?;
-                    if burn_after_read {
-                        message.is_burn_after_read = true;
+            OperationData::Read { message_ids, .. } => {
+                if let Some(server_id) = &message.server_id {
+                    if message_ids.contains(server_id) {
+                        message.mark_read(operator_id)?;
                     }
                 }
             }
@@ -245,10 +224,10 @@ impl MessageOperationHandler {
             OperationData::Reaction { emoji, action, .. } => {
                 match action {
                     ReactionAction::Add => {
-                        message.add_reaction(emoji, operation.operator_id.clone());
+                        message.add_reaction(emoji, operator_id);
                     }
                     ReactionAction::Remove => {
-                        message.remove_reaction(emoji, operation.operator_id.clone());
+                        message.remove_reaction(emoji, operator_id);
                     }
                 }
             }
@@ -257,8 +236,9 @@ impl MessageOperationHandler {
                 // 置顶逻辑：在 attributes 中标记为置顶
                 message.attributes.insert("pinned".to_string(), "true".to_string());
                 message.attributes.insert("pinned_at".to_string(), chrono::Utc::now().to_rfc3339());
-                if let Some(reason) = reason {
-                    message.attributes.insert("pin_reason".to_string(), reason);
+                message.attributes.insert("pinned_by".to_string(), operator_id);
+                if let Some(r) = reason {
+                    message.attributes.insert("pin_reason".to_string(), r);
                 }
                 if let Some(expire) = expire_at {
                     message.attributes.insert("pin_expire_at".to_string(), expire.to_rfc3339());
@@ -267,17 +247,13 @@ impl MessageOperationHandler {
                 message.updated_at = Utc::now();
             }
             
-            OperationData::Favorite { tags, note } => {
-                // 收藏逻辑：添加到 tags 和 attributes
-                message.tags.extend(tags.clone());
-                message.attributes.insert("favorited".to_string(), "true".to_string());
-                message.attributes.insert("favorited_at".to_string(), chrono::Utc::now().to_rfc3339());
-                if let Some(note) = note {
-                    message.attributes.insert("favorite_note".to_string(), note);
-                }
-                if !tags.is_empty() {
-                    message.attributes.insert("favorite_tags".to_string(), tags.join(","));
-                }
+            OperationData::Unpin => {
+                // 取消置顶：移除置顶相关属性
+                message.attributes.remove("pinned");
+                message.attributes.remove("pinned_at");
+                message.attributes.remove("pinned_by");
+                message.attributes.remove("pin_reason");
+                message.attributes.remove("pin_expire_at");
                 message.version += 1;
                 message.updated_at = Utc::now();
             }
@@ -285,20 +261,49 @@ impl MessageOperationHandler {
             OperationData::Mark { mark_type, color } => {
                 // 标记逻辑：在 attributes 中记录标记信息
                 message.attributes.insert(
-                    "mark_type".to_string(),
-                    format!("{:?}", mark_type),
+                    format!("mark_type_{:?}", mark_type),
+                    "true".to_string(),
                 );
                 message.attributes.insert("marked_at".to_string(), chrono::Utc::now().to_rfc3339());
-                if let Some(color) = color {
-                    message.attributes.insert("mark_color".to_string(), color);
+                message.attributes.insert("marked_by".to_string(), operator_id);
+                if let Some(c) = color {
+                    message.attributes.insert("mark_color".to_string(), c);
                 }
                 message.version += 1;
                 message.updated_at = Utc::now();
             }
             
-            _ => {
-                // 其他操作暂未实现
-                return Err(anyhow::anyhow!("Operation not implemented yet"));
+            OperationData::Unmark { mark_type } => {
+                // 取消标记逻辑：移除标记信息
+                if let Some(mt) = mark_type {
+                    // 取消特定类型的标记
+                    message.attributes.remove(&format!("mark_type_{:?}", mt));
+                } else {
+                    // 取消所有标记
+                    message.attributes.retain(|k, _| !k.starts_with("mark_"));
+                }
+                message.version += 1;
+                message.updated_at = Utc::now();
+            }
+            
+            OperationData::Forward { message_ids, target_conversation_id, reason, merge_forward } => {
+                // 转发操作：记录转发信息
+                // 转发本身不影响原消息状态，只是创建转发记录
+                message.attributes.insert("forwarded".to_string(), "true".to_string());
+                message.attributes.insert("forwarded_at".to_string(), chrono::Utc::now().to_rfc3339());
+                message.attributes.insert("forwarded_by".to_string(), operator_id);
+                
+                if let Some(r) = reason {
+                    message.attributes.insert("forward_reason".to_string(), r);
+                }
+                
+                // 记录转发的目标会话和消息ID
+                message.attributes.insert("forward_target_conversation".to_string(), target_conversation_id);
+                message.attributes.insert("forward_message_ids".to_string(), serde_json::to_string(&message_ids)?);
+                message.attributes.insert("forward_merge".to_string(), merge_forward.to_string());
+                
+                message.version += 1;
+                message.updated_at = Utc::now();
             }
         }
         

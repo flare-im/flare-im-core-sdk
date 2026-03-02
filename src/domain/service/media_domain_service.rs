@@ -4,7 +4,6 @@
 //! 领域层职责：业务规则和验证
 //! 基础层职责：实际的上传操作和缓存存储（通过接口注入）
 
-use crate::domain::message::TenantContext;
 use anyhow::Result;
 
 /// 媒体领域服务
@@ -95,7 +94,6 @@ impl MediaDomainService {
     /// * `file_size` - 文件大小
     /// * `mime_type` - MIME 类型
     /// * `user_id` - 用户ID
-    /// * `tenant` - 租户上下文
     ///
     /// # 返回
     /// * `Ok(MediaUploadContext)` - 上传上下文
@@ -105,7 +103,6 @@ impl MediaDomainService {
         file_size: u64,
         mime_type: &str,
         user_id: &str,
-        tenant: &TenantContext,
     ) -> Result<MediaUploadContext> {
         use std::path::Path;
         let path = Path::new(file_path);
@@ -125,7 +122,6 @@ impl MediaDomainService {
         metadata.insert("file_name".to_string(), file_name.clone());
         metadata.insert("original_path".to_string(), file_path.to_string());
         metadata.insert("uploaded_by".to_string(), user_id.to_string());
-        metadata.insert("tenant_id".to_string(), tenant.tenant_id.clone());
         metadata.insert("uploaded_at".to_string(), chrono::Utc::now().to_rfc3339());
         
         Ok(MediaUploadContext {
@@ -135,7 +131,6 @@ impl MediaDomainService {
             mime_type: mime_type.to_string(),
             file_type,
             user_id: user_id.to_string(),
-            tenant: tenant.clone(),
             metadata,
         })
     }
@@ -257,8 +252,6 @@ pub struct MediaUploadContext {
     pub file_type: MediaFileType,
     /// 上传用户ID
     pub user_id: String,
-    /// 租户上下文
-    pub tenant: TenantContext,
     /// 扩展元数据
     pub metadata: std::collections::HashMap<String, String>,
 }

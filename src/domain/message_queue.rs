@@ -81,14 +81,25 @@ impl MessageQueue {
     /// 返回 true 表示成功加入队列，false 表示队列已满或消息重复
     pub async fn enqueue(&self, message: Message, priority: u8) -> bool {
         // 性能优化：快速路径检查（避免不必要的锁）
-        if self.is_duplicate(&message.id).await {
-            let mut stats = self.stats.write().await;
-            stats.total_duplicates += 1;
-            return false;
+        if let Some(ref server_id) = message.server_id {
+            if self.is_duplicate(server_id).await {
+                let mut stats = self.stats.write().await;
+                stats.total_duplicates += 1;
+                return false;
+            }
+        } else {
+            // 如果没有 server_id，使用 client_msg_id 检查
+            if self.is_duplicate(&message.client_msg_id).await {
+                let mut stats = self.stats.write().await;
+                stats.total_duplicates += 1;
+                return false;
+            }
         }
         
         // 记录消息 ID（用于去重）
-        self.mark_seen(&message.id).await;
+        if let Some(ref server_id) = message.server_id {
+            self.mark_seen(server_id).await;
+        }
         
         // 创建队列消息
         let queued_message = QueuedMessage {
@@ -140,13 +151,17 @@ impl MessageQueue {
         
         for (message, priority) in messages {
             // 快速去重检查
-            if seen.contains_key(&message.id) {
-                duplicates += 1;
-                continue;
+            if let Some(ref server_id) = message.server_id {
+                if seen.contains_key(server_id) {
+                    duplicates += 1;
+                    continue;
+                }
             }
             
             // 标记已见（避免克隆，直接移动）
-            seen.insert(message.id.clone(), now);
+            if let Some(server_id) = message.server_id.clone() {
+                seen.insert(server_id, now);
+            }
             
             // 创建队列消息
             queued_messages.push(QueuedMessage {
@@ -290,7 +305,7 @@ pub trait MessageHandler: Send + Sync {
     
     /// 处理消息失败时的回调
     async fn handle_error(&self, message: &Message, error: &anyhow::Error) {
-        error!("Failed to process message {}: {}", message.id, error);
+        error!("Failed to process message {}: {}", message.server_id.as_ref().map(|s| s.as_str()).unwrap_or("<none>"), error);
     }
 }
 
@@ -309,8 +324,8 @@ impl MessageQueueProcessor {
             match self.queue.receive().await {
                 Some(queued_message) => {
                     info!(
-                        message_id = %queued_message.message.id,
-                        conversation_id = %queued_message.message.conversation_id,
+                        message_id = %queued_message.message.server_id.as_ref().map(|s| s.as_str()).unwrap_or("<none>"),
+                        conversation_id = %queued_message.message.conversation_id.as_ref().map(|s| s.as_str()).unwrap_or("<none>"),
                         sender_id = %queued_message.message.sender_id,
                         priority = queued_message.priority,
                         "Processing queued message"
@@ -320,7 +335,7 @@ impl MessageQueueProcessor {
                     match self.handler.handle_message(&queued_message.message).await {
                         Ok(_) => {
                             info!(
-                                message_id = %queued_message.message.id,
+                                message_id = %queued_message.message.server_id.as_ref().map(|s| s.as_str()).unwrap_or("<none>"),
                                 "Message processed successfully by handler"
                             );
                         }
@@ -335,14 +350,14 @@ impl MessageQueueProcessor {
                                 
                                 // 重新入队（降低优先级）
                                 if !self.queue.enqueue(retry_message.message, queued_message.priority.saturating_sub(1)).await {
-                                    warn!("Failed to retry message: {}", queued_message.message.id);
+                                    warn!("Failed to retry message: {}", queued_message.message.server_id.as_ref().map(|s| s.as_str()).unwrap_or("<none>"));
                                 }
                             } else {
-                                error!(
-                                    message_id = %queued_message.message.id,
-                                    retry_count = queued_message.retry_count,
-                                    "Message processing failed after max retries"
-                                );
+                    error!(
+                        message_id = %queued_message.message.server_id.as_ref().map(|s| s.as_str()).unwrap_or("<none>"),
+                        retry_count = queued_message.retry_count,
+                        "Message processing failed after max retries"
+                    );
                             }
                         }
                     }

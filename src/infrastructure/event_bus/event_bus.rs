@@ -1,68 +1,15 @@
-//! 事件总线
-//!
-//! 用于发布领域事件，供 UI 层订阅
-//!
-//! ## 设计特点
-//!
-//! 1. **双重机制**: 既支持类型安全的订阅器（推荐），也支持原始的 broadcast channel 订阅（向后兼容）
-//! 2. **自动分发**: 发布事件时自动分发到所有注册的订阅者
-//! 3. **异步处理**: 事件分发是异步的，不阻塞发布者
-//!
-//! ## 使用方式
-//!
-//! ### 方式一：使用类型安全的订阅器（推荐）
-//!
-//! ```rust
-//! use flare_im_core_sdk::domain::event::subscribers::*;
-//!
-//! struct MySubscriber;
-//!
-//! #[async_trait::async_trait]
-//! impl MessageEventSubscriber for MySubscriber {
-//!     async fn on_message_delivered(&self, event: &MessageDelivered) -> anyhow::Result<()> {
-//!         println!("收到消息: {}", event.message_id);
-//!         Ok(())
-//!     }
-//! }
-//!
-//! // 注册订阅者
-//! event_bus.subscribe_message(Arc::new(MySubscriber)).await;
-//! ```
-//!
-//! ### 方式二：使用原始的 broadcast channel（向后兼容）
-//!
-//! ```rust
-//! let mut receiver = event_bus.subscribe();
-//! tokio::spawn(async move {
-//!     while let Ok(event) = receiver.recv().await {
-//!         // 处理事件
-//!     }
-//! });
-//! ```
-
 use std::sync::Arc;
 use tokio::sync::broadcast;
-use tracing::warn;
 use crate::domain::event::DomainEvent;
 use crate::domain::event::subscribers::*;
 use super::subscription_manager::{EventSubscriptionManager, SubscriptionStatistics};
 
-/// 事件总线
-///
-/// 提供事件发布和订阅功能，支持类型安全的订阅器和原始的 broadcast channel
 pub struct EventBus {
-    /// 原始的 broadcast channel（用于向后兼容和通用订阅）
     sender: broadcast::Sender<DomainEvent>,
-    
-    /// 订阅管理器（用于类型安全的订阅）
     subscription_manager: Arc<EventSubscriptionManager>,
 }
 
 impl EventBus {
-    /// 创建新的事件总线
-    ///
-    /// # 参数
-    /// * `capacity` - 事件通道容量（建议 1000-10000）
     pub fn new(capacity: usize) -> Self {
         Self {
             sender: broadcast::channel(capacity).0,
@@ -70,18 +17,9 @@ impl EventBus {
         }
     }
     
-    /// 发布事件
-    ///
-    /// 事件会同时：
-    /// 1. 发送到 broadcast channel（供原始订阅者使用）
-    /// 2. 分发到所有注册的类型安全订阅者
-    ///
-    /// 性能优化：使用 fire-and-forget 模式，不阻塞发布者
     pub async fn publish(&self, event: DomainEvent) -> anyhow::Result<()> {
-        // 1. 发送到 broadcast channel（向后兼容，非阻塞）
         let _ = self.sender.send(event.clone());
         
-        // 2. 分发到类型安全的订阅者（异步，不阻塞）
         let subscription_manager = self.subscription_manager.clone();
         tokio::spawn(async move {
             subscription_manager.dispatch(&event).await;
@@ -90,9 +28,6 @@ impl EventBus {
         Ok(())
     }
     
-    /// 订阅事件（原始方式，向后兼容）
-    ///
-    /// 返回一个 broadcast receiver，可以接收所有类型的事件
     pub fn subscribe(&self) -> broadcast::Receiver<DomainEvent> {
         self.sender.subscribe()
     }

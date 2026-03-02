@@ -5,18 +5,15 @@
 //! # 协议处理
 //!
 //! 服务器推送的数据可能是：
-//! - `ServerPacket`（统一传输包，包含多种 payload 类型）
-//! - `MessageEnvelope`（直接的消息封装，向后兼容）
-//! - `Message`（单条消息，向后兼容）
+//! - `ServerPacket`（统一传输包，含 event_envelope / send_ack / sync_resp 等）
+//! - 非 ServerPacket 时转发原始 Frame 由应用层解析
 //!
-//! 根据 `transport.proto` 的定义，`ServerPacket` 的 payload 可以是：
-//! - `envelope` - 消息推送/同步
-//! - `send_ack` - 客户端发送消息的 ACK（由 send_frame_and_wait 处理）
-//! - `sync_messages_resp` - 消息同步响应
-//! - `sync_conversations_resp` - 会话增量响应
-//! - `sync_conversations_all_resp` - 全量会话响应
-//! - `get_conversation_detail_resp` - 会话详情响应
-//! - `custom_push_data` - 自定义推送数据
+//! 根据 `transport.proto`，ServerPacket payload 包括：
+//! - `event_envelope` - 事件批（推送消息等）
+//! - `send_ack` - 发送回执（由 send_frame_and_wait 处理）
+//! - `sync_resp` - 按会话同步响应
+//! - `sync_conversations_resp` / `sync_conversations_all_resp` / `get_conversation_detail_resp`
+//! - `custom_push` - 自定义推送
 
 use async_trait::async_trait;
 use flare_core::client::builder::flare::MessageListener;
@@ -25,9 +22,10 @@ use flare_core::common::error::Result as FlareResult;
 use tokio::sync::mpsc;
 use tracing::{error, info, warn, debug};
 
-use super::types::{NetworkMessage, ConnectionEvent};
 use super::packet::parse_server_packet;
 use super::router::MessageRouter;
+use super::types::{ConnectionEvent, NetworkMessage};
+use super::parser;
 
 /// 网络消息监听器
 ///
@@ -61,7 +59,7 @@ impl MessageListener for NetworkMessageListener {
     ///
     /// 2. **ServerPacket 解析**：对于普通消息（Type::Send = 0），先尝试解析为 `ServerPacket`，
     ///    根据不同的 payload 类型进行处理：
-    ///    - `envelope` / `sync_messages_resp` → 提取 MessageEnvelope，转发消息
+    ///    - `event_envelope` / `sync_resp` → 转发 Frame 或 SyncResponse，由处理器解析
     ///    - `custom_push_data` → 转发自定义数据
     ///    - `send_ack` → 由 send_frame_and_wait 处理
     ///    - 其他响应类型 → 转发原始 Frame，由应用层处理
@@ -87,10 +85,12 @@ impl MessageListener for NetworkMessageListener {
                         return Ok(None);
                     }
                     
-                    // 处理普通消息（Type::Send = 0）
-                    if msg_type == 0 {
-                        // 尝试解析为 ServerPacket
-                        match parse_server_packet(msg_cmd.payload.as_slice()) {
+                    // 处理普通消息（Type::Send = 0 / Type::Data = 2）
+                    // 新链路使用 DATA 承载 ServerPacket
+                    if msg_type == 0 || msg_type == 2 {
+                        // 先尝试解压 payload（与 parser 一致，避免压缩数据导致解析失败）
+                        let payload = parser::ensure_decompressed_payload(msg_cmd.payload.as_slice());
+                        match parse_server_packet(&payload) {
                             Ok(packet_result) => {
                                 // 使用 MessageRouter 进行路由
                                 match MessageRouter::route_packet(packet_result, frame) {
@@ -125,12 +125,23 @@ impl MessageListener for NetworkMessageListener {
                                 }
                                 return Ok(None);
                             }
-                            Err(_) => {
+                            Err(e) => {
                                 // 不是 ServerPacket，按向后兼容处理
                                 // 转发原始 Frame，由消息处理器解析 MessageEnvelope/Message
+                                let payload_len = payload.len();
+                                let prefix_hex = payload
+                                    .iter()
+                                    .take(6)
+                                    .map(|b| format!("{:02x}", b))
+                                    .collect::<Vec<_>>()
+                                    .join(" ");
                                 debug!(
                                     frame_id = %frame.message_id,
-                                    "Not a ServerPacket, processing as MessageEnvelope/Message"
+                                    message_type = msg_type,
+                                    payload_len = payload_len,
+                                    payload_prefix_hex = %prefix_hex,
+                                    parse_error = %e,
+                                    "Not a ServerPacket, forwarding raw frame"
                                 );
                                 if let Err(e) = self.message_tx.send(NetworkMessage::Received(frame.clone())) {
                                     error!("Failed to send received message: {}", e);

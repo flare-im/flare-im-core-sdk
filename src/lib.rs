@@ -36,10 +36,6 @@
 // 共享模块
 pub mod shared;
 
-// C ABI 包装层（用于自动生成各平台绑定）
-#[cfg(feature = "ffi")]
-pub mod ffi;
-
 // ============================================================================
 // Core SDK 架构模块
 // ============================================================================
@@ -91,7 +87,9 @@ pub mod prelude {
     pub use crate::application::sync_coordinator::*;
     pub use crate::domain::event::*;
     pub use crate::domain::repository::*;
-    pub use crate::infrastructure::storage::*;
+    // 注意：不再导出具体的存储实现，用户需要自行实现 trait
+    pub use crate::infrastructure::storage::event_projection::*;
+    pub use crate::infrastructure::storage::media_cache::*;
     pub use crate::interface::facade::*;
     pub use crate::interface::event::*;
     pub use crate::shared::error::*;

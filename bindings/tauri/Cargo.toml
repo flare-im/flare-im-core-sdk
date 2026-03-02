@@ -1,0 +1,34 @@
+[package]
+name = "flare-im-core-sdk-tauri"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+authors = ["Flare Team"]
+license = "MIT"
+description = "Flare IM Core SDK - Tauri bindings for desktop applications"
+repository = "https://github.com/flare-im/flare-im"
+
+[lib]
+name = "flare_im_core_sdk_tauri"
+path = "src/lib.rs"
+
+[dependencies]
+flare-im-core-sdk = { path = "../../", features = [] }
+flare-im-core-sdk-storage-sqlite = { path = "../../storage/sqlite" }
+tauri = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+tokio = { workspace = true }
+async-trait = { workspace = true }
+thiserror = { workspace = true }
+chrono = { workspace = true }
+flare-proto = { workspace = true }
+flare-server-core = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+prost = { workspace = true }
+jsonwebtoken = { version = "9.3", features = ["use_pem"] }
+uuid = { version = "1.10", features = ["v4", "serde"] }
+
+[dev-dependencies]

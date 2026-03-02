@@ -1,16 +1,34 @@
-//! Event 接口适配层
+//! Event Interface Adapter Layer
 //!
-//! 按照 DDD + CQRS 原则，Interface 层只负责适配器，提供便捷的 API
+//! Provides convenient APIs for event subscription and handling, following
+//! DDD + CQRS principles. The interface layer acts as an adapter that simplifies
+//! the use of domain and infrastructure components.
 //!
-//! ## 模块结构
+//! ## Module Structure
 //!
-//! - `subscriber_builder.rs`: 订阅器构建器（链式 API，接口适配器）
+//! - [`subscriber_builder`]: Subscriber builder with fluent API
 //!
-//! ## 架构说明
+//! ## Architecture
 //!
-//! - **Domain 层** (`domain/event/subscribers.rs`): 定义事件订阅器 trait（领域接口）
-//! - **Infrastructure 层** (`infrastructure/event_bus/`): 实现事件总线、订阅管理器等
-//! - **Interface 层** (`interface/event/`): 提供适配器，简化用户使用
+//! - **Domain Layer** (`domain/event/subscribers.rs`): Defines event subscriber traits
+//! - **Infrastructure Layer** (`infrastructure/event_bus/`): Implements event bus and subscription manager
+//! - **Interface Layer** (this module): Provides adapters to simplify usage
+//!
+//! ## Example
+//!
+//! ```no_run
+//! use flare_im_core_sdk::interface::event::SubscriberBuilder;
+//! use flare_im_core_sdk::interface::event::subscribers::*;
+//! use std::sync::Arc;
+//!
+//! # async fn example(event_bus: Arc<flare_im_core_sdk::infrastructure::event_bus::EventBus>) {
+//! SubscriberBuilder::new(event_bus)
+//!     .message(Arc::new(MyMessageSubscriber))
+//!     .connection(Arc::new(MyConnectionSubscriber))
+//!     .build()
+//!     .await;
+//! # }
+//! ```
 
 pub mod subscriber_builder;
 

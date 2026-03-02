@@ -17,30 +17,26 @@ use flare_proto::common::{
     GetConversationDetailResponse,
     ConversationPatchType,
 };
-use crate::domain::repository::ReadStore;
+use crate::domain::repository::ConversationRepository;
 use crate::infrastructure::event_bus::EventBus;
-use crate::application::fsm::FsmManager;
 use crate::infrastructure::converter::ConversationConverter;
 use tracing::{info, warn, debug, error};
 
 /// 会话同步处理器
 pub struct ConversationSyncHandler {
-    read_store: Arc<dyn ReadStore>,
+    conversation_repository: Arc<dyn ConversationRepository>,
     event_bus: Arc<EventBus>,
-    fsm: Arc<FsmManager>,
 }
 
 impl ConversationSyncHandler {
     /// 创建新的会话同步处理器
     pub fn new(
-        read_store: Arc<dyn ReadStore>,
+        conversation_repository: Arc<dyn ConversationRepository>,
         event_bus: Arc<EventBus>,
-        fsm: Arc<FsmManager>,
     ) -> Self {
         Self {
-            read_store,
+            conversation_repository,
             event_bus,
-            fsm,
         }
     }
     
@@ -159,21 +155,24 @@ impl ConversationSyncHandler {
             );
         }
         
-        // 性能优化：批量更新 ReadStore（并行处理，fire-and-forget 模式）
-        // 对于同步场景，使用 fire-and-forget 可以显著提高吞吐量
+        // 确保数据持久化：顺序执行数据库写入，确保数据一致性
         if !conversations_to_update.is_empty() {
             for conv in conversations_to_update {
-                let read_store = self.read_store.clone();
-                let conv_id = conv.conversation_id.clone();
-                tokio::spawn(async move {
-                    if let Err(e) = read_store.write_conversation(&conv).await {
-                        error!(
-                            conversation_id = %conv_id,
-                            error = %e,
-                            "Failed to update conversation (summary)"
-                        );
-                    }
-                });
+                // 尝试查找现有会话，如果存在则更新，否则保存
+                let result = if self.conversation_repository.find_by_id(&conv.conversation_id).await.ok().flatten().is_some() {
+                    self.conversation_repository.update(&conv).await
+                } else {
+                    self.conversation_repository.save(&conv).await
+                };
+                
+                if let Err(e) = result {
+                    error!(
+                        conversation_id = %conv.conversation_id,
+                        error = %e,
+                        "Failed to update conversation (summary)"
+                    );
+                    // 考虑是否应该中断同步？目前策略是尽最大努力同步
+                }
             }
         }
         
@@ -232,6 +231,55 @@ impl ConversationSyncHandler {
         Ok(())
     }
     
+    /// 处理会话摘要列表（用于 Bootstrap 或 SyncAll）
+    pub async fn handle_conversation_summaries(
+        &self,
+        summaries: Vec<flare_proto::common::ConversationSummary>,
+    ) -> anyhow::Result<()> {
+        let conversation_count = summaries.len();
+        info!(
+            conversation_count = conversation_count,
+            "Processing conversation summaries"
+        );
+        
+        // 批量转换会话
+        let mut conversations_to_update = Vec::with_capacity(conversation_count);
+        for summary in summaries {
+            match ConversationConverter::from_proto_summary(&summary) {
+                Ok(conversation) => {
+                    conversations_to_update.push(conversation);
+                }
+                Err(e) => {
+                    warn!(
+                        error = %e,
+                        "Failed to convert conversation summary"
+                    );
+                }
+            }
+        }
+        
+        // 确保数据持久化
+        if !conversations_to_update.is_empty() {
+            for conv in conversations_to_update {
+                let result = if self.conversation_repository.find_by_id(&conv.conversation_id).await.ok().flatten().is_some() {
+                    self.conversation_repository.update(&conv).await
+                } else {
+                    self.conversation_repository.save(&conv).await
+                };
+                
+                if let Err(e) = result {
+                    error!(
+                        conversation_id = %conv.conversation_id,
+                        error = %e,
+                        "Failed to update conversation"
+                    );
+                }
+            }
+        }
+        
+        Ok(())
+    }
+
     /// 处理全量会话同步响应
     ///
     /// # 参数
@@ -268,20 +316,23 @@ impl ConversationSyncHandler {
             }
         }
         
-        // 性能优化：批量更新 ReadStore（fire-and-forget 模式，提高吞吐量）
+        // 确保数据持久化：顺序执行数据库写入，确保数据一致性
         if !conversations_to_update.is_empty() {
             for conv in conversations_to_update {
-                let read_store = self.read_store.clone();
-                let conv_id = conv.conversation_id.clone();
-                tokio::spawn(async move {
-                    if let Err(e) = read_store.write_conversation(&conv).await {
-                        error!(
-                            conversation_id = %conv_id,
-                            error = %e,
-                            "Failed to update conversation from sync all"
-                        );
-                    }
-                });
+                // 尝试查找现有会话，如果存在则更新，否则保存
+                let result = if self.conversation_repository.find_by_id(&conv.conversation_id).await.ok().flatten().is_some() {
+                    self.conversation_repository.update(&conv).await
+                } else {
+                    self.conversation_repository.save(&conv).await
+                };
+                
+                if let Err(e) = result {
+                    error!(
+                        conversation_id = %conv.conversation_id,
+                        error = %e,
+                        "Failed to update conversation from sync all"
+                    );
+                }
             }
         }
         
@@ -324,24 +375,26 @@ impl ConversationSyncHandler {
         if let Some(detail) = resp.detail {
             match ConversationConverter::from_proto_detail(&detail) {
                 Ok(conversation) => {
-                    // 性能优化：异步写入，不阻塞事件处理
-                    let read_store = self.read_store.clone();
-                    let conv_id = conversation.conversation_id.clone();
-                    let conv = conversation;
-                    tokio::spawn(async move {
-                        if let Err(e) = read_store.write_conversation(&conv).await {
-                            error!(
-                                conversation_id = %conv_id,
-                                error = %e,
-                                "Failed to update conversation from detail"
-                            );
-                        } else {
-                            info!(
-                                conversation_id = %conv_id,
-                                "Updated conversation from detail"
-                            );
-                        }
-                    });
+                    // 确保数据持久化：等待数据库写入完成
+                    // 尝试查找现有会话，如果存在则更新，否则保存
+                    let result = if self.conversation_repository.find_by_id(&conversation.conversation_id).await.ok().flatten().is_some() {
+                        self.conversation_repository.update(&conversation).await
+                    } else {
+                        self.conversation_repository.save(&conversation).await
+                    };
+                    
+                    if let Err(e) = result {
+                        error!(
+                            conversation_id = %conversation.conversation_id,
+                            error = %e,
+                            "Failed to update conversation from detail"
+                        );
+                    } else {
+                        info!(
+                            conversation_id = %conversation.conversation_id,
+                            "Updated conversation from detail"
+                        );
+                    }
                 }
                 Err(e) => {
                     warn!(
@@ -355,5 +408,28 @@ impl ConversationSyncHandler {
         }
         
         Ok(())
+    }
+
+    /// 获取所有会话的游标（max_seq）
+    pub async fn get_conversation_cursors(&self) -> anyhow::Result<std::collections::HashMap<String, i64>> {
+        let mut cursor_map = std::collections::HashMap::new();
+        let mut next_cursor = None;
+        let limit = Some(100);
+
+        loop {
+            let result = self.conversation_repository.find_all(limit, next_cursor).await?;
+            for conv in result.conversations {
+                if conv.max_seq > 0 {
+                    cursor_map.insert(conv.conversation_id, conv.max_seq as i64);
+                }
+            }
+            
+            if result.next_cursor.is_none() {
+                break;
+            }
+            next_cursor = result.next_cursor;
+        }
+        
+        Ok(cursor_map)
     }
 }

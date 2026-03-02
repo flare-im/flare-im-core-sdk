@@ -32,7 +32,7 @@ pub trait SdkExtension: Send + Sync {
     /// # 返回
     /// * `Ok(())` - 注册成功
     /// * `Err` - 注册失败
-    fn register(&self, ctx: &mut SdkContext) -> anyhow::Result<()> {
+    fn register(&self, _ctx: &mut SdkContext) -> anyhow::Result<()> {
         // 默认实现：什么都不做
         // 扩展可以重写此方法来实现自己的注册逻辑
         Ok(())

@@ -15,7 +15,7 @@
 mod constants;
 mod session;
 mod connection;
-mod message;
+pub mod message;
 mod conversation;
 mod sync;
 pub mod subscribers;  // 公开模块，允许其他层访问
@@ -43,7 +43,7 @@ pub use sync::*;
 pub use subscribers::*;
 
 /// 领域事件基类
-mod domain_event {
+pub mod domain_event {
     use chrono::{DateTime, Utc};
     use serde::{Deserialize, Serialize};
 

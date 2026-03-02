@@ -1,36 +1,23 @@
-//! 消息领域服务
-//!
-//! 职责：包含所有消息相关的业务逻辑
-//! 无状态，不依赖基础设施层
-
 use crate::domain::message::{
-    Message, MessageOperation, MessageOperationHandler, OperationType, OperationData,
-    DeleteType, ReactionAction, MarkType, MessageType, TenantContext,
+    Message, MessageOperation, OperationType, OperationData,
+    DeleteType, ReactionAction, MarkType, MessageType, ContentType,
 };
 use anyhow::Result;
 use chrono::Utc;
+use flare_proto::MessageContentExt;
 
-/// 消息领域服务
-///
-/// 包含所有消息相关的业务逻辑
 pub struct MessageDomainService;
 
 impl MessageDomainService {
-    /// 创建新的消息领域服务实例
     pub fn new() -> Self {
         Self
     }
     
-    /// 应用消息操作（撤回、编辑、删除等）
-    ///
-    /// 注意：这是一个同步方法，直接调用 Message 的方法
     pub fn apply_operation(
         &self,
         operation: MessageOperation,
         message: &mut Message,
     ) -> Result<()> {
-        // 直接调用 Message 的方法，不通过 MessageOperationHandler
-        // 因为 MessageOperationHandler::execute 是 async 的，不适合在领域服务中使用
         match operation.operation_data {
             OperationData::Recall { reason, .. } => {
                 message.recall(operation.operator_id, reason)?;
@@ -39,28 +26,21 @@ impl MessageDomainService {
                 message.edit(new_content, operation.operator_id.clone(), None)?;
             }
             OperationData::Delete { delete_type, .. } => {
-                // 实现删除逻辑
-                match delete_type {
-                    DeleteType::Soft => {
-                        // 软删除：标记为已删除，但保留数据
-                        message.version += 1;
-                        message.updated_at = chrono::Utc::now();
-                        // 在 extra 中标记为已删除
-                        message.extra.insert("deleted".to_string(), "true".to_string());
-                        message.extra.insert("deleted_at".to_string(), chrono::Utc::now().to_rfc3339());
-                    }
-                    DeleteType::Hard => {
-                        // 硬删除：标记为已删除，后续可以物理删除
-                        message.version += 1;
-                        message.updated_at = chrono::Utc::now();
-                        message.extra.insert("deleted".to_string(), "hard".to_string());
-                        message.extra.insert("deleted_at".to_string(), chrono::Utc::now().to_rfc3339());
-                    }
-                }
+                let now = chrono::Utc::now();
+                let deleted_marker = match delete_type {
+                    DeleteType::Soft => "true",
+                    DeleteType::Hard => "hard",
+                };
+                message.version += 1;
+                message.updated_at = now;
+                message.extra.insert("deleted".to_string(), deleted_marker.to_string());
+                message.extra.insert("deleted_at".to_string(), now.to_rfc3339());
             }
             OperationData::Read { message_ids, .. } => {
-                if message_ids.contains(&message.id) {
-                    message.mark_read(operation.operator_id.clone())?;
+                if let Some(server_id) = &message.server_id {
+                    if message_ids.contains(server_id) {
+                        message.mark_read(operation.operator_id.clone())?;
+                    }
                 }
             }
             OperationData::Reaction { emoji, action, .. } => {
@@ -73,32 +53,21 @@ impl MessageDomainService {
                     }
                 }
             }
-            _ => {
-                // 其他操作暂未实现
-                return Err(anyhow::anyhow!("Operation not implemented yet"));
-            }
+            _ => return Err(anyhow::anyhow!("Operation not implemented")),
         }
         Ok(())
     }
     
-    /// 验证消息是否可以撤回
     pub fn can_recall(
         &self,
         message: &Message,
         operator_id: &str,
         time_limit_seconds: Option<i32>,
     ) -> Result<bool> {
-        // 检查消息是否已被撤回
-        if message.is_recalled {
+        if message.is_recalled || message.sender_id != operator_id {
             return Ok(false);
         }
         
-        // 检查操作者是否有权限（只有发送者可以撤回）
-        if message.sender_id != operator_id {
-            return Ok(false);
-        }
-        
-        // 检查时间限制
         if let Some(limit) = time_limit_seconds {
             let elapsed = (Utc::now() - message.timestamp).num_seconds();
             if elapsed > limit as i64 {
@@ -109,55 +78,26 @@ impl MessageDomainService {
         Ok(true)
     }
     
-    /// 验证消息是否可以编辑
-    pub fn can_edit(
-        &self,
-        message: &Message,
-        editor_id: &str,
-    ) -> Result<bool> {
-        // 检查消息是否已被撤回
-        if message.is_recalled {
-            return Ok(false);
-        }
-        
-        // 检查操作者是否有权限（只有发送者可以编辑）
-        if message.sender_id != editor_id {
-            return Ok(false);
-        }
-        
-        // 检查消息类型是否支持编辑（文本消息可以编辑）
-        if message.message_type != MessageType::Text {
-            return Ok(false);
-        }
-        
-        Ok(true)
+    pub fn can_edit(&self, message: &Message, editor_id: &str) -> Result<bool> {
+        Ok(!message.is_recalled 
+            && message.sender_id == editor_id 
+            && message.message_type == MessageType::Text)
     }
     
-    /// 验证消息是否可以删除
     pub fn can_delete(
         &self,
         message: &Message,
         operator_id: &str,
-        delete_type: DeleteType,
+        _delete_type: DeleteType,
     ) -> Result<bool> {
-        match delete_type {
-            DeleteType::Soft => {
-                // 软删除：只有发送者可以删除
-                Ok(message.sender_id == operator_id)
-            }
-            DeleteType::Hard => {
-                // 硬删除：发送者或管理员可以删除
-                // TODO: 检查管理员权限
-                Ok(message.sender_id == operator_id)
-            }
-        }
+        Ok(message.sender_id == operator_id)
     }
     
     /// 验证消息是否可以添加反应
     pub fn can_add_reaction(
         &self,
         message: &Message,
-        user_id: &str,
+        _user_id: &str,
     ) -> Result<bool> {
         // 检查消息是否已被撤回
         if message.is_recalled {
@@ -172,7 +112,7 @@ impl MessageDomainService {
     pub fn can_pin(
         &self,
         message: &Message,
-        operator_id: &str,
+        _operator_id: &str,
     ) -> Result<bool> {
         // 检查消息是否已被撤回
         if message.is_recalled {
@@ -188,7 +128,7 @@ impl MessageDomainService {
     pub fn can_favorite(
         &self,
         message: &Message,
-        operator_id: &str,
+        _operator_id: &str,
     ) -> Result<bool> {
         // 检查消息是否已被撤回
         if message.is_recalled {
@@ -203,15 +143,305 @@ impl MessageDomainService {
     pub fn can_mark(
         &self,
         message: &Message,
-        operator_id: &str,
+        _operator_id: &str,
     ) -> Result<bool> {
         // 检查消息是否已被撤回
         if message.is_recalled {
             return Ok(false);
         }
         
-        // 任何人都可以标记消息
         Ok(true)
+    }
+    
+    pub fn execute_recall_operation(
+        &self,
+        message: &mut Message,
+        operator_id: String,
+        reason: Option<String>,
+        time_limit_seconds: Option<i32>,
+    ) -> Result<MessageOperation> {
+        if !self.can_recall(message, &operator_id, time_limit_seconds)? {
+            return Err(anyhow::anyhow!("Message cannot be recalled"));
+        }
+        
+        message.recall(operator_id.clone(), reason.clone())?;
+        
+        Ok(MessageOperation {
+            operation_type: OperationType::Recall,
+            target_message_id: message.server_id.clone().unwrap_or_default(),
+            operator_id,
+            timestamp: Utc::now(),
+            show_notice: true,
+            notice_text: Some("消息已撤回".to_string()),
+            target_user_id: None,
+            operation_data: OperationData::Recall {
+                reason,
+                time_limit_seconds,
+                allow_admin_recall: false,
+            },
+            metadata: std::collections::HashMap::new(),
+        })
+    }
+    
+    pub fn execute_edit_operation(
+        &self,
+        message: &mut Message,
+        editor_id: String,
+        new_content: Vec<u8>,
+        reason: Option<String>,
+    ) -> Result<MessageOperation> {
+        if !self.can_edit(message, &editor_id)? {
+            return Err(anyhow::anyhow!("Message cannot be edited"));
+        }
+        
+        let edit_version = message.edit_history.len() as i32 + 1;
+        message.edit(new_content.clone(), editor_id.clone(), reason.clone())?;
+        
+        Ok(MessageOperation {
+            operation_type: OperationType::Edit,
+            target_message_id: message.server_id.clone().unwrap_or_default(),
+            operator_id: editor_id,
+            timestamp: Utc::now(),
+            show_notice: true,
+            notice_text: Some("消息已编辑".to_string()),
+            target_user_id: None,
+            operation_data: OperationData::Edit {
+                new_content,
+                edit_version,
+                reason,
+                show_edited_mark: true,
+            },
+            metadata: std::collections::HashMap::new(),
+        })
+    }
+    
+    pub fn execute_delete_operation(
+        &self,
+        message: &mut Message,
+        operator_id: String,
+        delete_type: DeleteType,
+        reason: Option<String>,
+    ) -> Result<MessageOperation> {
+        if !self.can_delete(message, &operator_id, delete_type)? {
+            return Err(anyhow::anyhow!("Message cannot be deleted"));
+        }
+        
+        let now = Utc::now();
+        match delete_type {
+            DeleteType::Soft => {
+                message.version += 1;
+                message.updated_at = now;
+                message.extra.insert("deleted".to_string(), "true".to_string());
+                message.extra.insert("deleted_at".to_string(), now.to_rfc3339());
+            }
+            DeleteType::Hard => {
+                message.version += 1;
+                message.updated_at = Utc::now();
+                message.extra.insert("deleted".to_string(), "hard".to_string());
+                message.extra.insert("deleted_at".to_string(), Utc::now().to_rfc3339());
+            }
+        }
+        
+        // 3. 构建 MessageOperation
+        Ok(MessageOperation {
+            operation_type: OperationType::Delete,
+            target_message_id: message.server_id.clone().unwrap_or_default(),
+            operator_id,
+            timestamp: Utc::now(),
+            show_notice: false,
+            notice_text: None,
+            target_user_id: None,
+            operation_data: OperationData::Delete {
+                delete_type,
+                reason,
+                notify_others: false,
+            },
+            metadata: std::collections::HashMap::new(),
+        })
+    }
+    
+    /// 执行添加反应操作（完整流程：验证 -> 应用 -> 构建操作数据）
+    pub fn execute_add_reaction_operation(
+        &self,
+        message: &mut Message,
+        user_id: String,
+        emoji: String,
+    ) -> Result<MessageOperation> {
+        // 1. 验证
+        if !self.can_add_reaction(message, &user_id)? {
+            return Err(anyhow::anyhow!("Cannot add reaction to this message"));
+        }
+        
+        // 2. 应用操作
+        message.add_reaction(emoji.clone(), user_id.clone());
+        
+        // 3. 构建 MessageOperation
+        let count = message.reactions.iter()
+            .find(|r| r.emoji == emoji)
+            .map(|r| r.count)
+            .unwrap_or(1);
+        
+        Ok(MessageOperation {
+            operation_type: OperationType::ReactionAdd,
+            target_message_id: message.server_id.clone().unwrap_or_default(),
+            operator_id: user_id,
+            timestamp: Utc::now(),
+            show_notice: false,
+            notice_text: None,
+            target_user_id: None,
+            operation_data: OperationData::Reaction {
+                emoji,
+                action: ReactionAction::Add,
+                count,
+            },
+            metadata: std::collections::HashMap::new(),
+        })
+    }
+    
+    /// 执行移除反应操作（完整流程：验证 -> 应用 -> 构建操作数据）
+    pub fn execute_remove_reaction_operation(
+        &self,
+        message: &mut Message,
+        user_id: String,
+        emoji: String,
+    ) -> Result<MessageOperation> {
+        // 1. 应用操作（移除反应不需要验证，任何人都可以移除自己的反应）
+        message.remove_reaction(emoji.clone(), user_id.clone());
+        
+        // 2. 构建 MessageOperation
+        let count = message.reactions.iter()
+            .find(|r| r.emoji == emoji)
+            .map(|r| r.count)
+            .unwrap_or(0);
+        
+        Ok(MessageOperation {
+            operation_type: OperationType::ReactionRemove,
+            target_message_id: message.server_id.clone().unwrap_or_default(),
+            operator_id: user_id,
+            timestamp: Utc::now(),
+            show_notice: false,
+            notice_text: None,
+            target_user_id: None,
+            operation_data: OperationData::Reaction {
+                emoji,
+                action: ReactionAction::Remove,
+                count,
+            },
+            metadata: std::collections::HashMap::new(),
+        })
+    }
+    
+    /// 执行置顶操作（完整流程：验证 -> 应用 -> 构建操作数据）
+    pub fn execute_pin_operation(
+        &self,
+        message: &mut Message,
+        operator_id: String,
+        reason: Option<String>,
+        expire_at: Option<chrono::DateTime<Utc>>,
+    ) -> Result<MessageOperation> {
+        // 1. 验证
+        if !self.can_pin(message, &operator_id)? {
+            return Err(anyhow::anyhow!("Cannot pin this message"));
+        }
+        
+        // 2. 应用操作
+        message.extra.insert("is_pinned".to_string(), "true".to_string());
+        if let Some(reason) = &reason {
+            message.extra.insert("pin_reason".to_string(), reason.clone());
+        }
+        if let Some(expire) = expire_at {
+            message.extra.insert("pin_expire_at".to_string(), expire.to_rfc3339());
+        }
+        message.version += 1;
+        message.updated_at = Utc::now();
+        
+        // 3. 构建 MessageOperation
+        Ok(MessageOperation {
+            operation_type: OperationType::Pin,
+            target_message_id: message.server_id.clone().unwrap_or_default(),
+            operator_id,
+            timestamp: Utc::now(),
+            show_notice: true,
+            notice_text: Some("消息已置顶".to_string()),
+            target_user_id: None,
+            operation_data: OperationData::Pin {
+                reason,
+                expire_at,
+            },
+            metadata: std::collections::HashMap::new(),
+        })
+    }
+    
+    /// 执行取消置顶操作（完整流程：应用 -> 构建操作数据）
+    pub fn execute_unpin_operation(
+        &self,
+        message: &mut Message,
+        operator_id: String,
+    ) -> Result<MessageOperation> {
+        // 1. 应用操作
+        message.extra.remove("is_pinned");
+        message.extra.remove("pin_reason");
+        message.extra.remove("pin_expire_at");
+        message.version += 1;
+        message.updated_at = Utc::now();
+        
+        // 2. 构建 MessageOperation
+        Ok(MessageOperation {
+            operation_type: OperationType::Unpin,
+            target_message_id: message.server_id.clone().unwrap_or_default(),
+            operator_id,
+            timestamp: Utc::now(),
+            show_notice: true,
+            notice_text: Some("消息已取消置顶".to_string()),
+            target_user_id: None,
+            operation_data: OperationData::Pin {
+                reason: None,
+                expire_at: None,
+            },
+            metadata: std::collections::HashMap::new(),
+        })
+    }
+    
+    /// 执行标记操作（完整流程：验证 -> 应用 -> 构建操作数据）
+    pub fn execute_mark_operation(
+        &self,
+        message: &mut Message,
+        operator_id: String,
+        mark_type: MarkType,
+        color: Option<String>,
+    ) -> Result<MessageOperation> {
+        // 1. 验证
+        if !self.can_mark(message, &operator_id)? {
+            return Err(anyhow::anyhow!("Cannot mark this message"));
+        }
+        
+        // 2. 应用操作
+        message.attributes.insert(
+            "mark_type".to_string(),
+            format!("{:?}", mark_type),
+        );
+        message.attributes.insert("marked_at".to_string(), Utc::now().to_rfc3339());
+        if let Some(color) = &color {
+            message.attributes.insert("mark_color".to_string(), color.clone());
+        }
+        message.version += 1;
+        message.updated_at = Utc::now();
+        
+        // 3. 构建 MessageOperation
+        Ok(MessageOperation {
+            operation_type: OperationType::Mark,
+            target_message_id: message.server_id.clone().unwrap_or_default(),
+            operator_id,
+            timestamp: Utc::now(),
+            show_notice: false,
+            notice_text: None,
+            target_user_id: None,
+            operation_data: OperationData::Mark {
+                mark_type,
+                color,
+            },
+            metadata: std::collections::HashMap::new(),
+        })
     }
     
     /// 计算消息的过期时间（用于阅后即焚）
@@ -228,13 +458,10 @@ impl MessageDomainService {
         &self,
         message: &Message,
     ) -> Result<()> {
-        // 检查消息ID
-        if message.id.is_empty() {
-            return Err(anyhow::anyhow!("Message ID cannot be empty"));
-        }
+
         
-        // 检查会话ID
-        if message.conversation_id.is_empty() {
+        // 检查会话ID（发送时必须有 conversation_id）
+        if message.conversation_id.is_none() || message.conversation_id.as_ref().unwrap().is_empty() {
             return Err(anyhow::anyhow!("Conversation ID cannot be empty"));
         }
         
@@ -257,6 +484,10 @@ impl MessageDomainService {
         message: &Message,
     ) -> String {
         match message.message_type {
+            MessageType::Operation => {
+                // 操作消息预览：根据操作类型生成预览文本
+                "[操作消息]".to_string()
+            }
             MessageType::Text => {
                 // 尝试解析文本内容
                 if let Ok(text_content) = self.parse_text_content(&message.content) {
@@ -331,9 +562,8 @@ impl MessageDomainService {
     
     /// 解析文本内容
     fn parse_text_content(&self, content: &[u8]) -> Result<String> {
-        use flare_proto::flare::common::v1::MessageContent;
-        use prost::Message as ProstMessage;
-        let message_content = MessageContent::decode(content)?;
+        // 使用统一的解码方法（高性能、一致性）
+        let message_content = flare_proto::decode_message_content(content)?;
         
         if let Some(flare_proto::flare::common::v1::message_content::Content::Text(text_content)) = message_content.content {
             Ok(text_content.text)
@@ -349,14 +579,13 @@ impl MessageDomainService {
     /// 创建@消息
     pub fn create_text_at_message(
         &self,
-        conversation_id: String,
+        conversation_id: Option<String>,
         sender_id: String,
         text: String,
         mentions: Vec<MentionInfo>,
-        tenant: TenantContext,
     ) -> Result<Message> {
         use uuid::Uuid;
-        use crate::domain::message::{MessageBuilder, MessageType, ContentType};
+        use crate::domain::message::{MessageBuilder, MessageType};
         
         // 构建@提及列表
         use flare_proto::flare::common::v1::{MessageContent, message_content::Content, TextContent, Mention};
@@ -373,10 +602,8 @@ impl MessageDomainService {
                 user_id: mention.user_id.unwrap_or_default(),
                 user_ids: mention.user_ids.unwrap_or_default(),
                 role_id: mention.role_id.unwrap_or_default(),
-                role_name: mention.role_name.unwrap_or_default(),
                 start: mention.start,
                 length: mention.length,
-                metadata: mention.metadata.unwrap_or_default(),
             };
             proto_mentions.push(proto_mention);
         }
@@ -388,28 +615,32 @@ impl MessageDomainService {
         let mut content = MessageContent::default();
         content.content = Some(Content::Text(text_content));
         
-        let mut buf = Vec::new();
-        prost::Message::encode(&content, &mut buf)?;
+        let buf = content.encode_to_bytes()
+            .map_err(|e| anyhow::anyhow!("Failed to encode MessageContent: {}", e))?;
         
-        MessageBuilder::new()
-            .with_id(Uuid::new_v4().to_string())
+        let mut builder = MessageBuilder::new()
+            .with_server_id(Uuid::new_v4().to_string())
             .with_client_msg_id(Uuid::new_v4().to_string())
-            .with_conversation_id(conversation_id)
             .with_sender_id(sender_id)
-            .with_message_type(MessageType::Text)
+            .with_message_type(MessageType::Text);
+        
+        // 如果提供了 conversation_id，则设置
+        if let Some(conv_id) = conversation_id {
+            builder = builder.with_conversation_id(conv_id);
+        }
+        
+        builder
             .with_content(buf)
             .with_content_type(ContentType::PlainText)
-            .with_tenant(tenant)
             .build()
     }
     
     /// 创建合并消息
     pub fn create_merge_message(
         &self,
-        conversation_id: String,
+        conversation_id: Option<String>,
         sender_id: String,
         message_ids: Vec<String>,
-        tenant: TenantContext,
     ) -> Result<Message> {
         use uuid::Uuid;
         use crate::domain::message::{MessageBuilder, MessageType};
@@ -419,33 +650,38 @@ impl MessageDomainService {
         let forward_content = ForwardContent {
             message_ids: message_ids.clone(),
             forward_reason: String::new(),
+            forwarded_previews: Vec::new(), // 转发预览列表（可选）
         };
         let mut content = MessageContent::default();
         content.content = Some(Content::Forward(forward_content));
         
-        let mut buf = Vec::new();
-        prost::Message::encode(&content, &mut buf)?;
+        let buf = content.encode_to_bytes()
+            .map_err(|e| anyhow::anyhow!("Failed to encode MessageContent: {}", e))?;
         
-        MessageBuilder::new()
-            .with_id(Uuid::new_v4().to_string())
+        let mut builder = MessageBuilder::new()
+            .with_server_id(Uuid::new_v4().to_string())
             .with_client_msg_id(Uuid::new_v4().to_string())
-            .with_conversation_id(conversation_id)
             .with_sender_id(sender_id)
             .with_message_type(MessageType::Custom)
-            .with_business_type("merge_forward".to_string())
+            .with_business_type("merge_forward".to_string());
+        
+        // 如果提供了 conversation_id，则设置
+        if let Some(conv_id) = conversation_id {
+            builder = builder.with_conversation_id(conv_id);
+        }
+        
+        builder
             .with_content(buf)
-            .with_tenant(tenant)
             .build()
     }
     
     /// 创建转发消息
     pub fn create_forward_message(
         &self,
-        conversation_id: String,
+        conversation_id: Option<String>,
         sender_id: String,
         message_ids: Vec<String>,
         forward_reason: Option<String>,
-        tenant: TenantContext,
     ) -> Result<Message> {
         use uuid::Uuid;
         use crate::domain::message::{MessageBuilder, MessageType};
@@ -454,36 +690,41 @@ impl MessageDomainService {
         let forward_content = ForwardContent {
             message_ids: message_ids.clone(),
             forward_reason: forward_reason.unwrap_or_default(),
+            forwarded_previews: Vec::new(), // 转发预览列表（可选）
         };
         let mut content = MessageContent::default();
         content.content = Some(Content::Forward(forward_content));
         
-        let mut buf = Vec::new();
-        prost::Message::encode(&content, &mut buf)?;
+        let buf = content.encode_to_bytes()
+            .map_err(|e| anyhow::anyhow!("Failed to encode MessageContent: {}", e))?;
         
-        MessageBuilder::new()
-            .with_id(Uuid::new_v4().to_string())
+        let mut builder = MessageBuilder::new()
+            .with_server_id(Uuid::new_v4().to_string())
             .with_client_msg_id(Uuid::new_v4().to_string())
-            .with_conversation_id(conversation_id)
             .with_sender_id(sender_id)
             .with_message_type(MessageType::Custom)
-            .with_business_type("forward".to_string())
+            .with_business_type("forward".to_string());
+        
+        // 如果提供了 conversation_id，则设置
+        if let Some(conv_id) = conversation_id {
+            builder = builder.with_conversation_id(conv_id);
+        }
+        
+        builder
             .with_content(buf)
-            .with_tenant(tenant)
             .build()
     }
     
     /// 创建定位消息
     pub fn create_location_message(
         &self,
-        conversation_id: String,
+        conversation_id: Option<String>,
         sender_id: String,
         longitude: f64,
         latitude: f64,
         address: String,
         description: Option<String>,
         poi_id: Option<String>,
-        tenant: TenantContext,
     ) -> Result<Message> {
         use uuid::Uuid;
         use crate::domain::message::{MessageBuilder, MessageType};
@@ -500,71 +741,71 @@ impl MessageDomainService {
         let mut content = MessageContent::default();
         content.content = Some(Content::Location(location_content));
         
-        let mut buf = Vec::new();
-        prost::Message::encode(&content, &mut buf)?;
+        let buf = content.encode_to_bytes()
+            .map_err(|e| anyhow::anyhow!("Failed to encode MessageContent: {}", e))?;
         
-        MessageBuilder::new()
-            .with_id(Uuid::new_v4().to_string())
+        let mut builder = MessageBuilder::new()
+            .with_server_id(Uuid::new_v4().to_string())
             .with_client_msg_id(Uuid::new_v4().to_string())
-            .with_conversation_id(conversation_id)
             .with_sender_id(sender_id)
-            .with_message_type(MessageType::Location)
+            .with_message_type(MessageType::Location);
+        
+        // 如果提供了 conversation_id，则设置
+        if let Some(conv_id) = conversation_id {
+            builder = builder.with_conversation_id(conv_id);
+        }
+        
+        builder
             .with_content(buf)
-            .with_tenant(tenant)
             .build()
     }
     
-    /// 创建引用消息
+    /// 创建引用消息（使用 quote 字段）
     pub fn create_quote_message(
         &self,
-        conversation_id: String,
+        conversation_id: Option<String>,
         sender_id: String,
         quoted_message_id: String,
-        quoted_sender_id: String,
-        quoted_text_preview: String,
+        quoted_sender_id: Option<String>,
+        quoted_text_preview: Option<String>,
         reply_content: Vec<u8>,
-        tenant: TenantContext,
     ) -> Result<Message> {
+        use crate::domain::message::{MessageBuilder, MessageType, QuoteContent};
         use uuid::Uuid;
-        use crate::domain::message::{MessageBuilder, MessageType};
         
-        // 构建引用内容
-        use flare_proto::flare::common::v1::{MessageContent, message_content::Content, QuoteContent};
-        let quote_content = QuoteContent {
+        let quote = QuoteContent {
             quoted_message_id: quoted_message_id.clone(),
-            quoted_sender_id: quoted_sender_id.clone(),
-            quoted_text_preview: quoted_text_preview.clone(),
+            quoted_sender_id: quoted_sender_id.unwrap_or_default(),
+            quoted_text_preview: quoted_text_preview.unwrap_or_default(),
             quoted_content: None,
         };
-        let mut content = MessageContent::default();
-        content.content = Some(Content::Quote(Box::new(quote_content)));
         
-        let mut buf = Vec::new();
-        prost::Message::encode(&content, &mut buf)?;
-        
-        MessageBuilder::new()
-            .with_id(Uuid::new_v4().to_string())
+        let mut builder = MessageBuilder::new()
+            .with_server_id(Uuid::new_v4().to_string())
             .with_client_msg_id(Uuid::new_v4().to_string())
-            .with_conversation_id(conversation_id)
             .with_sender_id(sender_id)
-            .with_message_type(MessageType::Text)
+            .with_message_type(MessageType::Text);
+        
+        // 如果提供了 conversation_id，则设置
+        if let Some(conv_id) = conversation_id {
+            builder = builder.with_conversation_id(conv_id);
+        }
+        
+        builder
             .with_content(reply_content)
-            .with_tenant(tenant)
-            .with_extra("is_quote".to_string(), "true".to_string())
-            .with_extra("reply_to_message_id".to_string(), quoted_message_id)
+            .with_quote(quote)
             .build()
     }
     
     /// 创建名片消息
     pub fn create_card_message(
         &self,
-        conversation_id: String,
+        conversation_id: Option<String>,
         sender_id: String,
         user_id: String,
         nickname: String,
         avatar_url: String,
         description: Option<String>,
-        tenant: TenantContext,
     ) -> Result<Message> {
         use uuid::Uuid;
         use crate::domain::message::{MessageBuilder, MessageType};
@@ -581,30 +822,34 @@ impl MessageDomainService {
         let mut content = MessageContent::default();
         content.content = Some(Content::Card(card_content));
         
-        let mut buf = Vec::new();
-        prost::Message::encode(&content, &mut buf)?;
+        let buf = content.encode_to_bytes()
+            .map_err(|e| anyhow::anyhow!("Failed to encode MessageContent: {}", e))?;
         
-        MessageBuilder::new()
-            .with_id(Uuid::new_v4().to_string())
+        let mut builder = MessageBuilder::new()
+            .with_server_id(Uuid::new_v4().to_string())
             .with_client_msg_id(Uuid::new_v4().to_string())
-            .with_conversation_id(conversation_id)
             .with_sender_id(sender_id)
-            .with_message_type(MessageType::Card)
+            .with_message_type(MessageType::Card);
+        
+        // 如果提供了 conversation_id，则设置
+        if let Some(conv_id) = conversation_id {
+            builder = builder.with_conversation_id(conv_id);
+        }
+        
+        builder
             .with_content(buf)
-            .with_tenant(tenant)
             .build()
     }
     
     /// 创建自定义消息
     pub fn create_custom_message(
         &self,
-        conversation_id: String,
+        conversation_id: Option<String>,
         sender_id: String,
         custom_type: String,
         payload: Vec<u8>,
         description: Option<String>,
         metadata: Option<std::collections::HashMap<String, String>>,
-        tenant: TenantContext,
     ) -> Result<Message> {
         use uuid::Uuid;
         use crate::domain::message::{MessageBuilder, MessageType};
@@ -616,36 +861,39 @@ impl MessageDomainService {
             payload: payload.clone(),
             description: description.unwrap_or_default(),
             metadata: metadata.unwrap_or_default(),
-            extensions: Vec::new(),
         };
         let mut content = MessageContent::default();
         content.content = Some(Content::Custom(custom_content));
         
-        let mut buf = Vec::new();
-        prost::Message::encode(&content, &mut buf)?;
+        let buf = content.encode_to_bytes()
+            .map_err(|e| anyhow::anyhow!("Failed to encode MessageContent: {}", e))?;
         
-        MessageBuilder::new()
-            .with_id(Uuid::new_v4().to_string())
+        let mut builder = MessageBuilder::new()
+            .with_server_id(Uuid::new_v4().to_string())
             .with_client_msg_id(Uuid::new_v4().to_string())
-            .with_conversation_id(conversation_id)
             .with_sender_id(sender_id)
-            .with_message_type(MessageType::Custom)
+            .with_message_type(MessageType::Custom);
+        
+        // 如果提供了 conversation_id，则设置
+        if let Some(conv_id) = conversation_id {
+            builder = builder.with_conversation_id(conv_id);
+        }
+        
+        builder
             .with_content(buf)
             .with_business_type(custom_type)
-            .with_tenant(tenant)
             .build()
     }
     
     /// 创建表情消息
     pub fn create_face_message(
         &self,
-        conversation_id: String,
+        conversation_id: Option<String>,
         sender_id: String,
         emoji: String,
-        tenant: TenantContext,
     ) -> Result<Message> {
         use uuid::Uuid;
-        use crate::domain::message::{MessageBuilder, MessageType, ContentType};
+        use crate::domain::message::{MessageBuilder, MessageType};
         
         // 表情消息可以作为文本消息的特殊类型
         use flare_proto::flare::common::v1::{MessageContent, message_content::Content, TextContent};
@@ -656,17 +904,16 @@ impl MessageDomainService {
         let mut content = MessageContent::default();
         content.content = Some(Content::Text(text_content));
         
-        let mut buf = Vec::new();
-        prost::Message::encode(&content, &mut buf)?;
+        let buf = content.encode_to_bytes()
+            .map_err(|e| anyhow::anyhow!("Failed to encode MessageContent: {}", e))?;
         
         MessageBuilder::new()
-            .with_id(Uuid::new_v4().to_string())
+            .with_server_id(Uuid::new_v4().to_string())
             .with_client_msg_id(Uuid::new_v4().to_string())
             .with_conversation_id(conversation_id)
             .with_sender_id(sender_id)
             .with_message_type(MessageType::Text)
             .with_content(buf)
-            .with_tenant(tenant)
             .with_extra("is_face".to_string(), "true".to_string())
             .build()
     }
@@ -680,7 +927,8 @@ impl MessageDomainService {
 }
 
 /// @提及信息（用于 API）
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct MentionInfo {
     pub mention_type: MentionInfoType,
     pub user_id: Option<String>,
@@ -693,7 +941,8 @@ pub struct MentionInfo {
 }
 
 /// @提及类型
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub enum MentionInfoType {
     User,
     All,

@@ -1,0 +1,23 @@
+[package]
+name = "flare-im-core-sdk-ffi"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+authors = ["Flare Team"]
+license = "MIT"
+description = "Flare IM Core SDK - C ABI FFI bindings"
+
+[lib]
+name = "flare_im_core_sdk_ffi"
+crate-type = ["cdylib", "staticlib"]
+
+[dependencies]
+flare-im-core-sdk = { path = "../../", features = [] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+tokio = { workspace = true }
+lazy_static = { workspace = true }
+
+[build-dependencies]
+cbindgen = { workspace = true }

@@ -1,10 +1,18 @@
 //! 主查询处理器（编排层）
 //!
 //! 职责：分发查询到具体的处理器，只负责编排，不包含业务逻辑
+//! 
+//! 架构模式：CQRS Query Handler
+//! - 接收 Query 对象
+//! - 委托给仓储层执行数据检索
+//! - 返回领域模型或 DTO
 
 use std::sync::Arc;
-use crate::domain::repository::ReadStore;
+use crate::domain::repository::{MessageRepository, ConversationRepository};
 use crate::application::fsm::FsmManager;
+
+use crate::domain::message::Message;
+use crate::domain::conversation::Conversation;
 
 use super::{
     MessageQueryHandler,
@@ -14,6 +22,9 @@ use super::{
 use crate::application::queries::*;
 
 /// 主查询处理器
+/// 
+/// 实现 CQRS 模式的 Query Handler 层
+/// 职责：编排所有读操作，分发查询到具体的处理器
 pub struct QueryHandler {
     message_handler: Arc<MessageQueryHandler>,
     conversation_handler: Arc<ConversationQueryHandler>,
@@ -21,9 +32,13 @@ pub struct QueryHandler {
 }
 
 impl QueryHandler {
-    pub fn new(read_store: Arc<dyn ReadStore>, fsm: Arc<FsmManager>) -> Self {
-        let message_handler = Arc::new(MessageQueryHandler::new(read_store.clone()));
-        let conversation_handler = Arc::new(ConversationQueryHandler::new(read_store.clone()));
+    pub fn new(
+        message_repository: Arc<dyn MessageRepository>,
+        conversation_repository: Arc<dyn ConversationRepository>,
+        fsm: Arc<FsmManager>,
+    ) -> Self {
+        let message_handler = Arc::new(MessageQueryHandler::new(message_repository.clone()));
+        let conversation_handler = Arc::new(ConversationQueryHandler::new(conversation_repository.clone()));
         let session_handler = Arc::new(SessionQueryHandler::new(fsm));
         
         Self {
@@ -34,30 +49,30 @@ impl QueryHandler {
     }
     
     // ============================================================================
-    // 消息查询（委托给 MessageQueryHandler）
+    // 消息查询（委托给 MessageQueryHandler，返回领域模型）
     // ============================================================================
     
-    pub async fn list_messages(&self, query: ListMessagesQuery) -> anyhow::Result<Vec<serde_json::Value>> {
+    pub async fn list_messages(&self, query: ListMessagesQuery) -> anyhow::Result<Vec<Message>> {
         self.message_handler.handle_list(query).await
     }
     
-    pub async fn get_message(&self, query: GetMessageQuery) -> anyhow::Result<serde_json::Value> {
+    pub async fn get_message(&self, query: GetMessageQuery) -> anyhow::Result<Message> {
         self.message_handler.handle_get(query).await
     }
     
-    pub async fn search_messages(&self, query: SearchMessagesQuery) -> anyhow::Result<Vec<serde_json::Value>> {
+    pub async fn search_messages(&self, query: SearchMessagesQuery) -> anyhow::Result<Vec<Message>> {
         self.message_handler.handle_search(query).await
     }
     
     // ============================================================================
-    // 会话查询（委托给 ConversationQueryHandler）
+    // 会话查询（委托给 ConversationQueryHandler，返回领域模型）
     // ============================================================================
     
-    pub async fn list_conversations(&self, query: ListConversationsQuery) -> anyhow::Result<Vec<serde_json::Value>> {
+    pub async fn list_conversations(&self, query: ListConversationsQuery) -> anyhow::Result<Vec<Conversation>> {
         self.conversation_handler.handle_list(query).await
     }
     
-    pub async fn get_conversation(&self, query: GetConversationQuery) -> anyhow::Result<serde_json::Value> {
+    pub async fn get_conversation(&self, query: GetConversationQuery) -> anyhow::Result<Conversation> {
         self.conversation_handler.handle_get(query).await
     }
     
@@ -74,7 +89,7 @@ impl QueryHandler {
     // ============================================================================
     
     /// 获取所有会话列表（便捷方法）
-    pub async fn get_all_conversation_list(&self) -> anyhow::Result<Vec<serde_json::Value>> {
+    pub async fn get_all_conversation_list(&self) -> anyhow::Result<Vec<Conversation>> {
         self.list_conversations(ListConversationsQuery {
             limit: None,
             cursor: None,
@@ -86,7 +101,7 @@ impl QueryHandler {
         &self,
         page: usize,
         page_size: usize,
-    ) -> anyhow::Result<(Vec<serde_json::Value>, usize)> {
+    ) -> anyhow::Result<(Vec<Conversation>, usize)> {
         self.conversation_handler.get_conversation_list_split(page, page_size).await
     }
     
@@ -94,7 +109,7 @@ impl QueryHandler {
     pub async fn get_one_conversation(
         &self,
         conversation_id: String,
-    ) -> anyhow::Result<serde_json::Value> {
+    ) -> anyhow::Result<Conversation> {
         self.get_conversation(GetConversationQuery { conversation_id }).await
     }
     
@@ -102,7 +117,7 @@ impl QueryHandler {
     pub async fn get_multiple_conversation(
         &self,
         conversation_ids: Vec<String>,
-    ) -> anyhow::Result<Vec<serde_json::Value>> {
+    ) -> anyhow::Result<Vec<Conversation>> {
         self.conversation_handler.get_multiple_conversation(conversation_ids).await
     }
     

@@ -4,7 +4,6 @@
 //! 对标微信、Telegram、飞书的监控体系
 
 use std::sync::Arc;
-use std::time::Instant;
 use once_cell::sync::Lazy;
 
 /// 消息发送指标

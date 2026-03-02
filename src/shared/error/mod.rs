@@ -5,6 +5,10 @@
 mod context;
 mod recovery;
 mod sdk_error;
+pub mod i18n;
 
 pub use recovery::{CircuitBreaker, ErrorRecovery, RetryStrategy};
-pub use sdk_error::{ErrorContext, SDKError, SDKResult};
+pub use context::ErrorContext;
+pub use sdk_error::{SDKError, SDKResult};
+pub use i18n::{LocalizedError, ToLocalizedError};
+pub use flare_core::common::error::code::ErrorCode;

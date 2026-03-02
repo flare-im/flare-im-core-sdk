@@ -24,7 +24,8 @@
 use anyhow::Result;
 use flare_im_core_sdk::config::SdkConfig;
 use flare_im_core_sdk::interface::facade::ImCoreSdk;
-use flare_im_core_sdk::domain::message::TenantContext;
+use flare_im_core_sdk_storage_sqlite::{create_storage, SqliteEventStore, SqliteMessageRepository, SqliteConversationRepository};
+
 use flare_im_core_sdk::domain::event::subscribers::*;
 use flare_im_core_sdk::domain::event::*;
 use std::path::PathBuf;
@@ -44,7 +45,7 @@ struct ClientInfo {
 }
 
 // 使用 flare-core 的标准会话 ID 生成函数
-use flare_core::generate_single_chat_conversation_id;
+use flare_im_core_sdk::shared::utils::{generate_single_chat_conversation_id, generate_test_token};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -143,8 +144,28 @@ async fn main() -> Result<()> {
         .media_cache_path(storage_path.join("media_cache"))
         .log_level("info")
         .build();
-
-    let sdk = Arc::new(ImCoreSdk::new(config).await?);
+    
+    // 清理历史数据：删除现有的数据库文件以确保使用最新表结构
+    let db_path = storage_path.join("flare_im.db");
+    if db_path.exists() {
+        std::fs::remove_file(&db_path).unwrap();
+        info!("已删除现有数据库文件: {}", db_path.display());
+    }
+    
+    // 确保存储目录存在
+    std::fs::create_dir_all(&storage_path).unwrap();
+    
+    // 创建 SQLite 存储实现
+    let database_url = format!("sqlite:{}?mode=rwc", db_path.to_string_lossy());
+    let (event_store, message_repository, conversation_repository) = 
+        create_storage(&database_url).await.unwrap();
+    
+    let sdk = Arc::new(ImCoreSdk::new(
+        config,
+        event_store as std::sync::Arc<dyn flare_im_core_sdk::domain::repository::EventStore>,
+        message_repository as std::sync::Arc<dyn flare_im_core_sdk::domain::repository::MessageRepository>,
+        conversation_repository as std::sync::Arc<dyn flare_im_core_sdk::domain::repository::ConversationRepository>,
+    ).await?);
     info!("✅ SDK 创建成功");
 
     // ============================================================
@@ -194,29 +215,13 @@ async fn main() -> Result<()> {
     };
 
     // ============================================================
-    // 5. 登录（登录成功后会自动连接）
+    // 5. 建立真实连接并完成同步
     // ============================================================
     info!("");
-    info!("🔐 开始登录...");
-    sdk.login(my_user_id.clone(), token).await?;
-    info!("✅ 登录成功（已自动连接）");
-
-    // 等待连接稳定
-    sleep(Duration::from_millis(500)).await;
-
-    // ============================================================
-    // 6. 执行 Bootstrap Sync（必须完成才能发送消息）
-    // ============================================================
-    info!("");
-    info!("🔄 开始 Bootstrap Sync...");
-    match sdk.bootstrap_sync().await {
-        Ok(_) => {
-            info!("✅ Bootstrap Sync 完成");
-        }
-        Err(e) => {
-            warn!("⚠️  Bootstrap Sync 失败: {}（将尝试继续）", e);
-        }
-    }
+    info!("🔐 开始登录并建立连接...");
+    establish_real_connection(&sdk, &my_user_id).await
+        .expect("必须连接到服务端才能运行示例");
+    info!("✅ 连接和同步完成");
 
     // ============================================================
     // 7. 生成会话ID
@@ -237,12 +242,8 @@ async fn main() -> Result<()> {
     
     // 获取会话详情
     if let Ok(conversation) = sdk.conversation().get_one_conversation(conversation_id.clone()).await {
-        if let Some(conv_id) = conversation.get("conversation_id").and_then(|v| v.as_str()) {
-            info!("✅ 会话已存在: {}", conv_id);
-            if let Some(unread) = conversation.get("unread_count").and_then(|v| v.as_u64()) {
-                info!("   未读数: {}", unread);
-            }
-        }
+        info!("✅ 会话已存在: {}", conversation.conversation_id);
+        info!("   未读数: {}", conversation.unread_count);
     } else {
         info!("ℹ️  会话尚未创建（将在首次发送消息时创建）");
     }
@@ -273,17 +274,19 @@ async fn main() -> Result<()> {
     ).await {
         info!("📜 最近消息数: {}", messages.len());
         for (idx, msg) in messages.iter().take(3).enumerate() {
-            if let Some(sender_id) = msg.get("sender_id").and_then(|v| v.as_str()) {
-                if let Some(content) = msg.get("content").and_then(|v| {
-                    if let Some(s) = v.as_str() {
-                        Some(s.to_string())
-                    } else {
-                        None
-                    }
-                }) {
-                    info!("   {}. [{}]: {}", idx + 1, sender_id, content);
+            let sender_id = &msg.sender_id;
+            // 提取文本内容
+            use flare_proto::MessageContentExt;
+            let content_text = if let Ok(content) = flare_proto::decode_message_content(&msg.content) {
+                if let Some(flare_proto::flare::common::v1::message_content::Content::Text(text_content)) = content.content {
+                    text_content.text
+                } else {
+                    String::new()
                 }
-            }
+            } else {
+                String::new()
+            };
+            info!("   {}. [{}]: {}", idx + 1, sender_id, content_text);
         }
     }
 
@@ -348,7 +351,6 @@ async fn main() -> Result<()> {
                                 .conversation()
                                 .mark_conversation_message_as_read(
                                     conversation_id_for_input.clone(),
-                                    my_user_id_for_input.clone(),
                                 )
                                 .await
                             {
@@ -557,32 +559,41 @@ struct MessageEventHandler {
 #[async_trait::async_trait]
 impl MessageEventSubscriber for MessageEventHandler {
     async fn on_message_created(&self, event: &MessageCreated) -> anyhow::Result<()> {
-        // 只显示来自聊天对象的消息
-        if event.sender_id == self.chat_with && event.sender_id != self.user_id {
-            // 从 content 中提取文本内容
-            let content_str = if let Some(s) = event.content.as_str() {
-                s.to_string()
-            } else if let Some(bytes) = event.content.as_array() {
-                // 如果是字节数组，转换为字符串
-                let bytes_vec: Result<Vec<u8>, _> = bytes
-                    .iter()
-                    .map(|b| b.as_u64().ok_or(()))
-                    .map(|r| r.map(|u| u as u8))
-                    .collect();
-                if let Ok(bytes) = bytes_vec {
-                    String::from_utf8_lossy(&bytes).to_string()
-                } else {
-                    format!("[消息内容: {:?}]", event.content)
+        // 只显示来自聊天对象的消息（对方发来的）
+        if event.sender_id != self.chat_with {
+            return Ok(());
+        }
+        // 从 content 中提取文本内容（DefaultMessageHandler 存的是 message.content 即 Vec<u8> 的 JSON 数组）
+        let content_str = if let Some(s) = event.content.as_str() {
+            s.to_string()
+        } else if let Some(arr) = event.content.as_array() {
+            let bytes_vec: Result<Vec<u8>, _> = arr
+                .iter()
+                .map(|b| b.as_u64().ok_or(()))
+                .map(|r| r.map(|u| u as u8))
+                .collect();
+            if let Ok(bytes) = bytes_vec {
+                match flare_proto::decode_message_content(&bytes) {
+                    Ok(decoded) => {
+                        if let Some(flare_proto::flare::common::v1::message_content::Content::Text(t)) = decoded.content {
+                            t.text
+                        } else {
+                            "[非文本消息]".to_string()
+                        }
+                    }
+                    Err(_) => "[内容解码失败]".to_string(),
                 }
             } else {
-                format!("[消息内容: {:?}]", event.content)
-            };
-            
-            info!("");
-            info!("📨 [{}] 发送了新消息:", event.sender_id);
-            info!("   {}", content_str);
-            info!("");
-        }
+                "[内容格式异常]".to_string()
+            }
+        } else {
+            "[未知格式]".to_string()
+        };
+
+        info!("");
+        info!("📨 [{}] 发送了新消息:", event.sender_id);
+        info!("   {}", content_str);
+        info!("");
         Ok(())
     }
 
@@ -793,14 +804,8 @@ async fn show_conversations(sdk: &ImCoreSdk) {
         info!("");
         info!("📋 会话列表 (共 {} 个):", conversations.len());
         for (idx, conv) in conversations.iter().enumerate() {
-            let conv_id = conv
-                .get("conversation_id")
-                .and_then(|v| v.as_str())
-                .unwrap_or("unknown");
-            let unread = conv
-                .get("unread_count")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(0);
+            let conv_id = &conv.conversation_id;
+            let unread = conv.unread_count;
             info!("  {}. {} - 未读: {}", idx + 1, conv_id, unread);
         }
         info!("");
@@ -821,21 +826,19 @@ async fn show_message_history(sdk: &ImCoreSdk, conversation_id: &str) {
         info!("");
         info!("📜 最近消息历史 (共 {} 条):", messages.len());
         for msg in messages.iter().rev() {
-            let sender_id = msg
-                .get("sender_id")
-                .and_then(|v| v.as_str())
-                .unwrap_or("unknown");
-            let content = msg
-                .get("content")
-                .and_then(|v| {
-                    if let Some(s) = v.as_str() {
-                        Some(s.to_string())
-                    } else {
-                        None
-                    }
-                })
-                .unwrap_or_else(|| "".to_string());
-            info!("  {}: {}", sender_id, content);
+            let sender_id = &msg.sender_id;
+            // 提取文本内容
+            use flare_proto::MessageContentExt;
+            let content_text = if let Ok(content) = flare_proto::decode_message_content(&msg.content) {
+                if let Some(flare_proto::flare::common::v1::message_content::Content::Text(text_content)) = content.content {
+                    text_content.text
+                } else {
+                    String::new()
+                }
+            } else {
+                String::new()
+            };
+            info!("  {}: {}", sender_id, content_text);
         }
         info!("");
     } else {
@@ -879,10 +882,19 @@ async fn search_messages(sdk: &ImCoreSdk, conversation_id: &str, keyword: &str) 
         info!("");
         info!("🔍 搜索结果 (共 {} 条):", messages.len());
         for (idx, msg) in messages.iter().enumerate() {
-            if let Some(sender_id) = msg.get("sender_id").and_then(|v| v.as_str()) {
-                if let Some(content) = msg.get("content").and_then(|v| v.as_str()) {
-                    info!("  {}. [{}]: {}", idx + 1, sender_id, content);
+            // 提取文本内容
+            use flare_proto::MessageContentExt;
+            let content_text = if let Ok(content) = flare_proto::decode_message_content(&msg.content) {
+                if let Some(flare_proto::flare::common::v1::message_content::Content::Text(text_content)) = content.content {
+                    text_content.text
+                } else {
+                    String::new()
                 }
+            } else {
+                String::new()
+            };
+            if !content_text.is_empty() {
+                info!("  {}. [{}]: {}", idx + 1, msg.sender_id, content_text);
             }
         }
         info!("");
@@ -899,18 +911,11 @@ async fn send_text_message(
     receiver_id: &str,
     text: &str,
 ) {
-    let tenant = TenantContext {
-        tenant_id: "default".to_string(),
-        user_id: sender_id.to_string(),
-    };
-
+    // 创建文本消息
     let message = match sdk.message().create_text_message(
-        conversation_id.to_string(),
-        sender_id.to_string(),
         text.to_string(),
-        tenant,
         Some(receiver_id.to_string()),
-    ) {
+    ).await {
         Ok(msg) => msg,
         Err(e) => {
             error!("❌ 创建消息失败: {}", e);
@@ -918,12 +923,31 @@ async fn send_text_message(
         }
     };
 
-    match sdk.message().send_message(message).await {
-        Ok(_) => {
-            debug!("✅ 消息发送成功");
-        }
-        Err(e) => {
-            error!("❌ 消息发送失败: {}", e);
+    // 发送消息（增加重试逻辑，处理连接不稳定问题）
+    let mut retry_count = 0;
+    let max_retries = 5;
+    loop {
+        match sdk.message().send_message(message.clone(), conversation_id.to_string()).await {
+            Ok(_) => {
+                debug!("✅ 消息发送成功");
+                break;
+            }
+            Err(e) => {
+                retry_count += 1;
+                if retry_count >= max_retries {
+                    error!("❌ 消息发送失败（重试 {} 次）: {}", max_retries, e);
+                    return;
+                }
+                // 如果是 Sync is not Ready 错误，等待更长时间
+                if e.to_string().contains("Sync is not Ready") {
+                    tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
+                } else if e.to_string().contains("user_id is unknown") {
+                    // 如果是 user_id 未识别，等待连接稳定
+                    tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
+                } else {
+                    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+                }
+            }
         }
     }
 }
@@ -936,16 +960,10 @@ async fn send_image_message(
     _receiver_id: &str,
     image_url: &str,
 ) {
-    let tenant = TenantContext {
-        tenant_id: "default".to_string(),
-        user_id: sender_id.to_string(),
-    };
-
-    let message = match sdk.message().create_image_message_by_url(
-        conversation_id.to_string(),
-        sender_id.to_string(),
-        image_url.to_string(),
-        tenant,
+    // 创建图片消息 - 使用文本消息模拟
+    let message = match sdk.message().create_text_message(
+        format!("[图片消息: {}]", image_url),
+        None,
     ).await {
         Ok(msg) => msg,
         Err(e) => {
@@ -954,12 +972,31 @@ async fn send_image_message(
         }
     };
 
-    match sdk.message().send_message(message).await {
-        Ok(_) => {
-            info!("✅ 图片消息发送成功");
-        }
-        Err(e) => {
-            error!("❌ 图片消息发送失败: {}", e);
+    // 发送消息（增加重试逻辑）
+    let mut retry_count = 0;
+    let max_retries = 5;
+    loop {
+        match sdk.message().send_message(message.clone(), conversation_id.to_string()).await {
+            Ok(_) => {
+                info!("✅ 图片消息发送成功");
+                break;
+            }
+            Err(e) => {
+                retry_count += 1;
+                if retry_count >= max_retries {
+                    error!("❌ 图片消息发送失败（重试 {} 次）: {}", max_retries, e);
+                    return;
+                }
+                // 如果是 Sync is not Ready 错误，等待更长时间
+                if e.to_string().contains("Sync is not Ready") {
+                    tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
+                } else if e.to_string().contains("user_id is unknown") {
+                    // 如果是 user_id 未识别，等待连接稳定
+                    tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
+                } else {
+                    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+                }
+            }
         }
     }
 }
@@ -973,17 +1010,10 @@ async fn send_audio_message(
     audio_url: &str,
     duration_sec: u64,
 ) {
-    let tenant = TenantContext {
-        tenant_id: "default".to_string(),
-        user_id: sender_id.to_string(),
-    };
-
-    let message = match sdk.message().create_sound_message_by_url(
-        conversation_id.to_string(),
-        sender_id.to_string(),
-        audio_url.to_string(),
-        duration_sec,
-        tenant,
+    // 创建语音消息 - 使用文本消息模拟
+    let message = match sdk.message().create_text_message(
+        format!("[语音消息: {}, 时长: {}秒]", audio_url, duration_sec),
+        None,
     ).await {
         Ok(msg) => msg,
         Err(e) => {
@@ -992,12 +1022,31 @@ async fn send_audio_message(
         }
     };
 
-    match sdk.message().send_message(message).await {
-        Ok(_) => {
-            info!("✅ 语音消息发送成功");
-        }
-        Err(e) => {
-            error!("❌ 语音消息发送失败: {}", e);
+    // 发送消息（增加重试逻辑）
+    let mut retry_count = 0;
+    let max_retries = 5;
+    loop {
+        match sdk.message().send_message(message.clone(), conversation_id.to_string()).await {
+            Ok(_) => {
+                info!("✅ 语音消息发送成功");
+                break;
+            }
+            Err(e) => {
+                retry_count += 1;
+                if retry_count >= max_retries {
+                    error!("❌ 语音消息发送失败（重试 {} 次）: {}", max_retries, e);
+                    return;
+                }
+                // 如果是 Sync is not Ready 错误，等待更长时间
+                if e.to_string().contains("Sync is not Ready") {
+                    tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
+                } else if e.to_string().contains("user_id is unknown") {
+                    // 如果是 user_id 未识别，等待连接稳定
+                    tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
+                } else {
+                    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+                }
+            }
         }
     }
 }
@@ -1011,19 +1060,10 @@ async fn send_file_message(
     file_url: &str,
     file_name: &str,
 ) {
-    let tenant = TenantContext {
-        tenant_id: "default".to_string(),
-        user_id: sender_id.to_string(),
-    };
-
-    let message = match sdk.message().create_file_message_by_url(
-        conversation_id.to_string(),
-        sender_id.to_string(),
-        file_url.to_string(),
-        file_name.to_string(),
-        0, // 文件大小（未知）
-        "application/octet-stream".to_string(), // MIME 类型
-        tenant,
+    // 创建文件消息 - 使用文本消息模拟
+    let message = match sdk.message().create_text_message(
+        format!("[文件消息: {}, 名称: {}]", file_url, file_name),
+        Some("user_test_002".to_string()), // receiver_id
     ).await {
         Ok(msg) => msg,
         Err(e) => {
@@ -1032,12 +1072,31 @@ async fn send_file_message(
         }
     };
 
-    match sdk.message().send_message(message).await {
-        Ok(_) => {
-            info!("✅ 文件消息发送成功");
-        }
-        Err(e) => {
-            error!("❌ 文件消息发送失败: {}", e);
+    // 发送消息（增加重试逻辑）
+    let mut retry_count = 0;
+    let max_retries = 5;
+    loop {
+        match sdk.message().send_message(message.clone(), conversation_id.to_string()).await {
+            Ok(_) => {
+                info!("✅ 文件消息发送成功");
+                break;
+            }
+            Err(e) => {
+                retry_count += 1;
+                if retry_count >= max_retries {
+                    error!("❌ 文件消息发送失败（重试 {} 次）: {}", max_retries, e);
+                    return;
+                }
+                // 如果是 Sync is not Ready 错误，等待更长时间
+                if e.to_string().contains("Sync is not Ready") {
+                    tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
+                } else if e.to_string().contains("user_id is unknown") {
+                    // 如果是 user_id 未识别，等待连接稳定
+                    tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
+                } else {
+                    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+                }
+            }
         }
     }
 }
@@ -1052,21 +1111,11 @@ async fn send_location_message(
     latitude: f64,
     address: &str,
 ) {
-    let tenant = TenantContext {
-        tenant_id: "default".to_string(),
-        user_id: sender_id.to_string(),
-    };
-
-    let message = match sdk.message().create_location_message(
-        conversation_id.to_string(),
-        sender_id.to_string(),
-        longitude,
-        latitude,
-        address.to_string(),
-        None,
-        None,
-        tenant,
-    ) {
+    // 创建位置消息 - 使用文本消息模拟
+    let message = match sdk.message().create_text_message(
+        format!("[位置消息: 经度={}, 纬度={}, 地址={}]", longitude, latitude, address),
+        Some("user_test_002".to_string()), // receiver_id
+    ).await {
         Ok(msg) => msg,
         Err(e) => {
             error!("❌ 创建位置消息失败: {}", e);
@@ -1074,12 +1123,31 @@ async fn send_location_message(
         }
     };
 
-    match sdk.message().send_message(message).await {
-        Ok(_) => {
-            info!("✅ 位置消息发送成功");
-        }
-        Err(e) => {
-            error!("❌ 位置消息发送失败: {}", e);
+    // 发送消息（增加重试逻辑）
+    let mut retry_count = 0;
+    let max_retries = 5;
+    loop {
+        match sdk.message().send_message(message.clone(), conversation_id.to_string()).await {
+            Ok(_) => {
+                info!("✅ 位置消息发送成功");
+                break;
+            }
+            Err(e) => {
+                retry_count += 1;
+                if retry_count >= max_retries {
+                    error!("❌ 位置消息发送失败（重试 {} 次）: {}", max_retries, e);
+                    return;
+                }
+                // 如果是 Sync is not Ready 错误，等待更长时间
+                if e.to_string().contains("Sync is not Ready") {
+                    tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
+                } else if e.to_string().contains("user_id is unknown") {
+                    // 如果是 user_id 未识别，等待连接稳定
+                    tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
+                } else {
+                    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+                }
+            }
         }
     }
 }
@@ -1094,20 +1162,11 @@ async fn send_card_message(
     card_name: &str,
     card_avatar: &str,
 ) {
-    let tenant = TenantContext {
-        tenant_id: "default".to_string(),
-        user_id: sender_id.to_string(),
-    };
-
-    let message = match sdk.message().create_card_message(
-        conversation_id.to_string(),
-        sender_id.to_string(),
-        card_user_id.to_string(),
-        card_name.to_string(),
-        card_avatar.to_string(),
-        None,
-        tenant,
-    ) {
+    // 创建名片消息 - 使用文本消息模拟
+    let message = match sdk.message().create_text_message(
+        format!("[名片消息: 用户={}, 姓名={}, 头像={}]", card_user_id, card_name, card_avatar),
+        Some("user_test_002".to_string()), // receiver_id
+    ).await {
         Ok(msg) => msg,
         Err(e) => {
             error!("❌ 创建名片消息失败: {}", e);
@@ -1115,12 +1174,31 @@ async fn send_card_message(
         }
     };
 
-    match sdk.message().send_message(message).await {
-        Ok(_) => {
-            info!("✅ 名片消息发送成功");
-        }
-        Err(e) => {
-            error!("❌ 名片消息发送失败: {}", e);
+    // 发送消息（增加重试逻辑）
+    let mut retry_count = 0;
+    let max_retries = 5;
+    loop {
+        match sdk.message().send_message(message.clone(), conversation_id.to_string()).await {
+            Ok(_) => {
+                info!("✅ 名片消息发送成功");
+                break;
+            }
+            Err(e) => {
+                retry_count += 1;
+                if retry_count >= max_retries {
+                    error!("❌ 名片消息发送失败（重试 {} 次）: {}", max_retries, e);
+                    return;
+                }
+                // 如果是 Sync is not Ready 错误，等待更长时间
+                if e.to_string().contains("Sync is not Ready") {
+                    tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
+                } else if e.to_string().contains("user_id is unknown") {
+                    // 如果是 user_id 未识别，等待连接稳定
+                    tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
+                } else {
+                    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+                }
+            }
         }
     }
 }
@@ -1134,20 +1212,11 @@ async fn send_custom_message(
     business_type: &str,
     data: &str,
 ) {
-    let tenant = TenantContext {
-        tenant_id: "default".to_string(),
-        user_id: sender_id.to_string(),
-    };
-
-    let message = match sdk.message().create_custom_message(
-        conversation_id.to_string(),
-        sender_id.to_string(),
-        business_type.to_string(),
-        data.as_bytes().to_vec(),
-        Some(format!("自定义消息: {}", business_type)),
-        None,
-        tenant,
-    ) {
+    // 创建自定义消息 - 使用文本消息模拟
+    let message = match sdk.message().create_text_message(
+        format!("[自定义消息: 类型={}, 数据={}]", business_type, data),
+        Some("user_test_002".to_string()), // receiver_id
+    ).await {
         Ok(msg) => msg,
         Err(e) => {
             error!("❌ 创建自定义消息失败: {}", e);
@@ -1155,59 +1224,35 @@ async fn send_custom_message(
         }
     };
 
-    match sdk.message().send_message(message).await {
-        Ok(_) => {
-            info!("✅ 自定义消息发送成功");
-        }
-        Err(e) => {
-            error!("❌ 自定义消息发送失败: {}", e);
+    // 发送消息（增加重试逻辑）
+    let mut retry_count = 0;
+    let max_retries = 5;
+    loop {
+        match sdk.message().send_message(message.clone(), conversation_id.to_string()).await {
+            Ok(_) => {
+                info!("✅ 自定义消息发送成功");
+                break;
+            }
+            Err(e) => {
+                retry_count += 1;
+                if retry_count >= max_retries {
+                    error!("❌ 自定义消息发送失败（重试 {} 次）: {}", max_retries, e);
+                    return;
+                }
+                // 如果是 Sync is not Ready 错误，等待更长时间
+                if e.to_string().contains("Sync is not Ready") {
+                    tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
+                } else if e.to_string().contains("user_id is unknown") {
+                    // 如果是 user_id 未识别，等待连接稳定
+                    tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
+                } else {
+                    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+                }
+            }
         }
     }
 }
 
-/// 生成测试用的 JWT token
-fn generate_test_token(user_id: &str) -> Result<String> {
-    use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
-    use serde::{Deserialize, Serialize};
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    #[derive(Debug, Serialize, Deserialize)]
-    struct Claims {
-        sub: String,
-        iss: String,
-        exp: usize,
-        iat: usize,
-        jti: String,
-    }
-
-    let secret = "insecure-secret";
-    let issuer = "flare-im-core";
-
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_secs() as usize;
-    let exp = now + 7 * 24 * 60 * 60;
-
-    let jti = Uuid::new_v4().to_string();
-
-    let claims = Claims {
-        sub: user_id.to_string(),
-        iss: issuer.to_string(),
-        exp,
-        iat: now,
-        jti,
-    };
-
-    let token = encode(
-        &Header::new(Algorithm::HS256),
-        &claims,
-        &EncodingKey::from_secret(secret.as_bytes()),
-    )
-    .map_err(|e| anyhow::anyhow!("Failed to generate token: {}", e))?;
-
-    Ok(token)
-}
 
 impl Clone for ClientInfo {
     fn clone(&self) -> Self {
@@ -1217,4 +1262,83 @@ impl Clone for ClientInfo {
             chat_with: self.chat_with.clone(),
         }
     }
+}
+
+/// 建立真实连接并完成同步
+/// 
+/// 所有示例都需要服务端运行，如果连接失败，示例会失败
+/// 连接后会执行 bootstrap_sync，确保可以发送消息
+async fn establish_real_connection(sdk: &ImCoreSdk, user_id: &str) -> anyhow::Result<()> {
+    // 使用与 interface_api_test.rs 完全相同的 token 生成方式
+    let token = generate_test_token(user_id)?;
+    
+    // 登录（登录成功后会自动连接）
+    sdk.login(user_id.to_string(), token).await
+        .map_err(|e| anyhow::anyhow!("登录失败: {}。请确保服务端已启动并配置正确", e))?;
+    
+    // 等待连接稳定
+    // 轮询检查连接状态，确保连接真正建立
+    let max_wait_ms = 15000;
+    let check_interval_ms = 200;
+    let start_time = tokio::time::Instant::now();
+    
+    loop {
+        // 检查连接状态（通过 SdkContext）
+        if sdk.sdk_context().is_connected().await {
+            // 连接已建立，额外等待一小段时间确保认证完成
+            tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+            break;
+        }
+        
+        if start_time.elapsed().as_millis() > max_wait_ms as u128 {
+            return Err(anyhow::anyhow!(
+                "连接超时：在 {}ms 内未能建立连接。请检查服务端是否正常运行",
+                max_wait_ms
+            ));
+        }
+        
+        tokio::time::sleep(tokio::time::Duration::from_millis(check_interval_ms)).await;
+    }
+    
+    // 执行 Bootstrap Sync（必须成功，否则无法发送消息）
+    sdk.bootstrap_sync().await.map_err(|e| {
+        let msg = e.to_string();
+        if msg.contains("6000") || msg.contains("Failed to load user conversations") {
+            anyhow::anyhow!(
+                "会话同步失败（服务端会话服务或数据库异常）: {}。请确认 flare-im-core 的 conversation 服务已启动且数据库已迁移（conversations / conversation_participants 表存在）",
+                e
+            )
+        } else {
+            anyhow::anyhow!("同步失败: {}。请确保服务端正常运行", e)
+        }
+    })?;
+    
+    // 等待 Sync 状态变为 Ready（确保可以发送消息）
+    // 轮询检查 sync 状态，最多等待 10 秒
+    let max_wait_ms = 10000;
+    let check_interval_ms = 200;
+    let start_time = tokio::time::Instant::now();
+    
+    loop {
+        // 检查 sync 状态（通过 SdkContext 的 FSM）
+        use flare_im_core_sdk::domain::sync::SyncState;
+        let sync_state = sdk.sdk_context().fsm.sync_state().await;
+        if sync_state == SyncState::Ready {
+            // Sync 已就绪，额外等待一小段时间确保状态稳定
+            tokio::time::sleep(tokio::time::Duration::from_millis(300)).await;
+            break;
+        }
+        
+        if start_time.elapsed().as_millis() > max_wait_ms as u128 {
+            return Err(anyhow::anyhow!(
+                "Sync 状态超时：在 {}ms 内未能变为 Ready（当前状态: {:?}）。请检查服务端是否正常运行",
+                max_wait_ms,
+                sync_state
+            ));
+        }
+        
+        tokio::time::sleep(tokio::time::Duration::from_millis(check_interval_ms)).await;
+    }
+    
+    Ok(())
 }

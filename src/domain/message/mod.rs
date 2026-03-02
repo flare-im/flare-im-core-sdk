@@ -1,10 +1,6 @@
-//! Message 聚合根
-//!
-//! 职责：管理消息生命周期
-//! 对齐 flare-proto 的 Message 定义，达到生产级别
-
 pub mod builder;
 pub mod operation;
+pub mod operation_fsm;
 pub mod text_processor;
 
 use serde::{Deserialize, Serialize};
@@ -29,123 +25,46 @@ pub use operation::{
     ReactionAction,
     MarkType,
 };
+pub use operation_fsm::MessageOperationFSM;
 pub use text_processor::TextContentProcessor;
 
-/// Message 聚合根
-///
-/// 对齐 flare-proto/common/message.proto 的 Message 定义
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub struct Message {
-    // ========== 消息头（路由索引层）==========
-    /// 消息ID（全局唯一）
-    pub id: String,
-    
-    /// 会话ID
-    pub conversation_id: String,
-    
-    /// 客户端消息ID（用于去重）
+    pub server_id: Option<String>,
+    pub conversation_id: Option<String>, 
     pub client_msg_id: String,
-    
-    /// 发送者ID
     pub sender_id: String,
-    
-    /// 消息来源
     pub source: MessageSource,
-    
-    /// 消息序列号（用于排序）
     pub seq: Option<u64>,
-    
-    /// 时间戳
     pub timestamp: DateTime<Utc>,
-    
-    /// 会话类型
     pub conversation_type: ConversationType,
-    
-    /// 消息类型
     pub message_type: MessageType,
-    
-    /// 业务类型（可选，业务系统扩展）
     pub business_type: Option<String>,
-    
-    // ========== 路由字段 ==========
-    /// 接收者ID（单聊时必需，群聊时为空）
     pub receiver_id: Option<String>,
-    
-    /// 通道ID（群聊/频道时使用）
     pub channel_id: Option<String>,
-    
-    // ========== 消息体 ==========
-    /// 消息内容（序列化的 MessageContent）
     pub content: Vec<u8>,
-    
-    /// 内容子类型（用于文本格式区分）
     pub content_type: ContentType,
-    
-    /// 媒体附件列表
     pub attachments: Vec<MediaAttachment>,
-    
-    /// 系统扩展字段
+    pub quote: Option<QuoteContent>,
     pub extra: HashMap<String, String>,
-    
-    /// 业务扩展字段
     pub attributes: HashMap<String, String>,
-    
-    // ========== 消息状态（生命周期状态层）==========
-    /// 当前状态
     pub state: MessageState,
-    
-    /// 是否已撤回
     pub is_recalled: bool,
-    
-    /// 撤回时间
     pub recalled_at: Option<DateTime<Utc>>,
-    
-    /// 撤回原因
     pub recall_reason: Option<String>,
-    
-    /// 是否阅后即焚
     pub is_burn_after_read: bool,
-    
-    /// 阅后即焚秒数
     pub burn_after_seconds: Option<i32>,
-    
-    /// 时间线信息
     pub timeline: MessageTimeline,
-    
-    /// 可见性状态（user_id -> VisibilityStatus）
     pub visibility: HashMap<String, VisibilityStatus>,
-    
-    /// 已读记录列表
     pub read_by: Vec<MessageReadRecord>,
-    
-    /// 反应列表
     pub reactions: Vec<Reaction>,
-    
-    /// 编辑历史列表
     pub edit_history: Vec<EditHistory>,
-    
-    // ========== 上下文信息 ==========
-    /// 租户上下文
-    pub tenant: TenantContext,
-    
-    /// 审计上下文（可选）
     pub audit: Option<AuditContext>,
-    
-    // ========== 扩展信息 ==========
-    /// 标签列表
     pub tags: Vec<String>,
-    
-    /// 离线推送信息
     pub offline_push_info: Option<OfflinePushInfo>,
-    
-    // ========== 内部状态 ==========
-    /// 版本（用于乐观锁）
     pub version: u64,
-    
-    /// 创建时间
     pub created_at: DateTime<Utc>,
-    
-    /// 更新时间
     pub updated_at: DateTime<Utc>,
 }
 
@@ -200,7 +119,7 @@ pub enum ConversationType {
     Channel,
 }
 
-/// 消息类型（对齐 MessageType，简化版）
+/// 消息类型（对齐 MessageType）
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MessageType {
     /// 文本消息
@@ -229,6 +148,9 @@ pub enum MessageType {
     
     /// 通知消息
     Notification,
+    
+    /// 消息操作（统一操作类型，包含撤回/编辑/删除/置顶等）
+    Operation,
 }
 
 /// 内容类型（对齐 ContentType）
@@ -309,12 +231,6 @@ pub struct EditHistory {
     pub show_edited_mark: bool,
 }
 
-/// 租户上下文
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TenantContext {
-    pub tenant_id: String,
-    pub user_id: String,
-}
 
 /// 审计上下文
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -323,6 +239,22 @@ pub struct AuditContext {
     pub operation_type: String,
     pub operation_time: DateTime<Utc>,
     pub ip_address: Option<String>,
+}
+
+/// 引用内容（用于在消息中展示被引用的消息，不是消息类型）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QuoteContent {
+    /// 被引用的消息ID（用于标识回复关系）
+    pub quoted_message_id: String,
+    
+    /// 被引用消息的发送者ID
+    pub quoted_sender_id: String,
+    
+    /// 引用内容预览（用于显示）
+    pub quoted_text_preview: String,
+    
+    /// 被引用的完整消息内容（可选，用于富文本展示）
+    pub quoted_content: Option<Vec<u8>>,
 }
 
 /// 离线推送信息
@@ -338,18 +270,16 @@ pub struct OfflinePushInfo {
 impl Message {
     /// 创建新消息
     pub fn new(
-        id: String,
+        server_id: Option<String>,
         client_msg_id: String,
-        conversation_id: String,
         sender_id: String,
         message_type: MessageType,
         content: Vec<u8>,
-        tenant: TenantContext,
     ) -> Self {
         let now = Utc::now();
         Self {
-            id,
-            conversation_id,
+            server_id,
+            conversation_id: None,
             client_msg_id,
             sender_id,
             source: MessageSource::User,
@@ -363,6 +293,7 @@ impl Message {
             content,
             content_type: ContentType::PlainText,
             attachments: Vec::new(),
+            quote: None,
             extra: HashMap::new(),
             attributes: HashMap::new(),
             state: MessageState::Created,
@@ -381,7 +312,6 @@ impl Message {
             read_by: Vec::new(),
             reactions: Vec::new(),
             edit_history: Vec::new(),
-            tenant,
             audit: None,
             tags: Vec::new(),
             offline_push_info: None,
@@ -391,46 +321,39 @@ impl Message {
         }
     }
     
-    /// 开始发送
-    ///
-    /// # 参数
-    /// * `allow_retry` - 是否允许重试（如果为 true，允许从 Sent/Failed 状态重新发送）
     pub fn start_sending(&mut self, allow_retry: bool) -> anyhow::Result<()> {
-        if self.state == MessageState::Created {
-            // 正常发送流程
-        self.state = MessageState::Sent;
-        self.version += 1;
-        self.updated_at = Utc::now();
-        Ok(())
-        } else if allow_retry && (self.state == MessageState::Sent || self.state == MessageState::Failed) {
-            // 重试流程：允许从 Sent 或 Failed 状态重新发送
-            // 重置状态为 Sent，准备重新发送
-            self.state = MessageState::Sent;
-            self.version += 1;
-            self.updated_at = Utc::now();
-            // 清除之前的错误信息（如果有）
-            Ok(())
-        } else {
-            Err(anyhow::anyhow!(
-                "Message is not in Created state (current state: {:?}), and retry is not allowed",
+        match self.state {
+            MessageState::Created => {
+                self.state = MessageState::Sent;
+                self.version += 1;
+                self.updated_at = Utc::now();
+                Ok(())
+            }
+            state if allow_retry && (state == MessageState::Sent || state == MessageState::Failed) => {
+                self.state = MessageState::Sent;
+                self.version += 1;
+                self.updated_at = Utc::now();
+                Ok(())
+            }
+            _ => Err(anyhow::anyhow!(
+                "Message state {:?} does not allow sending",
                 self.state
-            ))
+            )),
         }
     }
     
-    /// 发送成功（收到 ACK）
-    pub fn send_success(&mut self, seq: u64) -> anyhow::Result<()> {
+    pub fn send_success(&mut self, seq: u64, server_msg_id: String) -> anyhow::Result<()> {
         if self.state != MessageState::Sent {
             return Err(anyhow::anyhow!("Message is not in Sent state"));
         }
         self.seq = Some(seq);
         self.timeline.persisted_at = Some(Utc::now());
+        self.server_id = Some(server_msg_id);
         self.version += 1;
         self.updated_at = Utc::now();
         Ok(())
     }
     
-    /// 标记已送达
     pub fn mark_delivered(&mut self) -> anyhow::Result<()> {
         if self.state != MessageState::Sent {
             return Err(anyhow::anyhow!("Message is not in Sent state"));
@@ -442,13 +365,11 @@ impl Message {
         Ok(())
     }
     
-    /// 标记已读
     pub fn mark_read(&mut self, user_id: String) -> anyhow::Result<()> {
-        if self.state == MessageState::Recalled || self.state == MessageState::Failed {
+        if matches!(self.state, MessageState::Recalled | MessageState::Failed) {
             return Err(anyhow::anyhow!("Message is in invalid state for read"));
         }
         
-        // 检查是否已读
         if !self.read_by.iter().any(|r| r.user_id == user_id) {
             self.read_by.push(MessageReadRecord {
                 user_id: user_id.clone(),
@@ -457,7 +378,6 @@ impl Message {
             });
         }
         
-        // 如果是阅后即焚，设置销毁时间
         if self.is_burn_after_read {
             if let Some(record) = self.read_by.iter_mut().find(|r| r.user_id == user_id) {
                 record.burned_at = Some(Utc::now());
@@ -471,7 +391,6 @@ impl Message {
         Ok(())
     }
     
-    /// 标记发送失败
     pub fn mark_failed(&mut self) -> anyhow::Result<()> {
         if self.state != MessageState::Sent {
             return Err(anyhow::anyhow!("Message is not in Sent state"));
@@ -482,8 +401,7 @@ impl Message {
         Ok(())
     }
     
-    /// 撤回消息
-    pub fn recall(&mut self, recaller_id: String, reason: Option<String>) -> anyhow::Result<()> {
+    pub fn recall(&mut self, _recaller_id: String, reason: Option<String>) -> anyhow::Result<()> {
         if self.state == MessageState::Recalled {
             return Err(anyhow::anyhow!("Message is already recalled"));
         }
@@ -496,35 +414,35 @@ impl Message {
         Ok(())
     }
     
-    /// 添加反应
     pub fn add_reaction(&mut self, emoji: String, user_id: String) {
-        if let Some(reaction) = self.reactions.iter_mut().find(|r| r.emoji == emoji) {
-            if !reaction.user_ids.contains(&user_id) {
-                reaction.user_ids.push(user_id);
-                reaction.count = reaction.user_ids.len() as i32;
-                reaction.last_updated = Utc::now();
+        match self.reactions.iter_mut().find(|r| r.emoji == emoji) {
+            Some(reaction) => {
+                if !reaction.user_ids.contains(&user_id) {
+                    reaction.user_ids.push(user_id);
+                    reaction.count = reaction.user_ids.len() as i32;
+                    reaction.last_updated = Utc::now();
+                }
             }
-        } else {
-            self.reactions.push(Reaction {
-                emoji: emoji.clone(),
-                user_ids: vec![user_id],
-                count: 1,
-                last_updated: Utc::now(),
-                created_at: Utc::now(),
-            });
+            None => {
+                self.reactions.push(Reaction {
+                    emoji: emoji.clone(),
+                    user_ids: vec![user_id],
+                    count: 1,
+                    last_updated: Utc::now(),
+                    created_at: Utc::now(),
+                });
+            }
         }
         self.version += 1;
         self.updated_at = Utc::now();
     }
     
-    /// 移除反应
     pub fn remove_reaction(&mut self, emoji: String, user_id: String) {
         if let Some(reaction) = self.reactions.iter_mut().find(|r| r.emoji == emoji) {
             reaction.user_ids.retain(|id| id != &user_id);
             reaction.count = reaction.user_ids.len() as i32;
             reaction.last_updated = Utc::now();
             
-            // 如果没有用户了，移除反应
             if reaction.user_ids.is_empty() {
                 self.reactions.retain(|r| r.emoji != emoji);
             }
@@ -533,20 +451,30 @@ impl Message {
         self.updated_at = Utc::now();
     }
     
-    /// 编辑消息
     pub fn edit(&mut self, new_content: Vec<u8>, editor_id: String, reason: Option<String>) -> anyhow::Result<()> {
+        self.edit_with_details(new_content, editor_id, reason, true, 0)
+    }
+    
+    pub fn edit_with_details(
+        &mut self, 
+        new_content: Vec<u8>, 
+        editor_id: String, 
+        reason: Option<String>,
+        show_edited_mark: bool,
+        edit_version: i32,
+    ) -> anyhow::Result<()> {
         if self.state == MessageState::Recalled {
             return Err(anyhow::anyhow!("Cannot edit recalled message"));
         }
         
-        let edit_version = self.edit_history.len() as i32 + 1;
+        let actual_version = if edit_version > 0 { edit_version } else { self.edit_history.len() as i32 + 1 };
         self.edit_history.push(EditHistory {
-            edit_version,
+            edit_version: actual_version,
             content: self.content.clone(),
             edited_at: Utc::now(),
             editor_id: editor_id.clone(),
             reason: reason.clone(),
-            show_edited_mark: true,
+            show_edited_mark,
         });
         
         self.content = new_content;

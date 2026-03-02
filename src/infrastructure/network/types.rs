@@ -3,10 +3,10 @@
 //! 定义网络层使用的消息和事件类型
 
 use flare_core::common::protocol::Frame;
-use flare_proto::common::SyncMessagesResponse;
-use flare_proto::common::SyncConversationsResponse;
-use flare_proto::common::ConversationSyncAllResponse;
-use flare_proto::common::GetConversationDetailResponse;
+use flare_proto::common::{
+    EventEnvelope, SyncResponse, SyncConversationsResponse,
+    ConversationSyncAllResponse, GetConversationDetailResponse,
+};
 
 /// 网络消息
 ///
@@ -14,7 +14,8 @@ use flare_proto::common::GetConversationDetailResponse;
 ///
 /// # 消息类型分类
 ///
-/// - **Received** - 实时收到的消息（需要解析 MessageEnvelope）
+/// - **EventEnvelope** - 事件批（推送/同步，以 proto Event 为唯一数据源）
+/// - **Received** - 非 ServerPacket 的原始 Frame（向后兼容）
 /// - **SyncMessages** - 消息同步响应（批量处理）
 /// - **SyncConversations** - 会话增量同步（补丁处理）
 /// - **ConversationSyncAll** - 全量会话同步
@@ -22,7 +23,12 @@ use flare_proto::common::GetConversationDetailResponse;
 /// - **CustomPushData** - 自定义推送数据
 #[derive(Debug, Clone)]
 pub enum NetworkMessage {
-    /// 收到的消息 Frame（包含消息内容）
+    /// 事件批（ServerPacket.event_envelope）
+    ///
+    /// 统一走事件流处理：按 EventType 分发入队/发布领域事件
+    EventEnvelope(EventEnvelope),
+
+    /// 收到的消息 Frame（非 ServerPacket 或未知类型时使用）
     ///
     /// 需要解析 MessageEnvelope 提取消息
     Received(Frame),
@@ -30,7 +36,7 @@ pub enum NetworkMessage {
     /// 消息同步响应
     ///
     /// 包含 MessageEnvelope，需要批量处理
-    SyncMessages(SyncMessagesResponse),
+    SyncMessages(SyncResponse),
     
     /// 会话增量同步响应
     ///

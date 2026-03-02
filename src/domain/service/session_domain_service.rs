@@ -25,11 +25,11 @@ impl SessionDomainService {
         token: &str,
     ) -> Result<()> {
         // 检查 user_id 和 token 是否为空
-        if user_id.is_empty() {
+        if user_id.trim().is_empty() {
             return Err(anyhow::anyhow!("User ID cannot be empty"));
         }
         
-        if token.is_empty() {
+        if token.trim().is_empty() {
             return Err(anyhow::anyhow!("Token cannot be empty"));
         }
         

@@ -1,7 +1,3 @@
-//! 网络客户端
-//!
-//! 基于 flare-core 实现的网络客户端，负责与服务器的连接和消息收发
-
 use std::sync::Arc;
 use std::time::Duration;
 use flare_core::client::builder::flare::{FlareClient, FlareClientBuilder};
@@ -13,23 +9,15 @@ use super::types::{NetworkMessage, ConnectionEvent};
 use super::listener::NetworkMessageListener;
 use super::parser;
 
-/// 网络客户端
-///
-/// 封装 flare-core 的 FlareClient，提供网络连接和消息收发功能
 pub struct NetworkClient {
-    // 使用 Arc<Mutex<FlareClient>> 以便可以调用 send_frame_and_wait（需要 &mut self）
     client: Option<Arc<Mutex<FlareClient>>>,
     message_tx: mpsc::UnboundedSender<NetworkMessage>,
     connection_tx: mpsc::UnboundedSender<ConnectionEvent>,
-    ack_tx: Option<mpsc::UnboundedSender<Frame>>, // ACK 消息发送器（保留用于向后兼容，但不再使用）
+    #[allow(dead_code)]
+    ack_tx: Option<mpsc::UnboundedSender<Frame>>,
 }
 
 impl NetworkClient {
-    /// 创建新的网络客户端
-    ///
-    /// # 返回
-    ///
-    /// * `(NetworkClient, message_rx, connection_rx)` - 客户端实例和接收通道
     pub fn new() -> (Self, mpsc::UnboundedReceiver<NetworkMessage>, mpsc::UnboundedReceiver<ConnectionEvent>) {
         let (message_tx, message_rx) = mpsc::unbounded_channel();
         let (connection_tx, connection_rx) = mpsc::unbounded_channel();
@@ -44,41 +32,26 @@ impl NetworkClient {
         (client, message_rx, connection_rx)
     }
     
-    /// 创建新的网络客户端（带消息队列）
-    ///
-    /// 自动将接收到的消息解析并加入队列
-    ///
-    /// # 注意
-    ///
-    /// ACK 消息现在由 `send_frame_and_wait` 自动处理，不再需要单独的 ACK 通道
-    ///
-    /// # 参数
-    ///
-    /// * `queue` - 消息队列
-    ///
-    /// # 返回
-    ///
-    /// * `(NetworkClient, message_rx, connection_rx, ack_rx)` - 客户端实例和接收通道
-    ///   - `message_rx`: 用于接收所有 NetworkMessage（包括同步响应、会话同步等）
-    ///   - `connection_rx`: 连接事件通道
-    ///   - `ack_rx`: ACK 消息通道（保留以保持接口兼容）
     pub fn new_with_queue(
         queue: std::sync::Arc<crate::domain::message_queue::MessageQueue>,
+        event_bus: std::sync::Arc<crate::infrastructure::event_bus::EventBus>,
     ) -> (Self, mpsc::UnboundedReceiver<NetworkMessage>, mpsc::UnboundedReceiver<ConnectionEvent>, mpsc::UnboundedReceiver<Frame>) {
         let (message_tx, mut message_rx) = mpsc::unbounded_channel();
         let (connection_tx, connection_rx) = mpsc::unbounded_channel();
         let (ack_tx, ack_rx) = mpsc::unbounded_channel();
-        
-        // 创建一个外部通道，用于分发非 Received 类型的消息
         let (external_tx, external_rx) = mpsc::unbounded_channel();
         let message_tx_for_external = external_tx.clone();
-        
-        // 启动消息接收循环，将接收到的消息解析并加入队列
         let queue_clone = queue.clone();
         let ack_tx_clone = ack_tx.clone();
+        let event_stream_processor = crate::infrastructure::event_stream::EventStreamProcessor::new(queue_clone.clone(), event_bus);
         tokio::spawn(async move {
             while let Some(network_msg) = message_rx.recv().await {
                 match network_msg {
+                    NetworkMessage::EventEnvelope(env) => {
+                        if let Err(e) = event_stream_processor.process(&env).await {
+                            tracing::warn!(error = %e, event_count = env.events.len(), "EventStreamProcessor process envelope failed");
+                        }
+                    }
                     NetworkMessage::Received(frame) => {
                         // 检查是否是 ACK 消息
                         let is_ack = frame.command.as_ref()
@@ -93,112 +66,97 @@ impl NetworkClient {
                             .unwrap_or(false);
                         
                         if is_ack {
-                            // ACK 消息：发送到专用通道（虽然不再使用，但保留以保持接口兼容）
-                            // 注意：send_frame_and_wait 会自动处理 ACK，这里只是保留接口
-                            // 注意：ACK 消息已经在 listener.rs 中被过滤，这里理论上不会收到
                             let _ = ack_tx_clone.send(frame.clone());
                         } else {
                             // 普通消息解析并加入队列
-                            // 检查是否是 MessageCommand（Type::Send = 0）
-                            let is_message_send = frame.command.as_ref()
+                            // Type::Send(0) 为历史推送；Type::Data(2) 为新 ServerPacket 推送/同步
+                            let is_message_frame = frame.command.as_ref()
                                 .and_then(|cmd| cmd.r#type.as_ref())
                                 .and_then(|t| {
                                     if let flare_core::common::protocol::flare::core::commands::command::Type::Message(mc) = t {
-                                        Some(mc.r#type == 0) // Type::Send = 0
+                                        Some(mc.r#type == 0 || mc.r#type == 2)
                                     } else {
                                         None
                                     }
                                 })
                                 .unwrap_or(false);
                             
-                            if is_message_send {
-                                // 只处理 Type::Send 的消息
-                                debug!(
-                                    frame_id = %frame.message_id,
-                                    "Received Type::Send message frame, parsing..."
-                                );
-                                match parser::parse_frame_to_message(&frame) {
-                                    Ok(message) => {
-                                        debug!(
-                                            message_id = %message.id,
-                                            conversation_id = %message.conversation_id,
-                                            sender_id = %message.sender_id,
-                                            "Successfully parsed message, enqueueing..."
-                                        );
-                                        // 将消息加入队列（高优先级）
-                                        // 注意：enqueue 需要克隆 message，这是必要的（消息会被异步处理）
+                            if is_message_frame {
+                                debug!(frame_id = %frame.message_id, "Received message frame, parsing...");
+                                match parser::parse_frame_to_messages(&frame) {
+                                    Ok(messages) => {
+                                        if messages.is_empty() {
+                                            debug!(frame_id = %frame.message_id, "Parsed 0 messages from frame");
+                                            continue;
+                                        }
+
                                         let priority = 10u8;
-                                        let message_id = message.id.clone();
-                                        let conversation_id = message.conversation_id.clone();
-                                        let sender_id = message.sender_id.clone();
-                                        
-                                        match queue_clone.enqueue(message, priority).await {
-                                            true => {
-                                            debug!(
-                                                message_id = %message_id,
-                                                conversation_id = %conversation_id,
-                                                sender_id = %sender_id,
-                                                "Message enqueued successfully"
-                                                );
-                                            }
-                                            false => {
-                                                // 检查是否是重复消息
-                                                let is_dup = queue_clone.is_duplicate(&message_id).await;
-                                                if is_dup {
+                                        for message in messages {
+                                            let message_id = message
+                                                .server_id
+                                                .as_ref()
+                                                .map(|s| s.to_string())
+                                                .unwrap_or_else(|| message.client_msg_id.clone());
+                                            let conversation_id_str = message
+                                                .conversation_id
+                                                .as_ref()
+                                                .map(|s| s.as_str())
+                                                .unwrap_or("<none>")
+                                                .to_string();
+                                            let sender_id = message.sender_id.clone();
+
+                                            match queue_clone.enqueue(message, priority).await {
+                                                true => {
                                                     debug!(
                                                         message_id = %message_id,
-                                                        conversation_id = %conversation_id,
+                                                        conversation_id = %conversation_id_str,
                                                         sender_id = %sender_id,
-                                                        "Message is duplicate, skipping"
-                                            );
-                                        } else {
-                                            warn!(
-                                                message_id = %message_id,
-                                                conversation_id = %conversation_id,
-                                                sender_id = %sender_id,
-                                                        "Failed to enqueue received message (queue may be full)"
-                                            );
+                                                        "Message enqueued successfully"
+                                                    );
+                                                }
+                                                false => {
+                                                    let is_dup = queue_clone.is_duplicate(&message_id).await;
+                                                    if is_dup {
+                                                        debug!(
+                                                            message_id = %message_id,
+                                                            conversation_id = %conversation_id_str,
+                                                            sender_id = %sender_id,
+                                                            "Message is duplicate, skipping"
+                                                        );
+                                                    } else {
+                                                        warn!(
+                                                            message_id = %message_id,
+                                                            conversation_id = %conversation_id_str,
+                                                            sender_id = %sender_id,
+                                                            "Failed to enqueue received message (queue may be full)"
+                                                        );
+                                                    }
                                                 }
                                             }
                                         }
                                     }
                                     Err(e) => {
-                                        // 解析失败，记录详细错误信息
                                         warn!(
                                             error = %e,
                                             frame_id = %frame.message_id,
-                                            payload_len = frame.command.as_ref()
-                                                .and_then(|c| c.r#type.as_ref())
-                                                .and_then(|t| {
-                                                    if let flare_core::common::protocol::flare::core::commands::command::Type::Message(mc) = t {
-                                                        Some(mc.payload.len())
-                                                    } else {
-                                                        None
-                                                    }
-                                                })
-                                                .unwrap_or(0),
-                                            "Failed to parse frame to message: frame may not be a valid MessageCommand or payload format is incorrect"
+                                            "Failed to parse frame to messages"
                                         );
                                     }
                                 }
                             } else {
-                                // 不是 MessageCommand::Send，可能是系统消息、通知等，跳过
-                                debug!(
-                                    frame_id = %frame.message_id,
-                                    "Received non-message frame (not Type::Send), skipping"
-                                );
+                                debug!(frame_id = %frame.message_id, "Received non-message frame, skipping");
                             }
                         }
                     }
                     // 其他类型的消息：转发到外部通道，由 NetworkMessageDispatcher 处理
-                    msg @ NetworkMessage::SyncMessages(_) |
-                    msg @ NetworkMessage::SyncConversations(_) |
-                    msg @ NetworkMessage::ConversationSyncAll(_) |
-                    msg @ NetworkMessage::ConversationDetail(_) |
-                    msg @ NetworkMessage::CustomPushData { .. } |
-                    msg @ NetworkMessage::Connected(_) |
-                    msg @ NetworkMessage::Disconnected(_) |
-                    msg @ NetworkMessage::Error(_) => {
+                    msg @ NetworkMessage::SyncMessages(_)
+                    | msg @ NetworkMessage::SyncConversations(_)
+                    | msg @ NetworkMessage::ConversationSyncAll(_)
+                    | msg @ NetworkMessage::ConversationDetail(_)
+                    | msg @ NetworkMessage::CustomPushData { .. }
+                    | msg @ NetworkMessage::Connected(_)
+                    | msg @ NetworkMessage::Disconnected(_)
+                    | msg @ NetworkMessage::Error(_) => {
                         // 转发到外部通道，由 NetworkMessageDispatcher 处理
                         if let Err(e) = message_tx_for_external.send(msg) {
                             error!("Failed to forward network message: {}", e);

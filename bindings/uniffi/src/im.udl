@@ -1,0 +1,326 @@
+// Flare IM Core SDK - UniFFI Interface Definition
+// 定义跨语言绑定的接口，自动生成 Kotlin、Swift、Python 等语言的绑定
+
+namespace im {
+    [Error]
+    enum SdkError {
+        Config,
+        Connection,
+        Authentication,
+        Message,
+        Internal
+    };
+    
+    record SdkConfig {
+        string? websocket_url;
+        string? quic_url;
+        string? storage_path;
+        string? media_cache_path;
+        string log_level;
+    };
+    
+    // ============================================================================
+    // 消息类型
+    // ============================================================================
+    
+    record Message {
+        string server_id;
+        string conversation_id;
+        string client_msg_id;
+        string sender_id;
+        u64? seq;
+        string timestamp;
+        string conversation_type;
+        string message_type;
+        string? receiver_id;
+        string content_json;
+        string content_type;
+        string state;
+        u64 version;
+    };
+    
+    record TenantContext {
+        string tenant_id;
+        string user_id;
+    };
+    
+    // ============================================================================
+    // 会话类型
+    // ============================================================================
+    
+    record Conversation {
+        string conversation_id;
+        string conversation_type;
+        string? business_type;
+        string display_name;
+        string? avatar_url;
+        u32 unread_count;
+        u64 max_seq;
+        u64 last_read_seq;
+        bool is_muted;
+        bool is_pinned;
+        string? last_message_preview;
+    };
+    
+    // ============================================================================
+    // 操作回调接口（必须在 interface 之前定义）
+    // ============================================================================
+    
+    callback interface OperationCallback {
+        void on_success();
+        void on_error(SdkError error);
+    };
+    
+    callback interface MessageOperationCallback {
+        void on_success(Message message);
+        void on_error(SdkError error);
+    };
+    
+    callback interface ConversationOperationCallback {
+        void on_success(Conversation conversation);
+        void on_error(SdkError error);
+    };
+    
+    callback interface MessageListCallback {
+        void on_success(sequence<Message> messages);
+        void on_error(SdkError error);
+    };
+    
+    callback interface ConversationListCallback {
+        void on_success(sequence<Conversation> conversations);
+        void on_error(SdkError error);
+    };
+    
+    callback interface UnreadCountCallback {
+        void on_success(u32 unread_count);
+        void on_error(SdkError error);
+    };
+    
+    callback interface InputStatesCallback {
+        void on_success(string? states_json);
+        void on_error(SdkError error);
+    };
+    
+    // ============================================================================
+    // 事件订阅回调接口（必须在 interface 之前定义）
+    // ============================================================================
+    
+    callback interface MessageEventSubscriber {
+        void on_message_created(Message message);
+        void on_message_sent(Message message);
+        void on_message_send_failed(string message_id, string error);
+        void on_message_delivered(string conversation_id, string message_id, string user_id);
+        void on_message_read(string conversation_id, string message_id, string user_id);
+        void on_message_recalled(string conversation_id, string message_id, string user_id);
+        void on_message_edited(string conversation_id, string message_id, Message new_message);
+        void on_message_deleted(string conversation_id, string message_id, string user_id);
+        void on_reaction_added(string conversation_id, string message_id, string user_id, string emoji);
+        void on_reaction_removed(string conversation_id, string message_id, string user_id, string emoji);
+    };
+    
+    callback interface ConnectionEventSubscriber {
+        void on_connected(string connection_id);
+        void on_disconnected(string reason);
+        void on_reconnecting(u32 attempt);
+        void on_reconnected();
+        void on_connect_failed(string error);
+    };
+    
+    callback interface ConversationEventSubscriber {
+        void on_conversation_created(Conversation conversation);
+        void on_unread_updated(string conversation_id, u32 unread_count);
+        void on_last_message_updated(string conversation_id, Message? message);
+        void on_marked_as_read(string conversation_id, string user_id);
+        void on_draft_updated(string conversation_id, string? draft);
+        void on_hidden(string conversation_id);
+        void on_deleted(string conversation_id);
+        void on_messages_cleared(string conversation_id);
+        void on_updated(Conversation conversation);
+        void on_input_state_updated(string conversation_id, string user_id, string state_type);
+    };
+    
+    callback interface SessionEventSubscriber {
+        void on_logged_in(string user_id);
+        void on_logged_out();
+        void on_expired();
+        void on_token_refreshed();
+    };
+    
+    // ============================================================================
+    // SDK 主接口
+    // ============================================================================
+    
+    interface ImCoreSdk {
+        constructor(SdkConfig config) throws(SdkError);
+        
+        void login(string user_id, string token, OperationCallback callback);
+        void logout(OperationCallback callback);
+        void connect(OperationCallback callback);
+        void bootstrap_sync(OperationCallback callback);
+        
+        // ========== 消息操作（异步回调） ==========
+        // 创建并发送文本消息（推荐：一步完成）
+        void create_and_send_text_message(
+            string conversation_id,
+            string sender_id,
+            string text,
+            TenantContext tenant,
+            string? receiver_id,
+            MessageOperationCallback callback
+        );
+        
+        // 发送消息
+        void send_message(Message message, MessageOperationCallback callback);
+        
+        // 撤回消息
+        void revoke_message(
+            string client_msg_id,
+            string recaller_id,
+            MessageOperationCallback callback
+        );
+        
+        // 编辑消息
+        void edit_message(
+            string client_msg_id,
+            string editor_id,
+            string new_content,
+            MessageOperationCallback callback
+        );
+        
+        // 删除消息
+        void delete_message(
+            string client_msg_id,
+            string operator_id,
+            OperationCallback callback
+        );
+        
+        // 回复消息
+        void reply_message(
+            string conversation_id,
+            string replied_msg_id,
+            Message new_message,
+            MessageOperationCallback callback
+        );
+        
+        // 转发消息
+        void forward_messages(
+            sequence<string> conversation_ids,
+            sequence<Message> messages,
+            OperationCallback callback
+        );
+        
+        // 添加反应
+        void add_reaction(
+            string conversation_id,
+            string message_id,
+            string user_id,
+            string emoji,
+            OperationCallback callback
+        );
+        
+        // 移除反应
+        void remove_reaction(
+            string conversation_id,
+            string message_id,
+            string user_id,
+            string emoji,
+            OperationCallback callback
+        );
+        
+        // 标记消息已读
+        void mark_message_read(
+            string conversation_id,
+            sequence<string> message_ids,
+            string user_id,
+            OperationCallback callback
+        );
+        
+        // 查询消息（本地查询，仍使用回调保持一致性）
+        void get_messages(
+            string conversation_id,
+            u32? limit,
+            MessageListCallback callback
+        );
+        
+        // 搜索消息（本地查询）
+        void search_messages(
+            string conversation_id,
+            string keyword,
+            u32? limit,
+            MessageListCallback callback
+        );
+        
+        // ========== 会话操作（异步回调） ==========
+        // 获取会话列表（本地查询）
+        void get_all_conversations(ConversationListCallback callback);
+        
+        // 分页获取会话列表（本地查询）
+        void get_conversations_paginated(
+            u32 page,
+            u32 page_size,
+            ConversationListCallback callback
+        );
+        
+        // 获取单个会话（本地查询）
+        void get_conversation(string conversation_id, ConversationOperationCallback callback);
+        
+        // 获取多个会话（本地查询）
+        void get_multiple_conversations(
+            sequence<string> conversation_ids,
+            ConversationListCallback callback
+        );
+        
+        // 标记会话已读
+        void mark_conversation_read(
+            string conversation_id,
+            string user_id,
+            OperationCallback callback
+        );
+        
+        // 设置会话草稿
+        void set_conversation_draft(
+            string conversation_id,
+            string? draft,
+            OperationCallback callback
+        );
+        
+        // 隐藏会话
+        void hide_conversation(string conversation_id, OperationCallback callback);
+        
+        // 删除会话
+        void delete_conversation(string conversation_id, OperationCallback callback);
+        
+        // 清空会话消息
+        void clear_conversation_messages(string conversation_id, OperationCallback callback);
+        
+        // 设置会话信息
+        void set_conversation_info(
+            string conversation_id,
+            string? display_name,
+            string? avatar_url,
+            string? description,
+            OperationCallback callback
+        );
+        
+        // 设置输入状态
+        void set_input_state(
+            string conversation_id,
+            string user_id,
+            string state_type,
+            OperationCallback callback
+        );
+        
+        // 获取总未读数（本地查询）
+        void get_total_unread_count(UnreadCountCallback callback);
+        
+        // 获取输入状态（本地查询）
+        void get_input_states(string conversation_id, InputStatesCallback callback);
+        
+        string subscribe_message_events(MessageEventSubscriber callback) throws(SdkError);
+        void unsubscribe_message_events(string subscriber_id) throws(SdkError);
+        string subscribe_connection_events(ConnectionEventSubscriber callback) throws(SdkError);
+        void unsubscribe_connection_events(string subscriber_id) throws(SdkError);
+        string subscribe_conversation_events(ConversationEventSubscriber callback) throws(SdkError);
+        void unsubscribe_conversation_events(string subscriber_id) throws(SdkError);
+    };
+}

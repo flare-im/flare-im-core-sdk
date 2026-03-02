@@ -131,7 +131,7 @@ pub enum ConversationVisibility {
     /// 私有
     Private,
     
-    /// 租户
+    /// 租户可见（保留用于协议兼容）
     Tenant,
     
     /// 公开

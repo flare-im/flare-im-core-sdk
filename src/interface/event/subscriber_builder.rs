@@ -1,14 +1,16 @@
-//! 事件订阅器构建器
+//! Event Subscriber Builder
 //!
-//! 提供链式 API，方便用户注册多个订阅者
+//! Provides a fluent API for registering multiple event subscribers at once.
 //!
-//! ## 使用示例
+//! ## Example
 //!
-//! ```rust
+//! ```no_run
 //! use flare_im_core_sdk::interface::event::SubscriberBuilder;
+//! use flare_im_core_sdk::interface::event::subscribers::*;
+//! use std::sync::Arc;
 //!
-//! let builder = SubscriberBuilder::new(event_bus);
-//! builder
+//! # async fn example(event_bus: Arc<flare_im_core_sdk::infrastructure::event_bus::EventBus>) {
+//! SubscriberBuilder::new(event_bus)
 //!     .message(Arc::new(MyMessageSubscriber))
 //!     .connection(Arc::new(MyConnectionSubscriber))
 //!     .session(Arc::new(MySessionSubscriber))
@@ -16,15 +18,32 @@
 //!     .sync(Arc::new(MySyncSubscriber))
 //!     .build()
 //!     .await;
+//! # }
 //! ```
 
 use std::sync::Arc;
 use crate::infrastructure::event_bus::EventBus;
 use crate::domain::event::subscribers::*;
 
-/// 事件订阅器构建器
+/// Event subscriber builder with fluent API
 ///
-/// 提供链式 API，方便用户一次性注册多个订阅者
+/// Allows registering multiple subscribers in a chain before building.
+///
+/// # Example
+///
+/// ```no_run
+/// use flare_im_core_sdk::interface::event::SubscriberBuilder;
+/// use flare_im_core_sdk::interface::event::subscribers::*;
+/// use std::sync::Arc;
+///
+/// # async fn example(event_bus: Arc<flare_im_core_sdk::infrastructure::event_bus::EventBus>) {
+/// SubscriberBuilder::new(event_bus)
+///     .message(Arc::new(MyMessageSubscriber))
+///     .connection(Arc::new(MyConnectionSubscriber))
+///     .build()
+///     .await;
+/// # }
+/// ```
 pub struct SubscriberBuilder {
     event_bus: Arc<EventBus>,
     message_subscribers: Vec<Arc<dyn MessageEventSubscriber>>,
@@ -35,7 +54,11 @@ pub struct SubscriberBuilder {
 }
 
 impl SubscriberBuilder {
-    /// 创建新的构建器
+    /// Creates a new subscriber builder
+    ///
+    /// # Arguments
+    ///
+    /// * `event_bus` - The event bus to register subscribers with
     pub fn new(event_bus: Arc<EventBus>) -> Self {
         Self {
             event_bus,
@@ -47,37 +70,59 @@ impl SubscriberBuilder {
         }
     }
 
-    /// 添加 Message 事件订阅者
+    /// Adds a message event subscriber
+    ///
+    /// # Arguments
+    ///
+    /// * `subscriber` - The message event subscriber
     pub fn message(mut self, subscriber: Arc<dyn MessageEventSubscriber>) -> Self {
         self.message_subscribers.push(subscriber);
         self
     }
 
-    /// 添加 Connection 事件订阅者
+    /// Adds a connection event subscriber
+    ///
+    /// # Arguments
+    ///
+    /// * `subscriber` - The connection event subscriber
     pub fn connection(mut self, subscriber: Arc<dyn ConnectionEventSubscriber>) -> Self {
         self.connection_subscribers.push(subscriber);
         self
     }
 
-    /// 添加 Session 事件订阅者
+    /// Adds a session event subscriber
+    ///
+    /// # Arguments
+    ///
+    /// * `subscriber` - The session event subscriber
     pub fn session(mut self, subscriber: Arc<dyn SessionEventSubscriber>) -> Self {
         self.session_subscribers.push(subscriber);
         self
     }
 
-    /// 添加 Conversation 事件订阅者
+    /// Adds a conversation event subscriber
+    ///
+    /// # Arguments
+    ///
+    /// * `subscriber` - The conversation event subscriber
     pub fn conversation(mut self, subscriber: Arc<dyn ConversationEventSubscriber>) -> Self {
         self.conversation_subscribers.push(subscriber);
         self
     }
 
-    /// 添加 Sync 事件订阅者
+    /// Adds a sync event subscriber
+    ///
+    /// # Arguments
+    ///
+    /// * `subscriber` - The sync event subscriber
     pub fn sync(mut self, subscriber: Arc<dyn SyncEventSubscriber>) -> Self {
         self.sync_subscribers.push(subscriber);
         self
     }
 
-    /// 构建并注册所有订阅者
+    /// Builds and registers all subscribers
+    ///
+    /// This method registers all added subscribers with the event bus.
     pub async fn build(self) {
         // 注册所有 Message 订阅者
         for subscriber in self.message_subscribers {

@@ -1,18 +1,56 @@
-//! SDK Facade
+//! Main SDK Entry Point
 //!
-//! 对外统一接口，隐藏内部实现细节
+//! [`ImCoreSdk`] is the primary entry point for the Flare IM Core SDK.
+//! It provides access to all SDK functionality through facades and manages
+//! the SDK lifecycle (login, connect, sync, etc.).
+//!
+//! ## Architecture
+//!
+//! The SDK follows a layered architecture:
+//!
+//! - **Interface Layer** (this module): Public API facades
+//! - **Application Layer**: Command/Query handlers, FSM, sync coordinator
+//! - **Domain Layer**: Business logic, aggregates, domain services
+//! - **Infrastructure Layer**: Storage, network, event bus
+//!
+//! ## Example
+//!
+//! ```no_run
+//! use flare_im_core_sdk::interface::facade::ImCoreSdk;
+//! use flare_im_core_sdk::config::SdkConfig;
+//!
+//! # async fn example() -> anyhow::Result<()> {
+//! // Initialize SDK
+//! let config = SdkConfig::default();
+//! let sdk = ImCoreSdk::new(config).await?;
+//!
+//! // Login and connect
+//! sdk.login("user_id".to_string(), "token".to_string()).await?;
+//! sdk.connect().await?;
+//!
+//! // Bootstrap sync
+//! sdk.bootstrap_sync().await?;
+//!
+//! // Use facades
+//! let message_facade = sdk.message();
+//! let conversation_facade = sdk.conversation();
+//! # Ok(())
+//! # }
+//! ```
 
 use std::sync::Arc;
+use tokio::sync::Mutex;
 use crate::application::fsm::FsmManager;
-use crate::application::handlers::{CommandHandler, QueryHandler};
+use crate::application::handlers::{CommandHandler, QueryHandler, ConversationSyncHandler, SyncHandler};
 use crate::application::sync_coordinator::SyncCoordinator;
 use crate::application::extension::{ExtensionRegistry, SdkContext, SdkExtension};
-use crate::domain::repository::{EventStore, ReadStore};
+use crate::domain::repository::{EventStore, MessageRepository, ConversationRepository};
 use crate::domain::session::Session;
 use crate::domain::connection::Connection;
 use crate::domain::sync::Sync;
-use crate::domain::message_queue::{MessageQueue, MessageQueueProcessor, MessageHandler};
+use crate::domain::message_queue::{MessageQueue, MessageQueueProcessor};
 use crate::infrastructure::event_bus::EventBus;
+use crate::infrastructure::messaging::MessageSender;
 use super::event_subscription_facade::EventSubscriptionFacade;
 use super::default_message_handler::DefaultMessageHandler;
 use crate::config::SdkConfig;
@@ -20,133 +58,106 @@ use crate::config::SdkConfig;
 use super::message_facade::MessageFacade;
 use super::conversation_facade::ConversationFacade;
 
-/// IM Core SDK 主入口
+/// Main SDK entry point
+///
+/// Provides access to all SDK functionality through facades and manages
+/// the SDK lifecycle.
 pub struct ImCoreSdk {
+    #[allow(dead_code)]
     command_handler: Arc<CommandHandler>,
     query_handler: Arc<QueryHandler>,
     sync_coordinator: Arc<SyncCoordinator>,
     message_facade: MessageFacade,
     conversation_facade: ConversationFacade,
+    #[allow(dead_code)]
     message_queue: Arc<MessageQueue>,
+    #[allow(dead_code)]
     queue_processor: Option<Arc<MessageQueueProcessor>>,
+    #[allow(dead_code)]
     extension_registry: Arc<ExtensionRegistry>,
     sdk_context: Arc<SdkContext>,
 }
 
 impl ImCoreSdk {
-    /// 创建 SDK 实例
-    pub async fn new(config: SdkConfig) -> anyhow::Result<Self> {
-        // 创建存储层
-        #[cfg(not(target_arch = "wasm32"))]
-        use crate::infrastructure::storage::read_store::SqliteReadStore;
-        #[cfg(not(target_arch = "wasm32"))]
-        use crate::infrastructure::storage::event_store::SqliteEventStore;
-        use crate::infrastructure::storage::read_store::MemoryReadStore;
-        use crate::infrastructure::storage::event_store::MemoryEventStore;
+    /// Creates a new SDK instance with user-provided storage implementations
+    ///
+    /// Initializes all internal components including event bus,
+    /// command/query handlers, and facades.
+    ///
+    /// ## Storage Implementation
+    ///
+    /// The SDK does not provide default storage implementations.
+    /// Users must implement the storage traits themselves:
+    ///
+    /// - `EventStore`: For event sourcing (domain events)
+    /// - `MessageRepository`: For message storage and queries
+    /// - `ConversationRepository`: For conversation storage and queries
+    ///
+    /// See `domain::repository` module for trait definitions.
+    ///
+    /// # Arguments
+    ///
+    /// * `config` - SDK configuration
+    /// * `event_store` - User-implemented event store
+    /// * `message_repository` - User-implemented message repository
+    /// * `conversation_repository` - User-implemented conversation repository
+    ///
+    /// # Returns
+    ///
+    /// Returns a new [`ImCoreSdk`] instance on success.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - Configuration validation fails
+    /// - Component initialization fails
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use flare_im_core_sdk::interface::facade::ImCoreSdk;
+    /// use flare_im_core_sdk::config::SdkConfig;
+    /// use flare_im_core_sdk::domain::repository::{EventStore, MessageRepository, ConversationRepository};
+    /// use std::sync::Arc;
+    ///
+    /// // User implements storage
+    /// struct MyEventStore { /* ... */ }
+    /// struct MyMessageRepository { /* ... */ }
+    /// struct MyConversationRepository { /* ... */ }
+    ///
+    /// # async fn example() -> anyhow::Result<()> {
+    /// let config = SdkConfig::default();
+    /// let event_store = Arc::new(MyEventStore::new().await?) as Arc<dyn EventStore>;
+    /// let message_repository = Arc::new(MyMessageRepository::new().await?) as Arc<dyn MessageRepository>;
+    /// let conversation_repository = Arc::new(MyConversationRepository::new().await?) as Arc<dyn ConversationRepository>;
+    /// let sdk = ImCoreSdk::new(config, event_store, message_repository, conversation_repository).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn new(
+        config: SdkConfig,
+        event_store: Arc<dyn EventStore>,
+        message_repository: Arc<dyn MessageRepository>,
+        conversation_repository: Arc<dyn ConversationRepository>,
+    ) -> anyhow::Result<Self> {
         use crate::infrastructure::storage::media_cache::MediaCacheManager;
         
-        // 根据配置选择存储类型
-        // 如果配置了 storage.path，使用 SQLite；否则使用内存存储（用于测试）
-        let (event_store, read_store) = {
-            #[cfg(not(target_arch = "wasm32"))]
-            {
-                if let Some(ref storage_path) = config.storage.path {
-                    // 使用 SQLite 存储
-                    // 确保存储目录存在
-                    std::fs::create_dir_all(storage_path)
-                        .map_err(|e| anyhow::anyhow!("创建存储目录失败: {}", e))?;
-                    
-                    let db_path = storage_path.join(&config.storage.db_filename);
-                    // SQLite 连接字符串：sqlx 使用 sqlite:/// 表示绝对路径（三个斜杠）
-                    // 将路径转换为绝对路径，确保可以正确打开
-                    let db_path_abs = match db_path.canonicalize() {
-                        Ok(path) => path,
-                        Err(_) => {
-                            // 如果路径不存在，先创建父目录
-                            if let Some(parent) = db_path.parent() {
-                                std::fs::create_dir_all(parent)
-                                    .map_err(|e| anyhow::anyhow!("创建数据库目录失败: {}", e))?;
-                            }
-                            // 返回原始路径（如果 canonicalize 失败，可能是文件还不存在）
-                            db_path
-                        }
-                    };
-                    
-                    // 使用绝对路径，sqlx 需要三个斜杠
-                    // 注意：路径中的特殊字符需要处理，使用 display() 可能包含空格等
-                    // sqlx 的 SQLite 连接字符串格式：sqlite:///绝对路径
-                    let db_url = format!("sqlite:///{}", db_path_abs.to_string_lossy());
-                    
-                    tracing::info!("使用 SQLite 存储: {}", db_url);
-                    tracing::debug!("数据库文件路径: {}", db_path_abs.display());
-                    
-                    let event_store = Arc::new(
-                        SqliteEventStore::new(&db_url).await
-                            .map_err(|e| anyhow::anyhow!("创建 SQLite EventStore 失败: {} (路径: {})", e, db_path_abs.display()))?
-                    ) as Arc<dyn EventStore>;
-                    
-                    let read_store = Arc::new(
-                        SqliteReadStore::new(&db_url).await
-                            .map_err(|e| anyhow::anyhow!("创建 SQLite ReadStore 失败: {} (路径: {})", e, db_path_abs.display()))?
-                    ) as Arc<dyn ReadStore>;
-                    
-                    (event_store, read_store)
-                } else {
-                    // 使用内存存储（用于测试或 Web 平台）
-                    tracing::info!("使用内存存储（测试模式）");
-                    
-                    let event_store = Arc::new(
-                        MemoryEventStore::new()
-                    ) as Arc<dyn EventStore>;
-                    
-                    let read_store = Arc::new(
-                        MemoryReadStore::new()
-                    ) as Arc<dyn ReadStore>;
-                    
-                    (event_store, read_store)
-                }
-            }
-            
-            #[cfg(target_arch = "wasm32")]
-            {
-                // Web 平台只能使用内存存储
-                tracing::info!("使用内存存储（Web 平台）");
-                
-                let event_store = Arc::new(
-                    MemoryEventStore::new()
-                ) as Arc<dyn EventStore>;
-                
-                let read_store = Arc::new(
-                    MemoryReadStore::new()
-                ) as Arc<dyn ReadStore>;
-                
-                (event_store, read_store)
-            }
-        };
-        
-        // 验证配置
         config.validate()
             .map_err(|e| anyhow::anyhow!("配置验证失败: {}", e))?;
         
-        // 创建媒体缓存管理器
-        let cache_root = config.storage.path
-            .clone()
-            .unwrap_or_else(|| std::path::PathBuf::from("./flare_im_cache"))
-            .join("media_cache");
+        // 创建媒体缓存管理器（从配置读取缓存路径和大小）
         let media_cache = Arc::new(
-            MediaCacheManager::new(
-                &cache_root,
-                config.media.max_cache_size_mb * 1024 * 1024 // 转换为字节
+            MediaCacheManager::from_config(
+                config.media.cache_path.clone(),
+                config.media.max_cache_size_mb,
             )?
         );
         
-        // 创建聚合根
         let device_id = uuid::Uuid::new_v4().to_string();
         let session = Session::new(device_id);
         let connection = Connection::new();
         let sync = Sync::new();
         
-        // 创建 FSM
         let fsm = Arc::new(FsmManager::new(
             session,
             connection,
@@ -154,59 +165,80 @@ impl ImCoreSdk {
             event_store.clone(),
         ));
         
-        // 转换为 flare-core 配置
-        let flare_core_config = config.to_flare_core_config()?;
+        let _flare_core_config = config.to_flare_core_config()?;
         
-        // 创建事件总线（容量 1000）
         let event_bus = Arc::new(EventBus::new(1000));
-        
-        // 创建 Extension Registry
         let extension_registry = Arc::new(ExtensionRegistry::new());
-        
-        // 创建消息队列（必须在创建 CommandHandler 之前创建，以便传递给它）
         let message_queue = Arc::new(MessageQueue::new());
         
-        // 创建 Command Handler（传递 MessageQueue）
+        // 创建共享的网络客户端和消息发送器
+        let network = Arc::new(Mutex::new(None));
+        let message_sender = Arc::new(MessageSender::new(network.clone()));
+        
+        // 创建同步处理器
+        let conversation_sync_handler = Arc::new(ConversationSyncHandler::new(
+            conversation_repository.clone(),
+            event_bus.clone(),
+        ));
+        
+        let sync_handler = Arc::new(SyncHandler::new(
+            message_queue.clone(),
+            event_bus.clone(),
+        ));
+        
         let command_handler = Arc::new(CommandHandler::new(
             fsm.clone(),
             event_store.clone(),
-            read_store.clone(), // 传递 ReadStore
-            config.clone(), // 传递完整配置
+            message_repository.clone(),
+            conversation_repository.clone(),
+            config.clone(),
             media_cache.clone(),
             event_bus.clone(),
             extension_registry.clone(),
-            Some(message_queue.clone()), // 传递 MessageQueue
+            Some(message_queue.clone()),
+            network.clone(),
+            message_sender.clone(),
         )?);
         
-        // 创建 Query Handler（需要 FSM 以支持 Session 查询）
-        let query_handler = Arc::new(QueryHandler::new(read_store.clone(), fsm.clone()));
+        let _converter_registry = Arc::new(crate::infrastructure::converter::ConverterRegistry::new());
+        let query_handler = Arc::new(QueryHandler::new(
+            message_repository.clone(),
+            conversation_repository.clone(),
+            fsm.clone(),
+        ));
         
-        // 创建 Sync Coordinator（带 Extension Registry）
         let sync_coordinator = Arc::new(
             SyncCoordinator::new(
                 fsm.clone(),
-                event_store.clone(),
+                message_sender.clone() as Arc<dyn crate::application::ports::sync_transport::SyncTransport>,
+                conversation_sync_handler.clone(),
+                sync_handler.clone(),
+                event_bus.clone(),
             )
             .with_extension_registry(extension_registry.clone())
         );
         
-        // 创建 SdkContext（提供给扩展使用）
         let sdk_context = Arc::new(SdkContext::new(
             command_handler.clone(),
             query_handler.clone(),
             event_bus.clone(),
             event_store.clone(),
-            read_store.clone(),
+            message_repository.clone(),
+            conversation_repository.clone(),
             sync_coordinator.clone(),
             fsm.clone(),
         ));
         
-        // 创建 Facade
+        let converter_registry = Arc::new(crate::infrastructure::converter::ConverterRegistry::new());
+        
         let message_facade = MessageFacade::new(
+            fsm.clone(),
             command_handler.clone(),
             query_handler.clone(),
-            read_store.clone(), // 传递 ReadStore
+            message_repository.clone(),
+            conversation_repository.clone(),
             media_cache,
+            converter_registry.clone(),
         );
         
         let conversation_facade = ConversationFacade::new(
@@ -214,11 +246,9 @@ impl ImCoreSdk {
             query_handler.clone(),
         );
         
-        // 创建消息队列处理器（使用 DefaultMessageHandler）
         let queue_handler = Arc::new(DefaultMessageHandler::new(
-            command_handler.clone(),
-            message_queue.clone(),
-            read_store.clone(),
+            message_repository.clone(),
+            conversation_repository.clone(),
             event_store.clone(),
             event_bus.clone(),
             fsm.clone(),
@@ -247,113 +277,246 @@ impl ImCoreSdk {
         })
     }
     
-    // ============================================================================
-    // Facade 访问器
-    // ============================================================================
-    
-    /// 获取消息 Facade
+    /// Returns a reference to the message facade
+    ///
+    /// The message facade provides APIs for creating, sending, and managing messages.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use flare_im_core_sdk::interface::facade::ImCoreSdk;
+    /// # async fn example(sdk: &ImCoreSdk) -> anyhow::Result<()> {
+    /// let message_facade = sdk.message();
+    /// // Use message APIs...
+    /// # Ok(())
+    /// # }
+    /// ```
     pub fn message(&self) -> &MessageFacade {
         &self.message_facade
     }
     
-    /// 获取会话 Facade
+    /// Returns a reference to the conversation facade
+    ///
+    /// The conversation facade provides APIs for managing conversations.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use flare_im_core_sdk::interface::facade::ImCoreSdk;
+    /// # async fn example(sdk: &ImCoreSdk) -> anyhow::Result<()> {
+    /// let conversation_facade = sdk.conversation();
+    /// let conversations = conversation_facade.get_all_conversation_list().await?;
+    /// # Ok(())
+    /// # }
+    /// ```
     pub fn conversation(&self) -> &ConversationFacade {
         &self.conversation_facade
     }
     
-    // ============================================================================
-    // 核心 API：登录、登出、连接、同步
-    // ============================================================================
-    
-    /// 登录
+    /// Authenticates the user and establishes a session
     ///
-    /// SDK 核心方法，用于用户身份认证和建立连接
+    /// # Arguments
+    ///
+    /// * `user_id` - The user ID
+    /// * `token` - The authentication token (JWT)
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if authentication fails.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use flare_im_core_sdk::interface::facade::ImCoreSdk;
+    /// # async fn example(sdk: &ImCoreSdk) -> anyhow::Result<()> {
+    /// sdk.login("user_id".to_string(), "jwt_token".to_string()).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn login(&self, user_id: String, token: String) -> anyhow::Result<()> {
-        use crate::application::commands::LoginCommand;
         self.command_handler.login_direct(user_id, token).await
     }
     
-    /// 登出
+    /// Logs out the current user and clears the session
     ///
-    /// SDK 核心方法，用于断开连接和清理会话
+    /// # Errors
+    ///
+    /// Returns an error if logout fails.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use flare_im_core_sdk::interface::facade::ImCoreSdk;
+    /// # async fn example(sdk: &ImCoreSdk) -> anyhow::Result<()> {
+    /// sdk.logout().await?;
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn logout(&self) -> anyhow::Result<()> {
         self.command_handler.logout_direct().await
     }
     
-    /// 连接
+    /// Establishes a network connection to the server
     ///
-    /// SDK 核心方法，用于建立网络连接
+    /// Must be called after [`login`](Self::login) succeeds.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if connection fails.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use flare_im_core_sdk::interface::facade::ImCoreSdk;
+    /// # async fn example(sdk: &ImCoreSdk) -> anyhow::Result<()> {
+    /// sdk.login("user_id".to_string(), "token".to_string()).await?;
+    /// sdk.connect().await?;
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn connect(&self) -> anyhow::Result<()> {
         self.command_handler.connect_direct().await
     }
     
-    /// 执行 Bootstrap Sync
+    /// Performs bootstrap synchronization (full sync)
     ///
-    /// SDK 核心方法，用于初始化同步（全量同步）
+    /// This method synchronizes all conversations, messages, and related data
+    /// from the server. It should be called after a successful connection.
     ///
-    /// 同步流程：
-    /// 1. 核心 Bootstrap Sync（会话列表、未读消息等）
-    /// 2. Extension Bootstrap Sync（扩展的 Bootstrap 同步）
+    /// # Errors
+    ///
+    /// Returns an error if synchronization fails.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use flare_im_core_sdk::interface::facade::ImCoreSdk;
+    /// # async fn example(sdk: &ImCoreSdk) -> anyhow::Result<()> {
+    /// sdk.login("user_id".to_string(), "token".to_string()).await?;
+    /// sdk.connect().await?;
+    /// sdk.bootstrap_sync().await?;
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn bootstrap_sync(&self) -> anyhow::Result<()> {
         self.sync_coordinator.execute_bootstrap_sync().await
     }
     
-    /// 执行 Async Sync
+    /// Performs asynchronous synchronization for a specific sync type
     ///
-    /// SDK 核心方法，用于增量同步
+    /// # Arguments
     ///
-    /// # 参数
-    /// * `sync_type` - 同步类型（如 "friend_status", "group_info"）
+    /// * `sync_type` - The type of sync to perform (e.g., "friend_status", "group_info")
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if synchronization fails.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use flare_im_core_sdk::interface::facade::ImCoreSdk;
+    /// # async fn example(sdk: &ImCoreSdk) -> anyhow::Result<()> {
+    /// sdk.async_sync("friend_status".to_string()).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn async_sync(&self, sync_type: String) -> anyhow::Result<()> {
         self.sync_coordinator.execute_async_sync(sync_type).await
     }
     
-    /// 执行所有扩展的 Async Sync
+    /// Performs asynchronous synchronization for all registered extensions
     ///
-    /// 在后台执行所有扩展的异步同步
+    /// # Errors
+    ///
+    /// Returns an error if any extension sync fails.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use flare_im_core_sdk::interface::facade::ImCoreSdk;
+    /// # async fn example(sdk: &ImCoreSdk) -> anyhow::Result<()> {
+    /// sdk.sync_all_extensions().await?;
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn sync_all_extensions(&self) -> anyhow::Result<()> {
         self.sync_coordinator.execute_all_extension_async_sync().await
     }
     
-    /// 获取消息队列（用于接收消息）
+    /// Returns a reference to the message queue
+    ///
+    /// The message queue is used to receive incoming messages from the server.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use flare_im_core_sdk::interface::facade::ImCoreSdk;
+    /// # async fn example(sdk: &ImCoreSdk) -> anyhow::Result<()> {
+    /// let queue = sdk.message_queue();
+    /// // Use queue to receive messages...
+    /// # Ok(())
+    /// # }
+    /// ```
     pub fn message_queue(&self) -> &Arc<MessageQueue> {
         &self.message_queue
     }
     
-    /// 获取消息发送指标
+    /// Returns message sending metrics
     ///
-    /// 返回消息发送的统计信息（总数、成功数、失败数、平均延迟等）
+    /// Provides statistics about message sending including total count,
+    /// success count, failure count, and average latency.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use flare_im_core_sdk::interface::facade::ImCoreSdk;
+    /// # async fn example(sdk: &ImCoreSdk) -> anyhow::Result<()> {
+    /// let metrics = sdk.get_message_metrics().await;
+    /// println!("Total messages sent: {}", metrics.total_sent);
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn get_message_metrics(&self) -> crate::infrastructure::metrics::MessageMetricsSnapshot {
         crate::infrastructure::metrics::get_metrics_snapshot().await
     }
     
-    // ============================================================================
-    // Extension 管理 API
-    // ============================================================================
-    
-    /// 注册扩展
+    /// Registers an extension
     ///
-    /// # 参数
-    /// * `extension` - 要注册的扩展
+    /// Extensions allow you to extend SDK functionality with custom business logic.
     ///
-    /// # 返回
-    /// * `Ok(())` - 注册成功
-    /// * `Err` - 注册失败
+    /// # Arguments
+    ///
+    /// * `extension` - The extension to register
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if registration fails.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use flare_im_core_sdk::interface::facade::ImCoreSdk;
+    /// # use flare_im_core_sdk::application::extension::SdkExtension;
+    /// # use std::sync::Arc;
+    /// # async fn example(sdk: &ImCoreSdk, extension: Arc<dyn SdkExtension>) -> anyhow::Result<()> {
+    /// sdk.register_extension(extension).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn register_extension(
         &self,
         extension: Arc<dyn SdkExtension>,
     ) -> anyhow::Result<()> {
-        // 注册到 Extension Registry
         self.extension_registry.register_extension(extension.clone()).await?;
-        
-        // 创建可变的 SdkContext（用于注册）
         // 注意：这里需要创建一个临时的可变上下文
         let mut ctx = SdkContext::new(
             self.command_handler.clone(),
             self.query_handler.clone(),
             self.sdk_context.event_bus.clone(),
             self.sdk_context.event_store.clone(),
-            self.sdk_context.read_store.clone(),
+            self.sdk_context.message_repository.clone(),
+            self.sdk_context.conversation_repository.clone(),
             self.sync_coordinator.clone(),
             self.sdk_context.fsm.clone(),
         );
@@ -435,4 +598,3 @@ impl ImCoreSdk {
         &self.sdk_context.event_bus
     }
 }
-

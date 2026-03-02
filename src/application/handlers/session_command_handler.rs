@@ -5,7 +5,7 @@
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use crate::application::fsm::FsmManager;
-use crate::domain::repository::{EventStore, ReadStore};
+use crate::domain::repository::ConversationRepository;
 use crate::domain::service::SessionDomainService;
 use crate::infrastructure::network::NetworkClient;
 use crate::config::SdkConfig;
@@ -18,8 +18,7 @@ use crate::domain::message_queue::MessageQueue;
 /// 会话命令处理器
 pub struct SessionCommandHandler {
     fsm: Arc<FsmManager>,
-    event_store: Arc<dyn EventStore>,
-    read_store: Arc<dyn ReadStore>,
+    conversation_repository: Arc<dyn ConversationRepository>,
     config: SdkConfig,
     network: Arc<Mutex<Option<NetworkClient>>>,
     domain_service: SessionDomainService,
@@ -31,8 +30,7 @@ pub struct SessionCommandHandler {
 impl SessionCommandHandler {
     pub fn new(
         fsm: Arc<FsmManager>,
-        event_store: Arc<dyn EventStore>,
-        read_store: Arc<dyn ReadStore>,
+        conversation_repository: Arc<dyn ConversationRepository>,
         config: SdkConfig,
         network: Arc<Mutex<Option<NetworkClient>>>,
         event_bus: Arc<EventBus>,
@@ -41,8 +39,7 @@ impl SessionCommandHandler {
     ) -> Self {
         Self {
             fsm,
-            event_store,
-            read_store,
+            conversation_repository,
             config,
             network,
             domain_service: SessionDomainService::new(),
@@ -116,14 +113,14 @@ impl SessionCommandHandler {
             // 如果没有提供 MessageQueue，创建新的（向后兼容）
             Arc::new(crate::domain::message_queue::MessageQueue::new())
         };
-        let (mut network_client, message_rx, connection_rx, _ack_rx) = NetworkClient::new_with_queue(message_queue.clone());
+        let (mut network_client, message_rx, connection_rx, _ack_rx) =
+            NetworkClient::new_with_queue(message_queue.clone(), self.event_bus.clone());
         
         // 创建并启动网络消息分发器
         let dispatcher = NetworkMessageDispatcher::new(
             message_queue.clone(),
-            self.read_store.clone(),
+            self.conversation_repository.clone(),
             self.event_bus.clone(),
-            self.fsm.clone(),
             self.extension_registry.clone(),
         );
         dispatcher.start(message_rx); // 启动分发器（后台任务）
@@ -146,8 +143,8 @@ impl SessionCommandHandler {
             Some(flare_core_config),
         ).await?;
         
-        // 启动连接事件监听
-        let fsm_clone = self.fsm.clone();
+        // 启动连接事件监听（后台任务）
+        let fsm_for_disconnect = self.fsm.clone();
         let mut connection_rx_mut = connection_rx;
         tokio::spawn(async move {
             use crate::infrastructure::network::ConnectionEvent;
@@ -158,6 +155,10 @@ impl SessionCommandHandler {
                     }
                     ConnectionEvent::Disconnected => {
                         tracing::warn!("⚠️  网络连接已断开");
+                        // 更新 FSM 连接状态
+                        if let Err(e) = fsm_for_disconnect.connection_disconnect().await {
+                            tracing::error!("Failed to update FSM disconnection state: {}", e);
+                        }
                     }
                     ConnectionEvent::Error(err) => {
                         tracing::error!("❌ 网络连接错误: {}", err);
@@ -166,14 +167,22 @@ impl SessionCommandHandler {
             }
         });
         
-        // 等待连接建立
-        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+        // 等待连接建立（轮询检查 connection_id，最多等待 10 秒）
+        // 在并发测试场景下，连接建立可能需要更长时间
+        let max_wait_ms = 10000;
+        let check_interval_ms = 200;
+        let start_time = tokio::time::Instant::now();
+        let connection_id = loop {
+            if let Some(id) = network_client.connection_id() {
+                break id;
+            }
+            if start_time.elapsed().as_millis() > max_wait_ms as u128 {
+                return Err(anyhow::anyhow!("连接超时：在 {}ms 内未能获取 connection_id", max_wait_ms));
+            }
+            tokio::time::sleep(tokio::time::Duration::from_millis(check_interval_ms)).await;
+        };
         
-        // 获取连接 ID
-        let connection_id = network_client.connection_id()
-            .ok_or_else(|| anyhow::anyhow!("Failed to get connection ID"))?;
-        
-        // 连接成功，通过 FSM 更新状态
+        // 连接成功，通过 FSM 更新状态（重要：确保连接状态检查能正确工作）
         self.fsm.connection_connect_success(connection_id.clone()).await?;
         
         // 保存网络客户端
