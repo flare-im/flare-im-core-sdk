@@ -1,23 +1,23 @@
 [package]
 name = "flare-im-core-sdk-ffi"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.85"
 authors = ["Flare Team"]
 license = "MIT"
-description = "Flare IM Core SDK - C ABI FFI bindings"
+description = "Flare IM Core SDK - C FFI Bindings"
 
 [lib]
 name = "flare_im_core_sdk_ffi"
 crate-type = ["cdylib", "staticlib"]
 
 [dependencies]
-flare-im-core-sdk = { path = "../../", features = [] }
-serde = { workspace = true }
-serde_json = { workspace = true }
-anyhow = { workspace = true }
-tokio = { workspace = true }
-lazy_static = { workspace = true }
+flare-im-core-sdk = { path = "../.." }
+flare-im-core-sdk-storage-sqlite = { path = "../../storage/sqlite" }
+flare-proto = { path = "../../../flare-proto" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+serde_json = "1.0"
+prost = "0.14"
 
 [build-dependencies]
-cbindgen = { workspace = true }
+cbindgen = "0.26"

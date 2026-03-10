@@ -1,26 +1,22 @@
 [package]
 name = "flare-im-core-sdk-uniffi"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.85"
 authors = ["Flare Team"]
 license = "MIT"
-description = "Flare IM Core SDK - UniFFI bindings for Kotlin/Swift/Python"
+description = "Flare IM Core SDK - UniFFI Bindings (Kotlin/Swift/Python)"
 
 [lib]
-name = "flare_im_core_sdk_uniffi"
 crate-type = ["cdylib", "staticlib"]
 
 [dependencies]
-flare-im-core-sdk = { path = "../../", features = [] }
-uniffi = { workspace = true }
-serde = { workspace = true }
-serde_json = { workspace = true }
-anyhow = { workspace = true }
-tokio = { workspace = true }
-async-trait = { workspace = true }
-thiserror = { workspace = true }
-chrono = { workspace = true }
+flare-im-core-sdk = { path = "../.." }
+flare-im-core-sdk-storage-sqlite = { path = "../../storage/sqlite" }
+flare-proto = { path = "../../../flare-proto" }
+uniffi = "0.28"
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+prost = "0.14"
 
 [build-dependencies]
-uniffi_build = { workspace = true }
+uniffi = { version = "0.28", features = ["build"] }

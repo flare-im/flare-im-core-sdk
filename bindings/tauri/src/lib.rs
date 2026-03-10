@@ -1,111 +1,85 @@
-//! Flare IM Core SDK - Tauri Bindings
+//! Flare IM Core SDK - Tauri 绑定
 //!
-//! # Tauri Access Layer for Flare IM
+//! 基于 `flare_im_core_sdk` 的 IMClient、MessageApi、ConversationApi，
+//! 暴露 Tauri 命令与事件（im://message / im://unread 等），供前端调用。
 //!
-//! This crate provides a clean, production-ready interface between Tauri applications and the Flare IM Core SDK.
-//! It handles:
-//! - SDK Lifecycle & State Management
-//! - SQLite Storage Initialization
-//! - Command Bridging (Tauri -> Rust -> SDK)
-//! - Event Forwarding (SDK -> Rust -> Tauri)
-//!
-//! ## Usage
-//!
-//! Register the plugin in your Tauri application:
-//!
-//! ```rust,no_run
-//! use flare_im_core_sdk_tauri::{SdkState, commands};
-//!
-//! tauri::Builder::default()
-//!     .manage(SdkState::new())
-//!     .invoke_handler(tauri::generate_handler![
-//!         commands::lifecycle::sdk_init,
-//!         commands::lifecycle::sdk_login,
-//!         commands::lifecycle::sdk_connect,
-//!         commands::lifecycle::sdk_logout,
-//!         commands::lifecycle::sdk_generate_test_token,
-//!         
-//!         // Message Commands
-//!         commands::message::sdk_create_text_message,
-//!         commands::message::sdk_create_text_at_message,
-//!         commands::message::sdk_create_image_message,
-//!         commands::message::sdk_create_image_message_by_url,
-//!         commands::message::sdk_create_sound_message,
-//!         commands::message::sdk_create_sound_message_by_url,
-//!         commands::message::sdk_create_video_message,
-//!         commands::message::sdk_create_video_message_by_url,
-//!         commands::message::sdk_create_file_message,
-//!         commands::message::sdk_create_file_message_by_url,
-//!         commands::message::sdk_send_message,
-//!         commands::message::sdk_send_text_message,
-//!         commands::message::sdk_get_message_history,
-//!         commands::message::sdk_mark_read,
-//!         commands::message::sdk_recall_message,
-//!         commands::message::sdk_add_reaction,
-//!         commands::message::sdk_remove_reaction,
-//!         
-//!         // Conversation Commands
-//!         commands::conversation::sdk_get_conversations,
-//!         commands::conversation::sdk_get_conversation_list_split,
-//!         commands::conversation::sdk_get_one_conversation,
-//!         commands::conversation::sdk_get_multiple_conversation,
-//!         commands::conversation::sdk_get_conversation_id_by_session_type,
-//!         commands::conversation::sdk_get_total_unread_msg_count,
-//!         commands::conversation::sdk_get_input_states,
-//!         commands::conversation::sdk_mark_conversation_as_read,
-//!         commands::conversation::sdk_mark_session_read,
-//!         commands::conversation::sdk_mark_all_conversations_as_read,
-//!         commands::conversation::sdk_set_conversation_draft,
-//!         commands::conversation::sdk_hide_conversation,
-//!         commands::conversation::sdk_hide_all_conversations,
-//!         commands::conversation::sdk_delete_conversation,
-//!         commands::conversation::sdk_clear_conversation_messages,
-//!         commands::conversation::sdk_set_conversation_info,
-//!         commands::conversation::sdk_set_input_state,
-//!         commands::conversation::sdk_create_session,
-//!         
-//!         commands::sync::sdk_sync,
-//!         commands::sync::sdk_sync_session_incremental,
-//!         commands::sync::sdk_get_messages,
-//! ```\n
-pub mod commands;
-pub mod events;
+//! 模式：SDK Core ← 语言模型（model）→ App；binding 仅做 proto → model 转换，不直接使用 JSON。
+
+pub mod convert;
+pub mod model;
 pub mod state;
-pub mod utils;
-pub mod error;
+pub mod commands;
 
+pub use model::SdkConfigOptions;
 pub use state::SdkState;
-pub use error::CommandError;
 
-/// Register event subscribers to forward SDK events to Tauri frontend
-///
-/// This is called internally by `sdk_init`, but exposed if manual registration is needed.
-pub async fn register_event_subscribers(
-    sdk: &flare_im_core_sdk::interface::facade::ImCoreSdk,
-    app: tauri::AppHandle,
-) -> anyhow::Result<()> {
-    use events::*;
-    use std::sync::Arc;
-    
-    // Subscribe to Message Events
-    let message_forwarder = Arc::new(message::MessageEventForwarder::new(app.clone()));
-    sdk.events().subscribe_message(message_forwarder).await;
-    
-    // Subscribe to Connection Events
-    let connection_forwarder = Arc::new(connection::ConnectionEventForwarder::new(app.clone()));
-    sdk.events().subscribe_connection(connection_forwarder).await;
-    
-    // Subscribe to Session Events
-    let session_forwarder = Arc::new(session::SessionEventForwarder::new(app.clone()));
-    sdk.events().subscribe_session(session_forwarder).await;
-    
-    // Subscribe to Conversation Events
-    let conversation_forwarder = Arc::new(conversation::ConversationEventForwarder::new(app.clone()));
-    sdk.events().subscribe_conversation(conversation_forwarder).await;
-    
-    // Subscribe to Sync Events
-    let sync_forwarder = Arc::new(sync::SyncEventForwarder::new(app.clone()));
-    sdk.events().subscribe_sync(sync_forwarder).await;
+// 在 bindings crate 内展开 generate_handler!，使 __cmd__* 宏可见；示例应用直接使用 im_invoke_handler()
+use commands::{
+    conversation::{
+        sdk_create_session, sdk_delete_conversation, sdk_get_conversation_id_by_session_type,
+        sdk_get_conversation_list_split, sdk_get_conversations, sdk_get_multiple_conversation,
+        sdk_get_one_conversation, sdk_get_total_unread_msg_count, sdk_hide_all_conversations,
+        sdk_hide_conversation, sdk_mark_all_read, sdk_mark_conversation_as_read,
+        sdk_set_conversation_draft, sdk_set_conversation_info, sdk_set_input_state,
+        sdk_clear_conversation_messages, sdk_get_input_states,
+    },
+    lifecycle::{
+        sdk_generate_test_token, sdk_init, sdk_login, sdk_logout,
+    },
+    message::{
+        sdk_add_reaction, sdk_add_thread_reply, sdk_delete_message, sdk_edit_message,
+        sdk_favorite_message, sdk_forward_message, sdk_get_messages, sdk_mark_message,
+        sdk_mark_read, sdk_mark_session_read, sdk_pin_message, sdk_quote_message,
+        sdk_recall_message, sdk_remove_reaction, sdk_reply_message, sdk_send_text_message,
+        sdk_unfavorite_message, sdk_unpin_message,
+    },
+    sync::{sdk_sync, sdk_sync_session_incremental},
+};
 
-    Ok(())
+/// 返回 IM 命令的 invoke handler，在应用内使用：`.invoke_handler(flare_im_core_sdk_tauri::im_invoke_handler())`
+#[must_use]
+pub fn im_invoke_handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + 'static {
+    tauri::generate_handler![
+        sdk_init,
+        sdk_login,
+        sdk_logout,
+        sdk_generate_test_token,
+        sdk_send_text_message,
+        sdk_get_messages,
+        sdk_mark_session_read,
+        sdk_mark_read,
+        sdk_recall_message,
+        sdk_edit_message,
+        sdk_delete_message,
+        sdk_add_reaction,
+        sdk_remove_reaction,
+        sdk_pin_message,
+        sdk_unpin_message,
+        sdk_mark_message,
+        sdk_quote_message,
+        sdk_reply_message,
+        sdk_add_thread_reply,
+        sdk_forward_message,
+        sdk_favorite_message,
+        sdk_unfavorite_message,
+        sdk_get_conversations,
+        sdk_get_one_conversation,
+        sdk_get_conversation_id_by_session_type,
+        sdk_get_total_unread_msg_count,
+        sdk_mark_conversation_as_read,
+        sdk_mark_all_read,
+        sdk_delete_conversation,
+        sdk_create_session,
+        sdk_set_input_state,
+        sdk_get_conversation_list_split,
+        sdk_get_multiple_conversation,
+        sdk_get_input_states,
+        sdk_set_conversation_draft,
+        sdk_hide_conversation,
+        sdk_hide_all_conversations,
+        sdk_clear_conversation_messages,
+        sdk_set_conversation_info,
+        sdk_sync,
+        sdk_sync_session_incremental,
+    ]
 }

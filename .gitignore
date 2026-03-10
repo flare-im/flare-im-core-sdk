@@ -32,8 +32,9 @@ examples/tauri/
 examples/certs/
 dist/
 
-# Chat data directory (database and logs)
+# Data directories (database and logs)
 chat-data/
+temp-data/
 
 # Tauri ignore file (for file watching)
 .taurignore

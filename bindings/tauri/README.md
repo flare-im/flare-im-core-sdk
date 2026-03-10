@@ -60,7 +60,6 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             // 生命周期
             lifecycle::sdk_init,
-            lifecycle::sdk_connect,
             lifecycle::sdk_logout,
             
             // 消息操作
@@ -80,12 +79,33 @@ fn main() {
 在前端调用：
 
 ```typescript
-// 初始化 SDK
-await invoke('sdk_init');
+// 初始化 SDK（可选：environment、sdk_config）。不传 db_path，按 environment 自动解析数据目录
+await invoke('sdk_init', {
+  environment: import.meta.env.DEV ? 'development' : 'production',
+  sdk_config: undefined,  // 可选：含 serverUrl 及超时、重连等，见下表
+});
 
-// 连接并登录
-await invoke('sdk_connect', { userId: 'user123' });
+// 登录（内部会创建存储、连接并启动事件转发）
+await invoke('sdk_login', { userId: 'user123', token: '…' });
 ```
+
+- **数据目录**：`development` 使用项目下 **temp-data**（flare-im-core-sdk/temp-data）；`production` 使用 Tauri 应用目录（app_data_dir 等）。
+- **ws_url**：放在 `sdk_config.wsUrl` 中；未传时使用环境变量 `FLARE_IM_SERVER_URL` 或默认 `ws://localhost:60051`。
+
+**个性化配置 `sdk_config`**（可选）：字段均为可选，camelCase，与 Rust `SdkConfig` 对应：
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `wsUrl` | string | WebSocket 地址 |
+| `quicUrl` | string | QUIC 端点 |
+| `httpUrl` | string | HTTP 端点 |
+| `connectTimeoutSecs` | number | 连接超时（秒） |
+| `reconnectIntervalSecs` | number | 重连间隔（秒） |
+| `maxReconnectAttempts` | number | 最大重连次数 |
+| `syncBatchSize` | number | 同步批次大小 |
+| `ackTimeoutSecs` | number | 回执超时（秒） |
+| `ackMaxRetries` | number | 回执最大重试 |
+| `enableMetrics` | boolean | 是否开启指标 |
 
 ### 4. 监听事件
 
@@ -111,8 +131,8 @@ listen('im://connection_state', (event) => {
 
 ### 生命周期命令
 
-- `sdk_init()` - 初始化 SDK
-- `sdk_connect(user_id: String)` - 连接并登录
+- `sdk_init(environment?, sdk_config?)` - 初始化 SDK；数据目录按 environment（开发 temp-data，生产 Tauri 目录）；ws_url 在 sdk_config.wsUrl
+- `sdk_login(args)` - 登录；args 为 `{ userId, token }`（camelCase），内部创建存储、连接并启动事件转发；对外仅暴露此命令
 - `sdk_logout()` - 登出
 
 ### 消息命令
@@ -212,9 +232,9 @@ listen('im://connection_state', (event) => {
 
 ### 环境变量
 
-- `FLARE_IM_SERVER_URL` - 服务器地址（默认：`ws://localhost:60051`）
+- `FLARE_IM_SERVER_URL` - WebSocket 地址（未在 sdk_config.wsUrl 中指定时使用，默认：`ws://localhost:60051`）
 - `FLARE_IM_USE_TLS` - 是否使用 TLS（`1` 表示启用）
-- `FLARE_IM_DB_PATH` - 数据库路径（默认：自动查找 `chat-data` 目录）
+- 数据目录由 `sdk_init` 的 `environment` 决定：开发用 **temp-data**，生产用 Tauri 应用目录（不通过环境变量指定）
 - `FLARE_IM_TOKEN` - 认证 Token（可选，未设置时自动生成）
 - `TOKEN_SECRET` - JWT Secret（默认：`insecure-secret`）
 - `TOKEN_ISSUER` - JWT Issuer（默认：`flare-im-core`）

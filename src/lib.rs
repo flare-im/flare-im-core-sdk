@@ -1,99 +1,156 @@
-//! Flare IM Core SDK
+//! # Flare IM Core SDK
 //!
-//! 全端统一 IM Core SDK，基于 DDD + CQRS + FSM + Unified Sync + Storage Layer 架构
-//!
-//! ## 架构层次
-//!
-//! ```
-//! Application / UI
-//!        ↓
-//! SDK Application Layer
-//! (Facade / CommandBus / QueryBus / FSM / Sync Coordinator)
-//!        ↓
-//! Domain Layer (DDD)
-//! (Aggregate / Entity / Domain Event)
-//!        ↓
-//! Infrastructure Layer
-//! (LocalStore / Network / Clock)
-//! ```
-//!
-//! ## Core Bounded Context
-//!
-//! - **Session**: 登录态 / Token
-//! - **Connection**: 长连接 / 心跳
-//! - **Sync**: 统一同步引擎
-//! - **Message**: 消息生命周期
-//! - **Conversation**: 会话 / 未读数
+//! 生产级事件流驱动的跨平台 IM 客户端 SDK。
 //!
 //! ## 设计原则
 //!
-//! 1. 状态是第一公民
-//! 2. 所有写操作必须可回放
-//! 3. 读写物理隔离（CQRS）
-//! 4. FSM 是唯一状态迁移入口
-//! 5. 存储层不包含业务逻辑
+//! **核心只做消息和会话**，其他能力通过扩展机制注入：
+//! - `SyncTask` — 自定义同步任务（联系人、群列表等）
+//! - `MessageInterceptor` — 消息拦截（端到端加密、内容过滤等）
+//! - `EventInterceptor` — 事件拦截（日志、审计等）
+//! - `Extension` 事件 — 非核心领域推送（在线状态、通话信令、自定义业务等）
+//! - `CustomPush` — 服务端自定义推送透传
+//!
+//! ## 消息内容类型
+//!
+//! 支持 `message_content.proto` 定义的全部 26 种消息类型：
+//! - 基础 (1-15): Text / Image / Video / Audio / File / Location / Card / Sticker / Emoji / Gif / Quote / LinkCard / Forward / Thread / MiniProgram
+//! - 富媒体 (30-32): RichText / Markdown / ImageGroup
+//! - 系统 (60-61): System / Notification
+//! - 业务 (80-83): Vote / Task / Schedule / Announcement
+//! - 自定义 (100): Custom
+//! - 平台 (111-115): Placeholder (E2E / DecryptFailed / External / Imported / Migration)
+//!
+//! ## 消息操作
+//!
+//! 覆盖 `event.proto` 定义的全部事件操作 SDK 全流程：
+//! - 发送 → 拦截器 → 网络发送 → 本地存储 → SendAck
+//! - 撤回 → 网络发送 → 本地状态更新 → Recalled 事件
+//! - 编辑 → 网络发送 → 本地内容更新 → Edited 事件
+//! - 删除 → 网络发送 → 本地删除 → Deleted 事件
+//! - 已读 → 网络发送 → ReadReceipt 事件
+//! - 正在输入 → 网络发送 → Typing 事件
+//! - 表情反应 → 网络发送 → ReactionUpdated 事件
+//! - 置顶/取消 → 网络发送 → Pinned/Unpinned 事件
+//! - 标记/取消 → 网络发送 → Marked/Unmarked 事件
+//!
+//! ## 架构概览
+//!
+//! ```text
+//! ┌─────────────────────────────────────────────────────────────┐
+//! │                       IMClient                              │
+//! │  ┌──────────┬────────────────┐                              │
+//! │  │MessageApi│ConversationApi │  ← 核心 API                  │
+//! │  └────┬─────┴───────┬────────┘                              │
+//! │       │ Command/Query│                                      │
+//! │  ┌────▼─────────────▼──────────────────────────────────┐    │
+//! │  │                  SdkEngine                           │    │
+//! │  │  ┌──────────┐ ┌──────────┐ ┌──────────────────────┐ │    │
+//! │  │  │EventBus  │ │Dispatcher│ │SyncManager           │ │    │
+//! │  │  └──────────┘ └────┬─────┘ │ + custom SyncTasks   │ │    │
+//! │  │                    │       └──────────────────────┘ │    │
+//! │  │  ┌─────────────────▼─────────────────────────────┐  │    │
+//! │  │  │  MiddlewareChain (interceptors)               │  │    │
+//! │  │  └───────────────────────────────────────────────┘  │    │
+//! │  │  ┌──────────────┐ ┌────────────┐ ┌──────────────┐  │    │
+//! │  │  │SocketTransport│ │PacketSender│ │Router (store)│  │    │
+//! │  │  └────┬──────────┘ └────────────┘ └──────────────┘  │    │
+//! │  └───────┼─────────────────────────────────────────────┘    │
+//! │          │                                                   │
+//! │     FlareClient (WebSocket / QUIC)                          │
+//! └─────────────────────────────────────────────────────────────┘
+//! ```
+//!
+//! ## 快速上手
+//!
+//! ```ignore
+//! use flare_im_core_sdk::prelude::*;
+//!
+//! let client = IMClient::builder()
+//!     .config(SdkConfig::new("wss://im.example.com"))
+//!     .stores(stores)
+//!     .build();
+//!
+//! client.connect("user_123", "jwt_token").await?;
+//!
+//! // 构建并发送文本消息
+//! let content = ContentBuilder::text("Hello @All!")
+//!     .mention_all(6, 4)
+//!     .build();
+//! let msg = MessageBuilder::new("conv_id", "user_123")
+//!     .content(content)
+//!     .build()?;
+//! client.message().send(msg).await?;
+//!
+//! // 监听推送 + 解码内容
+//! let _sub = client.on_message(|msg| {
+//!     if let Ok(decoded) = decode_content(msg) {
+//!         println!("{}", decoded.text_preview());
+//!     }
+//! });
+//!
+//! // 消息操作
+//! client.message().typing("conv_id", "user_123", true).await?;
+//! client.message().mark("conv_id", "msg_id", "user_123", MarkType::Important).await?;
+//! client.message().pin("conv_id", "msg_id", "user_123").await?;
+//! client.message().add_reaction("conv_id", "msg_id", "user_123", "👍").await?;
+//! ```
 
-// 共享模块
-pub mod shared;
+pub mod error;
+pub mod util;
+pub mod model;
+pub mod protocol;
+pub mod store;
+pub mod event;
+pub mod core;
+pub mod transport;
+pub mod handler;
+pub mod sync;
+pub mod command;
+pub mod query;
+pub mod middleware;
+pub mod api;
+pub mod client;
+pub mod conversation;
 
-// ============================================================================
-// Core SDK 架构模块
-// ============================================================================
-
-// 配置模块
-pub mod config;
-
-// Domain Layer - 领域层
-pub mod domain {
-    pub mod session;
-    pub mod connection;
-    pub mod message;
-    pub mod conversation;
-    pub mod sync;
-    
-    // 领域事件
-    pub mod event;
-    
-    // 领域服务
-    pub mod service;
-    
-    // 仓储接口（Port）
-    pub mod repository;
-    
-    // 常量定义
-    pub mod constants;
-    
-    // 消息队列
-    pub mod message_queue;
-}
-
-// Application Layer - 应用层
-// 使用 application/mod.rs 中定义的结构
-pub mod application;
-
-// Infrastructure Layer - 基础设施层
-pub mod infrastructure;
-
-// Interface Layer - 接口层
-pub mod interface;
-
-// Extension 模块（可选）
-#[cfg(feature = "extensions")]
-pub mod extensions;
-
-// 预导出常用类型
+/// 常用类型预导出
 pub mod prelude {
-    pub use crate::application::fsm::*;
-    pub use crate::application::sync_coordinator::*;
-    pub use crate::domain::event::*;
-    pub use crate::domain::repository::*;
-    // 注意：不再导出具体的存储实现，用户需要自行实现 trait
-    pub use crate::infrastructure::storage::event_projection::*;
-    pub use crate::infrastructure::storage::media_cache::*;
-    pub use crate::interface::facade::*;
-    pub use crate::interface::event::*;
-    pub use crate::shared::error::*;
-    
-    #[cfg(feature = "extensions")]
-    pub use crate::extensions::*;
+    // client
+    pub use crate::client::{IMClient, IMClientBuilder, SdkConfig, SdkConfigBuilder};
+    pub use crate::error::{SdkError, Result};
+    pub use crate::core::SdkState;
+
+    // event
+    pub use crate::event::{SdkEvent, EventBus, EventReceiver, Subscription};
+    pub use crate::event::{MessageEvent, ConversationEvent};
+
+    // store
+    pub use crate::store::{
+        MessageStore, ConversationStore, SyncCursorStore, StoreProvider,
+    };
+
+    // sync
+    pub use crate::sync::{SyncTask, SyncCompletion, SyncMode, SyncPhase, SyncContext};
+
+    // middleware
+    pub use crate::middleware::{MessageInterceptor, EventInterceptor};
+
+    // api
+    pub use crate::api::{MessageApi, ConversationApi};
+
+    // 会话 ID 生成（与 flare-core 一致，供上层创建会话使用）
+    pub use crate::conversation::generate_single_chat_conversation_id;
+
+    // protocol
+    pub use crate::protocol::{Codec, ProtobufCodec};
+
+    // content builder / decoder / message builder
+    pub use crate::model::{ContentBuilder, BuiltContent, MessageBuilder};
+    pub use crate::model::{DecodedContent, decode_content, decode_content_bytes};
+
+    // frequently used proto types
+    pub use crate::model::message::{
+        Message, MessageType, MessageStatus, MessageSource, ConversationType,
+        MarkType, ReactionAction, DeleteType, DeleteScope,
+    };
 }

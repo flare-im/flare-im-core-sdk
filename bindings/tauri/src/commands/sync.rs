@@ -1,79 +1,35 @@
-//! Sync Commands
-//!
-//! Handles manual synchronization requests.
+//! 同步命令：仅触发 SDK 侧同步，进度/完成/失败由 SDK 通过事件回调通知（im://sync_progress / im://sync_completed / im://sync_failed）
 
 use tauri::State;
-use crate::state::SdkState;
-use crate::error::CommandError;
-use flare_im_core_sdk::domain::message::Message;
 
-/// Trigger a full bootstrap sync
+use crate::state::SdkState;
+
+/// 触发全量同步会话列表；结果通过 im://conversations_synced / im://sync_completed 等事件回调
 #[tauri::command]
-pub async fn sdk_sync(
-    state: State<'_, SdkState>,
-) -> Result<(), CommandError> {
-    let sdk = state.get_sdk().await.ok_or("SDK not initialized")?;
-    
-    sdk.bootstrap_sync()
-        .await
-        .map_err(CommandError::from)?;
-        
+pub async fn sdk_sync(state: State<'_, SdkState>) -> std::result::Result<(), String> {
+    state
+        .with_client(|c| {
+            Box::pin(async move {
+            c.sync_conversations().await.map_err(|e| e.to_string())
+        })
+        })
+        .await?;
     Ok(())
 }
 
-/// Incremental sync for a specific conversation/session
+/// 触发单会话增量同步；结果通过 im://message / im://sync_completed 等事件回调
 #[tauri::command]
 pub async fn sdk_sync_session_incremental(
     state: State<'_, SdkState>,
     session_id: String,
-) -> Result<u64, CommandError> {
-    let sdk = state.get_sdk().await.ok_or("SDK not initialized")?;
-    
-    // 使用 QueryHandler 拉取增量消息，并返回拉取条数
-    // 这里简单实现为重新查询最近消息条数，不做复杂游标管理
-    let query = flare_im_core_sdk::application::queries::ListMessagesQuery {
-        conversation_id: session_id.clone(),
-        limit: Some(200),
-        cursor: None,
-    };
-    
-    let messages = sdk.sdk_context()
-        .query_handler
-        .list_messages(query)
-        .await
-        .map_err(CommandError::from)?;
-    
-    Ok(messages.len() as u64)
-}
-
-use crate::utils::ensure_message_content_text;
-
-/// Get messages for a conversation
-#[tauri::command]
-pub async fn sdk_get_messages(
-    state: State<'_, SdkState>,
-    session_id: String,
-    limit: Option<usize>,
-    cursor: Option<String>,
-) -> Result<Vec<Message>, CommandError> {
-    let sdk = state.get_sdk().await.ok_or("SDK not initialized")?;
-    
-    let query = flare_im_core_sdk::application::queries::ListMessagesQuery {
-        conversation_id: session_id,
-        limit,
-        cursor,
-    };
-    
-    let mut messages = sdk.sdk_context()
-        .query_handler
-        .list_messages(query)
-        .await
-        .map_err(CommandError::from)?;
-        
-    // Ensure content text is available for frontend
-    for msg in &mut messages {
-        ensure_message_content_text(msg);
-    }
-    
-    Ok(messages)
+) -> std::result::Result<u32, String> {
+    let n = state
+        .with_client(|c| {
+            Box::pin(async move {
+                c.sync_conversation(&session_id).await.map_err(|e| e.to_string())?;
+                Ok::<u32, String>(0u32)
+            })
+        })
+        .await?;
+    Ok(n)
 }
