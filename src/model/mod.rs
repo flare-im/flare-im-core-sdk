@@ -1,23 +1,20 @@
-pub mod message;
-pub mod conversation;
-pub mod event;
+//! 协议层模型 — 与 flare_proto 对齐，并扩展 ContentBuilder / MessageBuilder / DecodedContent
+
 pub mod content_builder;
-pub mod content_decoder;
+pub mod conversation;
+pub mod decoder;
+pub mod event;
+pub mod message;
 pub mod message_builder;
+pub mod message_elem;
 
-pub use content_builder::{ContentBuilder, BuiltContent};
-pub use content_decoder::{DecodedContent, decode_content, decode_content_bytes};
+pub use content_builder::{BuiltContent, ContentBuilder};
+pub use conversation::{Conversation, ConversationSummary};
+pub use decoder::{DecodedContent, decode_content, decode_content_bytes};
+pub use event::{Event, EventType};
+pub use message::{
+    ConversationType, DeleteScope, DeleteType, IMMessage, MarkType, Message, MessageSource,
+    MessageStatus, MessageType, ReactionAction, SendAck,
+};
 pub use message_builder::MessageBuilder;
-
-pub use flare_proto::common::ClientPacket;
-pub use flare_proto::common::ServerPacket;
-pub use flare_proto::common::client_packet;
-pub use flare_proto::common::server_packet;
-pub use flare_proto::common::SyncRequest;
-pub use flare_proto::common::SyncResponse;
-pub use flare_proto::common::ConversationSyncAllRequest;
-pub use flare_proto::common::ConversationSyncAllResponse;
-pub use flare_proto::common::SyncConversationsRequest;
-pub use flare_proto::common::SyncConversationsResponse;
-pub use flare_proto::common::AckBatch;
-pub use flare_proto::common::PushAck;
+pub use message_elem::{Elem, MessagePreviewElem, decoded_content_to_elem};

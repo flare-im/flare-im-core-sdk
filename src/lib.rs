@@ -21,6 +21,9 @@
 //! - 自定义 (100): Custom
 //! - 平台 (111-115): Placeholder (E2E / DecryptFailed / External / Imported / Migration)
 //!
+//! 各接入层（Tauri / FFI / 其他）可将 `content` 字节通过 `decode_content_bytes` + `decoded_content_to_elem`
+//! 转为可序列化的 `Elem`（camelCase、`contentType` 标签），便于 JSON 等序列化供前端使用。
+//!
 //! ## 消息操作
 //!
 //! 覆盖 `event.proto` 定义的全部事件操作 SDK 全流程：
@@ -37,28 +40,23 @@
 //! ## 架构概览
 //!
 //! ```text
-//! ┌─────────────────────────────────────────────────────────────┐
-//! │                       IMClient                              │
-//! │  ┌──────────┬────────────────┐                              │
-//! │  │MessageApi│ConversationApi │  ← 核心 API                  │
-//! │  └────┬─────┴───────┬────────┘                              │
-//! │       │ Command/Query│                                      │
-//! │  ┌────▼─────────────▼──────────────────────────────────┐    │
-//! │  │                  SdkEngine                           │    │
-//! │  │  ┌──────────┐ ┌──────────┐ ┌──────────────────────┐ │    │
-//! │  │  │EventBus  │ │Dispatcher│ │SyncManager           │ │    │
-//! │  │  └──────────┘ └────┬─────┘ │ + custom SyncTasks   │ │    │
-//! │  │                    │       └──────────────────────┘ │    │
-//! │  │  ┌─────────────────▼─────────────────────────────┐  │    │
-//! │  │  │  MiddlewareChain (interceptors)               │  │    │
-//! │  │  └───────────────────────────────────────────────┘  │    │
-//! │  │  ┌──────────────┐ ┌────────────┐ ┌──────────────┐  │    │
-//! │  │  │SocketTransport│ │PacketSender│ │Router (store)│  │    │
-//! │  │  └────┬──────────┘ └────────────┘ └──────────────┘  │    │
-//! │  └───────┼─────────────────────────────────────────────┘    │
-//! │          │                                                   │
-//! │     FlareClient (WebSocket / QUIC)                          │
-//! └─────────────────────────────────────────────────────────────┘
+//!                    API (MessageApi / ConversationApi)
+//!                                 │
+//!                        Command / Query
+//!                                 │
+//!                             EventBus
+//!                    ┌────────────┼────────────┐
+//!                    │            │            │
+//!              Connection      Sync        Message
+//!                (FSM)       Engine       Engine
+//!                    │            │            │
+//!                    └────────────┼────────────┘
+//!                                 │
+//!                          Repository
+//!                                 │
+//!                            Storage
+//!                                 │
+//!              Network Pipeline (Decode → Router → EventBus)
 //! ```
 //!
 //! ## 快速上手
@@ -93,50 +91,68 @@
 //! client.message().typing("conv_id", "user_123", true).await?;
 //! client.message().mark("conv_id", "msg_id", "user_123", MarkType::Important).await?;
 //! client.message().pin("conv_id", "msg_id", "user_123").await?;
-//! client.message().add_reaction("conv_id", "msg_id", "user_123", "👍").await?;
+//! client.message().add_reaction("msg_id", "👍").await?;
 //! ```
 
-pub mod error;
-pub mod util;
-pub mod model;
-pub mod protocol;
-pub mod store;
-pub mod event;
-pub mod core;
-pub mod transport;
-pub mod handler;
-pub mod sync;
-pub mod command;
-pub mod query;
-pub mod middleware;
-pub mod api;
 pub mod client;
 pub mod conversation;
+pub mod core;
+pub mod domain;
+pub mod error;
+pub mod event;
+pub mod fsm;
+pub mod middleware;
+pub mod model;
+pub mod reliable_queue;
+pub mod types;
+pub mod util;
+
+// 与 flare-orchestrator 对齐的分层入口
+pub mod application;
+pub mod config;
+pub mod infrastructure;
+
+/// 与旧路径 `crate::lifecycle::*` 对齐：配置在 [`client::lifecycle`]；路径工具源实现在 [`util::paths`]（经 lifecycle 再导出）；SQLite 仓储在 [`util::sqlite_store`]（`lifecycle-sqlite`）。
+pub mod lifecycle {
+    pub use crate::client::lifecycle::*;
+}
+
+// 基础设施层对外别名，保持现有 crate::store / transport / protocol 路径可用
+pub use crate::infrastructure::persistence as store;
+pub use crate::infrastructure::protocol;
+pub use crate::infrastructure::transport;
+
+/// 错误类型与 Result 根级导出（与 flare-core 一致，便于 bindings 等使用）
+pub use error::{ErrorCode, FlareError, Result, from_rpc_status};
+/// 强类型 ID（防止 user_id / conversation_id 混用）
+pub use types::{ConversationId, UserId};
 
 /// 常用类型预导出
 pub mod prelude {
-    // client
-    pub use crate::client::{IMClient, IMClientBuilder, SdkConfig, SdkConfigBuilder};
-    pub use crate::error::{SdkError, Result};
+    // client（含 Facade：MessageApi / ConversationApi / MessageBuildApi）
+    pub use crate::client::{
+        ConversationApi, IMClient, IMClientBuilder, MessageApi, MessageBuildApi, SdkConfig,
+        SdkConfigBuilder,
+    };
     pub use crate::core::SdkState;
+    pub use crate::error::{ErrorCode, FlareError, Result, from_rpc_status};
+    pub use crate::types::{ConversationId, UserId};
 
     // event
-    pub use crate::event::{SdkEvent, EventBus, EventReceiver, Subscription};
-    pub use crate::event::{MessageEvent, ConversationEvent};
+    pub use crate::event::{ConversationEvent, MessageEvent};
+    pub use crate::event::{EventBus, EventReceiver, SdkEvent, Subscription};
 
     // store
-    pub use crate::store::{
-        MessageStore, ConversationStore, SyncCursorStore, StoreProvider,
-    };
+    pub use crate::store::{ConversationStore, MessageStore, StoreProvider, SyncCursorStore};
 
-    // sync
-    pub use crate::sync::{SyncTask, SyncCompletion, SyncMode, SyncPhase, SyncContext};
+    // sync（任务抽象与 SyncManager 位于 core::sync）
+    pub use crate::core::{
+        SyncContext, SyncMode, SyncPhase, SyncProgress, SyncTask, SyncTaskResult,
+    };
+    pub use crate::fsm::SyncState;
 
     // middleware
-    pub use crate::middleware::{MessageInterceptor, EventInterceptor};
-
-    // api
-    pub use crate::api::{MessageApi, ConversationApi};
+    pub use crate::middleware::{EventInterceptor, MessageInterceptor};
 
     // 会话 ID 生成（与 flare-core 一致，供上层创建会话使用）
     pub use crate::conversation::generate_single_chat_conversation_id;
@@ -144,13 +160,18 @@ pub mod prelude {
     // protocol
     pub use crate::protocol::{Codec, ProtobufCodec};
 
-    // content builder / decoder / message builder
-    pub use crate::model::{ContentBuilder, BuiltContent, MessageBuilder};
+    // content builder / decoder / message_elem / message builder
+    pub use crate::model::{BuiltContent, ContentBuilder, MessageBuilder};
     pub use crate::model::{DecodedContent, decode_content, decode_content_bytes};
+    pub use crate::model::{Elem, decoded_content_to_elem};
 
     // frequently used proto types
     pub use crate::model::message::{
-        Message, MessageType, MessageStatus, MessageSource, ConversationType,
-        MarkType, ReactionAction, DeleteType, DeleteScope,
+        ConversationType, DeleteScope, DeleteType, MarkType, Message, MessageSource, MessageStatus,
+        MessageType, ReactionAction,
     };
+
+    // 领域视图（含昵称、头像）
+    pub use crate::domain::UserProfile;
+    pub use crate::model::{Conversation, IMMessage};
 }

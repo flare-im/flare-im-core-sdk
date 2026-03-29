@@ -2,19 +2,16 @@
 name = "flare-im-core-sdk-tauri"
 version = "0.2.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.94.0"
 authors = ["Flare Team"]
 license = "MIT"
 description = "Flare IM Core SDK - Tauri Plugin"
 
 [dependencies]
-flare-im-core-sdk = { path = "../.." }
-flare-im-core-sdk-storage-sqlite = { path = "../../storage/sqlite" }
+anyhow = "1.0"
+flare-im-core-sdk = { path = "../..", features = ["lifecycle-sqlite"] }
 flare-proto = { path = "../../../flare-proto" }
 tauri = { version = "2.10.1", features = ["macos-private-api"] }
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1.0", features = ["derive"] }
-prost = "0.14"
-prost-types = "0.14"
 tracing = "0.1"
-chrono = "0.4"

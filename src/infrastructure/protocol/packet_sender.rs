@@ -1,0 +1,145 @@
+//! 上行发送：与 flare-proto 对齐 — 消息=Message，事件=Event，回执=Ack；DATA 载荷=`DataPacket`（`common/data.proto`）。
+
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::time::Duration;
+
+use flare_core::client::builder::flare::FlareClient;
+use flare_core::common::protocol::{
+    PayloadCommand, Reliability, builder,
+    flare::core::commands::payload_command::Type as PayloadType,
+};
+use flare_proto::common::data_packet::Payload as DataPacketPayload;
+use flare_proto::common::{Ack, CustomData, DataKind, DataPacket, Event, Message as ProtoMessage};
+use prost::Message;
+use tokio::sync::Mutex;
+
+use crate::error::{FlareError, Result};
+use crate::infrastructure::protocol::Codec;
+
+/// 上行包发送器 — Message / Event / Ack / DataPacket（同步与用户扩展）
+pub struct PacketSender {
+    client: Arc<Mutex<Option<FlareClient>>>,
+    #[allow(dead_code)]
+    codec: Arc<dyn Codec>,
+}
+
+impl PacketSender {
+    pub fn new(client: Arc<Mutex<Option<FlareClient>>>, codec: Arc<dyn Codec>) -> Self {
+        Self { client, codec }
+    }
+
+    /// 发送领域事件（event.proto Event）。PayloadCommand.type=Event，网关回 EventAck。
+    pub async fn send_event(&self, event: &Event, _timeout_duration: Duration) -> Result<()> {
+        let message_id = if event.event_id.is_empty() {
+            builder::generate_message_id()
+        } else {
+            event.event_id.clone()
+        };
+        let payload = event.encode_to_vec();
+        let mut guard = self.client.lock().await;
+        let client = guard.as_mut().ok_or_else(|| {
+            FlareError::localized(flare_core::common::ErrorCode::NotConnected, "未连接")
+        })?;
+        let cmd = builder::event_message(message_id, payload, None, None);
+        let frame = builder::frame_with_payload_command(cmd, Reliability::AtLeastOnce);
+        client
+            .send_frame(&frame)
+            .await
+            .map_err(|e| FlareError::connection_failed(e.to_string()))?;
+        Ok(())
+    }
+
+    /// 发送消息（message.proto Message）。PayloadCommand.type=Message，网关回 SendAck。
+    pub async fn send_message(
+        &self,
+        message: &ProtoMessage,
+        _timeout_duration: Duration,
+    ) -> Result<()> {
+        let message_id = message.client_msg_id.clone();
+        let mut metadata = HashMap::new();
+        if !message.conversation_id.is_empty() {
+            metadata.insert(
+                "conversation_id".to_string(),
+                message.conversation_id.as_bytes().to_vec(),
+            );
+        }
+        tracing::debug!(message_id = %message_id, "send_message");
+        let mut guard = self.client.lock().await;
+        let client = guard.as_mut().ok_or_else(|| {
+            FlareError::localized(flare_core::common::ErrorCode::NotConnected, "未连接")
+        })?;
+        // 发消息必须用 SEND (0)，网关才会走 handle_message 并回 ACK (1)；用 DATA (2) 会回 DATA (2)
+        let msg_cmd =
+            builder::send_message(message_id, message.encode_to_vec(), Some(metadata), None);
+        let frame = builder::frame_with_payload_command(msg_cmd, Reliability::AtLeastOnce);
+        client
+            .send_frame(&frame)
+            .await
+            .map_err(|e| FlareError::connection_failed(e.to_string()))?;
+        Ok(())
+    }
+
+    /// 上报 ACK（ack.proto Ack：PushAck/ConversationAck/AckBatch）。PayloadCommand.type=Ack。
+    pub async fn send_ack(&self, ack: &Ack) -> Result<()> {
+        let message_id = builder::generate_message_id();
+        let payload = ack.encode_to_vec();
+        let cmd = PayloadCommand {
+            r#type: PayloadType::Ack as i32,
+            message_id: message_id.clone(),
+            payload,
+            metadata: std::collections::HashMap::new(),
+            seq: 0,
+        };
+        let frame = builder::frame_with_payload_command(cmd, Reliability::AtLeastOnce);
+        let mut guard = self.client.lock().await;
+        let client = guard.as_mut().ok_or_else(|| {
+            FlareError::localized(flare_core::common::ErrorCode::NotConnected, "未连接")
+        })?;
+        client
+            .send_frame(&frame)
+            .await
+            .map_err(|e| FlareError::connection_failed(e.to_string()))?;
+        Ok(())
+    }
+
+    /// 发送用户扩展（`DataPacket` + `user_custom`）。PayloadCommand.type=Data。
+    pub async fn send_custom_data(&self, data: &CustomData) -> Result<()> {
+        let packet = DataPacket {
+            kind: DataKind::UserCustom as i32,
+            payload: Some(DataPacketPayload::UserCustom(data.clone())),
+        };
+        let payload = packet.encode_to_vec();
+        let mut guard = self.client.lock().await;
+        let client = guard.as_mut().ok_or_else(|| {
+            FlareError::localized(flare_core::common::ErrorCode::NotConnected, "未连接")
+        })?;
+        let cmd = builder::data_message(builder::generate_message_id(), payload, None, None);
+        let frame = builder::frame_with_payload_command(cmd, Reliability::AtLeastOnce);
+        client
+            .send_frame(&frame)
+            .await
+            .map_err(|e| FlareError::connection_failed(e.to_string()))?;
+        Ok(())
+    }
+
+    /// 发送同步请求（`DataPacket.sync_request` + `common/sync.proto` `Sync`）。
+    pub async fn send_sync(&self, sync: &flare_proto::common::Sync) -> Result<()> {
+        let packet = DataPacket {
+            kind: DataKind::SyncRequest as i32,
+            payload: Some(DataPacketPayload::SyncRequest(sync.clone())),
+        };
+        let payload = packet.encode_to_vec();
+        let mut guard = self.client.lock().await;
+        let client = guard.as_mut().ok_or_else(|| {
+            FlareError::localized(flare_core::common::ErrorCode::NotConnected, "未连接")
+        })?;
+        let cmd = builder::data_message(builder::generate_message_id(), payload, None, None);
+        let frame = builder::frame_with_payload_command(cmd, Reliability::AtLeastOnce);
+        client
+            .send_frame(&frame)
+            .await
+            .map_err(|e| FlareError::connection_failed(e.to_string()))?;
+        Ok(())
+    }
+}

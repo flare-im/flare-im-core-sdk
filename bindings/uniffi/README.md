@@ -201,7 +201,7 @@ sdk.unsubscribe_message_events(subscriber_id)?;
 
 3. **类型转换**: 部分复杂类型（如 `DateTime<Utc>`）被转换为字符串（ISO 8601 格式），需要在客户端进行解析。
 
-4. **错误处理**: 所有错误都通过 `SdkError` 返回，客户端需要处理所有可能的错误类型。
+4. **错误处理**: 所有错误统一基于 `flare-core` 的 `FlareError` 返回，客户端需要处理所有可能的错误类型。
 
 ## 开发指南
 

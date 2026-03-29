@@ -1,9 +1,24 @@
-pub mod lifecycle;
-pub mod dispatcher;
-pub mod router;
-pub mod engine;
+//! 核心引擎层
+//!
+//! 架构：`API → Command/Query → EventBus → (Connection | Sync | Message) → FSM → Repository → Storage → Network`
+//!
+//! - **状态集中**：状态仅在 FSM 与 Actor 中（Connection FSM、Sync FSM、ReliableQueue 消息状态）
+//! - **通信事件化**：模块间只通过 EventBus 通信，Dispatcher 仅做 Packet → Event 路由
+//! - **单一职责**：SyncManager 只负责同步；MessageEngine/ConversationFlow 位于 application 层
 
-pub use lifecycle::{SdkState, StateManager};
+mod dispatcher;
+mod engine;
+mod sync;
+
 pub use dispatcher::Dispatcher;
-pub use router::Router;
-pub use engine::{CurrentUserIdStore, SdkEngine};
+pub use engine::{SdkEngine, SdkState};
+pub use sync::{
+    SessionSyncRunner, SyncContext, SyncManager, SyncMode, SyncPhase, SyncProgress,
+    SyncResponseHandler, SyncResult, SyncTask, SyncTaskResult,
+};
+
+use std::sync::Arc;
+use tokio::sync::RwLock;
+
+/// 当前用户 ID 存储（连接后由引擎写入）
+pub type CurrentUserIdStore = Arc<RwLock<String>>;

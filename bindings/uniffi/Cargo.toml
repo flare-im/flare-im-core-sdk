@@ -2,7 +2,7 @@
 name = "flare-im-core-sdk-uniffi"
 version = "0.2.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.94.0"
 authors = ["Flare Team"]
 license = "MIT"
 description = "Flare IM Core SDK - UniFFI Bindings (Kotlin/Swift/Python)"

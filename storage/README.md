@@ -1,115 +1,110 @@
-# Flare IM Core SDK - 存储实现
+# Flare IM Core SDK - 存储
 
-本目录包含 Flare IM Core SDK 的存储实现。
-
-## 架构设计
-
-SDK 核心（`flare-im-core-sdk/src`）只包含业务逻辑和 trait 定义，不包含具体的存储实现。存储实现由独立的 crate 提供，用户可以根据平台选择合适的实现。
+本目录提供与 Flare IM Core SDK 配套的存储能力：**SQLite 连接与运行时**。本 crate **不依赖** `flare-im-core-sdk`，仅提供连接池、schema 注册与运行时封装，便于各平台与扩展复用同一数据库。
 
 ## 目录结构
 
 ```
 storage/
-├── sqlite/          # SQLite 存储实现（桌面/移动平台）
+├── README.md           # 本说明
+├── sqlite/             # SQLite 连接与运行时（pool + schema 注册）
 │   ├── Cargo.toml
 │   └── src/
-│       ├── lib.rs
-│       ├── event_store.rs
-│       ├── message_repository.rs
-│       ├── conversation_repository.rs
-│       └── snapshot_store.rs
-└── indexeddb/       # IndexedDB 存储实现（Web 平台，待实现）
+│       ├── lib.rs           # create_pool / open_pool / SqliteRuntime / register_schema_init*
+│       ├── runtime.rs       # SqliteRuntime
+│       └── schema_registry.rs  # 自定义 schema 注册
+└── indexeddb/          # IndexedDB（Web 平台，待实现）
     └── README.md
 ```
 
-## SQLite 存储实现
+## SQLite 存储（`flare-im-core-sdk-storage-sqlite`）
 
-### 特性
+### 职责
 
-- ✅ **EventStore**: 事件存储（事件溯源）
-- ✅ **MessageRepository**: 消息仓储（支持分页、搜索、时间范围查询）
-- ✅ **ConversationRepository**: 会话仓储（支持分页、参与者查询）
-- ✅ **SnapshotStore**: 快照存储（可选，用于性能优化）
+- **连接池**：`create_pool` / `open_pool` 创建并返回 `SqlitePool`。
+- **运行时**：`SqliteRuntime::open` 持有 pool，供应用与扩展统一使用。
+- **Schema 注册**：`register_schema_init` / `register_schema_init_with` 在创建 pool 后统一执行建表逻辑；`register_schema_init_with` 可直接传入 core-sdk 的 `sqlite_init_schema`，与扩展共用同一 DB。
+
+本 crate **不实现**消息/会话等仓储，也不建 core 表；core 表与仓储由 **flare-im-core-sdk**（`storage-sqlite` feature）在拿到 pool 后自行 `init_schema` 与构建。
+
+### API
+
+| API | 说明 |
+|-----|------|
+| `create_pool(database_url)` | 仅创建 SQLite 连接池，不建表。 |
+| `open_pool(database_url)` | 创建池并执行所有已注册的 schema 初始化器。 |
+| `database_url_from_path(path)` | 将本地路径转为 `sqlite://...?mode=rwc`。 |
+| `SqliteRuntime::open(url)` | 创建池 + 执行已注册 schema，返回持有 pool 的运行时。 |
+| `SqliteRuntime::pool()` | 获取连接池。 |
+| `register_schema_init(name, \|pool\| async move { ... })` | 注册返回 `anyhow::Result<()>` 的 schema 初始化器。 |
+| `register_schema_init_with(name, f)` | 注册返回 `Result<(), E>` 的初始化器，**可直接传入** core-sdk 的 `sqlite_init_schema`。 |
+
+### 依赖
+
+- 使用 **workspace** 依赖（与 `flare-im-core-sdk/Cargo.toml` 一致）：`anyhow`、`once_cell`、`sqlx`、`tokio`。
 
 ### 使用方式
 
+#### 1. 仅用本 crate：拿池 + 自定义 schema
+
 ```rust
-use flare_im_core_sdk_storage_sqlite::create_storage;
-use flare_im_core_sdk::interface::facade::ImCoreSdk;
-use std::sync::Arc;
+use flare_im_core_sdk_storage_sqlite::{open_pool, register_schema_init, SqliteRuntime};
 
-// 创建存储实例
-let database_url = "sqlite:./flare_im.db";
-let (event_store, message_repository, conversation_repository) = 
-    create_storage(database_url).await?;
+// 可选：注册扩展表
+register_schema_init("my_extension", |pool| async move {
+    sqlx::query("CREATE TABLE IF NOT EXISTS my_table (id TEXT PRIMARY KEY)")
+        .execute(pool)
+        .await?;
+    Ok(())
+});
 
-// 创建 SDK 实例
-let sdk = Arc::new(ImCoreSdk::new(
-    config,
-    event_store as Arc<dyn EventStore>,
-    message_repository as Arc<dyn MessageRepository>,
-    conversation_repository as Arc<dyn ConversationRepository>,
-).await?);
+// 方式 A：直接拿池
+let pool = open_pool("sqlite:///data/im.db?mode=rwc").await?;
+
+// 方式 B：运行时（推荐，便于多处复用同一 pool）
+let rt = SqliteRuntime::open("sqlite:///data/im.db?mode=rwc").await?;
+let pool = rt.pool();
 ```
 
-### 数据库表结构
+#### 2. 与本 SDK 配合：core 表 + 仓储
 
-#### events 表
-- `event_id`: 事件ID（主键）
-- `event_type`: 事件类型
-- `aggregate_id`: 聚合根ID
-- `version`: 版本号
-- `timestamp`: 时间戳
-- `data`: 事件数据（JSON）
+依赖 **flare-im-core-sdk**（启用 `storage-sqlite`）。推荐：用 `register_schema_init_with` 直接注册 core 的 `sqlite_init_schema`，这样 `open_pool` / `SqliteRuntime::open` 时会自动建 core 表，无需再手动调用。
 
-#### messages 表
-- `client_msg_id`: 客户端消息ID（主键）
-- `server_id`: 服务端消息ID
-- `conversation_id`: 会话ID
-- `sender_id`: 发送者ID
-- `content`: 消息内容（BLOB）
-- `timestamp`: 时间戳
-- ... 其他字段
+```rust
+use std::sync::Arc;
+use flare_im_core_sdk_storage_sqlite::{register_schema_init_with, SqliteRuntime};
+use flare_im_core_sdk::store::sqlite_init_schema;
+use flare_im_core_sdk::store::{StoreProvider,
+    SqliteMessageRepo, SqliteConversationRepo, SqlitePendingSendRepo,
+    SqliteUserProfileRepo, SqliteSyncCursorRepo};
 
-#### conversations 表
-- `conversation_id`: 会话ID（主键）
-- `conversation_type`: 会话类型
-- `display_name`: 显示名称
-- `unread_count`: 未读数
-- `max_seq`: 最大序列号
-- ... 其他字段
+// 1) 注册 core 表初始化（直接传入 init_schema，open 时自动执行）
+register_schema_init_with("core", |pool| sqlite_init_schema(pool));
 
-#### snapshots 表
-- `aggregate_id`: 聚合根ID
-- `aggregate_type`: 聚合根类型
-- `version`: 版本号
-- `data`: 快照数据（JSON）
+// 2) 拿运行时（内部已执行 core + 其他已注册的 schema）
+let rt = SqliteRuntime::open("sqlite:///data/im.db?mode=rwc").await?;
 
-### 索引
+// 3) 用同一 pool 构建仓储并组装 StoreProvider
+let p = rt.pool();
+let pending_repo = Arc::new(SqlitePendingSendRepo::new(p.clone()));
+let user_repo = Arc::new(SqliteUserProfileRepo::new(p.clone()));
+let stores = StoreProvider {
+    messages: Arc::new(SqliteMessageRepo::new(p.clone())),
+    conversations: Arc::new(SqliteConversationRepo::new(p.clone())),
+    cursors: Arc::new(SqliteSyncCursorRepo::new(p.clone())),
+    pending_send_reader: Some(pending_repo.clone()),
+    pending_send_writer: Some(pending_repo),
+    user_profiles_reader: Some(user_repo.clone()),
+    user_profiles_writer: Some(user_repo),
+};
+```
 
-所有表都创建了必要的索引以优化查询性能：
-- `events`: `(aggregate_id)`, `(aggregate_id, version)`
-- `messages`: `(server_id)`, `(conversation_id)`, `(timestamp DESC)`, `(conversation_id, timestamp DESC)`
-- `conversations`: `(updated_at DESC)`
+## IndexedDB 存储
 
-## IndexedDB 存储实现
-
-待实现。适用于 Web 平台（wasm32），使用浏览器的 IndexedDB API。
+待实现，适用于 Web（wasm32），通过实现 core-sdk 的 domain Reader/Writer trait 接入。参见 core-sdk 的 `store::indexeddb_adapter` 文档。
 
 ## 设计原则
 
-1. **依赖倒置**: SDK 核心只依赖 trait，不依赖具体实现
-2. **平台无关**: 核心代码不关心存储的具体实现方式
-3. **灵活扩展**: 用户可以轻松实现自己的存储（如 PostgreSQL、MongoDB 等）
-4. **性能优化**: 每个实现都可以针对特定平台进行优化
-
-## 实现自己的存储
-
-要实现自己的存储，需要实现以下 trait：
-
-- `EventStore` - 事件存储
-- `MessageRepository` - 消息仓储
-- `ConversationRepository` - 会话仓储
-- `SnapshotStore` - 快照存储（可选）
-
-参考 `sqlite/` 目录中的实现作为示例。
+1. **存储与 core 解耦**：本目录的 SQLite crate 不依赖 core-sdk，只提供连接与 schema 注册。
+2. **扩展友好**：通过 `register_schema_init` / `register_schema_init_with` 与同一 pool，扩展可与 core 共用同一数据库；core 的 `sqlite_init_schema` 可直接注册使用。
+3. **依赖统一**：使用 workspace 依赖，与根 `Cargo.toml` 版本一致。

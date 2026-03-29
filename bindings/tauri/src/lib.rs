@@ -1,85 +1,121 @@
-//! Flare IM Core SDK - Tauri 绑定
+//! Flare IM Core SDK — Tauri 命令薄封装：透传 [`flare_im_core_sdk::client::IMClient`] 与 Facade；
+//! SdkEvent → `im://*` 由 `sdk_login` 内 `spawn` 转发，无绑定层业务逻辑。
 //!
-//! 基于 `flare_im_core_sdk` 的 IMClient、MessageApi、ConversationApi，
-//! 暴露 Tauri 命令与事件（im://message / im://unread 等），供前端调用。
-//!
-//! 模式：SDK Core ← 语言模型（model）→ App；binding 仅做 proto → model 转换，不直接使用 JSON。
+//! ## 性能
+//! - [`SdkState`](state::SdkState) 仅持有一个 [`IMClient`]，命令热路径为 `Arc` 克隆，无绑定层异步锁。
+//! - `sdk_init` 仅需 `SdkInitArgs`；`sdk_login` 的 `AppHandle` 由 Tauri 注入，勿写入 invoke 参数。
 
+pub mod commands;
 pub mod convert;
 pub mod model;
 pub mod state;
-pub mod commands;
 
-pub use model::SdkConfigOptions;
+pub use model::{SdkConfigOptions, SendAckPayload};
 pub use state::SdkState;
 
-// 在 bindings crate 内展开 generate_handler!，使 __cmd__* 宏可见；示例应用直接使用 im_invoke_handler()
 use commands::{
     conversation::{
-        sdk_create_session, sdk_delete_conversation, sdk_get_conversation_id_by_session_type,
-        sdk_get_conversation_list_split, sdk_get_conversations, sdk_get_multiple_conversation,
-        sdk_get_one_conversation, sdk_get_total_unread_msg_count, sdk_hide_all_conversations,
-        sdk_hide_conversation, sdk_mark_all_read, sdk_mark_conversation_as_read,
-        sdk_set_conversation_draft, sdk_set_conversation_info, sdk_set_input_state,
-        sdk_clear_conversation_messages, sdk_get_input_states,
+        sdk_conversation_delete, sdk_conversation_get, sdk_conversation_get_multiple,
+        sdk_conversation_get_one, sdk_conversation_list, sdk_conversation_list_paginated,
+        sdk_conversation_list_raw, sdk_conversation_mark_all_read, sdk_conversation_mark_read,
+        sdk_conversation_set_pinned, sdk_conversation_update_draft,
     },
     lifecycle::{
-        sdk_generate_test_token, sdk_init, sdk_login, sdk_logout,
+        sdk_current_user_id, sdk_engine_state, sdk_generate_test_token, sdk_init, sdk_is_connected,
+        sdk_login, sdk_logout, sdk_mark_session_read, sdk_set_conversation_input_state,
+        sdk_sync_conversation, sdk_sync_messages,
     },
     message::{
-        sdk_add_reaction, sdk_add_thread_reply, sdk_delete_message, sdk_edit_message,
-        sdk_favorite_message, sdk_forward_message, sdk_get_messages, sdk_mark_message,
-        sdk_mark_read, sdk_mark_session_read, sdk_pin_message, sdk_quote_message,
-        sdk_recall_message, sdk_remove_reaction, sdk_reply_message, sdk_send_text_message,
-        sdk_unfavorite_message, sdk_unpin_message,
+        sdk_add_reaction, sdk_create_announcement, sdk_create_audio, sdk_create_card,
+        sdk_create_custom, sdk_create_emoji, sdk_create_file, sdk_create_forward, sdk_create_gif,
+        sdk_create_image, sdk_create_link_card, sdk_create_location, sdk_create_markdown,
+        sdk_create_mini_program, sdk_create_notification, sdk_create_placeholder, sdk_create_quote,
+        sdk_create_rich_text, sdk_create_schedule, sdk_create_sticker, sdk_create_system,
+        sdk_create_task, sdk_create_text, sdk_create_thread_reply, sdk_create_video,
+        sdk_create_vote, sdk_delete_message, sdk_edit, sdk_edit_text_by_message_id,
+        sdk_get_message, sdk_get_message_raw, sdk_list_messages, sdk_mark, sdk_mark_by_message_id,
+        sdk_mark_read, sdk_mark_read_with_ids, sdk_mark_with_color, sdk_pin, sdk_pin_by_message_id,
+        sdk_recall, sdk_remove_reaction, sdk_search_messages, sdk_send, sdk_typing, sdk_unmark,
+        sdk_unmark_by_message_id, sdk_unpin, sdk_unpin_by_message_id,
     },
-    sync::{sdk_sync, sdk_sync_session_incremental},
 };
 
-/// 返回 IM 命令的 invoke handler，在应用内使用：`.invoke_handler(flare_im_core_sdk_tauri::im_invoke_handler())`
+/// 返回 IM 命令的 invoke handler。应用内使用：`.invoke_handler(flare_im_core_sdk_tauri::im_invoke_handler())`
 #[must_use]
 pub fn im_invoke_handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + 'static {
     tauri::generate_handler![
+        // lifecycle
         sdk_init,
         sdk_login,
         sdk_logout,
+        sdk_is_connected,
+        sdk_current_user_id,
         sdk_generate_test_token,
-        sdk_send_text_message,
-        sdk_get_messages,
+        sdk_engine_state,
+        sdk_sync_conversation,
+        sdk_sync_messages,
         sdk_mark_session_read,
-        sdk_mark_read,
-        sdk_recall_message,
-        sdk_edit_message,
+        sdk_set_conversation_input_state,
+        // message build + send
+        sdk_create_text,
+        sdk_create_quote,
+        sdk_create_thread_reply,
+        sdk_create_forward,
+        sdk_create_image,
+        sdk_create_video,
+        sdk_create_audio,
+        sdk_create_file,
+        sdk_create_location,
+        sdk_create_card,
+        sdk_create_sticker,
+        sdk_create_emoji,
+        sdk_create_gif,
+        sdk_create_link_card,
+        sdk_create_mini_program,
+        sdk_create_rich_text,
+        sdk_create_markdown,
+        sdk_create_system,
+        sdk_create_notification,
+        sdk_create_vote,
+        sdk_create_task,
+        sdk_create_schedule,
+        sdk_create_announcement,
+        sdk_create_custom,
+        sdk_create_placeholder,
+        sdk_send,
+        sdk_recall,
+        sdk_edit,
+        sdk_edit_text_by_message_id,
         sdk_delete_message,
+        sdk_mark_read,
+        sdk_mark_read_with_ids,
+        sdk_typing,
         sdk_add_reaction,
         sdk_remove_reaction,
-        sdk_pin_message,
-        sdk_unpin_message,
-        sdk_mark_message,
-        sdk_quote_message,
-        sdk_reply_message,
-        sdk_add_thread_reply,
-        sdk_forward_message,
-        sdk_favorite_message,
-        sdk_unfavorite_message,
-        sdk_get_conversations,
-        sdk_get_one_conversation,
-        sdk_get_conversation_id_by_session_type,
-        sdk_get_total_unread_msg_count,
-        sdk_mark_conversation_as_read,
-        sdk_mark_all_read,
-        sdk_delete_conversation,
-        sdk_create_session,
-        sdk_set_input_state,
-        sdk_get_conversation_list_split,
-        sdk_get_multiple_conversation,
-        sdk_get_input_states,
-        sdk_set_conversation_draft,
-        sdk_hide_conversation,
-        sdk_hide_all_conversations,
-        sdk_clear_conversation_messages,
-        sdk_set_conversation_info,
-        sdk_sync,
-        sdk_sync_session_incremental,
+        sdk_pin,
+        sdk_unpin,
+        sdk_pin_by_message_id,
+        sdk_unpin_by_message_id,
+        sdk_mark,
+        sdk_mark_with_color,
+        sdk_unmark,
+        sdk_mark_by_message_id,
+        sdk_unmark_by_message_id,
+        sdk_get_message,
+        sdk_get_message_raw,
+        sdk_list_messages,
+        sdk_search_messages,
+        // conversation
+        sdk_conversation_list,
+        sdk_conversation_get,
+        sdk_conversation_get_one,
+        sdk_conversation_get_multiple,
+        sdk_conversation_list_paginated,
+        sdk_conversation_list_raw,
+        sdk_conversation_mark_read,
+        sdk_conversation_mark_all_read,
+        sdk_conversation_delete,
+        sdk_conversation_set_pinned,
+        sdk_conversation_update_draft,
     ]
 }

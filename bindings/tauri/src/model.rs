@@ -1,11 +1,11 @@
-//! 语言模型层：SDK Core ← model → App
-//!
-//! 与 SDK/proto 解耦的契约类型，仅做序列化（serde）；binding 不直接使用 JSON。
-//! 传输层可由 Tauri 默认 JSON 或后续改为 proto bytes。
+//! Tauri IPC 用的可序列化类型与事件 payload；业务在 core-sdk。
 
+use flare_proto::common::SendAck as ProtoSendAck;
 use serde::{Deserialize, Serialize};
 
-// ---------- 上层可传入的 SDK 配置（可选覆盖，camelCase 供前端） ----------
+// ---------- 上层可传入的 SDK 配置（camelCase，与 [flare_im_core_sdk::client::SdkConfigOverlay] 一致） ----------
+
+pub use flare_im_core_sdk::client::SdkConfigOverlay as SdkConfigOptions;
 
 /// sdk_init 入参：前端传对象 { environment?, sdkConfig? }，保证反序列化一致
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -15,87 +15,57 @@ pub struct SdkInitArgs {
     pub sdk_config: Option<SdkConfigOptions>,
 }
 
-/// SDK 配置可选覆盖：与 [flare_im_core_sdk::client::config::SdkConfig] 对应，全部可选，用于 sdk_init 个性化。
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", default)]
-pub struct SdkConfigOptions {
-    pub ws_url: Option<String>,
-    pub quic_url: Option<String>,
-    pub http_url: Option<String>,
-    pub connect_timeout_secs: Option<u64>,
-    pub reconnect_interval_secs: Option<u64>,
-    pub max_reconnect_attempts: Option<u32>,
-    pub sync_batch_size: Option<u32>,
-    pub ack_timeout_secs: Option<u64>,
-    pub ack_max_retries: Option<u32>,
-    pub enable_metrics: Option<bool>,
-}
+/// 消息：直接使用 SDK 的 IMMessage（序列化由 core-sdk 实现，camelCase + contentDecoded/content）
+pub use flare_im_core_sdk::model::IMMessage;
 
-/// 消息（与 proto Message 对应，camelCase 供前端）
+// ---------- 事件 payload（Tauri emit） ----------
+
+/// 发消息回执（与 proto SendAck 字段对齐，供 command / `im://send_ack`）
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct MessageOut {
-    pub server_id: String,
-    pub conversation_id: String,
+pub struct SendAckPayload {
     pub client_msg_id: String,
-    pub sender_id: String,
-    pub receiver_id: String,
+    pub server_msg_id: String,
     pub seq: u64,
-    pub timestamp: String,
-    pub conversation_type: i32,
-    pub message_type: i32,
-    pub content: Vec<u8>,
-    pub status: i32,
-    #[serde(skip_serializing_if = "std::collections::HashMap::is_empty")]
-    pub extra: std::collections::HashMap<String, String>,
-}
-
-/// 会话最后一条消息预览
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct MessagePreviewOut {
-    pub message_id: String,
-    pub sender_id: String,
-    #[serde(rename = "type")]
-    pub type_: i32,
-    pub text: String,
-    pub time: String,
-}
-
-/// 输入状态（占位用，SDK 无直接接口时返回空列表）
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct InputStateOut {
     pub conversation_id: String,
-    pub user_id: String,
-    pub typing: bool,
+    pub success: bool,
+    pub error_code: i32,
+    pub error_message: String,
 }
 
-/// 会话摘要（与 proto ConversationSummary 对应）
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ConversationSummaryOut {
-    pub conversation_id: String,
-    pub conversation_type: String,
-    pub business_type: String,
-    pub display_name: String,
-    pub avatar_url: String,
-    pub unread_count: u32,
-    pub max_seq: u64,
-    pub last_read_seq: u64,
-    pub last_message: Option<MessagePreviewOut>,
-    pub updated_at: String,
-    pub created_at: String,
-    /// 单聊时对方 user_id（创建会话时写入 ext.peer_id），发送消息时用作 receiver_id
-    pub peer_id: Option<String>,
+impl From<ProtoSendAck> for SendAckPayload {
+    fn from(a: ProtoSendAck) -> Self {
+        Self {
+            client_msg_id: a.client_msg_id,
+            server_msg_id: a.server_msg_id,
+            seq: a.seq,
+            conversation_id: a.conversation_id,
+            success: a.success,
+            error_code: a.error_code,
+            error_message: a.error_message,
+        }
+    }
 }
-
-// ---------- 事件 payload（Tauri emit 用，统一 Serialize，不碰 JSON） ----------
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StateChangedPayload {
     pub state: String,
+}
+
+/// 同步状态变更（Idle / Syncing / CatchingUp / Error）
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncStateChangedPayload {
+    pub state: String,
+}
+
+/// 消息发送失败（client_msg_id + 原因）
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MessageSendFailedPayload {
+    pub client_msg_id: String,
+    pub reason: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -115,7 +85,7 @@ pub struct MessageDeletedPayload {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConversationsSyncedPayload {
-    pub conversations: Vec<ConversationSummaryOut>,
+    pub conversation_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -139,16 +109,127 @@ pub struct SyncFailedPayload {
     pub error: String,
 }
 
+/// 同步开始（无额外字段，前端用于显示「同步中」）
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncStartedPayload {}
+
+/// 同步阶段结束（Init / Background）
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncFinishedPayload {
+    pub phase: String,
+}
+
+/// 连接已建立
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConnectedPayload {}
+
+/// 连接断开
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DisconnectedPayload {
+    pub reason: String,
+}
+
+/// 被踢下线
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KickedOffPayload {
+    pub reason: String,
+}
+
+/// Token 过期
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TokenExpiredPayload {
+    pub message: String,
+}
+
+/// 服务端错误
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ServerErrorPayload {
+    pub code: i32,
+    pub message: String,
+}
+
+/// 重连中
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReconnectingPayload {
+    pub attempt: u32,
+}
+
+/// 会话信息变更
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationUpdatedPayload {
+    pub conversation_id: String,
+}
+
+/// 会话删除
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationDeletedPayload {
+    pub conversation_id: String,
+}
+
+/// 未读数变更
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UnreadCountChangedPayload {
+    pub conversation_id: String,
+    pub unread_count: u32,
+}
+
+/// 正在输入
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TypingPayload {
+    pub conversation_id: String,
+    pub user_id: String,
+    pub typing: bool,
+}
+
+/// 扩展事件（payload 为原始字节，前端按需解码）
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExtensionPayload {
+    pub source: String,
+    pub event_type: String,
+    /// 原始字节，JSON 序列化为 number[]
+    pub payload: Vec<u8>,
+}
+
 /// 事件 payload 枚举，供 Tauri emit 使用；序列化时无标签，仅内层字段
 #[derive(Debug, Clone, Serialize)]
 #[serde(untagged)]
 pub enum EventPayload {
     StateChanged(StateChangedPayload),
-    Message(MessageOut),
+    SyncStateChanged(SyncStateChangedPayload),
+    Message(IMMessage),
+    MessageBatch(Vec<IMMessage>),
+    SendAck(SendAckPayload),
+    MessageSendFailed(MessageSendFailedPayload),
     MessageRecalled(MessageRecalledPayload),
     MessageDeleted(MessageDeletedPayload),
     ConversationsSynced(ConversationsSyncedPayload),
     SyncProgress(SyncProgressPayload),
     SyncCompleted(SyncCompletedPayload),
     SyncFailed(SyncFailedPayload),
+    SyncStarted(SyncStartedPayload),
+    SyncFinished(SyncFinishedPayload),
+    Connected(ConnectedPayload),
+    Disconnected(DisconnectedPayload),
+    KickedOff(KickedOffPayload),
+    TokenExpired(TokenExpiredPayload),
+    ServerError(ServerErrorPayload),
+    Reconnecting(ReconnectingPayload),
+    ConversationUpdated(ConversationUpdatedPayload),
+    ConversationDeleted(ConversationDeletedPayload),
+    UnreadCountChanged(UnreadCountChangedPayload),
+    Typing(TypingPayload),
+    Extension(ExtensionPayload),
 }

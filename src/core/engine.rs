@@ -1,159 +1,197 @@
 use std::sync::Arc;
+use std::sync::Arc as StdArc;
 
-use tokio::sync::{Notify, RwLock};
-use tracing::info;
+use tokio::sync::RwLock;
 
-use crate::core::lifecycle::{SdkState, StateManager};
-use crate::core::dispatcher::Dispatcher;
-use crate::core::router::Router;
-use crate::event::{EventBus, SdkEvent};
-use crate::error::{SdkError, Result};
+use crate::core::{SessionSyncRunner, SyncManager, SyncResponseHandler};
+use crate::error::FlareError;
+use crate::event::{ConnectionEvent as SdkConnectionEvent, EventBus, SdkEvent};
+use crate::fsm::{ConnectionEvent, ConnectionFsm, ConnectionState};
 use crate::middleware::MiddlewareChain;
-use crate::protocol::{PacketSender, ProtobufCodec};
+use crate::protocol::{Codec, PacketSender};
+use crate::reliable_queue::ReliableSendQueue;
 use crate::store::StoreProvider;
-use crate::sync::SyncManager;
-use crate::transport::{SocketTransport, SocketHandler};
+use crate::transport::{SocketHandler, SocketTransport};
 
-/// 当前用户 ID 提供者（连接时写入，断开时清空，供 MessageApi/ConversationApi 使用）
-pub type CurrentUserIdStore = Arc<RwLock<String>>;
+/// 对外暴露的连接状态（与 fsm::ConnectionState 对齐，便于 UI 展示）
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SdkState {
+    Disconnected,
+    Connecting,
+    Connected,
+    Ready,
+    Reconnecting,
+}
 
-/// SDK 核心引擎 — 组装并驱动所有子系统
-///
-/// ```text
-///                          ┌──────────────────┐
-///    IMClient ──────────── │    SdkEngine      │
-///                          │                   │
-///      ┌───────────────────┤  state_manager    │
-///      │                   │  event_bus        │
-///      │   ┌───────────────┤  dispatcher       │
-///      │   │               │  router           │
-///      │   │  ┌────────────┤  sync_manager     │
-///      │   │  │            │  middleware_chain  │
-///      │   │  │            │  ws_transport      │
-///      │   │  │            │  packet_sender     │
-///      │   │  │            └──────────────────┘
-/// ```
+impl From<crate::fsm::ConnectionState> for SdkState {
+    fn from(s: crate::fsm::ConnectionState) -> Self {
+        use crate::fsm::ConnectionState as S;
+        match s {
+            S::Disconnected => SdkState::Disconnected,
+            S::Connecting => SdkState::Connecting,
+            S::Connected => SdkState::Connected,
+            S::Ready => SdkState::Ready,
+            S::Reconnecting => SdkState::Reconnecting,
+        }
+    }
+}
+
 pub struct SdkEngine {
-    pub(crate) state: Arc<StateManager>,
-    pub(crate) bus: EventBus,
-    pub(crate) dispatcher: Arc<Dispatcher>,
-    pub(crate) router: Router,
-    pub(crate) sync_manager: SyncManager,
-    pub(crate) chain: Arc<MiddlewareChain>,
-    pub(crate) transport: SocketTransport,
-    pub(crate) sender: Arc<PacketSender>,
-    pub(crate) stores: Arc<StoreProvider>,
-    pub(crate) current_user_id: CurrentUserIdStore,
-    router_handle: Option<tokio::task::JoinHandle<()>>,
+    stores: StoreProvider,
+    bus: EventBus,
+    sender: Arc<PacketSender>,
+    transport: SocketTransport,
+    current_user_id: crate::core::CurrentUserIdStore,
+    sync_manager: Arc<SyncManager>,
+    sync_response_handler: Option<Arc<dyn SyncResponseHandler>>,
+    session_sync: Option<Arc<dyn SessionSyncRunner>>,
+    codec: Arc<dyn Codec>,
+    _chain: Arc<MiddlewareChain>,
+    reliable_queue: Option<Arc<ReliableSendQueue>>,
+    connection_state: StdArc<RwLock<ConnectionState>>,
 }
 
 impl SdkEngine {
+    /// 创建引擎。连接就绪后由 [connect] 内 [bootstrap] 激活同步；同步状态仅通过 [EventBus] 的同步回调获取。
+    /// `sync_response_handler` / `session_sync` 通常为同一 application SyncHandler 的 Arc。
     pub fn new(
         stores: StoreProvider,
-        chain: MiddlewareChain,
+        _chain: MiddlewareChain,
         transport: SocketTransport,
-        current_user_id: CurrentUserIdStore,
+        current_user_id: crate::core::CurrentUserIdStore,
+        codec: Arc<dyn Codec>,
+        bus: EventBus,
+        sync_response_handler: Option<Arc<dyn SyncResponseHandler>>,
+        session_sync: Option<Arc<dyn SessionSyncRunner>>,
     ) -> Self {
-        let state = Arc::new(StateManager::new());
-        let bus = EventBus::new();
-        let chain = Arc::new(chain);
-
-        let dispatcher = Arc::new(Dispatcher::new(bus.clone(), chain.clone()));
-
         let sender = transport.sender().clone();
-
-        let router = Router::new(
-            stores.messages.clone(),
-            stores.conversations.clone(),
-        );
-
-        let stores = Arc::new(stores);
-
-        let sync_manager = SyncManager::new(
-            sender.clone(),
-            stores.clone(),
-            state.clone(),
-            bus.clone(),
-        );
-
+        let reliable_queue = stores.pending_sends().map(|(reader, writer)| {
+            Arc::new(ReliableSendQueue::new(
+                reader,
+                writer,
+                sender.clone(),
+                stores.messages.clone(),
+                bus.clone(),
+                None,
+                None,
+            ))
+        });
         Self {
-            state,
-            bus,
-            dispatcher,
-            router,
-            sync_manager,
-            chain,
-            transport,
-            sender,
             stores,
+            bus,
+            sender,
+            transport,
             current_user_id,
-            router_handle: None,
+            sync_manager: Arc::new(SyncManager::new()),
+            sync_response_handler,
+            session_sync,
+            codec,
+            _chain: Arc::new(_chain),
+            reliable_queue,
+            connection_state: StdArc::new(RwLock::new(ConnectionState::Disconnected)),
         }
     }
 
-    /// 连接并启动所有子系统
-    ///
-    /// 内部会等待 CONNACK 到达后再返回，确保后续 `bootstrap()` 可安全发送请求。
-    pub async fn connect(&mut self, user_id: &str, token: &str) -> Result<()> {
-        if !self.state.transition(SdkState::Disconnected, SdkState::Connecting) {
-            let cur = self.state.get();
-            if cur == SdkState::Ready || cur == SdkState::Connected {
-                return Ok(());
-            }
-            return Err(SdkError::InvalidState {
-                expected: "Disconnected",
-                actual: cur.to_string(),
-            });
-        }
-        self.bus.publish(SdkEvent::StateChanged { state: SdkState::Connecting });
+    fn publish_state(&self, state: ConnectionState) {
+        self.bus
+            .publish(SdkEvent::Connection(SdkConnectionEvent::StateChanged {
+                state: state.into(),
+            }));
+    }
 
-        let ready_notify = Arc::new(Notify::new());
-        let handler = Arc::new(SocketHandler::new(
-            self.dispatcher.clone(),
-            Arc::new(ProtobufCodec),
-            ready_notify.clone(),
-        ));
-
-        match self.transport.connect(user_id, token, handler, ready_notify).await {
-            Ok(()) => {
-                *self.current_user_id.write().await = user_id.to_string();
-                self.state.set(SdkState::Connected);
-                self.bus.publish(SdkEvent::StateChanged { state: SdkState::Connected });
-
-                let handle = self.router.start(&self.bus);
-                self.router_handle = Some(handle);
-
-                info!(user_id, "engine connected");
-                Ok(())
+    async fn transition(&self, event: ConnectionEvent) {
+        let mut guard = self.connection_state.write().await;
+        match ConnectionFsm::transition(*guard, &event) {
+            Ok(next) => {
+                *guard = next;
+                drop(guard);
+                self.publish_state(next);
             }
             Err(e) => {
-                self.state.reset();
-                self.bus.publish(SdkEvent::StateChanged { state: SdkState::Disconnected });
-                Err(e)
+                tracing::warn!(%e, "connection FSM transition rejected");
             }
         }
     }
 
-    /// 执行 Bootstrap 同步
-    pub async fn bootstrap(&mut self) -> Result<()> {
-        self.sync_manager.bootstrap().await
-    }
-
-    /// 断开连接
-    pub async fn disconnect(&mut self) -> Result<()> {
-        if let Some(h) = self.router_handle.take() {
-            h.abort();
+    /// 连接服务器。同一用户已就绪时幂等返回；正在连接中或已连接为其他用户时返回错误，避免重复建连导致服务端踢线。
+    pub async fn connect(&mut self, user_id: &str, token: &str) -> crate::error::Result<()> {
+        let (state, current_uid) = {
+            let s = *self.connection_state.read().await;
+            let uid = self.current_user_id.read().await.clone();
+            (s, uid)
+        };
+        match state {
+            ConnectionState::Ready if current_uid == user_id => {
+                tracing::debug!(%user_id, "connect idempotent: already connected as same user");
+                return Ok(());
+            }
+            ConnectionState::Ready => {
+                return Err(FlareError::general_error(format!(
+                    "already connected as {}, disconnect first before connecting as {}",
+                    current_uid, user_id
+                )));
+            }
+            ConnectionState::Connecting
+            | ConnectionState::Connected
+            | ConnectionState::Reconnecting => {
+                return Err(FlareError::general_error(
+                    "connect already in progress or reconnecting, wait for it to finish or fail",
+                ));
+            }
+            ConnectionState::Disconnected => {}
         }
-        self.transport.disconnect().await?;
-        *self.current_user_id.write().await = String::new();
-        self.state.reset();
-        self.bus.publish(SdkEvent::StateChanged { state: SdkState::Disconnected });
-        info!("engine disconnected");
+
+        self.transition(ConnectionEvent::ConnectRequested).await;
+        let ready = Arc::new(tokio::sync::Notify::new());
+        let listener = Arc::new(SocketHandler::new(
+            Arc::new(Dispatcher::new(
+                self.bus.clone(),
+                self.reliable_queue.clone(),
+                self.sync_response_handler.clone(),
+                Some(self.stores.clone()),
+            )),
+            self.codec.clone(),
+            ready.clone(),
+        ));
+        self.transport
+            .connect(user_id, token, listener, ready)
+            .await?;
+        *self.current_user_id.write().await = user_id.to_string();
+        self.transition(ConnectionEvent::Connected).await; // fsm::ConnectionEvent
+        self.bootstrap().await?;
+        self.transition(ConnectionEvent::BootstrapDone).await;
         Ok(())
     }
 
+    pub async fn disconnect(&mut self) -> crate::error::Result<()> {
+        self.transition(ConnectionEvent::DisconnectRequested).await;
+        self.transport.disconnect().await?;
+        *self.current_user_id.write().await = String::new();
+        {
+            let mut guard = self.connection_state.write().await;
+            *guard = ConnectionState::Disconnected;
+            drop(guard);
+        }
+        self.publish_state(ConnectionState::Disconnected);
+        Ok(())
+    }
+
+    pub async fn bootstrap(&mut self) -> crate::error::Result<()> {
+        let user_id = self.current_user_id.read().await.clone();
+        if user_id.is_empty() {
+            return Ok(());
+        }
+        self.sync_manager
+            .run_sync(&user_id, self.stores.clone(), self.bus.clone());
+        Ok(())
+    }
+
+    /// 当前连接状态（由 FSM 驱动）
     pub fn state(&self) -> SdkState {
-        self.state.get()
+        self.connection_state
+            .try_read()
+            .map(|g| (*g).into())
+            .unwrap_or(SdkState::Disconnected)
     }
 
     pub fn bus(&self) -> &EventBus {
@@ -164,15 +202,27 @@ impl SdkEngine {
         &self.sender
     }
 
-    pub fn stores(&self) -> &Arc<StoreProvider> {
+    pub fn stores(&self) -> &StoreProvider {
         &self.stores
     }
 
-    pub fn sync_manager(&self) -> &SyncManager {
-        &self.sync_manager
+    pub fn sync_manager(&self) -> Arc<SyncManager> {
+        self.sync_manager.clone()
     }
 
-    pub fn sync_manager_mut(&mut self) -> &mut SyncManager {
-        &mut self.sync_manager
+    /// 单会话消息同步与已读上报（会话列表同步由同步引擎内部执行，不暴露）
+    pub fn session_sync_runner(&self) -> Option<Arc<dyn SessionSyncRunner>> {
+        self.session_sync.clone()
+    }
+
+    pub fn reliable_queue(&self) -> Option<Arc<ReliableSendQueue>> {
+        self.reliable_queue.clone()
+    }
+
+    /// 当前已连接用户 ID（未连接时为空）
+    pub async fn current_user_id(&self) -> String {
+        self.current_user_id.read().await.clone()
     }
 }
+
+use crate::core::Dispatcher;

@@ -1,153 +1,142 @@
-//! 一对一聊天客户端示例（基于当前 SDK API）
+//! 一对一聊天示例：**仅通过** [`flare_im_core_sdk::client`] 对外能力完成（[`IMClient`]、[`LoginDbKind`]、
+//! [`SdkConfigOverlay`]、路径工具、[`IMClient::on_*`] 订阅、[`MessageApi`] / [`ConversationApi`] / [`MessageBuildApi`]）。
 //!
-//! 展示如何使用 IMClient、MessageApi、ConversationApi 与事件回调，
-//! 所有可能失败的操作均做错误处理，无 unwrap/expect。
+//! 需启用 **`lifecycle-sqlite`**。先启动 IM 服务端（默认 `ws://localhost:60051`），再开 **两个终端** 分别执行：
 //!
-//! ## 运行方式
+//! ## 启动命令（复制即用）
 //!
-//! ```bash
-//! RUST_LOG=info cargo run --example two_clients_chat
-//! MY_USER_ID=user-alice CHAT_WITH=user-bob SERVER_URL=ws://localhost:60051 cargo run --example two_clients_chat
-//! MY_USER_ID=user-bob CHAT_WITH=user-alice SERVER_URL=ws://localhost:60051 cargo run --example two_clients_chat
+//! **用户 Alice（与 Bob 聊）**
+//! ```text
+//! RUST_LOG=info MY_USER_ID=user-alice CHAT_WITH=user-bob SERVER_URL=ws://localhost:60051 cargo run -p flare-im-core-sdk --example two_clients_chat --features lifecycle-sqlite
 //! ```
+//!
+//! **用户 Bob（与 Alice 聊）**
+//! ```text
+//! RUST_LOG=info MY_USER_ID=user-bob CHAT_WITH=user-alice SERVER_URL=ws://localhost:60051 cargo run -p flare-im-core-sdk --example two_clients_chat --features lifecycle-sqlite
+//! ```
+//!
+//! 在仓库根目录（`flare-im`）执行；若当前目录已是 `flare-im-core-sdk`，可改为：
+//! `cargo run --example two_clients_chat --features lifecycle-sqlite`（环境变量同上）。
+//!
+//! ## 双终端（与上等价，可换行书写）
+//!
+//! **终端 1 — Alice**
+//! ```bash
+//! RUST_LOG=info MY_USER_ID=user-alice CHAT_WITH=user-bob SERVER_URL=ws://localhost:60051 cargo run -p flare-im-core-sdk --example two_clients_chat --features lifecycle-sqlite
+//! ```
+//!
+//! **终端 2 — Bob**
+//! ```bash
+//! RUST_LOG=info MY_USER_ID=user-bob CHAT_WITH=user-alice SERVER_URL=ws://localhost:60051 \
+//!   cargo run -p flare-im-core-sdk --example two_clients_chat --features lifecycle-sqlite
+//! ```
+//!
+//! 未设置 `MY_USER_ID` / `CHAT_WITH` 时默认 **`user-alice`** / **`user-bob`**。可选 `FLARE_DATA_DIR`；
+//! 否则数据目录为 `temp-data/two_clients_chat/<sanitized_user>/`（与 [`dev_data_dir_relative_to_cwd`]、[`sanitize_user_id_for_dir`] 一致）。
+//!
+//! **订阅**：在 [`IMClient::login`].await **之后立刻**调用 [`IMClient::on_sync_finished`] / [`IMClient::on_message`] 等；
+//! 若你的环境里首轮同步极快，仍可选用 `login` 的 `before_connect` 里对传入的 `EventBus` 注册（与 `on_*` 等价）。
+
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use anyhow::Context;
-use flare_im_core_sdk::model::conversation::ConversationSummary;
+use flare_im_core_sdk::client::{
+    dev_data_dir_relative_to_cwd, parse_data_url_to_path, sanitize_user_id_for_dir, LoginDbKind,
+    SdkConfigOverlay, IMClient,
+};
+use flare_im_core_sdk::core::SdkState;
+use flare_im_core_sdk::event::{SdkEvent, SyncPhase};
+use flare_im_core_sdk::model::conversation::ConversationType;
 use flare_im_core_sdk::prelude::*;
-use flare_im_core_sdk::util::generate_test_token;
-use std::collections::HashMap;
-use std::sync::Arc;
 use tokio::io::{self, AsyncBufReadExt};
-use tokio::sync::RwLock;
 use tracing::{error, info, warn};
 
-// ── 内存存储（示例用，与 tests/common 逻辑一致）────────────────────────
+const DEFAULT_SELF: &str = "user-alice";
+const DEFAULT_PEER: &str = "user-bob";
 
-struct MemoryMessageStore {
-    data: RwLock<HashMap<String, Message>>,
+fn text_preview_from_message(msg: &IMMessage) -> String {
+    decode_content_bytes(&msg.content_bytes)
+        .map(|d| d.text_preview().to_string())
+        .unwrap_or_else(|_| format!("(decode err server_id={})", msg.server_id))
 }
 
-impl MemoryMessageStore {
-    fn new() -> Self {
-        Self { data: RwLock::new(HashMap::new()) }
-    }
+/// 构造 `dataUrl` 并校验与 [`parse_data_url_to_path`] 一致。
+fn resolve_data_url(my_user_id: &str) -> anyhow::Result<String> {
+    let base: PathBuf = std::env::var("FLARE_DATA_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| {
+            dev_data_dir_relative_to_cwd()
+                .join("two_clients_chat")
+                .join(sanitize_user_id_for_dir(my_user_id))
+        });
+    std::fs::create_dir_all(&base).context("create data dir")?;
+    let raw = base.to_string_lossy().replace('\\', "/");
+    let url = if raw.starts_with("file://") {
+        raw
+    } else {
+        format!("file://{}", raw)
+    };
+    let _ = parse_data_url_to_path(&url).map_err(|e| anyhow::anyhow!("{}", e))?;
+    Ok(url)
 }
 
-#[async_trait::async_trait]
-impl MessageStore for MemoryMessageStore {
-    async fn save_batch(&self, messages: &[Message]) -> Result<()> {
-        let mut data = self.data.write().await;
-        for msg in messages {
-            let key = if !msg.server_id.is_empty() { msg.server_id.clone() } else { msg.client_msg_id.clone() };
-            data.insert(key, msg.clone());
-        }
-        Ok(())
-    }
-    async fn get(&self, message_id: &str) -> Result<Option<Message>> {
-        let data = self.data.read().await;
-        Ok(data.get(message_id).cloned())
-    }
-    async fn get_by_conversation(&self, conversation_id: &str, before_seq: u64, limit: u32) -> Result<Vec<Message>> {
-        let data = self.data.read().await;
-        let mut msgs: Vec<_> = data
-            .values()
-            .filter(|m| m.conversation_id == conversation_id && (m.seq as u64) < before_seq)
-            .cloned()
-            .collect();
-        msgs.sort_by(|a, b| b.seq.cmp(&a.seq));
-        msgs.truncate(limit as usize);
-        Ok(msgs)
-    }
-    async fn update_status(&self, message_id: &str, status: i32) -> Result<()> {
-        let mut data = self.data.write().await;
-        if let Some(msg) = data.get_mut(message_id) {
-            msg.status = status;
-        }
-        Ok(())
-    }
-    async fn update_content(&self, message_id: &str, new_content: Vec<u8>) -> Result<()> {
-        let mut data = self.data.write().await;
-        if let Some(msg) = data.get_mut(message_id) {
-            msg.content = new_content;
-        }
-        Ok(())
-    }
-    async fn delete(&self, message_id: &str) -> Result<()> {
-        let mut data = self.data.write().await;
-        data.remove(message_id);
-        Ok(())
-    }
-    async fn search(&self, _keyword: &str, limit: u32) -> Result<Vec<Message>> {
-        let data = self.data.read().await;
-        Ok(data.values().cloned().take(limit as usize).collect())
-    }
-}
+/// 全部使用 [`IMClient`] 提供的 `on_*`（与直接调 `EventBus` 等价，便于与 App 集成方式对齐）。
+fn register_subscriptions(
+    client: &IMClient,
+    sync_done_tx: Arc<Mutex<Option<tokio::sync::oneshot::Sender<()>>>>,
+    sync_event_count: Arc<AtomicUsize>,
+) -> anyhow::Result<()> {
+    client
+        .on_sync_state_changed(|state| info!("[sync state] {:?}", state))
+        .map_err(|e| anyhow::anyhow!(e))?;
+    client
+        .on_sync_started(|| info!("[sync] started"))
+        .map_err(|e| anyhow::anyhow!(e))?;
 
-struct MemoryConversationStore {
-    data: RwLock<HashMap<String, ConversationSummary>>,
-}
+    let sync_done_cb = Arc::clone(&sync_done_tx);
+    client
+        .on_sync_finished(move |phase| {
+            info!("[sync] finished phase={:?}", phase);
+            if matches!(phase, SyncPhase::Background) {
+                if let Ok(mut g) = sync_done_cb.lock() {
+                    if let Some(tx) = g.take() {
+                        let _ = tx.send(());
+                    }
+                }
+            }
+        })
+        .map_err(|e| anyhow::anyhow!(e))?;
 
-impl MemoryConversationStore {
-    fn new() -> Self {
-        Self { data: RwLock::new(HashMap::new()) }
-    }
-}
+    client
+        .on_message(|msg| info!("[recv] {}", text_preview_from_message(msg)))
+        .map_err(|e| anyhow::anyhow!(e))?;
+    client
+        .on_message_batch(|messages| {
+            for msg in messages {
+                info!("[recv] {}", text_preview_from_message(msg));
+            }
+        })
+        .map_err(|e| anyhow::anyhow!(e))?;
 
-#[async_trait::async_trait]
-impl ConversationStore for MemoryConversationStore {
-    async fn save_batch(&self, conversations: &[ConversationSummary]) -> Result<()> {
-        let mut data = self.data.write().await;
-        for c in conversations {
-            data.insert(c.conversation_id.clone(), c.clone());
-        }
-        Ok(())
-    }
-    async fn get(&self, conversation_id: &str) -> Result<Option<ConversationSummary>> {
-        Ok(self.data.read().await.get(conversation_id).cloned())
-    }
-    async fn list(&self) -> Result<Vec<ConversationSummary>> {
-        Ok(self.data.read().await.values().cloned().collect())
-    }
-    async fn update_unread(&self, conversation_id: &str, unread_count: u32, _last_read_seq: u64) -> Result<()> {
-        let mut data = self.data.write().await;
-        if let Some(c) = data.get_mut(conversation_id) {
-            c.unread_count = unread_count;
-        }
-        Ok(())
-    }
-    async fn delete(&self, conversation_id: &str) -> Result<()> {
-        self.data.write().await.remove(conversation_id);
-        Ok(())
-    }
-}
+    let cnt = Arc::clone(&sync_event_count);
+    client
+        .on_any(move |e| {
+            if matches!(e.as_ref(), SdkEvent::Sync(_)) {
+                cnt.fetch_add(1, Ordering::Relaxed);
+            }
+        })
+        .map_err(|e| anyhow::anyhow!(e))?;
 
-#[async_trait::async_trait]
-impl SyncCursorStore for MemoryCursorStore {
-    async fn get(&self, key: &str) -> Result<Option<String>> {
-        Ok(self.data.read().await.get(key).cloned())
-    }
-    async fn save(&self, key: &str, cursor: &str) -> Result<()> {
-        self.data.write().await.insert(key.to_string(), cursor.to_string());
-        Ok(())
-    }
-}
+    client
+        .on_server_error(|code, message| {
+            warn!("server error code={} message={}", code, message);
+        })
+        .map_err(|e| anyhow::anyhow!(e))?;
 
-struct MemoryCursorStore {
-    data: RwLock<HashMap<String, String>>,
-}
-
-impl MemoryCursorStore {
-    fn new() -> Self {
-        Self { data: RwLock::new(HashMap::new()) }
-    }
-}
-
-fn make_stores() -> StoreProvider {
-    StoreProvider {
-        messages: Arc::new(MemoryMessageStore::new()),
-        conversations: Arc::new(MemoryConversationStore::new()),
-        cursors: Arc::new(MemoryCursorStore::new()),
-    }
+    Ok(())
 }
 
 #[tokio::main]
@@ -159,92 +148,123 @@ async fn main() -> anyhow::Result<()> {
         .try_init()
         .map_err(|e| anyhow::Error::msg(e.to_string()))?;
 
-    info!("🚀 Flare IM SDK 一对一聊天示例");
-    info!("==========================================");
+    info!("Flare IM SDK 一对一聊天（仅用 client 对外 API）");
+    info!("================================================");
 
     let ws_url = std::env::var("SERVER_URL").unwrap_or_else(|_| "ws://localhost:60051".to_string());
-    let my_user_id = std::env::var("MY_USER_ID").unwrap_or_else(|_| format!("user-{}", std::process::id()));
-    let chat_with_env = std::env::var("CHAT_WITH").unwrap_or_else(|_| String::new());
+    let my_user_id = std::env::var("MY_USER_ID").unwrap_or_else(|_| DEFAULT_SELF.to_string());
+    let chat_with = std::env::var("CHAT_WITH").unwrap_or_else(|_| DEFAULT_PEER.to_string());
 
-    info!("服务器: {}", ws_url);
-    info!("当前用户: {}", my_user_id);
+    info!("server: {}", ws_url);
+    info!("current user (MY_USER_ID): {}", my_user_id);
+    info!("peer (CHAT_WITH): {}", chat_with);
 
-    let chat_with = if chat_with_env.is_empty() {
-        info!("请输入聊天对象 user_id（按 Enter 确认）:");
-        let mut input = String::new();
-        let mut reader = io::BufReader::new(io::stdin());
-        reader.read_line(&mut input).await.context("读取 stdin 失败")?;
-        let s = input.trim().to_string();
-        if s.is_empty() {
-            anyhow::bail!("聊天对象不能为空");
-        }
-        s
-    } else {
-        chat_with_env
-    };
-    info!("聊天对象: {}", chat_with);
+    let data_url = resolve_data_url(&my_user_id)?;
+    info!("dataUrl: {}", data_url);
 
-    let token = generate_test_token(
-        "insecure-secret",
-        "flare-im-core",
-        &my_user_id,
-        3600,
-        None,
-        Some("default"),
-    ).context("生成 Token 失败")?;
+    let client = IMClient::new();
+    client
+        .init(
+            None,
+            Some(SdkConfigOverlay {
+                data_url: Some(data_url),
+                ws_url: Some(ws_url.clone()),
+                ..Default::default()
+            }),
+        )
+        .await
+        .context("client.init")?;
 
-    let config = SdkConfig::new(&ws_url);
-    let stores = make_stores();
-    let mut client = IMClient::builder().config(config).stores(stores).build();
+    let token =
+        IMClient::generate_test_token("", "", &my_user_id, None).context("generate_test_token")?;
 
-    // 必须保留 Subscription，否则回调任务可能被取消，收不到对方消息
-    let _sub_msg = client.on_message(|msg| {
-        if let Ok(decoded) = decode_content(msg) {
-            info!("[收到] {}", decoded.text_preview());
-        }
-    });
-    let _sub_ev = client.on(|e| {
-        if let SdkEvent::ServerError { code, message } = e.as_ref() {
-            warn!("服务端错误 code={} message={}", code, message);
-        }
-    });
+    let (sync_done_tx, sync_done_rx) = tokio::sync::oneshot::channel();
+    let sync_done_tx = Arc::new(Mutex::new(Some(sync_done_tx)));
+    let sync_event_count = Arc::new(AtomicUsize::new(0));
 
-    info!("正在连接...");
-    client.connect(&my_user_id, &token).await.context("连接失败")?;
+    info!("connecting...");
+    client
+        .login(&my_user_id, Some(&token), LoginDbKind::Sqlite, |_, _| {})
+        .await
+        .context("client.login")?;
 
-    let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(15);
+    register_subscriptions(
+        &client,
+        Arc::clone(&sync_done_tx),
+        Arc::clone(&sync_event_count),
+    )
+    .context("register_subscriptions")?;
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
     while client.state() != SdkState::Ready {
         if tokio::time::Instant::now() > deadline {
-            anyhow::bail!("等待 Ready 超时");
+            anyhow::bail!("wait Ready timeout");
         }
-        tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+        tokio::time::sleep(Duration::from_millis(200)).await;
     }
-    info!("已就绪");
+    info!("ready");
 
-    if let Err(e) = client.sync_conversations().await {
-        warn!("同步会话列表失败（可继续）: {}", e);
+    match tokio::time::timeout(Duration::from_secs(20), sync_done_rx).await {
+        Ok(Ok(())) => {
+            let convs = client
+                .conversation()
+                .context("conversation")?
+                .list()
+                .await
+                .context("conversation.list")?;
+            info!("sync done, conversations: {}", convs.len());
+            info!(
+                "sync events seen: {}",
+                sync_event_count.load(Ordering::Relaxed)
+            );
+        }
+        Ok(Err(_)) => warn!("sync done channel closed"),
+        Err(_) => {
+            warn!("sync wait timeout (20s), continue");
+            info!(
+                "sync events seen: {}",
+                sync_event_count.load(Ordering::Relaxed)
+            );
+        }
     }
 
-    let conversation_id = client.conversation().single_chat_id(&my_user_id, &chat_with);
-    info!("会话ID: {}", conversation_id);
+    let conversation_id = client
+        .conversation()
+        .context("conversation")?
+        .get_one(&chat_with, &ConversationType::Single)
+        .await
+        .context("get_one")?
+        .conversation_id()
+        .to_string();
 
-    if let Ok(convs) = client.conversation().list().await {
-        info!("会话数: {}", convs.len());
+    info!("conversation_id: {}", conversation_id);
+
+    let msgs = client
+        .message()
+        .context("message")?
+        .list(&conversation_id, u64::MAX, 50)
+        .await
+        .context("message.list")?;
+    info!("synced messages: {}", msgs.len());
+    for m in msgs.iter() {
+        info!(
+            "  [seq={}] sender={} text={}",
+            m.seq,
+            m.sender_id(),
+            text_preview_from_message(m)
+        );
     }
 
     info!("");
-    info!("输入消息按 Enter 发送；/list 会话列表；/history 历史；/read 标记已读；/quit 退出");
+    info!("输入文字回车发送；/list /history /read /quit");
     info!("");
 
     let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(32);
-    let client_tx = Arc::new(RwLock::new(client));
 
     let input_handle = {
         let tx = tx.clone();
         let conv_id = conversation_id.clone();
-        let _my_id = my_user_id.clone();
-        let _recv_id = chat_with.clone();
-        let client_ref = Arc::clone(&client_tx);
+        let client_bg = client.clone();
         tokio::spawn(async move {
             let stdin = io::stdin();
             let mut reader = io::BufReader::new(stdin);
@@ -263,48 +283,57 @@ async fn main() -> anyhow::Result<()> {
                             break;
                         }
                         if input == "/list" {
-                            let guard = client_ref.read().await;
-                            match guard.conversation().list().await {
-                                Ok(list) => {
-                                    info!("会话列表 ({}):", list.len());
-                                    for c in list.iter().take(10) {
-                                        info!("  {} 未读={}", c.conversation_id, c.unread_count);
+                            match client_bg.conversation() {
+                                Ok(api) => match api.list().await {
+                                    Ok(list) => {
+                                        info!("conversations ({}):", list.len());
+                                        for c in list.iter().take(10) {
+                                            info!(
+                                                "  {} unread={}",
+                                                c.conversation_id(),
+                                                c.unread_count()
+                                            );
+                                        }
                                     }
-                                }
-                                Err(e) => warn!("list 失败: {}", e),
+                                    Err(e) => warn!("list: {}", e),
+                                },
+                                Err(e) => warn!("conversation: {}", e),
                             }
                             continue;
                         }
                         if input == "/history" {
-                            let guard = client_ref.read().await;
-                            match guard.message().list(&conv_id, u64::MAX, 20).await {
-                                Ok(msgs) => {
-                                    info!("最近 {} 条:", msgs.len());
-                                    for m in msgs.iter().take(10) {
-                                        let preview = decode_content(m).map(|d| d.text_preview().to_string()).unwrap_or_else(|_| "[无法解码]".into());
-                                        info!("  [{}] {}", m.sender_id, preview);
+                            let cid = conv_id.clone();
+                            let c = client_bg.clone();
+                            match c.message() {
+                                Ok(api) => match api.list(&cid, u64::MAX, 20).await {
+                                    Ok(msgs) => {
+                                        info!("recent {} messages:", msgs.len());
+                                        for m in msgs.iter().take(10) {
+                                            info!("  [{}] {}", m.sender_id(), text_preview_from_message(m));
+                                        }
                                     }
-                                }
-                                Err(e) => warn!("history 失败: {}", e),
+                                    Err(e) => warn!("history: {}", e),
+                                },
+                                Err(e) => warn!("message: {}", e),
                             }
                             continue;
                         }
                         if input == "/read" {
-                            let guard = client_ref.read().await;
-                            if let Err(e) = guard.conversation().mark_read(&conv_id, u64::MAX).await {
-                                warn!("标记已读失败: {}", e);
-                            } else {
-                                info!("已标记已读");
+                            let cid = conv_id.clone();
+                            let c = client_bg.clone();
+                            match c.mark_session_read(&cid, u64::MAX).await {
+                                Ok(()) => info!("marked read (message + conversation + sync ack)"),
+                                Err(e) => warn!("mark_session_read: {}", e),
                             }
                             continue;
                         }
                         if let Err(e) = tx.send(input).await {
-                            error!("发送到主循环失败: {}", e);
+                            error!("send to main loop: {}", e);
                             break;
                         }
                     }
                     Err(e) => {
-                        error!("读取输入失败: {}", e);
+                        error!("stdin: {}", e);
                         break;
                     }
                 }
@@ -312,53 +341,59 @@ async fn main() -> anyhow::Result<()> {
         })
     };
 
-    let mut client_guard = client_tx.write().await;
-    let mut retry_delay = tokio::time::Duration::from_millis(500);
     while let Some(text) = rx.recv().await {
         if text == "/quit" || text == "/exit" {
             break;
         }
-        let msg = match MessageBuilder::new(&conversation_id, &my_user_id)
-            .content(ContentBuilder::text(&text).build())
-            .receiver(&chat_with)
-            .single_chat()
-            .build()
-        {
-            Ok(m) => m,
-            Err(e) => {
-                error!("构建消息失败: {}", e);
-                continue;
-            }
-        };
-        let mut tried = 0u32;
-        loop {
-            match client_guard.message().send(msg.clone()).await {
-                Ok(ack) => {
-                    if ack.success {
-                        info!("已发送 seq={}", ack.seq);
-                    } else {
-                        warn!("发送未成功: server_msg_id={}", ack.server_msg_id);
+
+        let conversation_id = conversation_id.clone();
+        let c = client.clone();
+        let send_result = async move {
+            let msg = c
+                .message_build()
+                .map_err(|e| e.to_string())?
+                .create_text(&conversation_id, &text)
+                .await
+                .map_err(|e| e.to_string())?;
+            let mut tried = 0u32;
+            let mut delay = Duration::from_millis(500);
+            loop {
+                match c
+                    .message()
+                    .map_err(|e| e.to_string())?
+                    .send(msg.clone())
+                    .await
+                {
+                    Ok(ack) => {
+                        if ack.success {
+                            info!("sent seq={}", ack.seq);
+                        } else {
+                            warn!("send not success server_msg_id={}", ack.server_msg_id);
+                        }
+                        return Ok::<(), String>(());
                     }
-                    break;
-                }
-                Err(e) => {
-                    tried += 1;
-                    if tried >= 5 {
-                        error!("发送失败（已重试 5 次）: {}", e);
-                        break;
+                    Err(e) => {
+                        tried += 1;
+                        if tried >= 5 {
+                            return Err(format!("send failed after retries: {}", e));
+                        }
+                        warn!("send retry in {}ms: {}", delay.as_millis(), e);
+                        tokio::time::sleep(delay).await;
+                        delay = std::cmp::min(delay * 2, Duration::from_secs(2));
                     }
-                    warn!("发送失败，{}ms 后重试: {}", retry_delay.as_millis(), e);
-                    tokio::time::sleep(retry_delay).await;
-                    retry_delay = std::cmp::min(retry_delay * 2, tokio::time::Duration::from_secs(2));
                 }
             }
+        }
+        .await;
+
+        match send_result {
+            Ok(()) => {}
+            Err(e) => error!("{}", e),
         }
     }
 
     input_handle.abort();
-    if let Err(e) = client_guard.disconnect().await {
-        warn!("断开连接时出错: {}", e);
-    }
-    info!("已退出");
+    client.logout().await.context("logout")?;
+    info!("bye");
     Ok(())
 }

@@ -1,92 +1,94 @@
-//! SDK Core ← 语言模型 → App：仅做 proto/SDK → model 转换，不涉及 JSON
-//!
-//! 会话/消息同步由 SDK 调度，通过 SdkEvent 回调；本层只做事件 → (name, payload 模型) 映射。
+//! SdkEvent → Tauri `im://*` 事件名与可序列化 payload；无查库、无合并等业务逻辑。
 
-use flare_proto::common::{ConversationSummary, Message, MessagePreview};
-use prost_types::Timestamp;
-
-use crate::model::{
-    ConversationSummaryOut, EventPayload, MessageOut, MessagePreviewOut,
-    ConversationsSyncedPayload, MessageDeletedPayload, MessageRecalledPayload,
-    StateChangedPayload, SyncCompletedPayload, SyncFailedPayload, SyncProgressPayload,
+use flare_im_core_sdk::event::{
+    ConnectionEvent, ConversationEvent, MessageEvent, SdkEvent, SyncNotify, SyncPhase,
 };
 
-fn ts_iso(t: Option<&Timestamp>) -> String {
-    let t = match t {
-        Some(x) => x,
-        None => return String::new(),
-    };
-    if t.seconds == 0 && t.nanos == 0 {
-        return String::new();
-    }
-    chrono::DateTime::from_timestamp(t.seconds as i64, t.nanos as u32)
-        .map(|dt| dt.to_rfc3339())
-        .unwrap_or_default()
-}
+use crate::model::{
+    ConnectedPayload, ConversationDeletedPayload, ConversationsSyncedPayload,
+    ConversationUpdatedPayload, DisconnectedPayload, EventPayload, ExtensionPayload,
+    KickedOffPayload, MessageRecalledPayload, MessageSendFailedPayload, ReconnectingPayload,
+    ServerErrorPayload, StateChangedPayload, SyncCompletedPayload,
+    SyncFailedPayload, SyncFinishedPayload, SyncProgressPayload, SyncStartedPayload,
+    SyncStateChangedPayload, TokenExpiredPayload, TypingPayload, UnreadCountChangedPayload,
+};
 
-fn message_preview_to_model(p: &MessagePreview) -> MessagePreviewOut {
-    MessagePreviewOut {
-        message_id: p.message_id.clone(),
-        sender_id: p.sender_id.clone(),
-        type_: p.r#type,
-        text: p.text.clone(),
-        time: ts_iso(p.time.as_ref()),
-    }
-}
-
-/// Message（proto）→ 语言模型
-pub fn message_to_model(m: &Message) -> MessageOut {
-    MessageOut {
-        server_id: m.server_id.clone(),
-        conversation_id: m.conversation_id.clone(),
-        client_msg_id: m.client_msg_id.clone(),
-        sender_id: m.sender_id.clone(),
-        receiver_id: m.receiver_id.clone(),
-        seq: m.seq,
-        timestamp: ts_iso(m.timestamp.as_ref()),
-        conversation_type: m.conversation_type,
-        message_type: m.message_type,
-        content: m.content.clone(),
-        status: m.status,
-        extra: m.extra.clone(),
-    }
-}
-
-/// ConversationSummary（proto）→ 语言模型
-pub fn conversation_to_model(c: &ConversationSummary) -> ConversationSummaryOut {
-    let peer_id = c.ext.get("peer_id").cloned();
-    ConversationSummaryOut {
-        conversation_id: c.conversation_id.clone(),
-        conversation_type: c.conversation_type.clone(),
-        business_type: c.business_type.clone(),
-        display_name: c.display_name.clone(),
-        avatar_url: c.avatar_url.clone(),
-        unread_count: c.unread_count,
-        max_seq: c.max_seq,
-        last_read_seq: c.last_read_seq,
-        last_message: c.last_message.as_ref().map(message_preview_to_model),
-        updated_at: ts_iso(c.updated_at.as_ref()),
-        created_at: ts_iso(c.created_at.as_ref()),
-        peer_id,
-    }
-}
-
-/// SdkEvent → Tauri 事件 (name, payload 模型)；None 表示不转发或由调用方特殊处理（如 SendAck 需查库再发 message）
-pub fn sdk_event_to_tauri(e: &flare_im_core_sdk::event::SdkEvent) -> Option<(String, EventPayload)> {
-    use flare_im_core_sdk::event::{ConversationEvent, MessageEvent, SdkEvent};
-
+/// SdkEvent → (事件名, payload)；无法序列化或不需要转发的返回 `None`。
+#[inline]
+pub fn sdk_event_to_tauri(e: &SdkEvent) -> Option<(String, EventPayload)> {
     match e {
-        SdkEvent::StateChanged { state } => Some((
-            "im://state".into(),
-            EventPayload::StateChanged(StateChangedPayload {
-                state: format!("{:?}", state),
+        SdkEvent::Connection(ConnectionEvent::Connected) => Some((
+            "im://connected".into(),
+            EventPayload::Connected(ConnectedPayload {}),
+        )),
+        SdkEvent::Connection(ConnectionEvent::Disconnected { reason }) => Some((
+            "im://disconnected".into(),
+            EventPayload::Disconnected(DisconnectedPayload {
+                reason: reason.clone(),
             }),
         )),
-        SdkEvent::Message(MessageEvent::Received { message }) => {
-            Some(("im://message".into(), EventPayload::Message(message_to_model(message))))
-        }
-        SdkEvent::Message(MessageEvent::SendAck { .. }) => None,
-        SdkEvent::Message(MessageEvent::Recalled { conversation_id, event }) => Some((
+        SdkEvent::Connection(ConnectionEvent::StateChanged { state }) => Some((
+            "im://state".into(),
+            EventPayload::StateChanged(StateChangedPayload {
+                state: format!("{state:?}"),
+            }),
+        )),
+        SdkEvent::Connection(ConnectionEvent::ServerError { code, message }) => Some((
+            "im://server_error".into(),
+            EventPayload::ServerError(ServerErrorPayload {
+                code: *code,
+                message: message.clone(),
+            }),
+        )),
+        SdkEvent::Connection(ConnectionEvent::Reconnecting { attempt }) => Some((
+            "im://reconnecting".into(),
+            EventPayload::Reconnecting(ReconnectingPayload { attempt: *attempt }),
+        )),
+        SdkEvent::Connection(ConnectionEvent::KickedOff { reason }) => Some((
+            "im://kicked_off".into(),
+            EventPayload::KickedOff(KickedOffPayload {
+                reason: reason.clone(),
+            }),
+        )),
+        SdkEvent::Connection(ConnectionEvent::TokenExpired { message }) => Some((
+            "im://token_expired".into(),
+            EventPayload::TokenExpired(TokenExpiredPayload {
+                message: message.clone(),
+            }),
+        )),
+        SdkEvent::Connection(ConnectionEvent::SyncStateChanged { state }) => Some((
+            "im://sync_state_changed".into(),
+            EventPayload::SyncStateChanged(SyncStateChangedPayload {
+                state: format!("{state:?}"),
+            }),
+        )),
+
+        SdkEvent::Message(MessageEvent::Received { message }) => Some((
+            "im://message".into(),
+            EventPayload::Message(message.clone()),
+        )),
+        SdkEvent::Message(MessageEvent::ReceivedBatch { messages }) => Some((
+            "im://message_batch".into(),
+            EventPayload::MessageBatch(messages.clone()),
+        )),
+        SdkEvent::Message(MessageEvent::SendAck { ack }) => Some((
+            "im://send_ack".into(),
+            EventPayload::SendAck(ack.clone().into()),
+        )),
+        SdkEvent::Message(MessageEvent::SendFailed {
+            client_msg_id,
+            reason,
+        }) => Some((
+            "im://send_failed".into(),
+            EventPayload::MessageSendFailed(MessageSendFailedPayload {
+                client_msg_id: client_msg_id.clone(),
+                reason: reason.clone(),
+            }),
+        )),
+        SdkEvent::Message(MessageEvent::Recalled {
+            conversation_id,
+            event,
+        }) => Some((
             "im://message_recalled".into(),
             EventPayload::MessageRecalled(MessageRecalledPayload {
                 conversation_id: conversation_id.clone(),
@@ -94,23 +96,74 @@ pub fn sdk_event_to_tauri(e: &flare_im_core_sdk::event::SdkEvent) -> Option<(Str
                 recaller_id: String::new(),
             }),
         )),
-        SdkEvent::Message(MessageEvent::Deleted { event, .. }) => Some((
-            "im://message_deleted".into(),
-            EventPayload::MessageDeleted(MessageDeletedPayload {
-                message_id: event.server_msg_id.clone(),
+        SdkEvent::Message(MessageEvent::Typing {
+            conversation_id,
+            event,
+        }) => Some((
+            "im://typing".into(),
+            EventPayload::Typing(TypingPayload {
+                conversation_id: conversation_id.clone(),
+                user_id: event.user_id.clone(),
+                typing: event.typing,
             }),
         )),
-        SdkEvent::Conversation(ConversationEvent::Synced { conversations }) => {
-            let list: Vec<ConversationSummaryOut> =
-                conversations.iter().map(conversation_to_model).collect();
+
+        SdkEvent::Conversation(ConversationEvent::Synced { conversation_ids }) => Some((
+            "im://conversations_synced".into(),
+            EventPayload::ConversationsSynced(ConversationsSyncedPayload {
+                conversation_ids: conversation_ids.clone(),
+            }),
+        )),
+        SdkEvent::Conversation(ConversationEvent::Created { conversation_id }) => Some((
+            "im://conversation_created".into(),
+            EventPayload::ConversationUpdated(ConversationUpdatedPayload {
+                conversation_id: conversation_id.clone(),
+            }),
+        )),
+        SdkEvent::Conversation(ConversationEvent::Updated { conversation_id }) => Some((
+            "im://conversation_updated".into(),
+            EventPayload::ConversationUpdated(ConversationUpdatedPayload {
+                conversation_id: conversation_id.clone(),
+            }),
+        )),
+        SdkEvent::Conversation(ConversationEvent::UnreadCountChanged {
+            conversation_id,
+            unread_count,
+        }) => Some((
+            "im://unread_count_changed".into(),
+            EventPayload::UnreadCountChanged(UnreadCountChangedPayload {
+                conversation_id: conversation_id.clone(),
+                unread_count: *unread_count,
+            }),
+        )),
+        SdkEvent::Conversation(ConversationEvent::Deleted { conversation_id }) => Some((
+            "im://conversation_deleted".into(),
+            EventPayload::ConversationDeleted(ConversationDeletedPayload {
+                conversation_id: conversation_id.clone(),
+            }),
+        )),
+
+        SdkEvent::Sync(SyncNotify::Started) => Some((
+            "im://sync_started".into(),
+            EventPayload::SyncStarted(SyncStartedPayload {}),
+        )),
+        SdkEvent::Sync(SyncNotify::Finished { phase }) => {
+            let phase_str = match phase {
+                SyncPhase::Init => "Init",
+                SyncPhase::Background => "Background",
+            };
             Some((
-                "im://conversations_synced".into(),
-                EventPayload::ConversationsSynced(ConversationsSyncedPayload {
-                    conversations: list,
+                "im://sync_finished".into(),
+                EventPayload::SyncFinished(SyncFinishedPayload {
+                    phase: phase_str.to_string(),
                 }),
             ))
         }
-        SdkEvent::SyncProgress { task, progress, detail } => Some((
+        SdkEvent::Sync(SyncNotify::Progress {
+            task,
+            progress,
+            detail,
+        }) => Some((
             "im://sync_progress".into(),
             EventPayload::SyncProgress(SyncProgressPayload {
                 task: task.clone(),
@@ -118,19 +171,31 @@ pub fn sdk_event_to_tauri(e: &flare_im_core_sdk::event::SdkEvent) -> Option<(Str
                 detail: detail.clone(),
             }),
         )),
-        SdkEvent::SyncTaskCompleted { task } => Some((
+        SdkEvent::Sync(SyncNotify::TaskCompleted { task }) => Some((
             "im://sync_completed".into(),
-            EventPayload::SyncCompleted(SyncCompletedPayload {
-                task: task.clone(),
-            }),
+            EventPayload::SyncCompleted(SyncCompletedPayload { task: task.clone() }),
         )),
-        SdkEvent::SyncTaskFailed { task, error } => Some((
+        SdkEvent::Sync(SyncNotify::Failed { task, message }) => Some((
             "im://sync_failed".into(),
             EventPayload::SyncFailed(SyncFailedPayload {
                 task: task.clone(),
-                error: error.clone(),
+                error: message.clone(),
             }),
         )),
-        _ => None,
+        SdkEvent::Sync(SyncNotify::StateChanged { state }) => Some((
+            "im://sync_state_changed".into(),
+            EventPayload::SyncStateChanged(SyncStateChangedPayload {
+                state: format!("{state:?}"),
+            }),
+        )),
+
+        SdkEvent::Extension(ev) => Some((
+            "im://extension".into(),
+            EventPayload::Extension(ExtensionPayload {
+                source: ev.source.clone(),
+                event_type: ev.event_type.clone(),
+                payload: ev.payload.clone(),
+            }),
+        )),
     }
 }

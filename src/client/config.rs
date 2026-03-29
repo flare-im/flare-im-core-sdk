@@ -24,13 +24,22 @@ pub struct SdkConfig {
 
 impl SdkConfig {
     pub fn new(ws_url: impl Into<String>) -> Self {
-        Self { ws_url: Some(ws_url.into()), ..Self::default() }
+        Self {
+            ws_url: Some(ws_url.into()),
+            ..Self::default()
+        }
     }
 
-    pub fn builder() -> SdkConfigBuilder { SdkConfigBuilder::default() }
+    pub fn builder() -> SdkConfigBuilder {
+        SdkConfigBuilder::default()
+    }
 
-    pub fn connect_timeout_secs(&self) -> u64 { self.connect_timeout_secs.unwrap_or(30) }
-    pub fn sync_batch_size(&self) -> u32 { self.sync_batch_size.unwrap_or(200) }
+    pub fn connect_timeout_secs(&self) -> u64 {
+        self.connect_timeout_secs.unwrap_or(30)
+    }
+    pub fn sync_batch_size(&self) -> u32 {
+        self.sync_batch_size.unwrap_or(200)
+    }
 }
 
 impl Default for SdkConfig {
@@ -51,16 +60,44 @@ impl Default for SdkConfig {
 }
 
 #[derive(Default)]
-pub struct SdkConfigBuilder { config: SdkConfig }
+pub struct SdkConfigBuilder {
+    config: SdkConfig,
+}
 
 impl SdkConfigBuilder {
-    pub fn endpoint(mut self, url: impl Into<String>) -> Self { self.config.ws_url = Some(url.into()); self }
-    pub fn quic_endpoint(mut self, url: impl Into<String>) -> Self { self.config.quic_url = Some(url.into()); self }
-    pub fn http_endpoint(mut self, url: impl Into<String>) -> Self { self.config.http_url = Some(url.into()); self }
-    pub fn connect_timeout_secs(mut self, s: u64) -> Self { self.config.connect_timeout_secs = Some(s); self }
-    pub fn reconnect_interval_secs(mut self, s: u64) -> Self { self.config.reconnect_interval_secs = Some(s); self }
-    pub fn max_reconnect_attempts(mut self, n: u32) -> Self { self.config.max_reconnect_attempts = Some(n); self }
-    pub fn sync_batch_size(mut self, n: u32) -> Self { self.config.sync_batch_size = Some(n); self }
-    pub fn enable_metrics(mut self, b: bool) -> Self { self.config.enable_metrics = b; self }
-    pub fn build(self) -> SdkConfig { self.config }
+    pub fn endpoint(mut self, url: impl Into<String>) -> Self {
+        self.config.ws_url = Some(url.into());
+        self
+    }
+    pub fn quic_endpoint(mut self, url: impl Into<String>) -> Self {
+        self.config.quic_url = Some(url.into());
+        self
+    }
+    pub fn http_endpoint(mut self, url: impl Into<String>) -> Self {
+        self.config.http_url = Some(url.into());
+        self
+    }
+    pub fn connect_timeout_secs(mut self, s: u64) -> Self {
+        self.config.connect_timeout_secs = Some(s);
+        self
+    }
+    pub fn reconnect_interval_secs(mut self, s: u64) -> Self {
+        self.config.reconnect_interval_secs = Some(s);
+        self
+    }
+    pub fn max_reconnect_attempts(mut self, n: u32) -> Self {
+        self.config.max_reconnect_attempts = Some(n);
+        self
+    }
+    pub fn sync_batch_size(mut self, n: u32) -> Self {
+        self.config.sync_batch_size = Some(n);
+        self
+    }
+    pub fn enable_metrics(mut self, b: bool) -> Self {
+        self.config.enable_metrics = b;
+        self
+    }
+    pub fn build(self) -> SdkConfig {
+        self.config
+    }
 }

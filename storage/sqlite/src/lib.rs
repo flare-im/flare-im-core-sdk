@@ -1,39 +1,41 @@
-mod message_store;
-mod conversation_store;
-mod cursor_store;
+//! SQLite 连接与运行时（不依赖 flare-im-core-sdk）
+//!
+//! 提供：
+//! - [create_pool]：创建 SQLite 连接池
+//! - [open_pool]：创建池并执行所有已注册 [register_schema_init] 的初始化器
+//! - **[SqliteRuntime]**：运行时持有 pool，创建后执行已注册的 schema init
+//! - [register_schema_init]：注册自定义 schema，在创建 pool 后统一调用
+//!
+//! Core 表与仓储由调用方（如 flare-im-core-sdk）在拿到 pool 后自行 init 与构建。
 
-pub use message_store::SqliteMessageStore;
-pub use conversation_store::SqliteConversationStore;
-pub use cursor_store::SqliteSyncCursorStore;
+mod runtime;
+mod schema_registry;
 
-use std::sync::Arc;
+use anyhow::Result as AnyhowResult;
 use sqlx::SqlitePool;
+use std::path::Path;
 
-/// 存储提供者工厂
-///
-/// 创建 SQLite 连接池并初始化所有表，返回三个 store 实例，
-/// 可直接传入 `StoreProvider`。
-pub async fn create_stores(
-    database_url: &str,
-) -> anyhow::Result<(
-    Arc<SqliteMessageStore>,
-    Arc<SqliteConversationStore>,
-    Arc<SqliteSyncCursorStore>,
-)> {
-    let pool = SqlitePool::connect(database_url).await?;
+pub use runtime::SqliteRuntime;
+pub use schema_registry::{SchemaInitializer, register_schema_init, register_schema_init_with};
 
-    let msg_store = SqliteMessageStore::new(pool.clone());
-    msg_store.init().await?;
+/// 创建 SQLite 连接池（不建表）
+pub async fn create_pool(database_url: &str) -> AnyhowResult<SqlitePool> {
+    Ok(SqlitePool::connect(database_url).await?)
+}
 
-    let conv_store = SqliteConversationStore::new(pool.clone());
-    conv_store.init().await?;
+/// 将本地文件路径转为 `sqlite://` URL
+pub fn database_url_from_path(path: &Path) -> String {
+    let path_str = path.to_string_lossy().replace('\\', "/");
+    if path_str.starts_with('/') {
+        format!("sqlite://{}?mode=rwc", path_str)
+    } else {
+        format!("sqlite:///{}?mode=rwc", path_str)
+    }
+}
 
-    let cursor_store = SqliteSyncCursorStore::new(pool.clone());
-    cursor_store.init().await?;
-
-    Ok((
-        Arc::new(msg_store),
-        Arc::new(conv_store),
-        Arc::new(cursor_store),
-    ))
+/// 创建连接池并执行所有已注册的 [register_schema_init] 初始化器。
+pub async fn open_pool(database_url: &str) -> AnyhowResult<SqlitePool> {
+    let pool = create_pool(database_url).await?;
+    schema_registry::run_registered_schema_inits(&pool).await?;
+    Ok(pool)
 }

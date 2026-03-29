@@ -18,15 +18,9 @@
 //! ```
 
 pub use flare_core::common::conversation::{
-    extract_conversation_type,
-    generate_ai_conversation_id,
-    generate_customer_conversation_id,
-    generate_group_conversation_id,
-    generate_single_chat_conversation_id,
-    generate_system_conversation_id,
-    generate_temp_conversation_id,
-    is_group_chat_conversation,
-    is_single_chat_conversation,
+    ConversationType as CidConversationType, extract_conversation_type,
+    generate_ai_conversation_id, generate_customer_conversation_id, generate_group_conversation_id,
+    generate_single_chat_conversation_id, generate_system_conversation_id,
+    generate_temp_conversation_id, is_group_chat_conversation, is_single_chat_conversation,
     validate_conversation_id,
-    ConversationType as CidConversationType,
 };

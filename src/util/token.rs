@@ -66,9 +66,12 @@ pub fn generate_test_token(
     device_id: Option<&str>,
     tenant_id: Option<&str>,
 ) -> Result<String> {
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|e| crate::error::SdkError::Config(format!("system time error: {e}")))?;
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).map_err(|e| {
+        crate::error::FlareError::localized(
+            crate::error::ErrorCode::ConfigurationError,
+            format!("system time error: {e}"),
+        )
+    })?;
 
     let iat = now.as_secs() as usize;
     let exp = (now.as_secs() + ttl_secs.max(60)) as usize;
@@ -88,5 +91,10 @@ pub fn generate_test_token(
         &claims,
         &EncodingKey::from_secret(secret.as_bytes()),
     )
-    .map_err(|e| crate::error::SdkError::Config(format!("token encode failed: {e}")))
+    .map_err(|e| {
+        crate::error::FlareError::localized(
+            crate::error::ErrorCode::ConfigurationError,
+            format!("token encode failed: {e}"),
+        )
+    })
 }

@@ -137,12 +137,14 @@ listen('im://connection_state', (event) => {
 
 ### 消息命令
 
+**约定**：所有对上层暴露的 `message_id` 均为 **client_msg_id**（客户端生成的消息 ID）；server_msg_id 仅用于内部与服务端交互，前端无需关心。
+
 - `sdk_send_text_message(session_id: String, text: String)` - 发送文本消息
-- `sdk_edit_message(session_id: String, message_id: String, text: String)` - 编辑消息
+- `sdk_edit_message(session_id: String, message_id: String, text: String)` - 编辑消息（message_id 为 client_msg_id）
 - `sdk_delete_message(message_id: String, delete_type?: i32, reason?: String)` - 删除消息
 - `sdk_recall_message(message_id: String)` - 撤回消息
-- `sdk_add_reaction(session_id: String, message_id: String, emoji: String)` - 添加反应
-- `sdk_remove_reaction(session_id: String, message_id: String, emoji: String)` - 移除反应
+- `sdk_add_reaction(message_id: String, emoji: String)` - 添加反应
+- `sdk_remove_reaction(message_id: String, emoji: String)` - 移除反应
 - `sdk_forward_message(message_ids: Vec<String>, target_session_id: String, merge_forward: bool, reason?: String)` - 转发消息
 - `sdk_quote_message(session_id: String, quoted_message_id: String, text: String, preview_text?: String)` - 引用消息
 - `sdk_reply_message(session_id: String, reply_to_message_id: String, text: String)` - 回复消息
@@ -163,8 +165,7 @@ listen('im://connection_state', (event) => {
 
 ### 同步命令
 
-- `sdk_sync_sessions()` - 同步会话列表
-- `sdk_sync_session_incremental(session_id: String)` - 增量同步会话消息
+- `sdk_sync_session_incremental(session_id: String)` - 单会话增量同步消息（会话列表由同步引擎在连接后自动同步，不暴露给前端）
 - `sdk_bootstrap_sync()` - 执行 Bootstrap Sync
 
 ## 事件列表
@@ -247,7 +248,7 @@ listen('im://connection_state', (event) => {
 
 ## 注意事项
 
-1. **消息内容提取**：绑定层会自动从 protobuf 编码的 `content` 字段提取文本内容，并设置到 `extra.content_text` 字段，方便前端直接使用。
+1. **消息内容解码**：由 **SDK 核心层**（`flare_im_core_sdk::model::message_elem`）统一提供 `Elem` 与 `decoded_content_to_elem`，绑定层在转换 Message 时调用并填充 `contentDecoded`。前端可根据 `contentDecoded.contentType` 取得对应结构，无需解析原始字节。兼容保留 `content` 与 `extra.content_text`。
 
 2. **事件重试机制**：消息事件（创建、发送、编辑等）会自动重试查询消息（最多 3 次），确保前端能收到完整的消息对象。
 

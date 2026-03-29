@@ -1,804 +1,856 @@
-//! Type-safe builders for all message content types defined in `message_content.proto`.
-//!
-//! ```ignore
-//! use flare_im_core_sdk::model::content_builder::ContentBuilder;
-//!
-//! // 文本消息（带 @提及）
-//! let content = ContentBuilder::text("Hello @Alice!")
-//!     .mention_user("alice_id", 6, 6)
-//!     .build();
-//!
-//! // 图片消息
-//! let content = ContentBuilder::image("img_123")
-//!     .source(ImageInfo { url: "https://cdn.example.com/a.jpg".into(), ..Default::default() })
-//!     .build();
-//!
-//! // 自定义消息
-//! let content = ContentBuilder::custom("red_packet")
-//!     .payload(b"...".to_vec())
-//!     .description("恭喜发财")
-//!     .build();
-//! ```
+//! 消息内容构建器 — 与 message_content.proto 对应，构建 MessageContent
 
 use flare_proto::common::{
-    MessageContent, MessageType, message_content,
-    TextContent, Mention, MentionType,
-    ImageContent, ImageInfo,
-    VideoContent, VideoInfo,
-    AudioContent, AudioInfo,
-    FileContent, LocationContent, CardContent,
-    StickerContent, EmojiContent, GifContent,
-    QuoteContent, LinkCardContent, ForwardContent, MessagePreview,
-    ThreadContent, MiniProgramContent,
-    RichTextContent, MarkdownContent, ImageGroupContent,
-    SystemContent, NotificationContent,
-    VoteContent, TaskContent, ScheduleContent, AnnouncementContent,
-    CustomContent, PlaceholderContent,
+    AnnouncementContent, AudioContent, AudioInfo, CardContent, CustomContent, EmojiContent,
+    FileContent, ForwardContent, GifContent, ImageContent, ImageGroupContent, ImageInfo,
+    LinkCardContent, LocationContent, MarkdownContent, Mention, MentionType, MessageContent,
+    MessageType, MiniProgramContent, NotificationContent, PlaceholderContent, QuoteContent,
+    RichTextContent, ScheduleContent, StickerContent, SystemContent, TaskContent, TextContent,
+    ThreadContent, VideoContent, VideoInfo, VoteContent,
 };
 
-/// 构建后的消息内容 — 同时携带 MessageType 和 MessageContent
+/// 已构建的消息内容（协议层 MessageContent + 类型，便于 encode 与预览）
 #[derive(Clone, Debug)]
 pub struct BuiltContent {
     pub message_type: MessageType,
-    pub content: MessageContent,
+    pub inner: MessageContent,
 }
 
 impl BuiltContent {
-    /// 将 MessageContent 编码为 bytes（用于 Message.content 字段）
+    pub fn new(message_type: MessageType, inner: MessageContent) -> Self {
+        Self {
+            message_type,
+            inner,
+        }
+    }
+
+    /// 编码为 bytes（写入 Message.content）
     pub fn encode(&self) -> Vec<u8> {
         use prost::Message;
-        self.content.encode_to_vec()
+        let mut buf = Vec::with_capacity(self.inner.encoded_len());
+        let _ = self.inner.encode(&mut buf);
+        buf
     }
 }
 
-/// 消息内容构建入口
-pub struct ContentBuilder;
+/// 消息内容构建器
+#[derive(Clone, Debug, Default)]
+pub struct ContentBuilder {
+    message_type: MessageType,
+    content: Option<MessageContent>,
+}
 
 impl ContentBuilder {
-    // ── 1-15: 基础内容 ──────────────────────────────────────
-
-    pub fn text(text: impl Into<String>) -> TextContentBuilder {
-        TextContentBuilder { text: text.into(), mentions: Vec::new() }
-    }
-
-    pub fn image(image_id: impl Into<String>) -> ImageContentBuilder {
-        ImageContentBuilder {
-            inner: ImageContent { image_id: image_id.into(), ..Default::default() },
+    pub fn text(text: impl Into<String>) -> Self {
+        let text = text.into();
+        let content = MessageContent {
+            content: Some(flare_proto::common::message_content::Content::Text(
+                TextContent {
+                    text: text.clone(),
+                    mentions: vec![],
+                },
+            )),
+        };
+        Self {
+            message_type: MessageType::Text,
+            content: Some(content),
         }
-    }
-
-    pub fn video(video_id: impl Into<String>) -> VideoContentBuilder {
-        VideoContentBuilder {
-            inner: VideoContent { video_id: video_id.into(), ..Default::default() },
-        }
-    }
-
-    pub fn audio(audio_id: impl Into<String>) -> AudioContentBuilder {
-        AudioContentBuilder {
-            inner: AudioContent { audio_id: audio_id.into(), ..Default::default() },
-        }
-    }
-
-    pub fn file(file_id: impl Into<String>) -> FileContentBuilder {
-        FileContentBuilder {
-            inner: FileContent { file_id: file_id.into(), ..Default::default() },
-        }
-    }
-
-    pub fn location(longitude: f64, latitude: f64) -> LocationContentBuilder {
-        LocationContentBuilder {
-            inner: LocationContent { longitude, latitude, ..Default::default() },
-        }
-    }
-
-    pub fn card(user_id: impl Into<String>) -> CardContentBuilder {
-        CardContentBuilder {
-            inner: CardContent { user_id: user_id.into(), ..Default::default() },
-        }
-    }
-
-    pub fn sticker(sticker_id: impl Into<String>) -> StickerContentBuilder {
-        StickerContentBuilder {
-            inner: StickerContent { sticker_id: sticker_id.into(), ..Default::default() },
-        }
-    }
-
-    pub fn emoji(emoji: impl Into<String>) -> EmojiContentBuilder {
-        EmojiContentBuilder {
-            inner: EmojiContent { emoji: emoji.into(), ..Default::default() },
-        }
-    }
-
-    pub fn gif(gif_id: impl Into<String>) -> GifContentBuilder {
-        GifContentBuilder {
-            inner: GifContent { gif_id: gif_id.into(), ..Default::default() },
-        }
-    }
-
-    pub fn quote(quoted_message_id: impl Into<String>) -> QuoteContentBuilder {
-        QuoteContentBuilder {
-            inner: QuoteContent { quoted_message_id: quoted_message_id.into(), ..Default::default() },
-        }
-    }
-
-    pub fn link_card(url: impl Into<String>) -> LinkCardContentBuilder {
-        LinkCardContentBuilder {
-            inner: LinkCardContent { url: url.into(), ..Default::default() },
-        }
-    }
-
-    pub fn forward(message_ids: Vec<String>) -> ForwardContentBuilder {
-        ForwardContentBuilder {
-            inner: ForwardContent { message_ids, ..Default::default() },
-        }
-    }
-
-    pub fn thread(thread_id: impl Into<String>) -> ThreadContentBuilder {
-        ThreadContentBuilder {
-            inner: ThreadContent { thread_id: thread_id.into(), ..Default::default() },
-        }
-    }
-
-    pub fn mini_program(app_id: impl Into<String>) -> MiniProgramContentBuilder {
-        MiniProgramContentBuilder {
-            inner: MiniProgramContent { app_id: app_id.into(), ..Default::default() },
-        }
-    }
-
-    // ── 30-32: 富媒体 ──────────────────────────────────────
-
-    pub fn rich_text(content: impl Into<String>, format: impl Into<String>) -> RichTextContentBuilder {
-        RichTextContentBuilder {
-            inner: RichTextContent { content: content.into(), format: format.into(), ..Default::default() },
-        }
-    }
-
-    pub fn markdown(text: impl Into<String>) -> MarkdownContentBuilder {
-        MarkdownContentBuilder {
-            inner: MarkdownContent { text: text.into(), ..Default::default() },
-        }
-    }
-
-    pub fn image_group(images: Vec<ImageInfo>) -> ImageGroupContentBuilder {
-        ImageGroupContentBuilder {
-            inner: ImageGroupContent { images, ..Default::default() },
-        }
-    }
-
-    // ── 60-61: 系统与通知 ───────────────────────────────────
-
-    pub fn system(event_kind: impl Into<String>, body: impl Into<String>) -> SystemContentBuilder {
-        SystemContentBuilder {
-            inner: SystemContent { event_kind: event_kind.into(), body: body.into(), ..Default::default() },
-        }
-    }
-
-    pub fn notification(title: impl Into<String>, body: impl Into<String>) -> NotificationContentBuilder {
-        NotificationContentBuilder {
-            inner: NotificationContent { title: title.into(), body: body.into(), ..Default::default() },
-        }
-    }
-
-    // ── 80-83: 平台推荐业务 ─────────────────────────────────
-
-    pub fn vote(vote_id: impl Into<String>, title: impl Into<String>, options: Vec<String>) -> VoteContentBuilder {
-        VoteContentBuilder {
-            inner: VoteContent { vote_id: vote_id.into(), title: title.into(), options, ..Default::default() },
-        }
-    }
-
-    pub fn task(task_id: impl Into<String>, title: impl Into<String>) -> TaskContentBuilder {
-        TaskContentBuilder {
-            inner: TaskContent { task_id: task_id.into(), title: title.into(), ..Default::default() },
-        }
-    }
-
-    pub fn schedule(schedule_id: impl Into<String>, title: impl Into<String>) -> ScheduleContentBuilder {
-        ScheduleContentBuilder {
-            inner: ScheduleContent { schedule_id: schedule_id.into(), title: title.into(), ..Default::default() },
-        }
-    }
-
-    pub fn announcement(title: impl Into<String>, body: impl Into<String>) -> AnnouncementContentBuilder {
-        AnnouncementContentBuilder {
-            inner: AnnouncementContent { title: title.into(), body: body.into(), ..Default::default() },
-        }
-    }
-
-    // ── 100: 自定义 ─────────────────────────────────────────
-
-    pub fn custom(r#type: impl Into<String>) -> CustomContentBuilder {
-        CustomContentBuilder {
-            inner: CustomContent { r#type: r#type.into(), ..Default::default() },
-        }
-    }
-
-    // ── 101-115: 平台能力 ───────────────────────────────────
-
-    pub fn placeholder(reason: impl Into<String>) -> PlaceholderContentBuilder {
-        PlaceholderContentBuilder {
-            inner: PlaceholderContent { reason: reason.into(), ..Default::default() },
-        }
-    }
-}
-
-// =============================================================================
-// 各类型 Builder
-// =============================================================================
-
-// ── TextContentBuilder ──────────────────────────────────────
-
-pub struct TextContentBuilder {
-    text: String,
-    mentions: Vec<Mention>,
-}
-
-impl TextContentBuilder {
-    pub fn mention_user(mut self, user_id: impl Into<String>, start: i32, length: i32) -> Self {
-        self.mentions.push(Mention {
-            r#type: MentionType::User as i32,
-            user_id: user_id.into(),
-            start, length,
-            ..Default::default()
-        });
-        self
-    }
-
-    pub fn mention_users(mut self, user_ids: Vec<String>, start: i32, length: i32) -> Self {
-        self.mentions.push(Mention {
-            r#type: MentionType::Multi as i32,
-            user_ids,
-            start, length,
-            ..Default::default()
-        });
-        self
     }
 
     pub fn mention_all(mut self, start: i32, length: i32) -> Self {
-        self.mentions.push(Mention {
-            r#type: MentionType::All as i32,
-            start, length,
-            ..Default::default()
-        });
-        self
-    }
-
-    pub fn mention_role(mut self, role_id: impl Into<String>, start: i32, length: i32) -> Self {
-        self.mentions.push(Mention {
-            r#type: MentionType::Role as i32,
-            role_id: role_id.into(),
-            start, length,
-            ..Default::default()
-        });
-        self
-    }
-
-    pub fn mention(mut self, mention: Mention) -> Self {
-        self.mentions.push(mention);
-        self
-    }
-
-    pub fn build(self) -> BuiltContent {
-        BuiltContent {
-            message_type: MessageType::Text,
-            content: MessageContent {
-                content: Some(message_content::Content::Text(TextContent {
-                    text: self.text,
-                    mentions: self.mentions,
-                })),
-            },
+        if let Some(ref mut c) = self.content {
+            if let Some(flare_proto::common::message_content::Content::Text(ref mut t)) = c.content
+            {
+                t.mentions.push(Mention {
+                    r#type: MentionType::All as i32,
+                    user_id: String::new(),
+                    user_ids: vec![],
+                    role_id: String::new(),
+                    start,
+                    length,
+                });
+            }
         }
+        self
     }
-}
 
-// ── ImageContentBuilder ─────────────────────────────────────
+    pub fn mention_user(mut self, user_id: impl Into<String>, start: i32, length: i32) -> Self {
+        if let Some(ref mut c) = self.content {
+            if let Some(flare_proto::common::message_content::Content::Text(ref mut t)) = c.content
+            {
+                t.mentions.push(Mention {
+                    r#type: MentionType::User as i32,
+                    user_id: user_id.into(),
+                    user_ids: vec![],
+                    role_id: String::new(),
+                    start,
+                    length,
+                });
+            }
+        }
+        self
+    }
 
-pub struct ImageContentBuilder {
-    inner: ImageContent,
-}
-
-impl ImageContentBuilder {
-    pub fn source(mut self, info: ImageInfo) -> Self { self.inner.source = Some(info); self }
-    pub fn thumbnail(mut self, info: ImageInfo) -> Self { self.inner.thumbnail = Some(info); self }
-    pub fn description(mut self, v: impl Into<String>) -> Self { self.inner.description = v.into(); self }
-
-    pub fn build(self) -> BuiltContent {
-        BuiltContent {
+    pub fn image(image_id: impl Into<String>) -> Self {
+        let content = MessageContent {
+            content: Some(flare_proto::common::message_content::Content::Image(
+                ImageContent {
+                    image_id: image_id.into(),
+                    source: None,
+                    thumbnail: None,
+                    description: String::new(),
+                },
+            )),
+        };
+        Self {
             message_type: MessageType::Image,
-            content: MessageContent { content: Some(message_content::Content::Image(self.inner)) },
+            content: Some(content),
         }
     }
-}
 
-// ── VideoContentBuilder ─────────────────────────────────────
+    pub fn source(mut self, info: ImageInfo) -> Self {
+        if let Some(ref mut c) = self.content {
+            if let Some(flare_proto::common::message_content::Content::Image(ref mut i)) = c.content
+            {
+                i.source = Some(info);
+            }
+        }
+        self
+    }
 
-pub struct VideoContentBuilder {
-    inner: VideoContent,
-}
+    pub fn video_source(mut self, info: VideoInfo) -> Self {
+        if let Some(ref mut c) = self.content {
+            if let Some(flare_proto::common::message_content::Content::Video(ref mut v)) = c.content
+            {
+                v.source = Some(info);
+            }
+        }
+        self
+    }
 
-impl VideoContentBuilder {
-    pub fn source(mut self, info: VideoInfo) -> Self { self.inner.source = Some(info); self }
-    pub fn cover(mut self, info: ImageInfo) -> Self { self.inner.cover = Some(info); self }
-    pub fn description(mut self, v: impl Into<String>) -> Self { self.inner.description = v.into(); self }
+    pub fn audio_source(mut self, info: AudioInfo) -> Self {
+        if let Some(ref mut c) = self.content {
+            if let Some(flare_proto::common::message_content::Content::Audio(ref mut a)) = c.content
+            {
+                a.source = Some(info);
+            }
+        }
+        self
+    }
 
-    pub fn build(self) -> BuiltContent {
-        BuiltContent {
+    pub fn description(mut self, d: impl Into<String>) -> Self {
+        if let Some(ref mut c) = self.content {
+            match c.content {
+                Some(flare_proto::common::message_content::Content::Image(ref mut i)) => {
+                    i.description = d.into();
+                }
+                Some(flare_proto::common::message_content::Content::Video(ref mut v)) => {
+                    v.description = d.into();
+                }
+                Some(flare_proto::common::message_content::Content::Audio(ref mut a)) => {
+                    a.description = d.into();
+                }
+                Some(flare_proto::common::message_content::Content::LinkCard(ref mut l)) => {
+                    l.description = d.into();
+                }
+                Some(flare_proto::common::message_content::Content::Custom(ref mut cu)) => {
+                    cu.description = d.into();
+                }
+                _ => {}
+            }
+        }
+        self
+    }
+
+    pub fn video(video_id: impl Into<String>) -> Self {
+        let content = MessageContent {
+            content: Some(flare_proto::common::message_content::Content::Video(
+                VideoContent {
+                    video_id: video_id.into(),
+                    source: None,
+                    cover: None,
+                    description: String::new(),
+                },
+            )),
+        };
+        Self {
             message_type: MessageType::Video,
-            content: MessageContent { content: Some(message_content::Content::Video(self.inner)) },
+            content: Some(content),
         }
     }
-}
 
-// ── AudioContentBuilder ─────────────────────────────────────
-
-pub struct AudioContentBuilder {
-    inner: AudioContent,
-}
-
-impl AudioContentBuilder {
-    pub fn source(mut self, info: AudioInfo) -> Self { self.inner.source = Some(info); self }
-    pub fn description(mut self, v: impl Into<String>) -> Self { self.inner.description = v.into(); self }
-
-    pub fn build(self) -> BuiltContent {
-        BuiltContent {
+    pub fn audio(audio_id: impl Into<String>) -> Self {
+        let content = MessageContent {
+            content: Some(flare_proto::common::message_content::Content::Audio(
+                AudioContent {
+                    audio_id: audio_id.into(),
+                    source: None,
+                    description: String::new(),
+                },
+            )),
+        };
+        Self {
             message_type: MessageType::Audio,
-            content: MessageContent { content: Some(message_content::Content::Audio(self.inner)) },
+            content: Some(content),
         }
     }
-}
 
-// ── FileContentBuilder ──────────────────────────────────────
-
-pub struct FileContentBuilder {
-    inner: FileContent,
-}
-
-impl FileContentBuilder {
-    pub fn file_name(mut self, v: impl Into<String>) -> Self { self.inner.file_name = v.into(); self }
-    pub fn mime_type(mut self, v: impl Into<String>) -> Self { self.inner.mime_type = v.into(); self }
-    pub fn file_size(mut self, v: i64) -> Self { self.inner.file_size = v; self }
-    pub fn url(mut self, v: impl Into<String>) -> Self { self.inner.url = v.into(); self }
-    pub fn description(mut self, v: impl Into<String>) -> Self { self.inner.description = v.into(); self }
-
-    pub fn build(self) -> BuiltContent {
-        BuiltContent {
+    pub fn file(file_id: impl Into<String>) -> Self {
+        let content = MessageContent {
+            content: Some(flare_proto::common::message_content::Content::File(
+                FileContent {
+                    file_id: file_id.into(),
+                    file_name: String::new(),
+                    mime_type: String::new(),
+                    file_size: 0,
+                    url: String::new(),
+                    description: String::new(),
+                },
+            )),
+        };
+        Self {
             message_type: MessageType::File,
-            content: MessageContent { content: Some(message_content::Content::File(self.inner)) },
+            content: Some(content),
         }
     }
-}
 
-// ── LocationContentBuilder ──────────────────────────────────
+    pub fn file_name(mut self, n: impl Into<String>) -> Self {
+        if let Some(ref mut c) = self.content {
+            if let Some(flare_proto::common::message_content::Content::File(ref mut f)) = c.content
+            {
+                f.file_name = n.into();
+            }
+        }
+        self
+    }
 
-pub struct LocationContentBuilder {
-    inner: LocationContent,
-}
+    pub fn mime_type(mut self, m: impl Into<String>) -> Self {
+        if let Some(ref mut c) = self.content {
+            if let Some(flare_proto::common::message_content::Content::File(ref mut f)) = c.content
+            {
+                f.mime_type = m.into();
+            }
+        }
+        self
+    }
 
-impl LocationContentBuilder {
-    pub fn address(mut self, v: impl Into<String>) -> Self { self.inner.address = v.into(); self }
-    pub fn description(mut self, v: impl Into<String>) -> Self { self.inner.description = v.into(); self }
-    pub fn poi_id(mut self, v: impl Into<String>) -> Self { self.inner.poi_id = v.into(); self }
+    pub fn file_size(mut self, s: i64) -> Self {
+        if let Some(ref mut c) = self.content {
+            if let Some(flare_proto::common::message_content::Content::File(ref mut f)) = c.content
+            {
+                f.file_size = s;
+            }
+        }
+        self
+    }
 
-    pub fn build(self) -> BuiltContent {
-        BuiltContent {
+    pub fn url(mut self, u: impl Into<String>) -> Self {
+        if let Some(ref mut c) = self.content {
+            match c.content {
+                Some(flare_proto::common::message_content::Content::File(ref mut f)) => {
+                    f.url = u.into();
+                }
+                Some(flare_proto::common::message_content::Content::Sticker(ref mut s)) => {
+                    s.url = u.into();
+                }
+                _ => {}
+            }
+        }
+        self
+    }
+
+    pub fn location(longitude: f64, latitude: f64) -> Self {
+        let content = MessageContent {
+            content: Some(flare_proto::common::message_content::Content::Location(
+                LocationContent {
+                    longitude,
+                    latitude,
+                    address: String::new(),
+                    description: String::new(),
+                    poi_id: String::new(),
+                },
+            )),
+        };
+        Self {
             message_type: MessageType::Location,
-            content: MessageContent { content: Some(message_content::Content::Location(self.inner)) },
+            content: Some(content),
         }
     }
-}
 
-// ── CardContentBuilder ──────────────────────────────────────
-
-pub struct CardContentBuilder {
-    inner: CardContent,
-}
-
-impl CardContentBuilder {
-    pub fn nickname(mut self, v: impl Into<String>) -> Self { self.inner.nickname = v.into(); self }
-    pub fn avatar_url(mut self, v: impl Into<String>) -> Self { self.inner.avatar_url = v.into(); self }
-    pub fn description(mut self, v: impl Into<String>) -> Self { self.inner.description = v.into(); self }
-    pub fn extra(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
-        self.inner.extra.insert(key.into(), value.into()); self
+    pub fn address(mut self, a: impl Into<String>) -> Self {
+        if let Some(ref mut c) = self.content {
+            if let Some(flare_proto::common::message_content::Content::Location(ref mut l)) =
+                c.content
+            {
+                l.address = a.into();
+            }
+        }
+        self
     }
 
-    pub fn build(self) -> BuiltContent {
-        BuiltContent {
+    pub fn card(user_id: impl Into<String>) -> Self {
+        let content = MessageContent {
+            content: Some(flare_proto::common::message_content::Content::Card(
+                CardContent {
+                    user_id: user_id.into(),
+                    nickname: String::new(),
+                    avatar_url: String::new(),
+                    description: String::new(),
+                    extra: std::collections::HashMap::new(),
+                },
+            )),
+        };
+        Self {
             message_type: MessageType::Card,
-            content: MessageContent { content: Some(message_content::Content::Card(self.inner)) },
+            content: Some(content),
         }
     }
-}
 
-// ── StickerContentBuilder ───────────────────────────────────
-
-pub struct StickerContentBuilder {
-    inner: StickerContent,
-}
-
-impl StickerContentBuilder {
-    pub fn url(mut self, v: impl Into<String>) -> Self { self.inner.url = v.into(); self }
-    pub fn size(mut self, width: i32, height: i32) -> Self { self.inner.width = width; self.inner.height = height; self }
-    pub fn extra(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
-        self.inner.extra.insert(key.into(), value.into()); self
+    pub fn nickname(mut self, n: impl Into<String>) -> Self {
+        if let Some(ref mut c) = self.content {
+            if let Some(flare_proto::common::message_content::Content::Card(ref mut card)) =
+                c.content
+            {
+                card.nickname = n.into();
+            }
+        }
+        self
     }
 
-    pub fn build(self) -> BuiltContent {
-        BuiltContent {
+    pub fn avatar_url(mut self, u: impl Into<String>) -> Self {
+        if let Some(ref mut c) = self.content {
+            if let Some(flare_proto::common::message_content::Content::Card(ref mut card)) =
+                c.content
+            {
+                card.avatar_url = u.into();
+            }
+        }
+        self
+    }
+
+    pub fn sticker(sticker_id: impl Into<String>) -> Self {
+        let content = MessageContent {
+            content: Some(flare_proto::common::message_content::Content::Sticker(
+                StickerContent {
+                    sticker_id: sticker_id.into(),
+                    url: String::new(),
+                    width: 0,
+                    height: 0,
+                    extra: std::collections::HashMap::new(),
+                },
+            )),
+        };
+        Self {
             message_type: MessageType::Sticker,
-            content: MessageContent { content: Some(message_content::Content::Sticker(self.inner)) },
+            content: Some(content),
         }
     }
-}
 
-// ── EmojiContentBuilder ─────────────────────────────────────
-
-pub struct EmojiContentBuilder {
-    inner: EmojiContent,
-}
-
-impl EmojiContentBuilder {
-    pub fn description(mut self, v: impl Into<String>) -> Self { self.inner.description = v.into(); self }
-    pub fn extra(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
-        self.inner.extra.insert(key.into(), value.into()); self
+    pub fn size(mut self, w: i32, h: i32) -> Self {
+        if let Some(ref mut c) = self.content {
+            if let Some(flare_proto::common::message_content::Content::Sticker(ref mut s)) =
+                c.content
+            {
+                s.width = w;
+                s.height = h;
+            }
+        }
+        self
     }
 
-    pub fn build(self) -> BuiltContent {
-        BuiltContent {
+    pub fn emoji(emoji: impl Into<String>) -> Self {
+        let content = MessageContent {
+            content: Some(flare_proto::common::message_content::Content::Emoji(
+                EmojiContent {
+                    emoji: emoji.into(),
+                    description: String::new(),
+                    extra: std::collections::HashMap::new(),
+                },
+            )),
+        };
+        Self {
             message_type: MessageType::Emoji,
-            content: MessageContent { content: Some(message_content::Content::Emoji(self.inner)) },
+            content: Some(content),
         }
     }
-}
 
-// ── GifContentBuilder ───────────────────────────────────────
-
-pub struct GifContentBuilder {
-    inner: GifContent,
-}
-
-impl GifContentBuilder {
-    pub fn url(mut self, v: impl Into<String>) -> Self { self.inner.url = v.into(); self }
-    pub fn thumbnail(mut self, info: ImageInfo) -> Self { self.inner.thumbnail = Some(info); self }
-    pub fn duration_ms(mut self, v: i64) -> Self { self.inner.duration_ms = v; self }
-    pub fn size(mut self, width: i32, height: i32) -> Self { self.inner.width = width; self.inner.height = height; self }
-
-    pub fn build(self) -> BuiltContent {
-        BuiltContent {
+    pub fn gif(gif_id: impl Into<String>) -> Self {
+        let content = MessageContent {
+            content: Some(flare_proto::common::message_content::Content::Gif(
+                GifContent {
+                    gif_id: gif_id.into(),
+                    url: String::new(),
+                    thumbnail: None,
+                    duration_ms: 0,
+                    width: 0,
+                    height: 0,
+                },
+            )),
+        };
+        Self {
             message_type: MessageType::Gif,
-            content: MessageContent { content: Some(message_content::Content::Gif(self.inner)) },
+            content: Some(content),
         }
     }
-}
 
-// ── QuoteContentBuilder ─────────────────────────────────────
-
-pub struct QuoteContentBuilder {
-    inner: QuoteContent,
-}
-
-impl QuoteContentBuilder {
-    pub fn quoted_sender_id(mut self, v: impl Into<String>) -> Self { self.inner.quoted_sender_id = v.into(); self }
-    pub fn quoted_text_preview(mut self, v: impl Into<String>) -> Self { self.inner.quoted_text_preview = v.into(); self }
-    pub fn quoted_content(mut self, content: MessageContent) -> Self { self.inner.quoted_content = Some(Box::new(content)); self }
-    /// 使用 BuiltContent 设置被引用内容
-    pub fn quoted_built_content(mut self, built: BuiltContent) -> Self { self.inner.quoted_content = Some(Box::new(built.content)); self }
-
-    pub fn build(self) -> BuiltContent {
-        BuiltContent {
+    pub fn quote(quoted_message_id: impl Into<String>) -> Self {
+        let content = MessageContent {
+            content: Some(flare_proto::common::message_content::Content::Quote(
+                std::boxed::Box::new(QuoteContent {
+                    quoted_message_id: quoted_message_id.into(),
+                    quoted_sender_id: String::new(),
+                    quoted_text_preview: String::new(),
+                    quoted_content: None,
+                }),
+            )),
+        };
+        Self {
             message_type: MessageType::Quote,
-            content: MessageContent { content: Some(message_content::Content::Quote(Box::new(self.inner))) },
+            content: Some(content),
         }
     }
-}
 
-// ── LinkCardContentBuilder ──────────────────────────────────
-
-pub struct LinkCardContentBuilder {
-    inner: LinkCardContent,
-}
-
-impl LinkCardContentBuilder {
-    pub fn title(mut self, v: impl Into<String>) -> Self { self.inner.title = v.into(); self }
-    pub fn description(mut self, v: impl Into<String>) -> Self { self.inner.description = v.into(); self }
-    pub fn thumbnail_url(mut self, v: impl Into<String>) -> Self { self.inner.thumbnail_url = v.into(); self }
-    pub fn site_name(mut self, v: impl Into<String>) -> Self { self.inner.site_name = v.into(); self }
-
-    pub fn build(self) -> BuiltContent {
-        BuiltContent {
-            message_type: MessageType::LinkCard,
-            content: MessageContent { content: Some(message_content::Content::LinkCard(self.inner)) },
+    pub fn quoted_sender_id(mut self, s: impl Into<String>) -> Self {
+        if let Some(ref mut c) = self.content {
+            if let Some(flare_proto::common::message_content::Content::Quote(ref mut q)) = c.content
+            {
+                q.quoted_sender_id = s.into();
+            }
         }
+        self
     }
-}
 
-// ── ForwardContentBuilder ───────────────────────────────────
-
-pub struct ForwardContentBuilder {
-    inner: ForwardContent,
-}
-
-impl ForwardContentBuilder {
-    pub fn forward_reason(mut self, v: impl Into<String>) -> Self { self.inner.forward_reason = v.into(); self }
-    pub fn add_preview(mut self, preview: MessagePreview) -> Self { self.inner.forwarded_previews.push(preview); self }
-
-    pub fn build(self) -> BuiltContent {
-        BuiltContent {
-            message_type: MessageType::MergeForward,
-            content: MessageContent { content: Some(message_content::Content::Forward(self.inner)) },
+    pub fn quoted_text_preview(mut self, s: impl Into<String>) -> Self {
+        if let Some(ref mut c) = self.content {
+            if let Some(flare_proto::common::message_content::Content::Quote(ref mut q)) = c.content
+            {
+                q.quoted_text_preview = s.into();
+            }
         }
-    }
-}
-
-// ── ThreadContentBuilder ────────────────────────────────────
-
-pub struct ThreadContentBuilder {
-    inner: ThreadContent,
-}
-
-impl ThreadContentBuilder {
-    pub fn thread_title(mut self, v: impl Into<String>) -> Self { self.inner.thread_title = v.into(); self }
-    pub fn root_content(mut self, content: MessageContent) -> Self { self.inner.root_content = Some(Box::new(content)); self }
-    pub fn root_built_content(mut self, built: BuiltContent) -> Self { self.inner.root_content = Some(Box::new(built.content)); self }
-    pub fn metadata(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
-        self.inner.metadata.insert(key.into(), value.into()); self
+        self
     }
 
-    pub fn build(self) -> BuiltContent {
-        BuiltContent {
+    pub fn thread(thread_id: impl Into<String>) -> Self {
+        let content = MessageContent {
+            content: Some(flare_proto::common::message_content::Content::Thread(
+                std::boxed::Box::new(ThreadContent {
+                    thread_id: thread_id.into(),
+                    thread_title: String::new(),
+                    root_content: None,
+                    metadata: std::collections::HashMap::new(),
+                }),
+            )),
+        };
+        Self {
             message_type: MessageType::Thread,
-            content: MessageContent { content: Some(message_content::Content::Thread(Box::new(self.inner))) },
+            content: Some(content),
         }
     }
-}
 
-// ── MiniProgramContentBuilder ───────────────────────────────
-
-pub struct MiniProgramContentBuilder {
-    inner: MiniProgramContent,
-}
-
-impl MiniProgramContentBuilder {
-    pub fn title(mut self, v: impl Into<String>) -> Self { self.inner.title = v.into(); self }
-    pub fn page_path(mut self, v: impl Into<String>) -> Self { self.inner.page_path = v.into(); self }
-    pub fn thumbnail_url(mut self, v: impl Into<String>) -> Self { self.inner.thumbnail_url = v.into(); self }
-    pub fn extra(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
-        self.inner.extra.insert(key.into(), value.into()); self
+    pub fn thread_title(mut self, s: impl Into<String>) -> Self {
+        if let Some(ref mut c) = self.content {
+            if let Some(flare_proto::common::message_content::Content::Thread(ref mut t)) =
+                c.content
+            {
+                t.thread_title = s.into();
+            }
+        }
+        self
     }
 
-    pub fn build(self) -> BuiltContent {
-        BuiltContent {
+    pub fn forward(message_ids: Vec<String>) -> Self {
+        let content = MessageContent {
+            content: Some(flare_proto::common::message_content::Content::Forward(
+                ForwardContent {
+                    message_ids,
+                    forward_reason: String::new(),
+                    forwarded_previews: vec![],
+                },
+            )),
+        };
+        Self {
+            message_type: MessageType::MergeForward,
+            content: Some(content),
+        }
+    }
+
+    pub fn forward_reason(mut self, s: impl Into<String>) -> Self {
+        if let Some(ref mut c) = self.content {
+            if let Some(flare_proto::common::message_content::Content::Forward(ref mut f)) =
+                c.content
+            {
+                f.forward_reason = s.into();
+            }
+        }
+        self
+    }
+
+    pub fn link_card(url: impl Into<String>) -> Self {
+        let content = MessageContent {
+            content: Some(flare_proto::common::message_content::Content::LinkCard(
+                LinkCardContent {
+                    url: url.into(),
+                    title: String::new(),
+                    description: String::new(),
+                    thumbnail_url: String::new(),
+                    site_name: String::new(),
+                },
+            )),
+        };
+        Self {
+            message_type: MessageType::LinkCard,
+            content: Some(content),
+        }
+    }
+
+    pub fn title(mut self, t: impl Into<String>) -> Self {
+        if let Some(ref mut c) = self.content {
+            match c.content {
+                Some(flare_proto::common::message_content::Content::LinkCard(ref mut l)) => {
+                    l.title = t.into();
+                }
+                Some(flare_proto::common::message_content::Content::MiniProgram(ref mut m)) => {
+                    m.title = t.into();
+                }
+                _ => {}
+            }
+        }
+        self
+    }
+
+    pub fn page_path(mut self, p: impl Into<String>) -> Self {
+        if let Some(ref mut c) = self.content {
+            if let Some(flare_proto::common::message_content::Content::MiniProgram(ref mut m)) =
+                c.content
+            {
+                m.page_path = p.into();
+            }
+        }
+        self
+    }
+
+    pub fn mini_program(app_id: impl Into<String>) -> Self {
+        let content = MessageContent {
+            content: Some(flare_proto::common::message_content::Content::MiniProgram(
+                MiniProgramContent {
+                    app_id: app_id.into(),
+                    title: String::new(),
+                    page_path: String::new(),
+                    thumbnail_url: String::new(),
+                    extra: std::collections::HashMap::new(),
+                },
+            )),
+        };
+        Self {
             message_type: MessageType::MiniProgram,
-            content: MessageContent { content: Some(message_content::Content::MiniProgram(self.inner)) },
+            content: Some(content),
         }
     }
-}
 
-// ── RichTextContentBuilder ──────────────────────────────────
-
-pub struct RichTextContentBuilder {
-    inner: RichTextContent,
-}
-
-impl RichTextContentBuilder {
-    pub fn mention(mut self, mention: Mention) -> Self { self.inner.mentions.push(mention); self }
-    pub fn metadata(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
-        self.inner.metadata.insert(key.into(), value.into()); self
-    }
-
-    pub fn build(self) -> BuiltContent {
-        BuiltContent {
+    pub fn rich_text(body: impl Into<String>, format: impl Into<String>) -> Self {
+        let content = MessageContent {
+            content: Some(flare_proto::common::message_content::Content::RichText(
+                RichTextContent {
+                    content: body.into(),
+                    format: format.into(),
+                    mentions: vec![],
+                    metadata: std::collections::HashMap::new(),
+                },
+            )),
+        };
+        Self {
             message_type: MessageType::RichText,
-            content: MessageContent { content: Some(message_content::Content::RichText(self.inner)) },
+            content: Some(content),
         }
     }
-}
 
-// ── MarkdownContentBuilder ──────────────────────────────────
-
-pub struct MarkdownContentBuilder {
-    inner: MarkdownContent,
-}
-
-impl MarkdownContentBuilder {
-    pub fn mention(mut self, mention: Mention) -> Self { self.inner.mentions.push(mention); self }
-    pub fn metadata(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
-        self.inner.metadata.insert(key.into(), value.into()); self
-    }
-
-    pub fn build(self) -> BuiltContent {
-        BuiltContent {
+    pub fn markdown(text: impl Into<String>) -> Self {
+        let content = MessageContent {
+            content: Some(flare_proto::common::message_content::Content::Markdown(
+                MarkdownContent {
+                    text: text.into(),
+                    mentions: vec![],
+                    metadata: std::collections::HashMap::new(),
+                },
+            )),
+        };
+        Self {
             message_type: MessageType::Markdown,
-            content: MessageContent { content: Some(message_content::Content::Markdown(self.inner)) },
+            content: Some(content),
         }
     }
-}
 
-// ── ImageGroupContentBuilder ────────────────────────────────
-
-pub struct ImageGroupContentBuilder {
-    inner: ImageGroupContent,
-}
-
-impl ImageGroupContentBuilder {
-    pub fn add_image(mut self, info: ImageInfo) -> Self { self.inner.images.push(info); self }
-    pub fn description(mut self, v: impl Into<String>) -> Self { self.inner.description = v.into(); self }
-    pub fn metadata(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
-        self.inner.metadata.insert(key.into(), value.into()); self
-    }
-
-    pub fn build(self) -> BuiltContent {
-        BuiltContent {
+    pub fn image_group(images: Vec<ImageInfo>) -> Self {
+        let content = MessageContent {
+            content: Some(flare_proto::common::message_content::Content::ImageGroup(
+                ImageGroupContent {
+                    images,
+                    description: String::new(),
+                    metadata: std::collections::HashMap::new(),
+                },
+            )),
+        };
+        Self {
             message_type: MessageType::ImageGroup,
-            content: MessageContent { content: Some(message_content::Content::ImageGroup(self.inner)) },
+            content: Some(content),
         }
     }
-}
 
-// ── SystemContentBuilder ────────────────────────────────────
-
-pub struct SystemContentBuilder {
-    inner: SystemContent,
-}
-
-impl SystemContentBuilder {
-    pub fn data(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
-        self.inner.data.insert(key.into(), value.into()); self
-    }
-    pub fn payload(mut self, v: Vec<u8>) -> Self { self.inner.payload = v; self }
-
-    pub fn build(self) -> BuiltContent {
-        BuiltContent {
+    pub fn system(event_kind: impl Into<String>, body: impl Into<String>) -> Self {
+        let content = MessageContent {
+            content: Some(flare_proto::common::message_content::Content::System(
+                SystemContent {
+                    event_kind: event_kind.into(),
+                    body: body.into(),
+                    data: std::collections::HashMap::new(),
+                    payload: vec![],
+                },
+            )),
+        };
+        Self {
             message_type: MessageType::System,
-            content: MessageContent { content: Some(message_content::Content::System(self.inner)) },
+            content: Some(content),
         }
     }
-}
 
-// ── NotificationContentBuilder ──────────────────────────────
-
-pub struct NotificationContentBuilder {
-    inner: NotificationContent,
-}
-
-impl NotificationContentBuilder {
-    pub fn notification_type(mut self, v: impl Into<String>) -> Self { self.inner.notification_type = v.into(); self }
     pub fn data(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
-        self.inner.data.insert(key.into(), value.into()); self
+        if let Some(ref mut c) = self.content {
+            if let Some(flare_proto::common::message_content::Content::System(ref mut s)) =
+                c.content
+            {
+                s.data.insert(key.into(), value.into());
+            }
+        }
+        self
     }
-    pub fn target_user_ids(mut self, ids: Vec<String>) -> Self { self.inner.target_user_ids = ids; self }
-    pub fn target_role_id(mut self, v: impl Into<String>) -> Self { self.inner.target_role_id = v.into(); self }
-    pub fn notify_all(mut self, v: bool) -> Self { self.inner.notify_all = v; self }
-    pub fn persistent(mut self, v: bool) -> Self { self.inner.persistent = v; self }
-    pub fn show_in_list(mut self, v: bool) -> Self { self.inner.show_in_list = v; self }
-    pub fn show_badge(mut self, v: bool) -> Self { self.inner.show_badge = v; self }
-    pub fn play_sound(mut self, v: bool) -> Self { self.inner.play_sound = v; self }
 
-    pub fn build(self) -> BuiltContent {
-        BuiltContent {
+    pub fn notification(title: impl Into<String>, body: impl Into<String>) -> Self {
+        let content = MessageContent {
+            content: Some(flare_proto::common::message_content::Content::Notification(
+                NotificationContent {
+                    title: title.into(),
+                    body: body.into(),
+                    notification_type: String::new(),
+                    data: std::collections::HashMap::new(),
+                    target_user_ids: vec![],
+                    target_role_id: String::new(),
+                    notify_all: false,
+                    persistent: false,
+                    show_in_list: false,
+                    show_badge: false,
+                    play_sound: false,
+                },
+            )),
+        };
+        Self {
             message_type: MessageType::Notification,
-            content: MessageContent { content: Some(message_content::Content::Notification(self.inner)) },
+            content: Some(content),
         }
     }
-}
 
-// ── VoteContentBuilder ──────────────────────────────────────
-
-pub struct VoteContentBuilder {
-    inner: VoteContent,
-}
-
-impl VoteContentBuilder {
-    pub fn metadata(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
-        self.inner.metadata.insert(key.into(), value.into()); self
+    pub fn notification_type(mut self, t: impl Into<String>) -> Self {
+        if let Some(ref mut c) = self.content {
+            if let Some(flare_proto::common::message_content::Content::Notification(ref mut n)) =
+                c.content
+            {
+                n.notification_type = t.into();
+            }
+        }
+        self
     }
 
-    pub fn build(self) -> BuiltContent {
-        BuiltContent {
+    pub fn persistent(mut self, v: bool) -> Self {
+        if let Some(ref mut c) = self.content {
+            if let Some(flare_proto::common::message_content::Content::Notification(ref mut n)) =
+                c.content
+            {
+                n.persistent = v;
+            }
+        }
+        self
+    }
+
+    pub fn show_badge(mut self, v: bool) -> Self {
+        if let Some(ref mut c) = self.content {
+            if let Some(flare_proto::common::message_content::Content::Notification(ref mut n)) =
+                c.content
+            {
+                n.show_badge = v;
+            }
+        }
+        self
+    }
+
+    pub fn vote(
+        vote_id: impl Into<String>,
+        title: impl Into<String>,
+        options: Vec<String>,
+    ) -> Self {
+        let content = MessageContent {
+            content: Some(flare_proto::common::message_content::Content::Vote(
+                VoteContent {
+                    vote_id: vote_id.into(),
+                    title: title.into(),
+                    options,
+                    metadata: std::collections::HashMap::new(),
+                },
+            )),
+        };
+        Self {
             message_type: MessageType::Poll,
-            content: MessageContent { content: Some(message_content::Content::Vote(self.inner)) },
+            content: Some(content),
         }
     }
-}
 
-// ── TaskContentBuilder ──────────────────────────────────────
-
-pub struct TaskContentBuilder {
-    inner: TaskContent,
-}
-
-impl TaskContentBuilder {
-    pub fn status(mut self, v: impl Into<String>) -> Self { self.inner.status = v.into(); self }
-    pub fn metadata(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
-        self.inner.metadata.insert(key.into(), value.into()); self
-    }
-
-    pub fn build(self) -> BuiltContent {
-        BuiltContent {
+    pub fn task(task_id: impl Into<String>, title: impl Into<String>) -> Self {
+        let content = MessageContent {
+            content: Some(flare_proto::common::message_content::Content::Task(
+                TaskContent {
+                    task_id: task_id.into(),
+                    title: title.into(),
+                    status: String::new(),
+                    metadata: std::collections::HashMap::new(),
+                },
+            )),
+        };
+        Self {
             message_type: MessageType::Task,
-            content: MessageContent { content: Some(message_content::Content::Task(self.inner)) },
+            content: Some(content),
         }
     }
-}
 
-// ── ScheduleContentBuilder ──────────────────────────────────
-
-pub struct ScheduleContentBuilder {
-    inner: ScheduleContent,
-}
-
-impl ScheduleContentBuilder {
-    pub fn start_time(mut self, ts: prost_types::Timestamp) -> Self { self.inner.start_time = Some(ts); self }
-    pub fn end_time(mut self, ts: prost_types::Timestamp) -> Self { self.inner.end_time = Some(ts); self }
-    pub fn metadata(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
-        self.inner.metadata.insert(key.into(), value.into()); self
+    pub fn status(mut self, s: impl Into<String>) -> Self {
+        if let Some(ref mut c) = self.content {
+            if let Some(flare_proto::common::message_content::Content::Task(ref mut t)) = c.content
+            {
+                t.status = s.into();
+            }
+        }
+        self
     }
 
-    pub fn build(self) -> BuiltContent {
-        BuiltContent {
+    pub fn schedule(schedule_id: impl Into<String>, title: impl Into<String>) -> Self {
+        let content = MessageContent {
+            content: Some(flare_proto::common::message_content::Content::Schedule(
+                ScheduleContent {
+                    schedule_id: schedule_id.into(),
+                    title: title.into(),
+                    start_time: None,
+                    end_time: None,
+                    metadata: std::collections::HashMap::new(),
+                },
+            )),
+        };
+        Self {
             message_type: MessageType::Schedule,
-            content: MessageContent { content: Some(message_content::Content::Schedule(self.inner)) },
+            content: Some(content),
         }
     }
-}
 
-// ── AnnouncementContentBuilder ──────────────────────────────
-
-pub struct AnnouncementContentBuilder {
-    inner: AnnouncementContent,
-}
-
-impl AnnouncementContentBuilder {
-    pub fn pinned(mut self, v: bool) -> Self { self.inner.pinned = v; self }
-    pub fn metadata(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
-        self.inner.metadata.insert(key.into(), value.into()); self
-    }
-
-    pub fn build(self) -> BuiltContent {
-        BuiltContent {
+    pub fn announcement(title: impl Into<String>, body: impl Into<String>) -> Self {
+        let content = MessageContent {
+            content: Some(flare_proto::common::message_content::Content::Announcement(
+                AnnouncementContent {
+                    title: title.into(),
+                    body: body.into(),
+                    pinned: false,
+                    metadata: std::collections::HashMap::new(),
+                },
+            )),
+        };
+        Self {
             message_type: MessageType::Announcement,
-            content: MessageContent { content: Some(message_content::Content::Announcement(self.inner)) },
+            content: Some(content),
         }
     }
-}
 
-// ── CustomContentBuilder ────────────────────────────────────
-
-pub struct CustomContentBuilder {
-    inner: CustomContent,
-}
-
-impl CustomContentBuilder {
-    pub fn payload(mut self, v: Vec<u8>) -> Self { self.inner.payload = v; self }
-    pub fn description(mut self, v: impl Into<String>) -> Self { self.inner.description = v.into(); self }
-    pub fn metadata(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
-        self.inner.metadata.insert(key.into(), value.into()); self
-    }
-
-    pub fn build(self) -> BuiltContent {
-        BuiltContent {
-            message_type: MessageType::Custom,
-            content: MessageContent { content: Some(message_content::Content::Custom(self.inner)) },
+    pub fn pinned(mut self, v: bool) -> Self {
+        if let Some(ref mut c) = self.content {
+            if let Some(flare_proto::common::message_content::Content::Announcement(ref mut a)) =
+                c.content
+            {
+                a.pinned = v;
+            }
         }
-    }
-}
-
-// ── PlaceholderContentBuilder ───────────────────────────────
-
-pub struct PlaceholderContentBuilder {
-    inner: PlaceholderContent,
-}
-
-impl PlaceholderContentBuilder {
-    pub fn payload(mut self, v: Vec<u8>) -> Self { self.inner.payload = v; self }
-    pub fn fallback_text(mut self, v: impl Into<String>) -> Self { self.inner.fallback_text = v.into(); self }
-    pub fn metadata(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
-        self.inner.metadata.insert(key.into(), value.into()); self
+        self
     }
 
-    pub fn build(self) -> BuiltContent {
-        BuiltContent {
+    pub fn placeholder(reason: impl Into<String>) -> Self {
+        let content = MessageContent {
+            content: Some(flare_proto::common::message_content::Content::Placeholder(
+                PlaceholderContent {
+                    reason: reason.into(),
+                    payload: vec![],
+                    fallback_text: String::new(),
+                    metadata: std::collections::HashMap::new(),
+                },
+            )),
+        };
+        Self {
             message_type: MessageType::E2ePlaceholder,
-            content: MessageContent { content: Some(message_content::Content::Placeholder(self.inner)) },
+            content: Some(content),
         }
+    }
+
+    pub fn fallback_text(mut self, s: impl Into<String>) -> Self {
+        if let Some(ref mut c) = self.content {
+            if let Some(flare_proto::common::message_content::Content::Placeholder(ref mut p)) =
+                c.content
+            {
+                p.fallback_text = s.into();
+            }
+        }
+        self
+    }
+
+    pub fn custom(r#type: impl Into<String>) -> Self {
+        let content = MessageContent {
+            content: Some(flare_proto::common::message_content::Content::Custom(
+                CustomContent {
+                    r#type: r#type.into(),
+                    payload: vec![],
+                    description: String::new(),
+                    metadata: std::collections::HashMap::new(),
+                },
+            )),
+        };
+        Self {
+            message_type: MessageType::Custom,
+            content: Some(content),
+        }
+    }
+
+    pub fn payload(mut self, p: Vec<u8>) -> Self {
+        if let Some(ref mut c) = self.content {
+            match c.content {
+                Some(flare_proto::common::message_content::Content::Custom(ref mut cu)) => {
+                    cu.payload = p;
+                }
+                Some(flare_proto::common::message_content::Content::Placeholder(ref mut ph)) => {
+                    ph.payload = p;
+                }
+                _ => {}
+            }
+        }
+        self
+    }
+
+    pub fn metadata(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        if let Some(ref mut c) = self.content {
+            match c.content {
+                Some(flare_proto::common::message_content::Content::Custom(ref mut cu)) => {
+                    cu.metadata.insert(key.into(), value.into());
+                }
+                _ => {}
+            }
+        }
+        self
+    }
+
+    pub fn build(self) -> BuiltContent {
+        let content = self
+            .content
+            .unwrap_or_else(|| MessageContent { content: None });
+        BuiltContent::new(self.message_type, content)
     }
 }
