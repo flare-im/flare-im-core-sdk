@@ -154,6 +154,7 @@ listen('im://connection_state', (event) => {
 - `sdk_unfavorite_message(message_id: String)` - 取消收藏消息
 - `sdk_mark_message(message_id: String, mark_type: i32, color?: String)` - 标记消息
 - `sdk_get_messages(session_id: String, limit: usize, cursor?: String)` - 获取消息列表
+- `sdk_send_with_media_progress(message: IMMessage)` - 发送消息并推送媒体上传进度事件（本地媒体路径场景）
 
 ### 会话命令
 
@@ -173,6 +174,7 @@ listen('im://connection_state', (event) => {
 ### 消息事件
 
 - `im://message` - 消息创建/更新（包含完整消息对象）
+- `im://upload_progress` - 媒体上传进度（用于图片/视频/音频/文件发送进度）
 - `im://message_delivered` - 消息已送达
 - `im://message_read` - 消息已读
 - `im://message_recalled` - 消息已撤回
@@ -245,6 +247,12 @@ listen('im://connection_state', (event) => {
 ## 示例
 
 完整示例请参考 `examples/tauri`。
+
+## 媒体上传进度协议
+
+`im://upload_progress` 的统一字段、阶段状态机与跨端兼容规范见：
+
+- [媒体上传进度事件协议](../../docs/upload_progress_event_protocol.md)
 
 ## 注意事项
 

@@ -16,7 +16,7 @@ pub use date::{
 };
 pub use paths::{
     dev_data_dir_relative_to_cwd, parse_data_url_to_path, resolve_user_db_path,
-    sanitize_user_id_for_dir,
+    resolve_user_media_cache_dir, sanitize_user_id_for_dir,
 };
 #[cfg(feature = "lifecycle-sqlite")]
 pub use sqlite_store::{

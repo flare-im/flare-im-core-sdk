@@ -132,7 +132,8 @@ pub mod prelude {
     // client（含 Facade：MessageApi / ConversationApi / MessageBuildApi）
     pub use crate::client::{
         ConversationApi, IMClient, IMClientBuilder, MessageApi, MessageBuildApi, SdkConfig,
-        SdkConfigBuilder,
+        SdkConfigBuilder, MediaApi, MediaAccessUrl, MediaCacheEntryVo, MediaCacheStatsVo, MediaResolvedAccess, UploadOptions, UploadedMedia, UploadPhase, UploadProgress,
+        UploadProgressCallback,
     };
     pub use crate::core::SdkState;
     pub use crate::error::{ErrorCode, FlareError, Result, from_rpc_status};
@@ -143,7 +144,8 @@ pub mod prelude {
     pub use crate::event::{EventBus, EventReceiver, SdkEvent, Subscription};
 
     // store
-    pub use crate::store::{ConversationStore, MessageStore, StoreProvider, SyncCursorStore};
+    pub use crate::domain::{ConversationStore, MessageStore, SyncCursorStore};
+    pub use crate::store::StoreProvider;
 
     // sync（任务抽象与 SyncManager 位于 core::sync）
     pub use crate::core::{

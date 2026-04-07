@@ -17,7 +17,9 @@ use tokio::sync::RwLock;
 
 use flare_im_core_sdk::model::Conversation;
 use flare_im_core_sdk::model::IMMessage;
+use flare_im_core_sdk::model::{decode_content_bytes, decoded_content_to_elem};
 use flare_im_core_sdk::prelude::*;
+use flare_proto::common::MessageStatus;
 
 /// 串行化集成测试，同一用户仅允许一个连接在线
 pub static SERIAL_LOCK: Lazy<tokio::sync::Mutex<()>> = Lazy::new(|| tokio::sync::Mutex::new(()));
@@ -85,18 +87,51 @@ impl MessageStore for MemoryMessageStore {
 
     async fn update_status(&self, message_id: &str, status: i32) -> Result<()> {
         let mut data = self.data.write().await;
-        if let Some(msg) = data.get_mut(message_id) {
+        let recalled = MessageStatus::Recalled as i32;
+        let apply = |msg: &mut IMMessage| {
             msg.status = status;
+            if status == recalled {
+                msg.is_recalled = true;
+            }
+        };
+        if let Some(msg) = data.get_mut(message_id) {
+            apply(msg);
+            return Ok(());
+        }
+        for msg in data.values_mut() {
+            if msg.server_id == message_id || msg.client_msg_id == message_id {
+                apply(msg);
+                break;
+            }
         }
         Ok(())
     }
 
-    async fn update_content(&self, message_id: &str, new_content: Vec<u8>) -> Result<()> {
+    async fn update_content(&self, message_id: &str, new_content: Vec<u8>) -> Result<bool> {
         let mut data = self.data.write().await;
+        let mut hit = false;
         if let Some(msg) = data.get_mut(message_id) {
-            msg.content_bytes = new_content;
+            msg.content_bytes = new_content.clone();
+            msg.is_edited = true;
+            msg.content = decode_content_bytes(&msg.content_bytes)
+                .ok()
+                .and_then(|d| decoded_content_to_elem(&d));
+            hit = true;
         }
-        Ok(())
+        if !hit {
+            for msg in data.values_mut() {
+                if msg.server_id == message_id || msg.client_msg_id == message_id {
+                    msg.content_bytes = new_content.clone();
+                    msg.is_edited = true;
+                    msg.content = decode_content_bytes(&msg.content_bytes)
+                        .ok()
+                        .and_then(|d| decoded_content_to_elem(&d));
+                    hit = true;
+                    break;
+                }
+            }
+        }
+        Ok(hit)
     }
 
     async fn delete(&self, message_id: &str) -> Result<()> {
@@ -255,6 +290,22 @@ impl ConversationStore for MemoryConversationStore {
         }
         Ok(())
     }
+
+    async fn recompute_unread_for_user(
+        &self,
+        _conversation_id: &str,
+        _current_user_id: &str,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    async fn get_local_max_seq(&self, conversation_id: &str) -> Result<u64> {
+        let data = self.data.read().await;
+        Ok(data
+            .get(conversation_id)
+            .map(|conv| conv.max_seq)
+            .unwrap_or_default())
+    }
 }
 
 // =============================================================================
@@ -336,6 +387,9 @@ fn make_stores() -> StoreProvider {
         cursors: Arc::new(MemoryCursorStore::new()),
         pending_send_reader: None,
         pending_send_writer: None,
+        upload_manifest_store: None,
+        media_cache_store: None,
+        media_cache_admin: None,
         user_profiles_reader: None,
         user_profiles_writer: None,
     }

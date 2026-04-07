@@ -304,6 +304,17 @@ impl EventBus {
                                 }
                             });
                         }
+                        MessageEvent::Edited { .. }
+                        | MessageEvent::ReactionChanged { .. }
+                        | MessageEvent::Deleted { .. }
+                        | MessageEvent::ReadReceipt { .. }
+                        | MessageEvent::Pinned { .. }
+                        | MessageEvent::Unpinned { .. }
+                        | MessageEvent::Marked { .. }
+                        | MessageEvent::Unmarked { .. }
+                        | MessageEvent::PresenceChanged { .. }
+                        | MessageEvent::CallSignal { .. }
+                        | MessageEvent::Custom { .. } => {}
                     },
                     SdkEvent::Conversation(ce) => match ce {
                         ConversationEvent::Synced { conversation_ids } => {

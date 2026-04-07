@@ -1,14 +1,14 @@
 //! 消息构建 Facade — 所有 `create_*` 必须传入 `conversation_id`；当前用户与 channel 由 SDK/会话内部解析，产出 [`crate::model::message::IMMessage`]。
-//! 与 [`super::MessageApi::send`] 配合：先构建再发送。实现委托 [`crate::application::handlers::MessageBuilderHandler`]。
+//! 与 [`super::MessageApi::send`] 配合：先构建再发送。实现委托 [`crate::application::MessageBuilderService`]。
 //!
 //! 发送前根据本地 [`Conversation`] 记录直接写入消息的 `channel_id` 与 `conversation_type`（映射为 proto 枚举），供 Orchestrator 构建推送目标。
 
 use std::sync::Arc;
 
-use crate::application::handlers::{ConversationQueryHandler, MessageBuilderHandler};
-use crate::application::queries::GetConversationQuery;
+use crate::application::MessageBuilderService;
 use crate::conversation;
 use crate::core::CurrentUserIdStore;
+use crate::domain::ConversationStore;
 use crate::error::{ErrorCode, FlareError, Result};
 use crate::model::content_builder::BuiltContent;
 use crate::model::message::IMMessage;
@@ -16,17 +16,17 @@ use crate::model::message::IMMessage;
 /// 多类型消息的构建入口（不负责发送）。
 pub struct MessageBuildApi {
     current_user_id: CurrentUserIdStore,
-    conversation_query: Arc<ConversationQueryHandler>,
+    conversations: Arc<dyn ConversationStore>,
 }
 
 impl MessageBuildApi {
     pub fn new(
         current_user_id: CurrentUserIdStore,
-        conversation_query: Arc<ConversationQueryHandler>,
+        conversations: Arc<dyn ConversationStore>,
     ) -> Self {
         Self {
             current_user_id,
-            conversation_query,
+            conversations,
         }
     }
 
@@ -45,10 +45,8 @@ impl MessageBuildApi {
         mut msg: IMMessage,
     ) -> Result<IMMessage> {
         let Some(conv) = self
-            .conversation_query
-            .handle_get_conversation(GetConversationQuery {
-                conversation_id: conversation_id.to_string(),
-            })
+            .conversations
+            .get(conversation_id)
             .await?
         else {
             if conversation::is_single_chat_conversation(conversation_id) {
@@ -75,7 +73,7 @@ impl MessageBuildApi {
 
     pub async fn create_text(&self, conversation_id: &str, text: &str) -> Result<IMMessage> {
         let sender_id = self.current_sender_id().await?;
-        let msg = MessageBuilderHandler::build_text(conversation_id, &sender_id, text, None)?;
+        let msg = MessageBuilderService::build_text(conversation_id, &sender_id, text, None)?;
         self.apply_conversation_routing(conversation_id, msg).await
     }
 
@@ -84,15 +82,19 @@ impl MessageBuildApi {
         conversation_id: &str,
         quoted_message_id: &str,
         text: &str,
+        quoted_sender_id: Option<&str>,
         quoted_text_preview: Option<&str>,
+        quoted_content: Option<BuiltContent>,
     ) -> Result<IMMessage> {
         let sender_id = self.current_sender_id().await?;
-        let msg = MessageBuilderHandler::build_quote(
+        let msg = MessageBuilderService::build_quote(
             conversation_id,
             &sender_id,
             quoted_message_id,
             text,
+            quoted_sender_id,
             quoted_text_preview,
+            quoted_content,
         )?;
         self.apply_conversation_routing(conversation_id, msg).await
     }
@@ -105,7 +107,7 @@ impl MessageBuildApi {
     ) -> Result<IMMessage> {
         let sender_id = self.current_sender_id().await?;
         let msg =
-            MessageBuilderHandler::build_thread_reply(conversation_id, &sender_id, thread_id, text)?;
+            MessageBuilderService::build_thread_reply(conversation_id, &sender_id, thread_id, text)?;
         self.apply_conversation_routing(conversation_id, msg).await
     }
 
@@ -115,7 +117,7 @@ impl MessageBuildApi {
         message_ids: Vec<String>,
     ) -> Result<IMMessage> {
         let sender_id = self.current_sender_id().await?;
-        let msg = MessageBuilderHandler::build_forward(conversation_id, &sender_id, message_ids)?;
+        let msg = MessageBuilderService::build_forward(conversation_id, &sender_id, message_ids)?;
         self.apply_conversation_routing(conversation_id, msg).await
     }
 
@@ -126,31 +128,48 @@ impl MessageBuildApi {
     ) -> Result<IMMessage> {
         let sender_id = self.current_sender_id().await?;
         let msg =
-            MessageBuilderHandler::build_with_content(conversation_id, &sender_id, content, None)?;
+            MessageBuilderService::build_with_content(conversation_id, &sender_id, content, None)?;
         self.apply_conversation_routing(conversation_id, msg).await
     }
 
     pub async fn create_image(&self, conversation_id: &str, image_id: &str) -> Result<IMMessage> {
         let sender_id = self.current_sender_id().await?;
-        let msg = MessageBuilderHandler::build_image(conversation_id, &sender_id, image_id, None)?;
+        let msg = MessageBuilderService::build_image(conversation_id, &sender_id, image_id, None)?;
+        self.apply_conversation_routing(conversation_id, msg).await
+    }
+
+    pub async fn create_image_with_thumbnail(
+        &self,
+        conversation_id: &str,
+        source_image_id: &str,
+        thumbnail_image_id: &str,
+    ) -> Result<IMMessage> {
+        let sender_id = self.current_sender_id().await?;
+        let msg = MessageBuilderService::build_image_with_thumbnail(
+            conversation_id,
+            &sender_id,
+            source_image_id,
+            thumbnail_image_id,
+            None,
+        )?;
         self.apply_conversation_routing(conversation_id, msg).await
     }
 
     pub async fn create_video(&self, conversation_id: &str, video_id: &str) -> Result<IMMessage> {
         let sender_id = self.current_sender_id().await?;
-        let msg = MessageBuilderHandler::build_video(conversation_id, &sender_id, video_id, None)?;
+        let msg = MessageBuilderService::build_video(conversation_id, &sender_id, video_id, None)?;
         self.apply_conversation_routing(conversation_id, msg).await
     }
 
     pub async fn create_audio(&self, conversation_id: &str, audio_id: &str) -> Result<IMMessage> {
         let sender_id = self.current_sender_id().await?;
-        let msg = MessageBuilderHandler::build_audio(conversation_id, &sender_id, audio_id, None)?;
+        let msg = MessageBuilderService::build_audio(conversation_id, &sender_id, audio_id, None)?;
         self.apply_conversation_routing(conversation_id, msg).await
     }
 
     pub async fn create_file(&self, conversation_id: &str, file_id: &str) -> Result<IMMessage> {
         let sender_id = self.current_sender_id().await?;
-        let msg = MessageBuilderHandler::build_file(conversation_id, &sender_id, file_id, None)?;
+        let msg = MessageBuilderService::build_file(conversation_id, &sender_id, file_id, None)?;
         self.apply_conversation_routing(conversation_id, msg).await
     }
 
@@ -161,7 +180,7 @@ impl MessageBuildApi {
         latitude: f64,
     ) -> Result<IMMessage> {
         let sender_id = self.current_sender_id().await?;
-        let msg = MessageBuilderHandler::build_location(
+        let msg = MessageBuilderService::build_location(
             conversation_id,
             &sender_id,
             longitude,
@@ -173,7 +192,7 @@ impl MessageBuildApi {
 
     pub async fn create_card(&self, conversation_id: &str, user_id: &str) -> Result<IMMessage> {
         let sender_id = self.current_sender_id().await?;
-        let msg = MessageBuilderHandler::build_card(conversation_id, &sender_id, user_id, None)?;
+        let msg = MessageBuilderService::build_card(conversation_id, &sender_id, user_id, None)?;
         self.apply_conversation_routing(conversation_id, msg).await
     }
 
@@ -184,25 +203,25 @@ impl MessageBuildApi {
     ) -> Result<IMMessage> {
         let sender_id = self.current_sender_id().await?;
         let msg =
-            MessageBuilderHandler::build_sticker(conversation_id, &sender_id, sticker_id, None)?;
+            MessageBuilderService::build_sticker(conversation_id, &sender_id, sticker_id, None)?;
         self.apply_conversation_routing(conversation_id, msg).await
     }
 
     pub async fn create_emoji(&self, conversation_id: &str, emoji: &str) -> Result<IMMessage> {
         let sender_id = self.current_sender_id().await?;
-        let msg = MessageBuilderHandler::build_emoji(conversation_id, &sender_id, emoji, None)?;
+        let msg = MessageBuilderService::build_emoji(conversation_id, &sender_id, emoji, None)?;
         self.apply_conversation_routing(conversation_id, msg).await
     }
 
     pub async fn create_gif(&self, conversation_id: &str, gif_id: &str) -> Result<IMMessage> {
         let sender_id = self.current_sender_id().await?;
-        let msg = MessageBuilderHandler::build_gif(conversation_id, &sender_id, gif_id, None)?;
+        let msg = MessageBuilderService::build_gif(conversation_id, &sender_id, gif_id, None)?;
         self.apply_conversation_routing(conversation_id, msg).await
     }
 
     pub async fn create_link_card(&self, conversation_id: &str, url: &str) -> Result<IMMessage> {
         let sender_id = self.current_sender_id().await?;
-        let msg = MessageBuilderHandler::build_link_card(conversation_id, &sender_id, url, None)?;
+        let msg = MessageBuilderService::build_link_card(conversation_id, &sender_id, url, None)?;
         self.apply_conversation_routing(conversation_id, msg).await
     }
 
@@ -213,7 +232,7 @@ impl MessageBuildApi {
     ) -> Result<IMMessage> {
         let sender_id = self.current_sender_id().await?;
         let msg =
-            MessageBuilderHandler::build_mini_program(conversation_id, &sender_id, app_id, None)?;
+            MessageBuilderService::build_mini_program(conversation_id, &sender_id, app_id, None)?;
         self.apply_conversation_routing(conversation_id, msg).await
     }
 
@@ -225,13 +244,13 @@ impl MessageBuildApi {
     ) -> Result<IMMessage> {
         let sender_id = self.current_sender_id().await?;
         let msg =
-            MessageBuilderHandler::build_rich_text(conversation_id, &sender_id, body, format, None)?;
+            MessageBuilderService::build_rich_text(conversation_id, &sender_id, body, format, None)?;
         self.apply_conversation_routing(conversation_id, msg).await
     }
 
     pub async fn create_markdown(&self, conversation_id: &str, text: &str) -> Result<IMMessage> {
         let sender_id = self.current_sender_id().await?;
-        let msg = MessageBuilderHandler::build_markdown(conversation_id, &sender_id, text, None)?;
+        let msg = MessageBuilderService::build_markdown(conversation_id, &sender_id, text, None)?;
         self.apply_conversation_routing(conversation_id, msg).await
     }
 
@@ -243,7 +262,7 @@ impl MessageBuildApi {
     ) -> Result<IMMessage> {
         let sender_id = self.current_sender_id().await?;
         let msg =
-            MessageBuilderHandler::build_system(conversation_id, &sender_id, event_kind, body)?;
+            MessageBuilderService::build_system(conversation_id, &sender_id, event_kind, body)?;
         self.apply_conversation_routing(conversation_id, msg).await
     }
 
@@ -255,7 +274,7 @@ impl MessageBuildApi {
     ) -> Result<IMMessage> {
         let sender_id = self.current_sender_id().await?;
         let msg =
-            MessageBuilderHandler::build_notification(conversation_id, &sender_id, title, body)?;
+            MessageBuilderService::build_notification(conversation_id, &sender_id, title, body)?;
         self.apply_conversation_routing(conversation_id, msg).await
     }
 
@@ -267,7 +286,7 @@ impl MessageBuildApi {
         options: Vec<String>,
     ) -> Result<IMMessage> {
         let sender_id = self.current_sender_id().await?;
-        let msg = MessageBuilderHandler::build_vote(
+        let msg = MessageBuilderService::build_vote(
             conversation_id,
             &sender_id,
             vote_id,
@@ -286,7 +305,7 @@ impl MessageBuildApi {
     ) -> Result<IMMessage> {
         let sender_id = self.current_sender_id().await?;
         let msg =
-            MessageBuilderHandler::build_task(conversation_id, &sender_id, task_id, title, None)?;
+            MessageBuilderService::build_task(conversation_id, &sender_id, task_id, title, None)?;
         self.apply_conversation_routing(conversation_id, msg).await
     }
 
@@ -297,7 +316,7 @@ impl MessageBuildApi {
         title: &str,
     ) -> Result<IMMessage> {
         let sender_id = self.current_sender_id().await?;
-        let msg = MessageBuilderHandler::build_schedule(
+        let msg = MessageBuilderService::build_schedule(
             conversation_id,
             &sender_id,
             schedule_id,
@@ -315,13 +334,13 @@ impl MessageBuildApi {
     ) -> Result<IMMessage> {
         let sender_id = self.current_sender_id().await?;
         let msg =
-            MessageBuilderHandler::build_announcement(conversation_id, &sender_id, title, body)?;
+            MessageBuilderService::build_announcement(conversation_id, &sender_id, title, body)?;
         self.apply_conversation_routing(conversation_id, msg).await
     }
 
     pub async fn create_custom(&self, conversation_id: &str, r#type: &str) -> Result<IMMessage> {
         let sender_id = self.current_sender_id().await?;
-        let msg = MessageBuilderHandler::build_custom(conversation_id, &sender_id, r#type, None)?;
+        let msg = MessageBuilderService::build_custom(conversation_id, &sender_id, r#type, None)?;
         self.apply_conversation_routing(conversation_id, msg).await
     }
 
@@ -331,7 +350,7 @@ impl MessageBuildApi {
         reason: &str,
     ) -> Result<IMMessage> {
         let sender_id = self.current_sender_id().await?;
-        let msg = MessageBuilderHandler::build_placeholder(conversation_id, &sender_id, reason)?;
+        let msg = MessageBuilderService::build_placeholder(conversation_id, &sender_id, reason)?;
         self.apply_conversation_routing(conversation_id, msg).await
     }
 }

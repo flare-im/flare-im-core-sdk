@@ -36,8 +36,6 @@ pub async fn sdk_login(
             Some(&token),
             LoginDbKind::Sqlite,
             move |bus, _msg_store| {
-                // 必须在 `connect` 之前订阅：否则登录后首轮同步/推送在异步任务尚未 `subscribe` 时已发出，
-                // broadcast 新订户收不到历史包，WebView 会漏 `im://message*`（DB 有数据但实时事件丢、竞态下也可能与首屏交错）。
                 let rx = bus.subscribe();
                 let app = app.clone();
                 tauri::async_runtime::spawn(async move {

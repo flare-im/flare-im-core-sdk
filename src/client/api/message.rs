@@ -1,37 +1,64 @@
-//! 消息 Facade — 委托 [`crate::application::MessageEngine`]；发送前用 [`super::MessageBuildApi`] 构建 [`crate::model::message::IMMessage`] 再调用 [`MessageApi::send`]。
+//! 消息 Facade — 直接编排消息写侧/读侧 usecase；发送前用 [`super::MessageBuildApi`] 构建 [`crate::model::message::IMMessage`] 再调用 [`MessageApi::send`]。
 //!
 //! **上层约定**：所有对上层暴露的 `message_id` 均为 **client_msg_id**；server_msg_id 仅用于内部与服务端交互。
 
 use std::sync::Arc;
 
-use crate::application::MessageEngine;
+use crate::application::usecases::{
+    MessageMutationUseCase, MessageSendUseCase, MessageViewAssembler,
+};
 use crate::error::Result;
 use crate::model::content_builder::BuiltContent;
 use crate::model::message::{IMMessage, MarkType, SendAck};
+use super::media::UploadProgressCallback;
 
-/// 消息命令与查询入口（逻辑在 `MessageEngine`）。
+/// 消息命令与查询入口（直接委托 application usecases）。
 #[derive(Clone)]
 pub struct MessageApi {
-    engine: Arc<MessageEngine>,
+    send_use_case: Arc<MessageSendUseCase>,
+    mutation_use_case: Arc<MessageMutationUseCase>,
+    view_assembler: Arc<MessageViewAssembler>,
 }
 
 impl MessageApi {
-    pub fn new(engine: Arc<MessageEngine>) -> Self {
-        Self { engine }
+    pub fn new(
+        send_use_case: Arc<MessageSendUseCase>,
+        mutation_use_case: Arc<MessageMutationUseCase>,
+        view_assembler: Arc<MessageViewAssembler>,
+    ) -> Self {
+        Self {
+            send_use_case,
+            mutation_use_case,
+            view_assembler,
+        }
     }
 
     pub async fn current_user_id(&self) -> Result<String> {
-        self.engine.current_user_id().await
+        self.send_use_case.current_user_id().await
     }
 
-    /// 统一发送：传入已构建的 IMMessage，内部流转。消息需通过 [`super::MessageBuildApi`] 构建（必须带会话 id）。
+    /// 默认发送：若检测到本地媒体路径则先上传 OSS，再发送消息。
     pub async fn send(&self, message: IMMessage) -> Result<SendAck> {
-        self.engine.send_message(message).await
+        self.send_use_case.send_with_media(message, None).await
+    }
+
+    /// 带上传进度回调的发送：检测到本地媒体路径时，回调会上报上传阶段与字节进度。
+    pub async fn send_with_media_progress(
+        &self,
+        message: IMMessage,
+        on_progress: Option<UploadProgressCallback>,
+    ) -> Result<SendAck> {
+        self.send_use_case.send_with_media(message, on_progress).await
+    }
+
+    /// 原样发送：不做 OSS 上传预处理。
+    pub async fn send_no_oss(&self, message: IMMessage) -> Result<SendAck> {
+        self.send_use_case.send(message).await
     }
 
     /// 撤回消息。message_id 为 client_msg_id。
     pub async fn recall(&self, message_id: &str) -> Result<()> {
-        self.engine.recall(message_id).await
+        self.mutation_use_case.recall(message_id).await
     }
 
     /// 编辑消息内容。message_id 为 client_msg_id。
@@ -41,7 +68,7 @@ impl MessageApi {
         message_id: &str,
         new_content: Vec<u8>,
     ) -> Result<()> {
-        self.engine
+        self.mutation_use_case
             .edit(conversation_id, message_id, new_content)
             .await
     }
@@ -53,23 +80,47 @@ impl MessageApi {
         message_id: &str,
         content: BuiltContent,
     ) -> Result<()> {
-        self.engine
-            .edit_content(conversation_id, message_id, content)
+        self.mutation_use_case
+            .edit(conversation_id, message_id, content.encode())
             .await
     }
 
     /// 按 message_id（client_msg_id）编辑为纯文本。
     pub async fn edit_text_by_message_id(&self, message_id: &str, text: &str) -> Result<()> {
-        self.engine.edit_text(message_id, text).await
+        let (conversation_id, _) = self.mutation_use_case.resolve_message_id(message_id).await?;
+        self.edit_content(
+            &conversation_id,
+            message_id,
+            crate::model::ContentBuilder::text(text).build(),
+        )
+        .await
     }
 
     /// 删除消息。message_id 为 client_msg_id。
     pub async fn delete(&self, message_id: &str) -> Result<()> {
-        self.engine.delete(message_id).await
+        self.mutation_use_case.delete_for_self(message_id, None).await
+    }
+
+    /// 仅删除自己可见（多端同步）。
+    pub async fn delete_for_self(&self, message_id: &str, reason: Option<String>) -> Result<()> {
+        self.mutation_use_case.delete_for_self(message_id, reason).await
+    }
+
+    /// 删除所有人可见（仅发送者）。
+    pub async fn delete_for_everyone(
+        &self,
+        message_id: &str,
+        reason: Option<String>,
+    ) -> Result<()> {
+        self.mutation_use_case
+            .delete_for_everyone(message_id, reason)
+            .await
     }
 
     pub async fn mark_read(&self, conversation_id: &str, read_seq: u64) -> Result<()> {
-        self.engine.mark_read(conversation_id, read_seq).await
+        self.mutation_use_case
+            .mark_read_with_ids(conversation_id, Vec::new(), read_seq)
+            .await
     }
 
     pub async fn mark_read_with_ids(
@@ -78,43 +129,45 @@ impl MessageApi {
         message_ids: Vec<String>,
         read_seq: u64,
     ) -> Result<()> {
-        self.engine
+        self.mutation_use_case
             .mark_read_with_ids(conversation_id, message_ids, read_seq)
             .await
     }
 
     pub async fn typing(&self, conversation_id: &str, typing: bool) -> Result<()> {
-        self.engine.typing(conversation_id, typing).await
+        self.mutation_use_case.typing(conversation_id, typing).await
     }
 
     /// 按 message_id（client_msg_id）添加反应。
     pub async fn add_reaction(&self, message_id: &str, emoji: &str) -> Result<()> {
-        self.engine.add_reaction(message_id, emoji).await
+        self.mutation_use_case.add_reaction(message_id, emoji).await
     }
 
     /// 按 message_id（client_msg_id）移除反应。
     pub async fn remove_reaction(&self, message_id: &str, emoji: &str) -> Result<()> {
-        self.engine.remove_reaction(message_id, emoji).await
+        self.mutation_use_case.remove_reaction(message_id, emoji).await
     }
 
     /// 置顶消息。message_id 为 client_msg_id。
     pub async fn pin(&self, conversation_id: &str, message_id: &str) -> Result<()> {
-        self.engine.pin(conversation_id, message_id).await
+        self.mutation_use_case.pin(conversation_id, message_id).await
     }
 
     /// 取消置顶。message_id 为 client_msg_id。
     pub async fn unpin(&self, conversation_id: &str, message_id: &str) -> Result<()> {
-        self.engine.unpin(conversation_id, message_id).await
+        self.mutation_use_case.unpin(conversation_id, message_id).await
     }
 
     /// 按 message_id（client_msg_id）置顶。
     pub async fn pin_by_message_id(&self, message_id: &str) -> Result<()> {
-        self.engine.pin_by_message_id(message_id).await
+        let (conversation_id, _) = self.mutation_use_case.resolve_message_id(message_id).await?;
+        self.pin(&conversation_id, message_id).await
     }
 
     /// 按 message_id（client_msg_id）取消置顶。
     pub async fn unpin_by_message_id(&self, message_id: &str) -> Result<()> {
-        self.engine.unpin_by_message_id(message_id).await
+        let (conversation_id, _) = self.mutation_use_case.resolve_message_id(message_id).await?;
+        self.unpin(&conversation_id, message_id).await
     }
 
     /// 标记消息。message_id 为 client_msg_id。
@@ -124,8 +177,8 @@ impl MessageApi {
         message_id: &str,
         mark_type: MarkType,
     ) -> Result<()> {
-        self.engine
-            .mark(conversation_id, message_id, mark_type)
+        self.mutation_use_case
+            .mark(conversation_id, message_id, mark_type, "")
             .await
     }
 
@@ -137,8 +190,8 @@ impl MessageApi {
         mark_type: MarkType,
         color: &str,
     ) -> Result<()> {
-        self.engine
-            .mark_with_color(conversation_id, message_id, mark_type, color)
+        self.mutation_use_case
+            .mark(conversation_id, message_id, mark_type, color)
             .await
     }
 
@@ -149,7 +202,7 @@ impl MessageApi {
         message_id: &str,
         mark_type: MarkType,
     ) -> Result<()> {
-        self.engine
+        self.mutation_use_case
             .unmark(conversation_id, message_id, mark_type)
             .await
     }
@@ -161,26 +214,28 @@ impl MessageApi {
         mark_type: MarkType,
         color: &str,
     ) -> Result<()> {
-        self.engine
-            .mark_by_message_id(message_id, mark_type, color)
+        let (conversation_id, _) = self.mutation_use_case.resolve_message_id(message_id).await?;
+        self.mutation_use_case
+            .mark(&conversation_id, message_id, mark_type, color)
             .await
     }
 
     /// 按 message_id（client_msg_id）取消标记。
     pub async fn unmark_by_message_id(&self, message_id: &str, mark_type: MarkType) -> Result<()> {
-        self.engine
-            .unmark_by_message_id(message_id, mark_type)
+        let (conversation_id, _) = self.mutation_use_case.resolve_message_id(message_id).await?;
+        self.mutation_use_case
+            .unmark(&conversation_id, message_id, mark_type)
             .await
     }
 
     /// 按 message_id（client_msg_id）查询单条消息。
     pub async fn get(&self, message_id: &str) -> Result<Option<IMMessage>> {
-        self.engine.get(message_id).await
+        self.view_assembler.get(message_id).await
     }
 
     /// 按 message_id（client_msg_id）查询原始消息（不填充发送者资料）。
     pub async fn get_raw(&self, message_id: &str) -> Result<Option<IMMessage>> {
-        self.engine.get_raw(message_id).await
+        self.view_assembler.get_raw(message_id).await
     }
 
     pub async fn list(
@@ -189,10 +244,10 @@ impl MessageApi {
         before_seq: u64,
         limit: u32,
     ) -> Result<Vec<IMMessage>> {
-        self.engine.list(conversation_id, before_seq, limit).await
+        self.view_assembler.list(conversation_id, before_seq, limit).await
     }
 
     pub async fn search(&self, keyword: &str, limit: u32) -> Result<Vec<IMMessage>> {
-        self.engine.search(keyword, limit).await
+        self.view_assembler.search(keyword, limit).await
     }
 }

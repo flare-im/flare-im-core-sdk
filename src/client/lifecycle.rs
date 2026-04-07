@@ -28,6 +28,12 @@ pub struct SdkConfigOverlay {
     pub enable_metrics: Option<bool>,
 }
 
+/// 解析默认 WebSocket 地址。
+///
+/// 优先级：
+/// 1. `overlay.ws_url`
+/// 2. 环境变量 `FLARE_IM_SERVER_URL`
+/// 3. 内置默认 `ws://localhost:60051`
 pub fn default_ws_url(overlay: Option<&SdkConfigOverlay>) -> String {
     overlay
         .and_then(|c| c.ws_url.as_deref())
@@ -36,6 +42,9 @@ pub fn default_ws_url(overlay: Option<&SdkConfigOverlay>) -> String {
         .unwrap_or_else(|| "ws://localhost:60051".to_string())
 }
 
+/// 将上层 overlay 合并进基础 [`SdkConfig`]。
+///
+/// 仅覆盖 `Some(...)` 字段，未提供的字段保持默认值。
 pub fn merge_sdk_config(ws_url: &str, overlay: Option<&SdkConfigOverlay>) -> SdkConfig {
     let mut config = SdkConfig::new(ws_url);
     if let Some(o) = overlay {
@@ -73,6 +82,13 @@ pub fn merge_sdk_config(ws_url: &str, overlay: Option<&SdkConfigOverlay>) -> Sdk
     config
 }
 
+/// 解析连接 token。
+///
+/// 优先级：
+/// 1. 显式参数 `explicit_token`
+/// 2. 环境变量 `FLARE_IM_TOKEN`
+/// 3. 环境变量 `TOKEN`
+/// 4. 开发态自动生成临时 token（仅用于开发/测试）
 pub fn resolve_connect_token(user_id: &str, explicit_token: Option<&str>) -> Result<String> {
     if let Some(token) = explicit_token {
         let t = token.trim();

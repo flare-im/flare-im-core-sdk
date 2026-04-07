@@ -5,12 +5,15 @@ use flare_im_core_sdk::event::{
 };
 
 use crate::model::{
-    ConnectedPayload, ConversationDeletedPayload, ConversationsSyncedPayload,
-    ConversationUpdatedPayload, DisconnectedPayload, EventPayload, ExtensionPayload,
-    KickedOffPayload, MessageRecalledPayload, MessageSendFailedPayload, ReconnectingPayload,
-    ServerErrorPayload, StateChangedPayload, SyncCompletedPayload,
-    SyncFailedPayload, SyncFinishedPayload, SyncProgressPayload, SyncStartedPayload,
-    SyncStateChangedPayload, TokenExpiredPayload, TypingPayload, UnreadCountChangedPayload,
+    CallSignalPayload, ConnectedPayload, ConversationDeletedPayload, ConversationUpdatedPayload,
+    ConversationsSyncedPayload, DisconnectedPayload, EventPayload, ExtensionPayload,
+    KickedOffPayload, MessageCustomEventPayload, MessageDeletedPayload, MessageEditedPayload,
+    MessageMarkedPayload, MessagePinnedPayload, MessageReactionChangedPayload,
+    MessageReadReceiptPayload, MessageRecalledPayload, MessageSendFailedPayload,
+    MessageUnmarkedPayload, MessageUnpinnedPayload, PresenceChangedPayload, ReconnectingPayload,
+    ServerErrorPayload, StateChangedPayload, SyncCompletedPayload, SyncFailedPayload,
+    SyncFinishedPayload, SyncProgressPayload, SyncStartedPayload, SyncStateChangedPayload,
+    TokenExpiredPayload, TypingPayload, UnreadCountChangedPayload,
 };
 
 /// SdkEvent → (事件名, payload)；无法序列化或不需要转发的返回 `None`。
@@ -96,6 +99,34 @@ pub fn sdk_event_to_tauri(e: &SdkEvent) -> Option<(String, EventPayload)> {
                 recaller_id: String::new(),
             }),
         )),
+        SdkEvent::Message(MessageEvent::Edited {
+            conversation_id,
+            server_msg_id,
+            edit_version,
+        }) => Some((
+            "im://message_edited".into(),
+            EventPayload::MessageEdited(MessageEditedPayload {
+                conversation_id: conversation_id.clone(),
+                message_id: server_msg_id.clone(),
+                edit_version: *edit_version,
+            }),
+        )),
+        SdkEvent::Message(MessageEvent::ReactionChanged {
+            conversation_id,
+            server_msg_id,
+            user_id,
+            emoji,
+            action,
+        }) => Some((
+            "im://message_reaction_changed".into(),
+            EventPayload::MessageReactionChanged(MessageReactionChangedPayload {
+                conversation_id: conversation_id.clone(),
+                message_id: server_msg_id.clone(),
+                user_id: user_id.clone(),
+                emoji: emoji.clone(),
+                action: *action,
+            }),
+        )),
         SdkEvent::Message(MessageEvent::Typing {
             conversation_id,
             event,
@@ -105,6 +136,113 @@ pub fn sdk_event_to_tauri(e: &SdkEvent) -> Option<(String, EventPayload)> {
                 conversation_id: conversation_id.clone(),
                 user_id: event.user_id.clone(),
                 typing: event.typing,
+            }),
+        )),
+        SdkEvent::Message(MessageEvent::Deleted {
+            conversation_id,
+            event,
+        }) => Some((
+            "im://message_deleted".into(),
+            EventPayload::MessageDeleted(MessageDeletedPayload {
+                conversation_id: conversation_id.clone(),
+                message_id: event.server_msg_id.clone(),
+            }),
+        )),
+        SdkEvent::Message(MessageEvent::ReadReceipt {
+            conversation_id,
+            event,
+        }) => Some((
+            "im://message_read_receipt".into(),
+            EventPayload::MessageReadReceipt(MessageReadReceiptPayload {
+                conversation_id: conversation_id.clone(),
+                user_id: event.user_id.clone(),
+                read_seq: event.read_seq,
+                message_ids: event.message_ids.clone(),
+            }),
+        )),
+        SdkEvent::Message(MessageEvent::Pinned {
+            conversation_id,
+            event,
+        }) => Some((
+            "im://message_pinned".into(),
+            EventPayload::MessagePinned(MessagePinnedPayload {
+                conversation_id: conversation_id.clone(),
+                message_id: event.server_msg_id.clone(),
+                pinned_by: event.pinned_by.clone(),
+            }),
+        )),
+        SdkEvent::Message(MessageEvent::Unpinned {
+            conversation_id,
+            event,
+        }) => Some((
+            "im://message_unpinned".into(),
+            EventPayload::MessageUnpinned(MessageUnpinnedPayload {
+                conversation_id: conversation_id.clone(),
+                message_id: event.server_msg_id.clone(),
+            }),
+        )),
+        SdkEvent::Message(MessageEvent::Marked {
+            conversation_id,
+            event,
+        }) => Some((
+            "im://message_marked".into(),
+            EventPayload::MessageMarked(MessageMarkedPayload {
+                conversation_id: conversation_id.clone(),
+                message_id: event.server_msg_id.clone(),
+                user_id: event.user_id.clone(),
+                mark_type: event.mark_type,
+                color: event.color.clone(),
+            }),
+        )),
+        SdkEvent::Message(MessageEvent::Unmarked {
+            conversation_id,
+            event,
+        }) => Some((
+            "im://message_unmarked".into(),
+            EventPayload::MessageUnmarked(MessageUnmarkedPayload {
+                conversation_id: conversation_id.clone(),
+                message_id: event.server_msg_id.clone(),
+                user_id: event.user_id.clone(),
+                mark_type: event.mark_type,
+            }),
+        )),
+        SdkEvent::Message(MessageEvent::PresenceChanged {
+            conversation_id,
+            event,
+        }) => Some((
+            "im://presence_changed".into(),
+            EventPayload::PresenceChanged(PresenceChangedPayload {
+                conversation_id: conversation_id.clone(),
+                user_id: event.user_id.clone(),
+                status: event.status.clone(),
+                extra: event.extra.clone(),
+            }),
+        )),
+        SdkEvent::Message(MessageEvent::CallSignal {
+            conversation_id,
+            event,
+        }) => Some((
+            "im://call_signal".into(),
+            EventPayload::CallSignal(CallSignalPayload {
+                conversation_id: conversation_id.clone(),
+                call_id: event.call_id.clone(),
+                signal_type: event.signal_type.clone(),
+                payload: event.payload.clone(),
+                metadata: event.metadata.clone(),
+            }),
+        )),
+        SdkEvent::Message(MessageEvent::Custom {
+            conversation_id,
+            event,
+        }) => Some((
+            "im://message_custom_event".into(),
+            EventPayload::MessageCustomEvent(MessageCustomEventPayload {
+                conversation_id: conversation_id.clone(),
+                namespace: event.namespace.clone(),
+                name: event.name.clone(),
+                version: event.version.clone(),
+                payload: event.payload.clone(),
+                metadata: event.metadata.clone(),
             }),
         )),
 

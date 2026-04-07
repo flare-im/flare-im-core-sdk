@@ -3,7 +3,10 @@
 //! 内部仅通过 Event 通信；对外暴露类型化回调 API（on_*），
 //! 不暴露大 trait，便于 FFI / Swift / Kotlin / TypeScript 绑定。
 
-use flare_proto::common::{MessageRecallEvent, SendAck, TypingEvent};
+use flare_proto::common::{
+    CallSignalEvent, CustomEvent, MarkEvent, MessageDeleteEvent, MessageRecallEvent, PinEvent,
+    PresenceEvent, ReadReceiptEvent, SendAck, TypingEvent, UnmarkEvent, UnpinEvent,
+};
 
 use crate::core::SdkState;
 use crate::fsm::SyncState;
@@ -60,6 +63,67 @@ pub enum MessageEvent {
     Typing {
         conversation_id: String,
         event: TypingEvent,
+    },
+    /// 消息正文已更新（本地编辑确认或服务端推送/同步下发后，本地库已写入新 `content`）
+    Edited {
+        conversation_id: String,
+        server_msg_id: String,
+        /// 服务端编辑版本（`MessageEditEvent.edit_version`），无则 `None`
+        edit_version: Option<i32>,
+    },
+    /// 消息反应已变化（添加/移除）
+    ReactionChanged {
+        conversation_id: String,
+        server_msg_id: String,
+        user_id: String,
+        emoji: String,
+        /// 与 proto `ReactionAction` 对齐：1=ADD, 2=REMOVE
+        action: i32,
+    },
+    /// 消息被删除（服务端事件）
+    Deleted {
+        conversation_id: String,
+        event: MessageDeleteEvent,
+    },
+    /// 已读回执（服务端事件）
+    ReadReceipt {
+        conversation_id: String,
+        event: ReadReceiptEvent,
+    },
+    /// 消息被置顶
+    Pinned {
+        conversation_id: String,
+        event: PinEvent,
+    },
+    /// 消息取消置顶
+    Unpinned {
+        conversation_id: String,
+        event: UnpinEvent,
+    },
+    /// 消息被标记
+    Marked {
+        conversation_id: String,
+        event: MarkEvent,
+    },
+    /// 消息取消标记
+    Unmarked {
+        conversation_id: String,
+        event: UnmarkEvent,
+    },
+    /// 在线状态事件（presence）
+    PresenceChanged {
+        conversation_id: String,
+        event: PresenceEvent,
+    },
+    /// 通话信令事件（call_signal）
+    CallSignal {
+        conversation_id: String,
+        event: CallSignalEvent,
+    },
+    /// 自定义领域事件（custom）
+    Custom {
+        conversation_id: String,
+        event: CustomEvent,
     },
 }
 

@@ -1,10 +1,10 @@
 //! 同步任务检查点
 //!
 //! 任务可选择性持久化游标（cursor），以便中断后恢复。引擎在运行任务前加载 checkpoint，
-//! 任务完成后可保存新 cursor。使用 [crate::store::SyncCursorStore]，key 格式：`sync:checkpoint:{task_id}`.
+//! 任务完成后可保存新 cursor。使用 [crate::domain::SyncCursorStore]，key 格式：`sync:checkpoint:{task_id}`.
 
 use crate::error::Result;
-use crate::store::SyncCursorStore;
+use crate::domain::SyncCursorStore;
 
 const PREFIX: &str = "sync:checkpoint:";
 

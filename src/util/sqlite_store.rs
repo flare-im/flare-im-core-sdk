@@ -7,12 +7,14 @@ use std::sync::{Arc, OnceLock};
 
 use flare_im_core_sdk_storage_sqlite::{database_url_from_path, open_pool, register_schema_init_with};
 
+use crate::domain::{MediaCacheAdmin, MediaCacheStore};
 use crate::error::ErrorCode;
 use crate::store::{
-    sqlite_init_schema, SqliteConversationRepo, SqliteMessageRepo, SqlitePendingSendRepo,
-    SqliteSyncCursorRepo, SqliteUserProfileRepo, StoreProvider,
+    sqlite_init_schema, SqliteConversationRepo, SqliteMediaCacheRepo, SqliteMessageRepo,
+    SqlitePendingSendRepo, SqliteSyncCursorRepo, SqliteUploadManifestRepo, SqliteUserProfileRepo,
+    StoreProvider,
 };
-use crate::util::paths::resolve_user_db_path;
+use crate::util::paths::{resolve_media_cache_dir_next_to_db, resolve_user_db_path};
 use crate::FlareError;
 use crate::Result;
 
@@ -38,7 +40,12 @@ pub fn sqlite_database_url_from_path(path: &std::path::Path) -> String {
 }
 
 /// 打开连接池并组装核心 SDK 所需的 SQLite 仓储集合。
-pub async fn open_sqlite_store_provider(database_url: &str) -> Result<StoreProvider> {
+///
+/// `media_cache_dir`：媒体文件落盘根目录；为 `None` 时不启用本地媒体缓存（`resolve_media_access` 始终走网关）。
+pub async fn open_sqlite_store_provider(
+    database_url: &str,
+    media_cache_dir: Option<&std::path::Path>,
+) -> Result<StoreProvider> {
     ensure_core_schema_registered();
     let pool = open_pool(database_url).await.map_err(|e| {
         FlareError::localized(
@@ -48,13 +55,28 @@ pub async fn open_sqlite_store_provider(database_url: &str) -> Result<StoreProvi
     })?;
 
     let pending_repo = Arc::new(SqlitePendingSendRepo::new(pool.clone()));
+    let upload_manifest_repo = Arc::new(SqliteUploadManifestRepo::new(pool.clone()));
     let user_repo = Arc::new(SqliteUserProfileRepo::new(pool.clone()));
+    let (media_cache_store, media_cache_admin) = if let Some(root) = media_cache_dir {
+        let repo = Arc::new(
+            SqliteMediaCacheRepo::create(pool.clone(), root.to_path_buf()).await?,
+        );
+        (
+            Some(repo.clone() as Arc<dyn MediaCacheStore>),
+            Some(repo as Arc<dyn MediaCacheAdmin>),
+        )
+    } else {
+        (None, None)
+    };
     Ok(StoreProvider {
         messages: Arc::new(SqliteMessageRepo::new(pool.clone())),
         conversations: Arc::new(SqliteConversationRepo::new(pool.clone())),
         cursors: Arc::new(SqliteSyncCursorRepo::new(pool.clone())),
         pending_send_reader: Some(pending_repo.clone()),
         pending_send_writer: Some(pending_repo),
+        upload_manifest_store: Some(upload_manifest_repo),
+        media_cache_store,
+        media_cache_admin,
         user_profiles_reader: Some(user_repo.clone()),
         user_profiles_writer: Some(user_repo),
     })
@@ -66,7 +88,8 @@ pub async fn open_sqlite_store_for_user(
     user_id: &str,
 ) -> Result<StoreProvider> {
     let db_path = resolve_user_db_path(base_data_dir, user_id);
-    tracing::info!(db = %db_path.display(), "Opening SQLite store");
+    let cache_dir = resolve_media_cache_dir_next_to_db(&db_path);
+    tracing::info!(db = %db_path.display(), cache = %cache_dir.display(), "Opening SQLite store");
     let database_url = sqlite_database_url_from_path(&db_path);
-    open_sqlite_store_provider(&database_url).await
+    open_sqlite_store_provider(&database_url, Some(&cache_dir)).await
 }

@@ -3,9 +3,11 @@
 //! 由 [`crate::client::IMClient`] 在连接后持有；事件订阅为 `IMClient::on_*`（见 [`crate::client::events`]，委托 [`crate::event::EventBus`]）。
 
 mod conversation;
+mod media;
 mod message;
 mod message_build;
 
 pub use conversation::ConversationApi;
+pub use media::{MediaApi, UploadPhase, UploadProgress, UploadProgressCallback};
 pub use message::MessageApi;
 pub use message_build::MessageBuildApi;

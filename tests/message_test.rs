@@ -67,8 +67,13 @@ async fn test_content_builder_text_with_mentions() {
 async fn test_content_builder_image() {
     let built = ContentBuilder::image("img_001")
         .source(ImageInfo {
+            uuid: "img_001".into(),
+            image_id: "img_001".into(),
             url: "https://cdn.example.com/a.jpg".into(),
-            ..Default::default()
+            mime_type: String::new(),
+            size: 0,
+            width: 0,
+            height: 0,
         })
         .description("photo")
         .build();
@@ -210,12 +215,22 @@ async fn test_content_builder_markdown() {
 async fn test_content_builder_image_group() {
     let built = ContentBuilder::image_group(vec![
         ImageInfo {
+            uuid: String::new(),
+            image_id: String::new(),
             url: "https://cdn.example.com/1.jpg".into(),
-            ..Default::default()
+            mime_type: String::new(),
+            size: 0,
+            width: 0,
+            height: 0,
         },
         ImageInfo {
+            uuid: String::new(),
+            image_id: String::new(),
             url: "https://cdn.example.com/2.jpg".into(),
-            ..Default::default()
+            mime_type: String::new(),
+            size: 0,
+            width: 0,
+            height: 0,
         },
     ])
     .build();
@@ -744,12 +759,13 @@ mod server_tests {
 
         let content = ContentBuilder::image("img_test_001")
             .source(ImageInfo {
+                uuid: "img_test_001".into(),
+                image_id: "img_test_001".into(),
                 url: "https://cdn.example.com/test.jpg".into(),
                 mime_type: "image/jpeg".into(),
                 size: 102400,
                 width: 1920,
                 height: 1080,
-                ..Default::default()
             })
             .description("测试图片")
             .build();

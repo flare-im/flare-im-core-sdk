@@ -63,7 +63,13 @@ fn content_text_preview(c: &ProtoContent) -> String {
         C::Sticker(_) => "[贴纸]".to_string(),
         C::Emoji(e) => e.emoji.clone(),
         C::Gif(_) => "[动图]".to_string(),
-        C::Quote(q) => q.quoted_text_preview.clone(),
+        C::Quote(q) => q
+            .current_content
+            .as_deref()
+            .and_then(|mc| mc.content.as_ref())
+            .map(content_text_preview)
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| q.quoted_text_preview.clone()),
         C::LinkCard(l) => non_empty(&l.title).unwrap_or_else(|| "[链接]".to_string()),
         C::Forward(f) => format!("[转发] {} 条消息", f.message_ids.len()),
         C::Thread(t) => t.thread_title.clone(),

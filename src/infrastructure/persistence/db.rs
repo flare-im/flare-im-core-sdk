@@ -1,20 +1,8 @@
-use crate::domain::{PendingSendReader, PendingSendWriter, SyncCursorVo, UserReader, UserWriter};
-use crate::infrastructure::persistence::{ConversationStore, MessageStore};
-use async_trait::async_trait;
+use crate::domain::{
+    ConversationStore, MediaCacheAdmin, MediaCacheStore, MessageStore, PendingSendReader,
+    PendingSendWriter, SyncCursorStore, UploadManifestStore, UserReader, UserWriter,
+};
 use std::sync::Arc;
-
-/// 同步游标存储
-#[async_trait]
-pub trait SyncCursorStore: Send + Sync {
-    async fn get_raw(&self, key: &str) -> crate::error::Result<Option<String>>;
-    async fn save_raw(&self, key: &str, cursor: &str) -> crate::error::Result<()>;
-    async fn get_conversation_cursor(
-        &self,
-        user_id: &str,
-        conversation_id: &str,
-    ) -> crate::error::Result<Option<SyncCursorVo>>;
-    async fn save_conversation_cursor(&self, cursor: &SyncCursorVo) -> crate::error::Result<()>;
-}
 
 /// 存储提供者 — 统一持有各 Store；待发/用户资料使用 domain Reader/Writer 分开持有
 pub struct StoreProvider {
@@ -23,6 +11,9 @@ pub struct StoreProvider {
     pub cursors: Arc<dyn SyncCursorStore>,
     pub pending_send_reader: Option<Arc<dyn PendingSendReader>>,
     pub pending_send_writer: Option<Arc<dyn PendingSendWriter>>,
+    pub upload_manifest_store: Option<Arc<dyn UploadManifestStore>>,
+    pub media_cache_store: Option<Arc<dyn MediaCacheStore>>,
+    pub media_cache_admin: Option<Arc<dyn MediaCacheAdmin>>,
     pub user_profiles_reader: Option<Arc<dyn UserReader>>,
     pub user_profiles_writer: Option<Arc<dyn UserWriter>>,
 }
@@ -54,6 +45,9 @@ impl Clone for StoreProvider {
             cursors: self.cursors.clone(),
             pending_send_reader: self.pending_send_reader.clone(),
             pending_send_writer: self.pending_send_writer.clone(),
+            upload_manifest_store: self.upload_manifest_store.clone(),
+            media_cache_store: self.media_cache_store.clone(),
+            media_cache_admin: self.media_cache_admin.clone(),
             user_profiles_reader: self.user_profiles_reader.clone(),
             user_profiles_writer: self.user_profiles_writer.clone(),
         }

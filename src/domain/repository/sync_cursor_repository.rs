@@ -19,3 +19,8 @@ pub trait SyncCursorWriter: Send + Sync {
     async fn save_raw(&self, key: &str, cursor: &str) -> Result<()>;
     async fn save_conversation_cursor(&self, cursor: &SyncCursorVo) -> Result<()>;
 }
+
+/// 同步游标统一端口（读写聚合）
+pub trait SyncCursorStore: SyncCursorReader + SyncCursorWriter {}
+
+impl<T> SyncCursorStore for T where T: SyncCursorReader + SyncCursorWriter + Send + Sync {}

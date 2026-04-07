@@ -4,14 +4,18 @@
 
 mod conversation_repo;
 mod cursor_repo;
+mod media_cache_repo;
 mod message_repo;
 mod pending_send_repo;
 mod schema;
+mod upload_manifest_repo;
 mod user_repo;
 
 pub use conversation_repo::SqliteConversationRepo;
 pub use cursor_repo::SqliteSyncCursorRepo;
+pub use media_cache_repo::SqliteMediaCacheRepo;
 pub use message_repo::SqliteMessageRepo;
 pub use pending_send_repo::SqlitePendingSendRepo;
 pub use schema::init_schema;
+pub use upload_manifest_repo::SqliteUploadManifestRepo;
 pub use user_repo::SqliteUserProfileRepo;

@@ -16,6 +16,7 @@ use tokio::sync::Mutex;
 
 use crate::error::{FlareError, Result};
 use crate::infrastructure::protocol::Codec;
+use crate::util::system_time_to_prost_timestamp;
 
 /// 上行包发送器 — Message / Event / Ack / DataPacket（同步与用户扩展）
 pub struct PacketSender {
@@ -30,22 +31,38 @@ impl PacketSender {
     }
 
     /// 发送领域事件（event.proto Event）。PayloadCommand.type=Event，网关回 EventAck。
-    pub async fn send_event(&self, event: &Event, _timeout_duration: Duration) -> Result<()> {
+    pub async fn send_event(&self, event: &Event, timeout_duration: Duration) -> Result<()> {
         let message_id = if event.event_id.is_empty() {
             builder::generate_message_id()
         } else {
             event.event_id.clone()
         };
-        let payload = event.encode_to_vec();
+        // 与服务端编排对齐：event_id/request_id 为空时补齐，避免“帧发出但事件本体缺少关联 ID”导致的静默失败。
+        let mut wire_event = event.clone();
+        if wire_event.event_id.is_empty() {
+            wire_event.event_id = message_id.clone();
+        }
+        if wire_event.request_id.is_none() {
+            wire_event.request_id = Some(message_id.clone());
+        }
+        if wire_event.created_at.is_none() {
+            wire_event.created_at = Some(system_time_to_prost_timestamp());
+        }
+        let payload = wire_event.encode_to_vec();
         let mut guard = self.client.lock().await;
         let client = guard.as_mut().ok_or_else(|| {
             FlareError::localized(flare_core::common::ErrorCode::NotConnected, "未连接")
         })?;
         let cmd = builder::event_message(message_id, payload, None, None);
         let frame = builder::frame_with_payload_command(cmd, Reliability::AtLeastOnce);
-        client
-            .send_frame(&frame)
+        tokio::time::timeout(timeout_duration, client.send_frame(&frame))
             .await
+            .map_err(|_| {
+                FlareError::localized(
+                    flare_core::common::ErrorCode::OperationTimeout,
+                    "event send timeout",
+                )
+            })?
             .map_err(|e| FlareError::connection_failed(e.to_string()))?;
         Ok(())
     }
@@ -54,7 +71,7 @@ impl PacketSender {
     pub async fn send_message(
         &self,
         message: &ProtoMessage,
-        _timeout_duration: Duration,
+        timeout_duration: Duration,
     ) -> Result<()> {
         let message_id = message.client_msg_id.clone();
         let mut metadata = HashMap::new();
@@ -73,9 +90,14 @@ impl PacketSender {
         let msg_cmd =
             builder::send_message(message_id, message.encode_to_vec(), Some(metadata), None);
         let frame = builder::frame_with_payload_command(msg_cmd, Reliability::AtLeastOnce);
-        client
-            .send_frame(&frame)
+        tokio::time::timeout(timeout_duration, client.send_frame(&frame))
             .await
+            .map_err(|_| {
+                FlareError::localized(
+                    flare_core::common::ErrorCode::OperationTimeout,
+                    "message send timeout",
+                )
+            })?
             .map_err(|e| FlareError::connection_failed(e.to_string()))?;
         Ok(())
     }

@@ -62,6 +62,37 @@ pub async fn init_schema(pool: &SqlitePool) -> Result<()> {
     .map_err(|e| FlareError::localized(ErrorCode::DatabaseError, e.to_string()))?;
 
     sqlx::query(
+        r#"CREATE TABLE IF NOT EXISTS message_reactions (
+            message_server_id TEXT NOT NULL,
+            conversation_id TEXT NOT NULL DEFAULT '',
+            emoji TEXT NOT NULL,
+            user_id TEXT NOT NULL,
+            created_at INTEGER NOT NULL DEFAULT 0,
+            updated_at INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (message_server_id, emoji, user_id)
+        )"#,
+    )
+    .execute(pool)
+    .await
+    .map_err(|e| FlareError::localized(ErrorCode::DatabaseError, e.to_string()))?;
+
+    sqlx::query(
+        r#"CREATE INDEX IF NOT EXISTS idx_message_reactions_message
+           ON message_reactions(message_server_id, updated_at DESC)"#,
+    )
+    .execute(pool)
+    .await
+    .map_err(|e| FlareError::localized(ErrorCode::DatabaseError, e.to_string()))?;
+
+    sqlx::query(
+        r#"CREATE INDEX IF NOT EXISTS idx_message_reactions_conversation
+           ON message_reactions(conversation_id, updated_at DESC)"#,
+    )
+    .execute(pool)
+    .await
+    .map_err(|e| FlareError::localized(ErrorCode::DatabaseError, e.to_string()))?;
+
+    sqlx::query(
         r#"CREATE TABLE IF NOT EXISTS conversations (
             conversation_id TEXT PRIMARY KEY,
             conversation_type INTEGER NOT NULL,
@@ -177,6 +208,103 @@ pub async fn init_schema(pool: &SqlitePool) -> Result<()> {
             last_seq INTEGER NOT NULL DEFAULT 0,
             synced_at INTEGER NOT NULL DEFAULT 0,
             PRIMARY KEY (user_id, conversation_id)
+        )"#,
+    )
+    .execute(pool)
+    .await
+    .map_err(|e| FlareError::localized(ErrorCode::DatabaseError, e.to_string()))?;
+
+    sqlx::query(
+        r#"CREATE TABLE IF NOT EXISTS media_upload_manifest (
+            local_upload_id TEXT PRIMARY KEY,
+            remote_upload_id TEXT,
+            file_id TEXT,
+            storage_upload_id TEXT,
+            tenant_id TEXT NOT NULL,
+            user_id TEXT NOT NULL,
+            source_kind TEXT NOT NULL,
+            source_locator TEXT NOT NULL,
+            file_name TEXT NOT NULL,
+            mime_type TEXT NOT NULL,
+            file_size INTEGER NOT NULL,
+            part_size INTEGER NOT NULL,
+            total_parts INTEGER NOT NULL,
+            transport_kind TEXT,
+            bucket TEXT,
+            object_key TEXT,
+            upload_url TEXT,
+            file_fingerprint TEXT NOT NULL,
+            head_tail_sha256 TEXT NOT NULL,
+            full_sha256 TEXT,
+            upload_state TEXT NOT NULL,
+            last_error_code TEXT,
+            last_error_message TEXT,
+            expires_at_ms INTEGER,
+            created_at_ms INTEGER NOT NULL,
+            updated_at_ms INTEGER NOT NULL
+        )"#,
+    )
+    .execute(pool)
+    .await
+    .map_err(|e| FlareError::localized(ErrorCode::DatabaseError, e.to_string()))?;
+
+    sqlx::query(
+        r#"CREATE INDEX IF NOT EXISTS idx_media_upload_manifest_active
+           ON media_upload_manifest (source_locator, file_fingerprint, upload_state, updated_at_ms DESC)"#,
+    )
+    .execute(pool)
+    .await
+    .map_err(|e| FlareError::localized(ErrorCode::DatabaseError, e.to_string()))?;
+
+    sqlx::query(
+        r#"CREATE TABLE IF NOT EXISTS media_local_cache (
+            file_id TEXT PRIMARY KEY,
+            local_path TEXT NOT NULL,
+            mime_type TEXT NOT NULL DEFAULT '',
+            size_bytes INTEGER NOT NULL DEFAULT 0,
+            updated_at_ms INTEGER NOT NULL DEFAULT 0
+        )"#,
+    )
+    .execute(pool)
+    .await
+    .map_err(|e| FlareError::localized(ErrorCode::DatabaseError, e.to_string()))?;
+
+    sqlx::query(
+        r#"CREATE INDEX IF NOT EXISTS idx_media_local_cache_updated
+           ON media_local_cache (updated_at_ms DESC)"#,
+    )
+    .execute(pool)
+    .await
+    .map_err(|e| FlareError::localized(ErrorCode::DatabaseError, e.to_string()))?;
+
+    sqlx::query(
+        r#"CREATE TABLE IF NOT EXISTS media_cache_settings (
+            singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+            max_bytes INTEGER NOT NULL DEFAULT 0,
+            cache_root TEXT NOT NULL DEFAULT ''
+        )"#,
+    )
+    .execute(pool)
+    .await
+    .map_err(|e| FlareError::localized(ErrorCode::DatabaseError, e.to_string()))?;
+
+    sqlx::query(
+        r#"INSERT OR IGNORE INTO media_cache_settings (singleton, max_bytes, cache_root) VALUES (1, 0, '')"#,
+    )
+    .execute(pool)
+    .await
+    .map_err(|e| FlareError::localized(ErrorCode::DatabaseError, e.to_string()))?;
+
+    sqlx::query(
+        r#"CREATE TABLE IF NOT EXISTS media_upload_part (
+            local_upload_id TEXT NOT NULL,
+            part_number INTEGER NOT NULL,
+            offset_bytes INTEGER NOT NULL,
+            size_bytes INTEGER NOT NULL,
+            sha256 TEXT NOT NULL,
+            etag TEXT,
+            uploaded INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (local_upload_id, part_number)
         )"#,
     )
     .execute(pool)

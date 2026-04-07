@@ -1,5 +1,5 @@
 //! 消息同步任务（Init）：按会话列表逐会话拉取消息，限流并发请求。
-//! 构造时注入 [SyncHandler]，在 execute 内直接调用。
+//! 构造时注入 [SyncProtocolAdapter]，在 execute 内直接调用。
 
 use std::pin::Pin;
 use std::sync::Arc;
@@ -7,14 +7,14 @@ use std::sync::Arc;
 use futures::stream::{self, StreamExt};
 use tracing::info;
 
-use super::super::handlers::SyncHandler;
+use super::super::SyncProtocolAdapter;
 use crate::core::{SyncContext, SyncMode, SyncResult, SyncTask, SyncTaskResult};
 
-pub struct MessagesSyncTask(pub(crate) Arc<SyncHandler>);
+pub struct MessagesSyncTask(pub(crate) Arc<SyncProtocolAdapter>);
 const MAX_SYNC_CONCURRENCY: usize = 8;
 
 impl MessagesSyncTask {
-    pub fn new(handler: Arc<SyncHandler>) -> Self {
+    pub fn new(handler: Arc<SyncProtocolAdapter>) -> Self {
         Self(handler)
     }
 }

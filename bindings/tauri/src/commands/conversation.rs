@@ -35,9 +35,9 @@ pub async fn sdk_conversation_get(
 pub async fn sdk_conversation_get_one(
     state: State<'_, SdkState>,
     source_id: String,
-    conversation_type: String,
+    conversation_type: i32,
 ) -> std::result::Result<Conversation, String> {
-    let ct = ConversationType::from(conversation_type.as_str());
+    let ct = ConversationType::from_proto_int(conversation_type);
     let c = state.client();
     c.conversation()
         .map_err(|e| e.to_string())?

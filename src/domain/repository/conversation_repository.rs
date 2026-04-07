@@ -39,4 +39,22 @@ pub trait ConversationWriter: Send + Sync {
         last_message_preview: Option<&str>,
         max_seq: u64,
     ) -> Result<()>;
+
+    /// 基于本地消息表重算单会话未读：
+    /// `seq > last_read_seq` 且 `sender_id != current_user_id` 且未撤回。
+    async fn recompute_unread_for_user(
+        &self,
+        conversation_id: &str,
+        current_user_id: &str,
+    ) -> Result<()>;
+
+    /// 查询本地消息表中的最大 seq（用于 read_seq=0 的“全部已读”本地对齐）。
+    async fn get_local_max_seq(&self, _conversation_id: &str) -> Result<u64> {
+        Ok(0)
+    }
 }
+
+/// 会话统一端口（读写聚合）
+pub trait ConversationStore: ConversationReader + ConversationWriter {}
+
+impl<T> ConversationStore for T where T: ConversationReader + ConversationWriter + Send + Sync {}

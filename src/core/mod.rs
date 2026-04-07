@@ -4,7 +4,7 @@
 //!
 //! - **状态集中**：状态仅在 FSM 与 Actor 中（Connection FSM、Sync FSM、ReliableQueue 消息状态）
 //! - **通信事件化**：模块间只通过 EventBus 通信，Dispatcher 仅做 Packet → Event 路由
-//! - **单一职责**：SyncManager 只负责同步；MessageEngine/ConversationFlow 位于 application 层
+//! - **单一职责**：SyncManager 只负责同步；消息/会话 API 直接委托 application usecases，`SyncProtocolAdapter` 仅作协议适配
 
 mod dispatcher;
 mod engine;

@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use crate::model::message_elem::{MessagePreviewElem, message_preview_from_proto};
 use crate::util::date::{ms_to_prost_timestamp, prost_timestamp_to_ms};
 
-// ---------- 会话类型（与 `flare.common.v1.ConversationType`、flare_core CID 前缀一致；proto 另有 `Channel` 无本地 CID 前缀）----------
+// ---------- 会话类型（严格对齐 `flare.common.v1.ConversationType`，并与 flare_core CID 前缀一致）----------
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -18,8 +18,8 @@ pub enum ConversationType {
     Single,
     Group,
     Ai,
-    Customer,
     System,
+    Customer,
     Temp,
 }
 
@@ -87,14 +87,13 @@ impl ConversationType {
         }
     }
 
-    /// 从消息 proto 的 `conversation_type` 整型解析；`Channel` 等与本地枚举无 CID 对应时映射为 [`Unspecified`]
+    /// 从消息 proto 的 `conversation_type` 整型解析；未知值映射为 [`Unspecified`]
     pub fn from_proto_int(v: i32) -> Self {
         use flare_proto::common::ConversationType as ProtoT;
         match ProtoT::try_from(v) {
             Ok(ProtoT::Unspecified) => ConversationType::Unspecified,
             Ok(ProtoT::Single) => ConversationType::Single,
             Ok(ProtoT::Group) => ConversationType::Group,
-            Ok(ProtoT::Channel) => ConversationType::Unspecified,
             Ok(ProtoT::Ai) => ConversationType::Ai,
             Ok(ProtoT::Customer) => ConversationType::Customer,
             Ok(ProtoT::System) => ConversationType::System,
@@ -369,6 +368,9 @@ impl From<flare_proto::common::ConversationSummary> for Conversation {
     fn from(s: flare_proto::common::ConversationSummary) -> Self {
         let updated_at = prost_timestamp_to_ms(s.updated_at.as_ref());
         let created_at = prost_timestamp_to_ms(s.created_at.as_ref());
+        // 以服务端聚合后的 unread_count 为准：
+        // 该值已按消息可见性/消息状态（删除、撤回等）处理，能正确覆盖历史未读统计。
+        let unread_count = s.unread_count;
         Self {
             conversation_id: s.conversation_id,
             conversation_type: ConversationType::from(s.conversation_type.as_str()),
@@ -376,7 +378,7 @@ impl From<flare_proto::common::ConversationSummary> for Conversation {
             channel_id: s.channel_id,
             display_name: s.display_name,
             avatar_url: s.avatar_url,
-            unread_count: s.unread_count,
+            unread_count,
             max_seq: s.max_seq,
             last_read_seq: s.last_read_seq,
             last_message: s.last_message.as_ref().map(message_preview_from_proto),

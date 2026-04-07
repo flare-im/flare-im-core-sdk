@@ -69,3 +69,20 @@ pub fn resolve_user_db_path(base: &std::path::Path, user_id: &str) -> PathBuf {
     let _ = std::fs::create_dir_all(&user_data_dir);
     user_data_dir.join("flare_im_sdk.db")
 }
+
+/// 用户媒体缓存目录（`{user_data}/media_cache`），与 [`resolve_user_db_path`] 同级。
+pub fn resolve_user_media_cache_dir(base: &std::path::Path, user_id: &str) -> PathBuf {
+    let db = resolve_user_db_path(base, user_id);
+    resolve_media_cache_dir_next_to_db(&db)
+}
+
+/// 与 SQLite 数据库文件**同目录**下的 `media_cache`（默认缓存根，与库文件并列）。
+pub fn resolve_media_cache_dir_next_to_db(db_file: &std::path::Path) -> PathBuf {
+    let parent = db_file
+        .parent()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."));
+    let cache = parent.join("media_cache");
+    let _ = std::fs::create_dir_all(&cache);
+    cache
+}

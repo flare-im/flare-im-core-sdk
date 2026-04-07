@@ -9,9 +9,11 @@ description = "Flare IM Core SDK - Tauri Plugin"
 
 [dependencies]
 anyhow = "1.0"
+base64 = "0.22"
 flare-im-core-sdk = { path = "../..", features = ["lifecycle-sqlite"] }
 flare-proto = { path = "../../../flare-proto" }
 tauri = { version = "2.10.1", features = ["macos-private-api"] }
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1.0", features = ["derive"] }
 tracing = "0.1"
+uuid = { version = "1", features = ["v4"] }

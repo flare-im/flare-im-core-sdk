@@ -55,7 +55,7 @@ crate-type = ["rlib", "cdylib", "staticlib"]
 default = []
 integration-tests = []
 # SQLite 持久化实现（Message/Conversation/PendingSend/UserProfile 仓储）
-storage-sqlite = ["dep:sqlx", "dep:base64"]
+storage-sqlite = ["dep:sqlx"]
 # 跨平台 SQLite 登录编排（依赖 storage/sqlite 连接池与 schema 注册）
 lifecycle-sqlite = ["storage-sqlite", "dep:flare-im-core-sdk-storage-sqlite"]
 
@@ -80,11 +80,12 @@ hex = "0.4"
 futures = "0.3"
 
 sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "chrono"], optional = true }
-base64 = { version = "0.22", optional = true }
+base64 = { version = "0.22" }
 flare-im-core-sdk-storage-sqlite = { path = "storage/sqlite", optional = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 tokio = { workspace = true }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 tokio = { version = "1", default-features = false, features = ["macros", "sync", "rt", "time"] }

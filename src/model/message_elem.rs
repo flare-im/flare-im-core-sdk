@@ -24,6 +24,9 @@ pub struct MentionElem {
 #[serde(rename_all = "camelCase")]
 pub struct ImageInfoElem {
     pub uuid: String,
+    /// 媒体存储侧稳定 id（与 proto `ImageInfo.image_id` 一致；展示时走 GetFileUrl）
+    #[serde(default)]
+    pub image_id: String,
     pub url: String,
     pub mime_type: String,
     pub size: i64,
@@ -76,7 +79,6 @@ pub struct TextElem {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ImageElem {
-    pub image_id: String,
     pub source: Option<ImageInfoElem>,
     pub thumbnail: Option<ImageInfoElem>,
     pub description: String,
@@ -166,6 +168,7 @@ pub struct QuoteElem {
     pub quoted_sender_id: String,
     pub quoted_text_preview: String,
     pub quoted_content: Option<Box<Elem>>,
+    pub current_content: Option<Box<Elem>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -351,6 +354,7 @@ fn image_info_out(o: Option<&flare_proto::common::ImageInfo>) -> Option<ImageInf
     let i = o?;
     Some(ImageInfoElem {
         uuid: i.uuid.clone(),
+        image_id: i.image_id.clone(),
         url: i.url.clone(),
         mime_type: i.mime_type.clone(),
         size: i.size,
@@ -433,7 +437,6 @@ fn proto_content_to_out(c: &ProtoContent) -> Option<Elem> {
             mentions: t.mentions.iter().map(mention_out).collect(),
         }),
         ProtoContent::Image(i) => Elem::Image(ImageElem {
-            image_id: i.image_id.clone(),
             source: image_info_out(i.source.as_ref()),
             thumbnail: image_info_out(i.thumbnail.as_ref()),
             description: i.description.clone(),
@@ -497,6 +500,10 @@ fn proto_content_to_out(c: &ProtoContent) -> Option<Elem> {
             quoted_text_preview: q.quoted_text_preview.clone(),
             quoted_content: q
                 .quoted_content
+                .as_ref()
+                .and_then(|mc| message_content_to_out(mc).map(Box::new)),
+            current_content: q
+                .current_content
                 .as_ref()
                 .and_then(|mc| message_content_to_out(mc).map(Box::new)),
         }),
@@ -625,6 +632,7 @@ fn mention_in(m: &MentionElem) -> flare_proto::common::Mention {
 fn image_info_in(e: &ImageInfoElem) -> flare_proto::common::ImageInfo {
     flare_proto::common::ImageInfo {
         uuid: e.uuid.clone(),
+        image_id: e.image_id.clone(),
         url: e.url.clone(),
         mime_type: e.mime_type.clone(),
         size: e.size,
@@ -663,7 +671,6 @@ fn elem_to_proto_content(elem: &Elem) -> ProtoContent {
             mentions: t.mentions.iter().map(mention_in).collect(),
         }),
         Elem::Image(i) => ProtoContent::Image(flare_proto::common::ImageContent {
-            image_id: i.image_id.clone(),
             source: i.source.as_ref().map(image_info_in),
             thumbnail: i.thumbnail.as_ref().map(image_info_in),
             description: i.description.clone(),
@@ -727,6 +734,10 @@ fn elem_to_proto_content(elem: &Elem) -> ProtoContent {
             quoted_text_preview: q.quoted_text_preview.clone(),
             quoted_content: q
                 .quoted_content
+                .as_ref()
+                .map(|b| Box::new(elem_to_message_content(b))),
+            current_content: q
+                .current_content
                 .as_ref()
                 .map(|b| Box::new(elem_to_message_content(b))),
         })),

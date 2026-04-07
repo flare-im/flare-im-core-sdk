@@ -3,6 +3,8 @@ use std::sync::Arc as StdArc;
 
 use tokio::sync::RwLock;
 
+use crate::application::event_deduper::EventDeduper;
+use crate::application::message_deduper::MessageDeduper;
 use crate::core::{SessionSyncRunner, SyncManager, SyncResponseHandler};
 use crate::error::FlareError;
 use crate::event::{ConnectionEvent as SdkConnectionEvent, EventBus, SdkEvent};
@@ -49,12 +51,14 @@ pub struct SdkEngine {
     _chain: Arc<MiddlewareChain>,
     reliable_queue: Option<Arc<ReliableSendQueue>>,
     connection_state: StdArc<RwLock<ConnectionState>>,
+    event_deduper: EventDeduper,
+    message_deduper: MessageDeduper,
 }
 
 impl SdkEngine {
     /// 创建引擎。连接就绪后由 [connect] 内 [bootstrap] 激活同步；同步状态仅通过 [EventBus] 的同步回调获取。
-    /// `sync_response_handler` / `session_sync` 通常为同一 application SyncHandler 的 Arc。
-    pub fn new(
+    /// `sync_response_handler` / `session_sync` 通常为同一 application SyncProtocolAdapter 的 Arc。
+    pub(crate) fn new(
         stores: StoreProvider,
         _chain: MiddlewareChain,
         transport: SocketTransport,
@@ -63,6 +67,8 @@ impl SdkEngine {
         bus: EventBus,
         sync_response_handler: Option<Arc<dyn SyncResponseHandler>>,
         session_sync: Option<Arc<dyn SessionSyncRunner>>,
+        event_deduper: EventDeduper,
+        message_deduper: MessageDeduper,
     ) -> Self {
         let sender = transport.sender().clone();
         let reliable_queue = stores.pending_sends().map(|(reader, writer)| {
@@ -71,6 +77,7 @@ impl SdkEngine {
                 writer,
                 sender.clone(),
                 stores.messages.clone(),
+                current_user_id.clone(),
                 bus.clone(),
                 None,
                 None,
@@ -89,6 +96,8 @@ impl SdkEngine {
             _chain: Arc::new(_chain),
             reliable_queue,
             connection_state: StdArc::new(RwLock::new(ConnectionState::Disconnected)),
+            event_deduper,
+            message_deduper,
         }
     }
 
@@ -149,6 +158,9 @@ impl SdkEngine {
                 self.reliable_queue.clone(),
                 self.sync_response_handler.clone(),
                 Some(self.stores.clone()),
+                self.current_user_id.clone(),
+                self.event_deduper.clone(),
+                self.message_deduper.clone(),
             )),
             self.codec.clone(),
             ready.clone(),
@@ -157,6 +169,9 @@ impl SdkEngine {
             .connect(user_id, token, listener, ready)
             .await?;
         *self.current_user_id.write().await = user_id.to_string();
+        if let Some(queue) = &self.reliable_queue {
+            let _ = queue.recover_pending_for_current_user().await;
+        }
         self.transition(ConnectionEvent::Connected).await; // fsm::ConnectionEvent
         self.bootstrap().await?;
         self.transition(ConnectionEvent::BootstrapDone).await;
@@ -165,6 +180,7 @@ impl SdkEngine {
 
     pub async fn disconnect(&mut self) -> crate::error::Result<()> {
         self.transition(ConnectionEvent::DisconnectRequested).await;
+        self.sync_manager.stop_sync();
         self.transport.disconnect().await?;
         *self.current_user_id.write().await = String::new();
         {

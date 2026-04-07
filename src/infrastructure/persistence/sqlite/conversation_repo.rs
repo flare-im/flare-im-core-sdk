@@ -8,7 +8,6 @@ use sqlx::{Row, SqlitePool};
 
 use crate::domain::{ConversationReader, ConversationWriter};
 use crate::error::{ErrorCode, FlareError, Result};
-use crate::infrastructure::persistence::ConversationStore;
 use crate::model::Conversation;
 use crate::model::conversation::{ConversationLocalState, ConversationType};
 use crate::model::message_elem::MessagePreviewElem;
@@ -191,7 +190,43 @@ impl ConversationWriter for SqliteConversationRepo {
             .await
             .map_err(|e| FlareError::localized(ErrorCode::DatabaseError, e.to_string()))?;
         for c in conversations {
-            let ext_json = serde_json::to_string(&c.ext).unwrap_or_default();
+            let incoming_derived_last_read = c.max_seq.saturating_sub(c.unread_count as u64);
+            // 保护读位单调性：服务端摘要偶发滞后时，不允许把本地 last_read_seq 回退。
+            // 这样 read_states 能继续把更高读位回推服务端，避免重登未读“回弹”。
+            let existing = sqlx::query(
+                r#"SELECT last_read_seq, max_seq, unread_count
+                   FROM conversations
+                   WHERE conversation_id = ?"#,
+            )
+            .bind(&c.conversation_id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|e| FlareError::localized(ErrorCode::DatabaseError, e.to_string()))?;
+
+            let mut merged = c.clone();
+            if let Some(row) = existing {
+                let prev_last_read_seq = row.try_get::<i64, _>("last_read_seq").unwrap_or(0).max(0) as u64;
+                let prev_max_seq = row.try_get::<i64, _>("max_seq").unwrap_or(0).max(0) as u64;
+                let prev_unread = row.try_get::<i64, _>("unread_count").unwrap_or(0).max(0) as u32;
+
+                merged.last_read_seq = merged
+                    .last_read_seq
+                    .max(incoming_derived_last_read)
+                    .max(prev_last_read_seq);
+                merged.max_seq = merged.max_seq.max(prev_max_seq);
+
+                // 若本次摘要没有提供更新的序列位点，且 read_seq 反而更旧，则保持本地 unread，防止未读突增。
+                if c.max_seq <= prev_max_seq && c.last_read_seq < prev_last_read_seq {
+                    merged.unread_count = prev_unread;
+                }
+            } else {
+                merged.last_read_seq = merged.last_read_seq.max(incoming_derived_last_read);
+            }
+            // unread 上界：最多为“最新位点 - 已读位点”
+            let unread_upper_bound = merged.max_seq.saturating_sub(merged.last_read_seq) as u32;
+            merged.unread_count = merged.unread_count.min(unread_upper_bound);
+
+            let ext_json = serde_json::to_string(&merged.ext).unwrap_or_default();
             sqlx::query(
                 r#"INSERT OR REPLACE INTO conversations (
                    conversation_id, conversation_type, business_type, channel_id, members_count,
@@ -202,37 +237,37 @@ impl ConversationWriter for SqliteConversationRepo {
                    mention_count, mention_me, badge, role)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"#,
             )
-            .bind(&c.conversation_id)
-            .bind(conversation_type_to_i32(&c.conversation_type))
-            .bind(&c.business_type)
-            .bind(&c.channel_id)
-            .bind(c.members_count as i64)
-            .bind(&c.display_name)
-            .bind(&c.avatar_url)
-            .bind(&c.remark)
-            .bind(&c.description)
-            .bind(&c.last_message_id)
-            .bind(&c.last_sender_id)
-            .bind(c.last_message_at.map(|t| t as i64))
-            .bind(&c.last_message_preview)
-            .bind(&c.last_sender_nickname)
-            .bind(&c.last_sender_avatar_url)
-            .bind(c.unread_count as i32)
-            .bind(c.last_read_seq as i64)
-            .bind(c.max_seq as i64)
-            .bind(if c.is_pinned { 1i32 } else { 0 })
-            .bind(if c.is_muted { 1i32 } else { 0 })
-            .bind(if c.is_archived { 1i32 } else { 0 })
-            .bind(c.version as i64)
-            .bind(c.updated_at as i64)
-            .bind(c.created_at as i64)
-            .bind(c.updated_at_ts.map(|t| t as i64))
+            .bind(&merged.conversation_id)
+            .bind(conversation_type_to_i32(&merged.conversation_type))
+            .bind(&merged.business_type)
+            .bind(&merged.channel_id)
+            .bind(merged.members_count as i64)
+            .bind(&merged.display_name)
+            .bind(&merged.avatar_url)
+            .bind(&merged.remark)
+            .bind(&merged.description)
+            .bind(&merged.last_message_id)
+            .bind(&merged.last_sender_id)
+            .bind(merged.last_message_at.map(|t| t as i64))
+            .bind(&merged.last_message_preview)
+            .bind(&merged.last_sender_nickname)
+            .bind(&merged.last_sender_avatar_url)
+            .bind(merged.unread_count as i32)
+            .bind(merged.last_read_seq as i64)
+            .bind(merged.max_seq as i64)
+            .bind(if merged.is_pinned { 1i32 } else { 0 })
+            .bind(if merged.is_muted { 1i32 } else { 0 })
+            .bind(if merged.is_archived { 1i32 } else { 0 })
+            .bind(merged.version as i64)
+            .bind(merged.updated_at as i64)
+            .bind(merged.created_at as i64)
+            .bind(merged.updated_at_ts.map(|t| t as i64))
             .bind(&ext_json)
-            .bind(&c.draft)
-            .bind(c.mention_count as i32)
-            .bind(if c.mention_me { 1i32 } else { 0 })
-            .bind(&c.badge)
-            .bind(&c.role)
+            .bind(&merged.draft)
+            .bind(merged.mention_count as i32)
+            .bind(if merged.mention_me { 1i32 } else { 0 })
+            .bind(&merged.badge)
+            .bind(&merged.role)
             .execute(&mut *tx)
             .await
             .map_err(|e| FlareError::localized(ErrorCode::DatabaseError, e.to_string()))?;
@@ -254,10 +289,16 @@ impl ConversationWriter for SqliteConversationRepo {
         last_read_seq: u64,
     ) -> Result<()> {
         sqlx::query(
-            r#"UPDATE conversations SET unread_count = ?, last_read_seq = ? WHERE conversation_id = ?"#,
+            r#"UPDATE conversations
+               SET
+                 last_read_seq = MAX(COALESCE(last_read_seq, 0), ?),
+                 max_seq = MAX(COALESCE(max_seq, 0), ?),
+                 unread_count = MAX(0, ?)
+               WHERE conversation_id = ?"#,
         )
-        .bind(unread_count as i32)
         .bind(last_read_seq as i64)
+        .bind(last_read_seq as i64)
+        .bind(unread_count as i64)
         .bind(conversation_id)
         .execute(&self.pool)
         .await
@@ -331,6 +372,31 @@ impl ConversationWriter for SqliteConversationRepo {
         Ok(())
     }
 
+    async fn recompute_unread_for_user(
+        &self,
+        conversation_id: &str,
+        current_user_id: &str,
+    ) -> Result<()> {
+        sqlx::query(
+            r#"UPDATE conversations
+               SET unread_count = (
+                   SELECT COUNT(1)
+                   FROM messages m
+                   WHERE m.conversation_id = conversations.conversation_id
+                     AND COALESCE(m.seq, 0) > COALESCE(conversations.last_read_seq, 0)
+                     AND COALESCE(m.sender_id, '') <> ?
+                     AND COALESCE(m.is_recalled, 0) = 0
+               )
+               WHERE conversation_id = ?"#,
+        )
+        .bind(current_user_id)
+        .bind(conversation_id)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| FlareError::localized(ErrorCode::DatabaseError, e.to_string()))?;
+        Ok(())
+    }
+
     async fn delete(&self, conversation_id: &str) -> Result<()> {
         sqlx::query("DELETE FROM conversations WHERE conversation_id = ?")
             .bind(conversation_id)
@@ -339,75 +405,17 @@ impl ConversationWriter for SqliteConversationRepo {
             .map_err(|e| FlareError::localized(ErrorCode::DatabaseError, e.to_string()))?;
         Ok(())
     }
-}
-
-// ---------- ConversationStore 适配（供 StoreProvider / 应用层使用）----------
-
-#[async_trait]
-impl ConversationStore for SqliteConversationRepo {
-    async fn save_batch(&self, conversations: &[Conversation]) -> Result<()> {
-        ConversationWriter::save_batch(self, conversations).await
-    }
-
-    async fn save_one(&self, conversation: &Conversation) -> Result<()> {
-        ConversationWriter::save_one(self, conversation).await
-    }
-
-    async fn get(&self, conversation_id: &str) -> Result<Option<Conversation>> {
-        ConversationReader::get(self, conversation_id).await
-    }
-
-    async fn list(&self) -> Result<Vec<Conversation>> {
-        ConversationReader::list(self).await
-    }
-
-    async fn update_unread(
-        &self,
-        conversation_id: &str,
-        unread_count: u32,
-        last_read_seq: u64,
-    ) -> Result<()> {
-        ConversationWriter::update_unread(self, conversation_id, unread_count, last_read_seq).await
-    }
-
-    async fn set_pinned(&self, conversation_id: &str, pinned: bool) -> Result<()> {
-        ConversationWriter::set_pinned(self, conversation_id, pinned).await
-    }
-
-    async fn set_muted(&self, conversation_id: &str, muted: bool) -> Result<()> {
-        ConversationWriter::set_muted(self, conversation_id, muted).await
-    }
-
-    async fn set_archived(&self, conversation_id: &str, archived: bool) -> Result<()> {
-        ConversationWriter::set_archived(self, conversation_id, archived).await
-    }
-
-    async fn update_draft(&self, conversation_id: &str, draft: Option<&str>) -> Result<()> {
-        ConversationWriter::update_draft(self, conversation_id, draft).await
-    }
-
-    async fn update_last_message(
-        &self,
-        conversation_id: &str,
-        last_message_id: &str,
-        last_sender_id: &str,
-        last_message_at: u64,
-        last_message_preview: Option<&str>,
-        max_seq: u64,
-    ) -> Result<()> {
-        ConversationWriter::update_last_message(
-            self,
-            conversation_id,
-            last_message_id,
-            last_sender_id,
-            last_message_at,
-            last_message_preview,
-            max_seq,
+    async fn get_local_max_seq(&self, conversation_id: &str) -> Result<u64> {
+        let row = sqlx::query(
+            r#"SELECT COALESCE(MAX(seq), 0) AS max_seq
+               FROM messages
+               WHERE conversation_id = ?"#,
         )
+        .bind(conversation_id)
+        .fetch_one(&self.pool)
         .await
-    }
-
-    async fn delete(&self, conversation_id: &str) -> Result<()> {
-        ConversationWriter::delete(self, conversation_id).await
+        .map_err(|e| FlareError::localized(ErrorCode::DatabaseError, e.to_string()))?;
+        let max_seq = row.try_get::<i64, _>("max_seq").unwrap_or(0).max(0) as u64;
+        Ok(max_seq)
     }
 }

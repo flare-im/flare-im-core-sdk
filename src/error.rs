@@ -15,11 +15,7 @@ pub use flare_core::common::error::{
 /// # Example
 ///
 /// ```ignore
-/// if let Some(status) = response.status {
-///     if status.code != ERROR_CODE_OK {
-///         return Err(from_rpc_status(status.code, status.message));
-///     }
-/// }
+/// return Err(from_rpc_status(rpc_status.code, rpc_status.message));
 /// ```
 #[inline]
 pub fn from_rpc_status(code: i32, message: impl Into<String>) -> FlareError {

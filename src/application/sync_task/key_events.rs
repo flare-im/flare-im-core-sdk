@@ -5,13 +5,13 @@ use std::sync::Arc;
 
 use tracing::info;
 
-use super::super::handlers::SyncHandler;
+use super::super::SyncProtocolAdapter;
 use crate::core::{SyncContext, SyncMode, SyncResult, SyncTask, SyncTaskResult};
 
-pub struct KeyEventsSyncTask(pub(crate) Arc<SyncHandler>);
+pub struct KeyEventsSyncTask(pub(crate) Arc<SyncProtocolAdapter>);
 
 impl KeyEventsSyncTask {
-    pub fn new(handler: Arc<SyncHandler>) -> Self {
+    pub fn new(handler: Arc<SyncProtocolAdapter>) -> Self {
         Self(handler)
     }
 }
@@ -22,7 +22,9 @@ impl SyncTask for KeyEventsSyncTask {
     }
 
     fn mode(&self) -> SyncMode {
-        SyncMode::Init
+        // 关键事件回放可能触发 QueryEvents 远程拉取（默认 30s 超时），
+        // 放在 Background 可避免阻塞登录首屏可用性。
+        SyncMode::Background
     }
 
     fn weight(&self) -> u32 {

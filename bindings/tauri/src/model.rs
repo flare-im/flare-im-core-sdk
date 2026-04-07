@@ -1,5 +1,7 @@
 //! Tauri IPC 用的可序列化类型与事件 payload；业务在 core-sdk。
 
+use std::collections::HashMap;
+
 use flare_proto::common::SendAck as ProtoSendAck;
 use serde::{Deserialize, Serialize};
 
@@ -31,6 +33,40 @@ pub struct SendAckPayload {
     pub success: bool,
     pub error_code: i32,
     pub error_message: String,
+}
+
+/// 媒体上传进度（sdk_send_with_media_progress 通过 im://upload_progress 推送）
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UploadProgressPayload {
+    pub file_name: String,
+    pub upload_id: String,
+    pub phase: String,
+    pub uploaded_bytes: u64,
+    pub total_bytes: u64,
+    pub chunk_index: Option<u32>,
+    pub total_chunks: Option<u32>,
+}
+
+impl From<flare_im_core_sdk::client::UploadProgress> for UploadProgressPayload {
+    fn from(p: flare_im_core_sdk::client::UploadProgress) -> Self {
+        let phase = match p.phase {
+            flare_im_core_sdk::client::UploadPhase::Preparing => "Preparing",
+            flare_im_core_sdk::client::UploadPhase::Uploading => "Uploading",
+            flare_im_core_sdk::client::UploadPhase::Completing => "Completing",
+            flare_im_core_sdk::client::UploadPhase::Finished => "Finished",
+        }
+        .to_string();
+        Self {
+            file_name: p.file_name,
+            upload_id: p.upload_id,
+            phase,
+            uploaded_bytes: p.uploaded_bytes,
+            total_bytes: p.total_bytes,
+            chunk_index: p.chunk_index,
+            total_chunks: p.total_chunks,
+        }
+    }
 }
 
 impl From<ProtoSendAck> for SendAckPayload {
@@ -76,10 +112,115 @@ pub struct MessageRecalledPayload {
     pub recaller_id: String,
 }
 
+/// 消息已编辑（本地库已更新，前端宜按 conversationId 刷新列表或按 messageId 合并）
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MessageEditedPayload {
+    pub conversation_id: String,
+    /// 服务端消息 id（与撤回事件的 message_id 语义一致）
+    pub message_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub edit_version: Option<i32>,
+}
+
+/// 消息反应变更（添加/移除）
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MessageReactionChangedPayload {
+    pub conversation_id: String,
+    pub message_id: String,
+    pub user_id: String,
+    pub emoji: String,
+    /// 与 proto `ReactionAction` 对齐：1=ADD, 2=REMOVE
+    pub action: i32,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MessageDeletedPayload {
+    pub conversation_id: String,
     pub message_id: String,
+}
+
+/// 已读回执事件
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MessageReadReceiptPayload {
+    pub conversation_id: String,
+    pub user_id: String,
+    pub read_seq: u64,
+    pub message_ids: Vec<String>,
+}
+
+/// 置顶事件
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MessagePinnedPayload {
+    pub conversation_id: String,
+    pub message_id: String,
+    pub pinned_by: String,
+}
+
+/// 取消置顶事件
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MessageUnpinnedPayload {
+    pub conversation_id: String,
+    pub message_id: String,
+}
+
+/// 标记事件
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MessageMarkedPayload {
+    pub conversation_id: String,
+    pub message_id: String,
+    pub user_id: String,
+    pub mark_type: i32,
+    pub color: String,
+}
+
+/// 取消标记事件
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MessageUnmarkedPayload {
+    pub conversation_id: String,
+    pub message_id: String,
+    pub user_id: String,
+    pub mark_type: i32,
+}
+
+/// 在线状态事件
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PresenceChangedPayload {
+    pub conversation_id: String,
+    pub user_id: String,
+    pub status: String,
+    pub extra: HashMap<String, String>,
+}
+
+/// 通话信令事件
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CallSignalPayload {
+    pub conversation_id: String,
+    pub call_id: String,
+    pub signal_type: String,
+    pub payload: Vec<u8>,
+    pub metadata: HashMap<String, String>,
+}
+
+/// 自定义领域事件
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MessageCustomEventPayload {
+    pub conversation_id: String,
+    pub namespace: String,
+    pub name: String,
+    pub version: String,
+    pub payload: Vec<u8>,
+    pub metadata: HashMap<String, String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -214,7 +355,17 @@ pub enum EventPayload {
     SendAck(SendAckPayload),
     MessageSendFailed(MessageSendFailedPayload),
     MessageRecalled(MessageRecalledPayload),
+    MessageEdited(MessageEditedPayload),
+    MessageReactionChanged(MessageReactionChangedPayload),
     MessageDeleted(MessageDeletedPayload),
+    MessageReadReceipt(MessageReadReceiptPayload),
+    MessagePinned(MessagePinnedPayload),
+    MessageUnpinned(MessageUnpinnedPayload),
+    MessageMarked(MessageMarkedPayload),
+    MessageUnmarked(MessageUnmarkedPayload),
+    PresenceChanged(PresenceChangedPayload),
+    CallSignal(CallSignalPayload),
+    MessageCustomEvent(MessageCustomEventPayload),
     ConversationsSynced(ConversationsSyncedPayload),
     SyncProgress(SyncProgressPayload),
     SyncCompleted(SyncCompletedPayload),

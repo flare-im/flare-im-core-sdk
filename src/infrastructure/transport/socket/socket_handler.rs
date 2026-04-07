@@ -59,10 +59,7 @@ impl MessageListener for SocketHandler {
             match &cmd.r#type {
                 Some(CommandType::System(sys_cmd)) => {
                     let t = sys_cmd.r#type;
-                    if t == SystemType::ConnectAck as i32
-                        || t == SystemType::Error as i32
-                        || t == SystemType::Kicked as i32
-                    {
+                    if t == SystemType::ConnectAck as i32 {
                         self.signal_ready();
                     }
                 }
@@ -92,15 +89,26 @@ impl MessageListener for SocketHandler {
             if pt == PayloadType::Ack as i32 {
                 let payload = ensure_decompressed_payload(&payload_cmd.payload);
                 if let Ok(ack) = Ack::decode(payload.as_slice()) {
-                    if let Some(AckPayload::Send(send_ack)) = ack.payload {
-                        info!(
-                            frame_id = %frame.message_id,
-                            client_msg_id = %send_ack.client_msg_id,
-                            server_msg_id = %send_ack.server_msg_id,
-                            "received SendAck (PayloadCommand Ack), dispatching to bus"
-                        );
-                        let payload = DownlinkPayload::SendAck(send_ack.clone());
-                        let _ = self.dispatcher.dispatch(payload).await;
+                    match ack.payload {
+                        Some(AckPayload::Send(send_ack)) => {
+                            info!(
+                                frame_id = %frame.message_id,
+                                client_msg_id = %send_ack.client_msg_id,
+                                server_msg_id = %send_ack.server_msg_id,
+                                "received SendAck (PayloadCommand Ack), dispatching to bus"
+                            );
+                            let payload = DownlinkPayload::SendAck(send_ack.clone());
+                            let _ = self.dispatcher.dispatch(payload).await;
+                        }
+                        Some(AckPayload::Event(event_ack)) => {
+                            info!(
+                                frame_id = %frame.message_id,
+                                event_id = %event_ack.event_id,
+                                metadata = ?event_ack.metadata,
+                                "received EventAck (PayloadCommand Ack)"
+                            );
+                        }
+                        _ => {}
                     }
                 } else {
                     warn!(
@@ -111,14 +119,18 @@ impl MessageListener for SocketHandler {
                 }
                 return Ok(None);
             }
-            // PayloadType::Message (1) / Data (4)：推送或 DATA 响应，payload 为 EventEnvelope / SyncRes / SyncConversationsResponse
-            if pt == PayloadType::Message as i32 || pt == PayloadType::Data as i32 {
+            // PayloadType::Message (1) / Data (4) / Event (2)：内层为 MessagePush / Event / EventEnvelope / DataPacket…（与网关下行约定一致）
+            if pt == PayloadType::Message as i32
+                || pt == PayloadType::Data as i32
+                || pt == PayloadType::Event as i32
+            {
                 let payload = ensure_decompressed_payload(&payload_cmd.payload);
                 match self.codec.decode_server(&payload) {
                     Ok(downlink) => {
                         info!(
                             frame_id = %frame.message_id,
-                            "received push/data message, dispatching to bus"
+                            payload_type = pt,
+                            "received push/data/event frame, dispatching to bus"
                         );
                         let _ = self.dispatcher.dispatch(downlink).await;
                     }

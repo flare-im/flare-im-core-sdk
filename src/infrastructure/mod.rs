@@ -8,8 +8,8 @@ pub mod transport;
 
 // 常用类型统一导出，便于上层通过 infrastructure::* 使用
 pub use persistence::{
-    ConversationStore, LayeredPendingSendStore, MemoryPendingSendStore, MemoryUserProfileStore,
-    MessageStore, StoreProvider, SyncCursorStore,
+    LayeredPendingSendStore, MemoryPendingSendStore, MemoryUserProfileStore, StoreProvider,
 };
+pub use crate::domain::{ConversationStore, MessageStore, SyncCursorStore};
 pub use protocol::{Codec, PacketSender, ProtobufCodec};
 pub use transport::{HttpClient, SocketHandler, SocketTransport};

@@ -1,0 +1,103 @@
+use std::sync::Arc;
+
+use crate::domain::{MessageStore, UserReader};
+use crate::error::Result;
+use crate::model::IMMessage;
+
+pub struct MessageViewAssembler {
+    store: Arc<dyn MessageStore>,
+    profile_reader: Arc<dyn UserReader>,
+}
+
+impl MessageViewAssembler {
+    pub fn new(store: Arc<dyn MessageStore>, profile_reader: Arc<dyn UserReader>) -> Self {
+        Self {
+            store,
+            profile_reader,
+        }
+    }
+
+    pub async fn get(&self, message_id: &str) -> Result<Option<IMMessage>> {
+        let msg = match self.store.get_by_client_msg_id(message_id).await? {
+            Some(message) => Some(message),
+            None => self.store.get(message_id).await?,
+        };
+        let Some(mut view) = msg else {
+            return Ok(None);
+        };
+        self.hydrate_reactions_for_messages(std::slice::from_mut(&mut view))
+            .await?;
+        self.fill_sender_profile(&mut view).await;
+        Ok(Some(view))
+    }
+
+    pub async fn get_raw(&self, message_id: &str) -> Result<Option<IMMessage>> {
+        let mut msg = match self.store.get_by_client_msg_id(message_id).await? {
+            Some(message) => Some(message),
+            None => self.store.get(message_id).await?,
+        };
+        if let Some(view) = msg.as_mut() {
+            self.hydrate_reactions_for_messages(std::slice::from_mut(view))
+                .await?;
+        }
+        Ok(msg)
+    }
+
+    pub async fn list(
+        &self,
+        conversation_id: &str,
+        before_seq: u64,
+        limit: u32,
+    ) -> Result<Vec<IMMessage>> {
+        let mut views = self
+            .store
+            .get_by_conversation(conversation_id, before_seq, limit)
+            .await?;
+        self.hydrate_reactions_for_messages(&mut views).await?;
+        for view in &mut views {
+            self.fill_sender_profile(view).await;
+        }
+        Ok(views)
+    }
+
+    pub async fn search(&self, keyword: &str, limit: u32) -> Result<Vec<IMMessage>> {
+        let mut views = self.store.search(keyword, limit).await?;
+        self.hydrate_reactions_for_messages(&mut views).await?;
+        for view in &mut views {
+            self.fill_sender_profile(view).await;
+        }
+        Ok(views)
+    }
+
+    async fn hydrate_reactions_for_messages(&self, views: &mut [IMMessage]) -> Result<()> {
+        let message_ids: Vec<String> = views
+            .iter()
+            .filter_map(|message| {
+                if message.server_id.is_empty() {
+                    None
+                } else {
+                    Some(message.server_id.clone())
+                }
+            })
+            .collect();
+        if message_ids.is_empty() {
+            return Ok(());
+        }
+        let reaction_map = self.store.list_reactions(&message_ids).await?;
+        for view in views.iter_mut() {
+            if view.server_id.is_empty() {
+                continue;
+            }
+            if let Some(reactions) = reaction_map.get(&view.server_id) {
+                view.reactions = reactions.clone();
+            }
+        }
+        Ok(())
+    }
+
+    async fn fill_sender_profile(&self, view: &mut IMMessage) {
+        if let Ok(Some(profile)) = self.profile_reader.get(&view.sender_id().to_string()).await {
+            *view = view.clone().with_sender_profile(profile.display_name());
+        }
+    }
+}

@@ -221,6 +221,7 @@ flare-im-core-sdk/
 
 - [重构架构设计](./REFACTOR_ARCHITECTURE.md) - 重构后的架构说明
 - [重构计划](./REFACTOR_PLAN.md) - 重构实施计划
+- [媒体上传进度事件协议](./docs/upload_progress_event_protocol.md) - `im://upload_progress` 统一字段与状态机规范
 
 > 更多详细文档请查看项目源码中的注释和示例代码。
 

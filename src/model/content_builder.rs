@@ -91,13 +91,63 @@ impl ContentBuilder {
         self
     }
 
-    pub fn image(image_id: impl Into<String>) -> Self {
+    /// 原图稳定 id（本地路径或已上传 file_id），写入 `source.image_id` / `source.uuid`。
+    pub fn image(primary_media_id: impl Into<String>) -> Self {
+        let id = primary_media_id.into();
+        let source = ImageInfo {
+            uuid: id.clone(),
+            image_id: id,
+            url: String::new(),
+            mime_type: String::new(),
+            size: 0,
+            width: 0,
+            height: 0,
+        };
         let content = MessageContent {
             content: Some(flare_proto::common::message_content::Content::Image(
                 ImageContent {
-                    image_id: image_id.into(),
-                    source: None,
+                    source: Some(source),
                     thumbnail: None,
+                    description: String::new(),
+                },
+            )),
+        };
+        Self {
+            message_type: MessageType::Image,
+            content: Some(content),
+        }
+    }
+
+    /// 原图 + 缩略图各自稳定 id（可指向不同本地路径，发送时分别上传）。
+    pub fn image_with_thumbnail(
+        source_media_id: impl Into<String>,
+        thumbnail_media_id: impl Into<String>,
+    ) -> Self {
+        let sid = source_media_id.into();
+        let tid = thumbnail_media_id.into();
+        let source = ImageInfo {
+            uuid: sid.clone(),
+            image_id: sid,
+            url: String::new(),
+            mime_type: String::new(),
+            size: 0,
+            width: 0,
+            height: 0,
+        };
+        let thumbnail = ImageInfo {
+            uuid: tid.clone(),
+            image_id: tid,
+            url: String::new(),
+            mime_type: String::new(),
+            size: 0,
+            width: 0,
+            height: 0,
+        };
+        let content = MessageContent {
+            content: Some(flare_proto::common::message_content::Content::Image(
+                ImageContent {
+                    source: Some(source),
+                    thumbnail: Some(thumbnail),
                     description: String::new(),
                 },
             )),
@@ -113,6 +163,16 @@ impl ContentBuilder {
             if let Some(flare_proto::common::message_content::Content::Image(ref mut i)) = c.content
             {
                 i.source = Some(info);
+            }
+        }
+        self
+    }
+
+    pub fn image_thumbnail(mut self, info: ImageInfo) -> Self {
+        if let Some(ref mut c) = self.content {
+            if let Some(flare_proto::common::message_content::Content::Image(ref mut i)) = c.content
+            {
+                i.thumbnail = Some(info);
             }
         }
         self
@@ -401,6 +461,7 @@ impl ContentBuilder {
                     quoted_sender_id: String::new(),
                     quoted_text_preview: String::new(),
                     quoted_content: None,
+                    current_content: None,
                 }),
             )),
         };
@@ -427,6 +488,61 @@ impl ContentBuilder {
                 q.quoted_text_preview = s.into();
             }
         }
+        self
+    }
+
+    pub fn quoted_content(mut self, content: MessageContent) -> Self {
+        if let Some(ref mut c) = self.content {
+            if let Some(flare_proto::common::message_content::Content::Quote(ref mut q)) = c.content
+            {
+                q.quoted_content = Some(Box::new(content));
+            }
+        }
+        self
+    }
+
+    pub fn quoted(mut self, content: BuiltContent) -> Self {
+        self = self.quoted_content(content.inner);
+        self
+    }
+
+    pub fn current_text(mut self, s: impl Into<String>) -> Self {
+        if let Some(ref mut c) = self.content {
+            if let Some(flare_proto::common::message_content::Content::Quote(ref mut q)) = c.content
+            {
+                q.current_content = Some(Box::new(MessageContent {
+                    content: Some(flare_proto::common::message_content::Content::Text(
+                        flare_proto::common::TextContent {
+                            text: s.into(),
+                            mentions: Vec::new(),
+                        },
+                    )),
+                }));
+            }
+        }
+        self
+    }
+
+    pub fn current_content(mut self, content: MessageContent) -> Self {
+        if let Some(ref mut c) = self.content {
+            if let Some(flare_proto::common::message_content::Content::Quote(ref mut q)) = c.content
+            {
+                // 防止出现 Quote 套 Quote，避免展示与摘要链路歧义。
+                let is_quote = matches!(
+                    content.content,
+                    Some(flare_proto::common::message_content::Content::Quote(_))
+                );
+                q.current_content = if is_quote { None } else { Some(Box::new(content)) };
+            }
+        }
+        self
+    }
+
+    pub fn current(mut self, content: BuiltContent) -> Self {
+        if content.message_type == MessageType::Quote {
+            return self;
+        }
+        self = self.current_content(content.inner);
         self
     }
 

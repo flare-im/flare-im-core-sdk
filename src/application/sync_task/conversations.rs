@@ -1,18 +1,18 @@
 //! 会话列表同步任务（Init）：拉取服务端会话列表并落库，bootstrap 时由编排器执行。
-//! 构造时注入 [SyncHandler]，在 execute 内直接调用，与用户扩展任务一致。
+//! 构造时注入 [SyncProtocolAdapter]，在 execute 内直接调用，与用户扩展任务一致。
 
 use std::pin::Pin;
 use std::sync::Arc;
 
 use tracing::info;
 
-use super::super::handlers::SyncHandler;
+use super::super::SyncProtocolAdapter;
 use crate::core::{SyncContext, SyncMode, SyncResult, SyncTask, SyncTaskResult};
 
-pub struct ConversationsSyncTask(pub(crate) Arc<SyncHandler>);
+pub struct ConversationsSyncTask(pub(crate) Arc<SyncProtocolAdapter>);
 
 impl ConversationsSyncTask {
-    pub fn new(handler: Arc<SyncHandler>) -> Self {
+    pub fn new(handler: Arc<SyncProtocolAdapter>) -> Self {
         Self(handler)
     }
 }

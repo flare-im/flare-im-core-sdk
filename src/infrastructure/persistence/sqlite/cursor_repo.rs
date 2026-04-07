@@ -3,7 +3,6 @@ use sqlx::SqlitePool;
 
 use crate::domain::{SyncCursorReader, SyncCursorVo, SyncCursorWriter};
 use crate::error::{ErrorCode, FlareError, Result};
-use crate::infrastructure::persistence::SyncCursorStore;
 
 pub struct SqliteSyncCursorRepo {
     pool: SqlitePool,
@@ -80,28 +79,5 @@ impl SyncCursorWriter for SqliteSyncCursorRepo {
         .await
         .map_err(|e| FlareError::localized(ErrorCode::DatabaseError, e.to_string()))?;
         Ok(())
-    }
-}
-
-#[async_trait]
-impl SyncCursorStore for SqliteSyncCursorRepo {
-    async fn get_raw(&self, key: &str) -> Result<Option<String>> {
-        SyncCursorReader::get_raw(self, key).await
-    }
-
-    async fn save_raw(&self, key: &str, cursor: &str) -> Result<()> {
-        SyncCursorWriter::save_raw(self, key, cursor).await
-    }
-
-    async fn get_conversation_cursor(
-        &self,
-        user_id: &str,
-        conversation_id: &str,
-    ) -> Result<Option<SyncCursorVo>> {
-        SyncCursorReader::get_conversation_cursor(self, user_id, conversation_id).await
-    }
-
-    async fn save_conversation_cursor(&self, cursor: &SyncCursorVo) -> Result<()> {
-        SyncCursorWriter::save_conversation_cursor(self, cursor).await
     }
 }
