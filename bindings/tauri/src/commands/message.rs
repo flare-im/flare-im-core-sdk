@@ -1,19 +1,14 @@
 //! 消息命令：透传 [MessageBuildApi] / [MessageApi]。
 
-use tauri::Emitter;
 use tauri::State;
 
-use crate::model::{SendAckPayload, UploadProgressPayload};
+use crate::model::SendAckPayload;
 use crate::state::SdkState;
-use flare_im_core_sdk::client::UploadProgressCallback;
 use flare_im_core_sdk::model::content_builder::BuiltContent;
 use flare_im_core_sdk::model::message::MarkType;
 use flare_im_core_sdk::model::message_elem::elem_to_message_content;
-use flare_im_core_sdk::model::{
-    IMMessage, MediaAccessUrl, MediaCacheEntryVo, MediaCacheStatsVo, MediaResolvedAccess,
-};
+use flare_im_core_sdk::model::IMMessage;
 use flare_proto::common::MessageType;
-use std::sync::Arc;
 
 fn build_content_from_message(m: &IMMessage) -> Option<BuiltContent> {
     let elem = m.content.as_ref()?;
@@ -86,12 +81,19 @@ pub async fn sdk_create_thread_reply(
 pub async fn sdk_create_forward(
     state: State<'_, SdkState>,
     conversation_id: String,
-    message_ids: Vec<String>,
+    merge: bool,
+    forward_title: String,
+    source_messages: Vec<IMMessage>,
 ) -> std::result::Result<IMMessage, String> {
     let c = state.client();
     c.message_build()
         .map_err(|e| e.to_string())?
-        .create_forward(&conversation_id, message_ids)
+        .create_forward(
+            &conversation_id,
+            merge,
+            &forward_title,
+            source_messages,
+        )
         .await
         .map_err(|e| e.to_string())
 }
@@ -173,11 +175,25 @@ pub async fn sdk_create_location(
     conversation_id: String,
     longitude: f64,
     latitude: f64,
+    address: Option<String>,
+    title: Option<String>,
+    zoom: Option<u8>,
+    snapshot_url: Option<String>,
+    snapshot_local_path: Option<String>,
 ) -> std::result::Result<IMMessage, String> {
     let c = state.client();
     c.message_build()
         .map_err(|e| e.to_string())?
-        .create_location(&conversation_id, longitude, latitude)
+        .create_location(
+            &conversation_id,
+            longitude,
+            latitude,
+            address.unwrap_or_default(),
+            title.unwrap_or_default(),
+            zoom,
+            snapshot_url,
+            snapshot_local_path,
+        )
         .await
         .map_err(|e| e.to_string())
 }
@@ -186,12 +202,23 @@ pub async fn sdk_create_location(
 pub async fn sdk_create_card(
     state: State<'_, SdkState>,
     conversation_id: String,
-    user_id: String,
+    id: String,
+    card_type: Option<String>,
+    title: Option<String>,
+    subtitle: Option<String>,
+    avatar: Option<String>,
 ) -> std::result::Result<IMMessage, String> {
     let c = state.client();
     c.message_build()
         .map_err(|e| e.to_string())?
-        .create_card(&conversation_id, &user_id)
+        .create_card(
+            &conversation_id,
+            &id,
+            card_type.as_deref(),
+            title.as_deref(),
+            subtitle.as_deref(),
+            avatar.as_deref(),
+        )
         .await
         .map_err(|e| e.to_string())
 }
@@ -201,11 +228,24 @@ pub async fn sdk_create_sticker(
     state: State<'_, SdkState>,
     conversation_id: String,
     sticker_id: String,
+    package_id: Option<String>,
+    url: Option<String>,
+    width: Option<i32>,
+    height: Option<i32>,
+    sticker_format: Option<String>,
 ) -> std::result::Result<IMMessage, String> {
     let c = state.client();
     c.message_build()
         .map_err(|e| e.to_string())?
-        .create_sticker(&conversation_id, &sticker_id)
+        .create_sticker(
+            &conversation_id,
+            &sticker_id,
+            package_id.as_deref(),
+            url.as_deref(),
+            width,
+            height,
+            sticker_format.as_deref(),
+        )
         .await
         .map_err(|e| e.to_string())
 }
@@ -225,29 +265,26 @@ pub async fn sdk_create_emoji(
 }
 
 #[tauri::command]
-pub async fn sdk_create_gif(
-    state: State<'_, SdkState>,
-    conversation_id: String,
-    gif_id: String,
-) -> std::result::Result<IMMessage, String> {
-    let c = state.client();
-    c.message_build()
-        .map_err(|e| e.to_string())?
-        .create_gif(&conversation_id, &gif_id)
-        .await
-        .map_err(|e| e.to_string())
-}
-
-#[tauri::command]
 pub async fn sdk_create_link_card(
     state: State<'_, SdkState>,
     conversation_id: String,
     url: String,
+    title: Option<String>,
+    description: Option<String>,
+    thumbnail_url: Option<String>,
+    site_name: Option<String>,
 ) -> std::result::Result<IMMessage, String> {
     let c = state.client();
     c.message_build()
         .map_err(|e| e.to_string())?
-        .create_link_card(&conversation_id, &url)
+        .create_link_card(
+            &conversation_id,
+            &url,
+            title.as_deref(),
+            description.as_deref(),
+            thumbnail_url.as_deref(),
+            site_name.as_deref(),
+        )
         .await
         .map_err(|e| e.to_string())
 }
@@ -257,40 +294,22 @@ pub async fn sdk_create_mini_program(
     state: State<'_, SdkState>,
     conversation_id: String,
     app_id: String,
+    title: Option<String>,
+    page_path: Option<String>,
+    thumbnail_url: Option<String>,
+    extra: Option<std::collections::HashMap<String, String>>,
 ) -> std::result::Result<IMMessage, String> {
     let c = state.client();
     c.message_build()
         .map_err(|e| e.to_string())?
-        .create_mini_program(&conversation_id, &app_id)
-        .await
-        .map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub async fn sdk_create_rich_text(
-    state: State<'_, SdkState>,
-    conversation_id: String,
-    body: String,
-    format: String,
-) -> std::result::Result<IMMessage, String> {
-    let c = state.client();
-    c.message_build()
-        .map_err(|e| e.to_string())?
-        .create_rich_text(&conversation_id, &body, &format)
-        .await
-        .map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub async fn sdk_create_markdown(
-    state: State<'_, SdkState>,
-    conversation_id: String,
-    text: String,
-) -> std::result::Result<IMMessage, String> {
-    let c = state.client();
-    c.message_build()
-        .map_err(|e| e.to_string())?
-        .create_markdown(&conversation_id, &text)
+        .create_mini_program(
+            &conversation_id,
+            &app_id,
+            title.as_deref(),
+            page_path.as_deref(),
+            thumbnail_url.as_deref(),
+            extra,
+        )
         .await
         .map_err(|e| e.to_string())
 }
@@ -332,11 +351,18 @@ pub async fn sdk_create_vote(
     vote_id: String,
     title: String,
     options: Vec<String>,
+    participant_user_ids: Option<Vec<String>>,
 ) -> std::result::Result<IMMessage, String> {
     let c = state.client();
     c.message_build()
         .map_err(|e| e.to_string())?
-        .create_vote(&conversation_id, &vote_id, &title, options)
+        .create_vote(
+            &conversation_id,
+            &vote_id,
+            &title,
+            options,
+            participant_user_ids,
+        )
         .await
         .map_err(|e| e.to_string())
 }
@@ -347,11 +373,19 @@ pub async fn sdk_create_task(
     conversation_id: String,
     task_id: String,
     title: String,
+    status: Option<String>,
+    participant_user_ids: Option<Vec<String>>,
 ) -> std::result::Result<IMMessage, String> {
     let c = state.client();
     c.message_build()
         .map_err(|e| e.to_string())?
-        .create_task(&conversation_id, &task_id, &title)
+        .create_task(
+            &conversation_id,
+            &task_id,
+            &title,
+            status.as_deref(),
+            participant_user_ids,
+        )
         .await
         .map_err(|e| e.to_string())
 }
@@ -362,11 +396,21 @@ pub async fn sdk_create_schedule(
     conversation_id: String,
     schedule_id: String,
     title: String,
+    start_time_ms: i64,
+    end_time_ms: i64,
+    participant_user_ids: Option<Vec<String>>,
 ) -> std::result::Result<IMMessage, String> {
     let c = state.client();
     c.message_build()
         .map_err(|e| e.to_string())?
-        .create_schedule(&conversation_id, &schedule_id, &title)
+        .create_schedule(
+            &conversation_id,
+            &schedule_id,
+            &title,
+            start_time_ms,
+            end_time_ms,
+            participant_user_ids,
+        )
         .await
         .map_err(|e| e.to_string())
 }
@@ -426,27 +470,6 @@ pub async fn sdk_send(
         .message()
         .map_err(|e| e.to_string())?
         .send(message)
-        .await
-        .map_err(|e| e.to_string())?;
-    Ok(ack.into())
-}
-
-#[tauri::command]
-pub async fn sdk_send_with_media_progress(
-    state: State<'_, SdkState>,
-    app: tauri::AppHandle,
-    message: IMMessage,
-) -> std::result::Result<SendAckPayload, String> {
-    let c = state.client();
-    let app_emit = app.clone();
-    let progress_cb: UploadProgressCallback = Arc::new(move |progress| {
-        let payload: UploadProgressPayload = progress.into();
-        let _ = app_emit.emit("im://upload_progress", payload);
-    });
-    let ack = c
-        .message()
-        .map_err(|e| e.to_string())?
-        .send_with_media_progress(message, Some(progress_cb))
         .await
         .map_err(|e| e.to_string())?;
     Ok(ack.into())
@@ -734,96 +757,6 @@ pub async fn sdk_get_message(
     c.message()
         .map_err(|e| e.to_string())?
         .get(&message_id)
-        .await
-        .map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub async fn sdk_get_file_url(
-    state: State<'_, SdkState>,
-    file_id: String,
-    expires_in: Option<i32>,
-) -> std::result::Result<MediaAccessUrl, String> {
-    let c = state.client();
-    c.media()
-        .map_err(|e| e.to_string())?
-        .get_file_url(&file_id, expires_in.unwrap_or(3600))
-        .await
-        .map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub async fn sdk_resolve_media_access(
-    state: State<'_, SdkState>,
-    file_id: String,
-    expires_in: Option<i32>,
-) -> std::result::Result<MediaResolvedAccess, String> {
-    let c = state.client();
-    c.media()
-        .map_err(|e| e.to_string())?
-        .resolve_media_access(&file_id, expires_in.unwrap_or(3600))
-        .await
-        .map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub async fn sdk_cache_remote_media(
-    state: State<'_, SdkState>,
-    file_id: String,
-    expires_in: Option<i32>,
-) -> std::result::Result<MediaCacheEntryVo, String> {
-    let c = state.client();
-    c.media()
-        .map_err(|e| e.to_string())?
-        .cache_remote_media(&file_id, expires_in.unwrap_or(3600))
-        .await
-        .map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub async fn sdk_media_cache_stats(
-    state: State<'_, SdkState>,
-) -> std::result::Result<MediaCacheStatsVo, String> {
-    let c = state.client();
-    c.media()
-        .map_err(|e| e.to_string())?
-        .media_cache_stats()
-        .await
-        .map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub async fn sdk_set_media_cache_max_bytes(
-    state: State<'_, SdkState>,
-    max_bytes: u64,
-) -> std::result::Result<(), String> {
-    let c = state.client();
-    c.media()
-        .map_err(|e| e.to_string())?
-        .set_media_cache_max_bytes(max_bytes)
-        .await
-        .map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub async fn sdk_set_media_cache_root(
-    state: State<'_, SdkState>,
-    absolute_path: Option<String>,
-) -> std::result::Result<(), String> {
-    let c = state.client();
-    c.media()
-        .map_err(|e| e.to_string())?
-        .set_media_cache_root(absolute_path.as_deref())
-        .await
-        .map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub async fn sdk_clear_media_cache(state: State<'_, SdkState>) -> std::result::Result<(), String> {
-    let c = state.client();
-    c.media()
-        .map_err(|e| e.to_string())?
-        .clear_media_cache()
         .await
         .map_err(|e| e.to_string())
 }

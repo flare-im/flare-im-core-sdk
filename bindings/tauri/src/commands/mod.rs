@@ -5,12 +5,16 @@
 pub mod conversation;
 pub mod host_util;
 pub mod lifecycle;
+pub mod media;
 pub mod message;
+pub mod rich_doc_v2;
 
 pub use conversation::*;
 pub use host_util::*;
 pub use lifecycle::*;
+pub use media::*;
 pub use message::*;
+pub use rich_doc_v2::*;
 
 #[inline]
 pub(crate) fn map_sdk_err(e: flare_im_core_sdk::FlareError) -> String {

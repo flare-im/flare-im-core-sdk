@@ -8,6 +8,9 @@ mod message;
 mod message_build;
 
 pub use conversation::ConversationApi;
-pub use media::{MediaApi, UploadPhase, UploadProgress, UploadProgressCallback};
+pub use media::{
+    FileDownloadProgress, FileDownloadProgressCallback, MediaApi, UploadPhase, UploadProgress,
+    UploadProgressCallback,
+};
 pub use message::MessageApi;
 pub use message_build::MessageBuildApi;

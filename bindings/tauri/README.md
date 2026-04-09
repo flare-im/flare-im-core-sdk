@@ -256,7 +256,7 @@ listen('im://connection_state', (event) => {
 
 ## 注意事项
 
-1. **消息内容解码**：由 **SDK 核心层**（`flare_im_core_sdk::model::message_elem`）统一提供 `Elem` 与 `decoded_content_to_elem`，绑定层在转换 Message 时调用并填充 `contentDecoded`。前端可根据 `contentDecoded.contentType` 取得对应结构，无需解析原始字节。兼容保留 `content` 与 `extra.content_text`。
+1. **消息内容解码**：由 **SDK 核心层**（`flare_im_core_sdk::model::message_elem`）统一提供 `Elem` 与 `decoded_content_to_elem`，绑定层在转换 Message 时调用并填充 `contentDecoded`。前端可根据 `contentDecoded.contentType` 取得对应结构，无需解析原始字节。`content` 与 `extra.contentText`（camelCase）等约定一致。
 
 2. **事件重试机制**：消息事件（创建、发送、编辑等）会自动重试查询消息（最多 3 次），确保前端能收到完整的消息对象。
 

@@ -441,6 +441,7 @@ mod tests {
                 upload_manifest_store: None,
                 media_cache_store: None,
                 media_cache_admin: None,
+                user_file_download_store: None,
                 user_profiles_reader: None,
                 user_profiles_writer: None,
             },

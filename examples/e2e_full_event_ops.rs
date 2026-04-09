@@ -162,7 +162,12 @@ async fn main() -> anyhow::Result<()> {
     let forward_msg = client
         .message_build()
         .context("message_build api")?
-        .create_forward(&conversation_id, vec![base_client_msg_id.clone()])
+        .create_forward(
+            &conversation_id,
+            true,
+            "e2e 合并转发",
+            vec![base_msg_for_quote.clone()],
+        )
         .await
         .context("create_forward")?;
     let forward_ack = client

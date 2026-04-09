@@ -7,8 +7,8 @@ use std::sync::Arc;
 use crate::application::usecases::{
     MessageMutationUseCase, MessageSendUseCase, MessageViewAssembler,
 };
-use crate::error::Result;
-use crate::model::content_builder::BuiltContent;
+use crate::error::{ErrorCode, FlareError, Result};
+use crate::model::content_builder::{BuiltContent, ContentBuilder};
 use crate::model::message::{IMMessage, MarkType, SendAck};
 use super::media::UploadProgressCallback;
 
@@ -94,6 +94,47 @@ impl MessageApi {
             crate::model::ContentBuilder::text(text).build(),
         )
         .await
+    }
+
+    /// 按 message_id 编辑为 Rich Doc（与 [`ContentBuilder::try_rich_doc`] 规则一致）。
+    pub async fn edit_rich_doc_by_message_id(
+        &self,
+        message_id: &str,
+        doc_json: impl Into<String>,
+        content_schema: impl Into<String>,
+        plain_text: impl Into<String>,
+        input_format: Option<&str>,
+        input_format_version: Option<i32>,
+        source_payload: Option<std::collections::HashMap<String, String>>,
+        title: Option<&str>,
+        search_text: Option<&str>,
+        render_hints_json: Option<&str>,
+    ) -> Result<()> {
+        let (conversation_id, _) = self.mutation_use_case.resolve_message_id(message_id).await?;
+        let mut cb = ContentBuilder::try_rich_doc(doc_json, content_schema, plain_text).map_err(
+            |e| {
+                FlareError::localized(
+                    ErrorCode::InvalidParameter,
+                    format!("sdk.message.rich_doc_v2.invalid: {e}"),
+                )
+            },
+        )?;
+        if let Some(f) = input_format {
+            cb = cb.rich_text_input_format(f);
+        }
+        if let Some(v) = input_format_version {
+            cb = cb.rich_text_input_format_version(v);
+        }
+        if let Some(map) = source_payload {
+            for (k, v) in map {
+                cb = cb.rich_text_source_payload_entry(k, v);
+            }
+        }
+        cb = cb.rich_text_title(title.map(|s| s.to_string()));
+        cb = cb.rich_text_search_text(search_text.map(|s| s.to_string()));
+        cb = cb.rich_text_render_hints_json(render_hints_json.map(|s| s.to_string()));
+        let built = cb.build();
+        self.edit_content(&conversation_id, message_id, built).await
     }
 
     /// 删除消息。message_id 为 client_msg_id。

@@ -160,7 +160,7 @@ pub trait MessageStore: MessageReader + MessageWriter {
         Ok(())
     }
 
-    /// 设置消息标记（extra.mark_type / extra.mark_color）。
+    /// 设置消息标记（extra.markType / extra.markColor）。
     async fn set_message_mark(
         &self,
         _message_id: &str,
@@ -170,7 +170,7 @@ pub trait MessageStore: MessageReader + MessageWriter {
         Ok(())
     }
 
-    /// 取消消息标记（清理 extra.mark_type / extra.mark_color）。
+    /// 取消消息标记（清理 extra.markType / extra.markColor）。
     async fn clear_message_mark(&self, _message_id: &str, _mark_type: i32) -> Result<()> {
         Ok(())
     }

@@ -2,6 +2,7 @@
 
 use crate::error::Result;
 use crate::model::message::Message;
+use crate::model::message_elem::proto_image_content_is_motion;
 use flare_proto::MessageContentExt;
 use flare_proto::common::MessageType;
 use flare_proto::common::message_content::Content as ProtoContent;
@@ -40,11 +41,33 @@ impl DecodedContent {
     }
 }
 
+fn rich_text_list_preview(r: &flare_proto::common::RichTextContent) -> String {
+    let body = non_empty(r.plain_text.trim()).unwrap_or_default();
+    match (
+        r.title
+            .as_deref()
+            .map(str::trim)
+            .filter(|t| !t.is_empty()),
+        body.is_empty(),
+    ) {
+        (Some(t), false) => format!("{t} {}", body),
+        (Some(t), true) => t.to_string(),
+        (None, false) => body,
+        (None, true) => "[富文本]".to_string(),
+    }
+}
+
 fn content_text_preview(c: &ProtoContent) -> String {
     use ProtoContent as C;
     match c {
         C::Text(t) => t.text.clone(),
-        C::Image(i) => non_empty(&i.description).unwrap_or_else(|| "[图片]".to_string()),
+        C::Image(i) => {
+            if proto_image_content_is_motion(i) {
+                "[动图]".to_string()
+            } else {
+                non_empty(&i.description).unwrap_or_else(|| "[图片]".to_string())
+            }
+        }
         C::Video(v) => non_empty(&v.description).unwrap_or_else(|| "[视频]".to_string()),
         C::Audio(a) => non_empty(&a.description).unwrap_or_else(|| "[语音]".to_string()),
         C::File(f) => {
@@ -54,15 +77,16 @@ fn content_text_preview(c: &ProtoContent) -> String {
                 format!("[文件] {}", f.file_name)
             }
         }
-        C::Location(l) => non_empty(&l.address)
+        C::Location(l) => non_empty(&l.title)
+            .or(non_empty(&l.address))
             .map(|s| format!("[位置] {}", s))
             .unwrap_or_else(|| "[位置]".to_string()),
-        C::Card(card) => non_empty(&card.nickname)
+        C::Card(card) => non_empty(&card.title)
+            .or(non_empty(&card.id))
             .map(|s| format!("[名片] {}", s))
             .unwrap_or_else(|| "[名片]".to_string()),
         C::Sticker(_) => "[贴纸]".to_string(),
         C::Emoji(e) => e.emoji.clone(),
-        C::Gif(_) => "[动图]".to_string(),
         C::Quote(q) => q
             .current_content
             .as_deref()
@@ -71,11 +95,19 @@ fn content_text_preview(c: &ProtoContent) -> String {
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| q.quoted_text_preview.clone()),
         C::LinkCard(l) => non_empty(&l.title).unwrap_or_else(|| "[链接]".to_string()),
-        C::Forward(f) => format!("[转发] {} 条消息", f.message_ids.len()),
+        C::Forward(f) => {
+            let n = f.items.len();
+            if n == 0 {
+                "[转发]".to_string()
+            } else if n == 1 {
+                f.items[0].plain_text.clone()
+            } else {
+                format!("[转发] {n} 条消息")
+            }
+        }
         C::Thread(t) => t.thread_title.clone(),
         C::MiniProgram(m) => non_empty(&m.title).unwrap_or_else(|| "[小程序]".to_string()),
-        C::RichText(r) => non_empty(&r.content).unwrap_or_else(|| "[富文本]".to_string()),
-        C::Markdown(m) => non_empty(&m.text).unwrap_or_else(|| "[Markdown]".to_string()),
+        C::RichText(r) => rich_text_list_preview(r),
         C::ImageGroup(_) => "[多图]".to_string(),
         C::System(s) => non_empty(&s.body).unwrap_or_else(|| "[系统消息]".to_string()),
         C::Notification(n) => non_empty(&n.body)
@@ -112,14 +144,12 @@ fn content_message_type(c: &ProtoContent) -> MessageType {
         C::Card(_) => M::Card,
         C::Sticker(_) => M::Sticker,
         C::Emoji(_) => M::Emoji,
-        C::Gif(_) => M::Gif,
         C::Quote(_) => M::Quote,
         C::LinkCard(_) => M::LinkCard,
         C::Forward(_) => M::MergeForward,
         C::Thread(_) => M::Thread,
         C::MiniProgram(_) => M::MiniProgram,
         C::RichText(_) => M::RichText,
-        C::Markdown(_) => M::Markdown,
         C::ImageGroup(_) => M::ImageGroup,
         C::System(_) => M::System,
         C::Notification(_) => M::Notification,

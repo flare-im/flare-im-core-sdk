@@ -9,7 +9,7 @@ pub mod message_builder;
 pub mod message_elem;
 pub mod media;
 
-pub use content_builder::{BuiltContent, ContentBuilder};
+pub use content_builder::{BuiltContent, ContentBuilder, DEFAULT_STICKER_DISPLAY_SIDE};
 pub use conversation::{Conversation, ConversationSummary};
 pub use decoder::{DecodedContent, decode_content, decode_content_bytes};
 pub use event::{Event, EventType};

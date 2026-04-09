@@ -311,5 +311,34 @@ pub async fn init_schema(pool: &SqlitePool) -> Result<()> {
     .await
     .map_err(|e| FlareError::localized(ErrorCode::DatabaseError, e.to_string()))?;
 
+    sqlx::query(
+        r#"CREATE TABLE IF NOT EXISTS user_file_download (
+            download_key TEXT PRIMARY KEY,
+            local_path TEXT NOT NULL,
+            display_name TEXT NOT NULL DEFAULT '',
+            updated_at_ms INTEGER NOT NULL DEFAULT 0
+        )"#,
+    )
+    .execute(pool)
+    .await
+    .map_err(|e| FlareError::localized(ErrorCode::DatabaseError, e.to_string()))?;
+
+    sqlx::query(
+        r#"CREATE TABLE IF NOT EXISTS file_download_settings (
+            singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+            download_subfolder TEXT NOT NULL DEFAULT 'flare'
+        )"#,
+    )
+    .execute(pool)
+    .await
+    .map_err(|e| FlareError::localized(ErrorCode::DatabaseError, e.to_string()))?;
+
+    sqlx::query(
+        r#"INSERT OR IGNORE INTO file_download_settings (singleton, download_subfolder) VALUES (1, 'flare')"#,
+    )
+    .execute(pool)
+    .await
+    .map_err(|e| FlareError::localized(ErrorCode::DatabaseError, e.to_string()))?;
+
     Ok(())
 }

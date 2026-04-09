@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use crate::application::commands::SendMessageCommand;
 use crate::application::UploadProgressCallback;
-use crate::application::MediaUploadService;
+use crate::application::MediaService;
 use crate::core::CurrentUserIdStore;
 use crate::domain::{MessageActor, MessageDraftService, MessageStore};
 use crate::error::{ErrorCode, FlareError, Result};
@@ -13,6 +13,7 @@ use crate::model::message::{IMMessage, SendAck};
 use crate::model::message_elem::{AudioInfoElem, Elem, ImageInfoElem, VideoInfoElem};
 use crate::protocol::PacketSender;
 use crate::reliable_queue::ReliableSendQueue;
+use flare_proto::common::ImageFormat;
 
 pub struct MessageSendUseCase {
     sender: Arc<PacketSender>,
@@ -20,7 +21,7 @@ pub struct MessageSendUseCase {
     chain: Arc<MiddlewareChain>,
     current_user_id: CurrentUserIdStore,
     reliable_queue: Option<Arc<ReliableSendQueue>>,
-    media_upload_handler: Arc<MediaUploadService>,
+    media_service: Arc<MediaService>,
     draft_service: MessageDraftService,
 }
 
@@ -32,7 +33,7 @@ impl MessageSendUseCase {
         chain: Arc<MiddlewareChain>,
         current_user_id: CurrentUserIdStore,
         reliable_queue: Option<Arc<ReliableSendQueue>>,
-        media_upload_handler: Arc<MediaUploadService>,
+        media_service: Arc<MediaService>,
     ) -> Self {
         Self {
             sender,
@@ -40,7 +41,7 @@ impl MessageSendUseCase {
             chain,
             current_user_id,
             reliable_queue,
-            media_upload_handler,
+            media_service,
             draft_service: MessageDraftService::default(),
         }
     }
@@ -105,7 +106,7 @@ impl MessageSendUseCase {
                         extract_local_path(&file.file_id).or_else(|| extract_local_path(&file.url))
                     {
                         let uploaded = self
-                            .media_upload_handler
+                            .media_service
                             .upload_file_from_path_with_progress(path, None, on_progress.clone())
                             .await?;
                         file.file_id = uploaded.file_id;
@@ -135,7 +136,7 @@ impl MessageSendUseCase {
                         .map(|p| p.to_path_buf());
                     if let Some(ref path) = source_path {
                         let uploaded = self
-                            .media_upload_handler
+                            .media_service
                             .upload_file_from_path_with_progress(path.as_path(), None, on_progress.clone())
                             .await?;
                         let desc = uploaded_media_to_image_descriptor(&uploaded);
@@ -143,7 +144,7 @@ impl MessageSendUseCase {
                         match thumb_path.as_ref() {
                             Some(tp) if tp != path => {
                                 let uploaded_thumb = self
-                                    .media_upload_handler
+                                    .media_service
                                     .upload_file_from_path_with_progress(
                                         tp.as_path(),
                                         None,
@@ -160,7 +161,7 @@ impl MessageSendUseCase {
                         touched = true;
                     } else if let Some(ref path) = thumb_path {
                         let uploaded = self
-                            .media_upload_handler
+                            .media_service
                             .upload_file_from_path_with_progress(path.as_path(), None, on_progress.clone())
                             .await?;
                         let desc = uploaded_media_to_image_descriptor(&uploaded);
@@ -172,7 +173,7 @@ impl MessageSendUseCase {
                 Elem::Video(video) => {
                     if let Some(path) = extract_local_path(&video.video_id) {
                         let uploaded = self
-                            .media_upload_handler
+                            .media_service
                             .upload_file_from_path_with_progress(path, None, on_progress.clone())
                             .await?;
                         video.video_id = uploaded.file_id.clone();
@@ -183,7 +184,7 @@ impl MessageSendUseCase {
                 Elem::Audio(audio) => {
                     if let Some(path) = extract_local_path(&audio.audio_id) {
                         let uploaded = self
-                            .media_upload_handler
+                            .media_service
                             .upload_file_from_path_with_progress(path, None, on_progress.clone())
                             .await?;
                         audio.audio_id = uploaded.file_id.clone();
@@ -259,6 +260,26 @@ fn uploaded_media_to_image_descriptor(uploaded: &UploadedMedia) -> Option<ImageI
     if uploaded.file_id.trim().is_empty() {
         return None;
     }
+    let mime_lower = uploaded.mime_type.to_lowercase();
+    let (format, animated) = if mime_lower.contains("gif") {
+        (ImageFormat::Gif as i32, true)
+    } else if mime_lower.contains("png") && mime_lower.contains("apng") {
+        (ImageFormat::Apng as i32, true)
+    } else if mime_lower.contains("png") {
+        (ImageFormat::Png as i32, false)
+    } else if mime_lower.contains("jpeg") || mime_lower.contains("jpg") {
+        (ImageFormat::Jpeg as i32, false)
+    } else if mime_lower.contains("webp") {
+        (ImageFormat::Webp as i32, false)
+    } else if mime_lower.contains("bmp") {
+        (ImageFormat::Bmp as i32, false)
+    } else if mime_lower.contains("heic") || mime_lower.contains("heif") {
+        (ImageFormat::Heic as i32, false)
+    } else if mime_lower.contains("svg") {
+        (ImageFormat::Svg as i32, false)
+    } else {
+        (ImageFormat::Unspecified as i32, false)
+    };
     Some(ImageInfoElem {
         uuid: uploaded.file_id.clone(),
         image_id: uploaded.file_id.clone(),
@@ -267,6 +288,8 @@ fn uploaded_media_to_image_descriptor(uploaded: &UploadedMedia) -> Option<ImageI
         size: uploaded.size,
         width: 0,
         height: 0,
+        format,
+        animated,
     })
 }
 
@@ -300,7 +323,7 @@ fn uploaded_media_to_audio_descriptor(uploaded: &UploadedMedia) -> Option<AudioI
 
 #[cfg(test)]
 mod tests {
-    use super::{extract_local_path, uploaded_media_to_image_descriptor};
+    use super::{extract_local_path, uploaded_media_to_image_descriptor, ImageFormat};
     use crate::model::UploadedMedia;
 
     #[test]
@@ -354,5 +377,7 @@ mod tests {
         assert_eq!(source.url, "");
         assert_eq!(source.mime_type, "image/png");
         assert_eq!(source.size, 123);
+        assert_eq!(source.format, ImageFormat::Png as i32);
+        assert!(!source.animated);
     }
 }

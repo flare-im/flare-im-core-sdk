@@ -2,10 +2,10 @@
 members = [
     ".",
     "storage/sqlite",
+    "bindings/c",
     "bindings/tauri",
 ]
 exclude = [
-    "bindings/c",
     "bindings/uniffi",
     "examples/tauri/src-tauri",
 ]
@@ -82,10 +82,20 @@ futures = "0.3"
 sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "chrono"], optional = true }
 base64 = { version = "0.22" }
 flare-im-core-sdk-storage-sqlite = { path = "storage/sqlite", optional = true }
+# RichDoc v2：Markdown 归一化 + 检索串规范化（全目标可用）
+pulldown-cmark = "0.12"
+unicode-normalization = "0.1"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 tokio = { workspace = true }
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+tokio-util = { version = "0.7", features = ["rt"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+dirs = "5.0"
+futures-util = "0.3"
+bytes = "1"
+url = "2.5"
+scraper = "0.20"
+ego-tree = "0.6"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 tokio = { version = "1", default-features = false, features = ["macros", "sync", "rt", "time"] }

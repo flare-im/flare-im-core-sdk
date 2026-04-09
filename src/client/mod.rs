@@ -10,8 +10,8 @@ pub mod im_client;
 pub mod lifecycle;
 
 pub use api::{
-    ConversationApi, MediaApi, MessageApi, MessageBuildApi, UploadPhase, UploadProgress,
-    UploadProgressCallback,
+    ConversationApi, FileDownloadProgress, FileDownloadProgressCallback, MediaApi, MessageApi,
+    MessageBuildApi, UploadPhase, UploadProgress, UploadProgressCallback,
 };
 pub use builder::IMClientBuilder;
 pub use config::{SdkConfig, SdkConfigBuilder};

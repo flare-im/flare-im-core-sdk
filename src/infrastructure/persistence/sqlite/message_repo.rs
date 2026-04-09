@@ -143,7 +143,7 @@ impl SqliteMessageRepo {
                 let trimmed = t.trim();
                 if !trimmed.is_empty() {
                     extra
-                        .entry("content_text".to_string())
+                        .entry("contentText".to_string())
                         .or_insert_with(|| trimmed.to_string());
                     content = Some(Elem::Text(TextElem {
                         text: trimmed.to_string(),
@@ -740,7 +740,7 @@ impl MessageStore for SqliteMessageRepo {
         let extra_raw: Option<String> = row.try_get("extra").map_err(sqlx_err)?;
         let mut extra = parse_extra(extra_raw.as_deref());
         let current_edit_version = extra
-            .get("current_edit_version")
+            .get("currentEditVersion")
             .and_then(|value| value.parse::<i32>().ok())
             .unwrap_or(0);
         if edit_version > 0 && current_edit_version > 0 && edit_version <= current_edit_version {
@@ -754,9 +754,9 @@ impl MessageStore for SqliteMessageRepo {
         } else {
             current_edit_version.max(1)
         };
-        extra.insert("current_edit_version".to_string(), next_edit_version.to_string());
-        extra.insert("message_fsm_state".to_string(), "EDITED".to_string());
-        extra.insert("last_edited_at".to_string(), now_ms.to_string());
+        extra.insert("currentEditVersion".to_string(), next_edit_version.to_string());
+        extra.insert("messageFsmState".to_string(), "EDITED".to_string());
+        extra.insert("lastEditedAt".to_string(), now_ms.to_string());
 
         let rows = sqlx::query(
             r#"UPDATE messages
@@ -880,7 +880,7 @@ impl MessageStore for SqliteMessageRepo {
             return Ok(OperationApplyResult::NotFound);
         }
 
-        let seq_key = format!("last_reaction_event_seq:{user_id}:{emoji}");
+        let seq_key = format!("lastReactionEventSeq:{user_id}:{emoji}");
         let applied = apply_message_extra_with_seq(
             &self.pool,
             message_server_id,
@@ -947,7 +947,7 @@ impl MessageStore for SqliteMessageRepo {
 
         let extra_raw: Option<String> = row.try_get("extra").map_err(sqlx_err)?;
         let extra = parse_extra(extra_raw.as_deref());
-        if is_stale_operation(&extra, "last_delete_event_seq", event_seq) {
+        if is_stale_operation(&extra, "lastDeleteEventSeq", event_seq) {
             return Ok(OperationApplyResult::IgnoredStale);
         }
 
@@ -964,7 +964,7 @@ impl MessageStore for SqliteMessageRepo {
         apply_message_extra_with_seq(
             &self.pool,
             message_id,
-            "last_pin_event_seq",
+            "lastPinEventSeq",
             event_seq,
             |extra| {
                 extra.insert(
@@ -984,22 +984,22 @@ impl MessageStore for SqliteMessageRepo {
         set_mark: bool,
         event_seq: Option<u64>,
     ) -> Result<OperationApplyResult> {
-        let seq_key = format!("last_mark_event_seq:{mark_type}");
+        let seq_key = format!("lastMarkEventSeq:{mark_type}");
         apply_message_extra_with_seq(&self.pool, message_id, &seq_key, event_seq, |extra| {
             if set_mark {
-                extra.insert("mark_type".to_string(), mark_type.to_string());
+                extra.insert("markType".to_string(), mark_type.to_string());
                 if let Some(c) = color {
                     if !c.trim().is_empty() {
-                        extra.insert("mark_color".to_string(), c.trim().to_string());
+                        extra.insert("markColor".to_string(), c.trim().to_string());
                     } else {
-                        extra.remove("mark_color");
+                        extra.remove("markColor");
                     }
                 } else {
-                    extra.remove("mark_color");
+                    extra.remove("markColor");
                 }
             } else {
-                extra.remove("mark_type");
-                extra.remove("mark_color");
+                extra.remove("markType");
+                extra.remove("markColor");
             }
         })
         .await
@@ -1117,15 +1117,15 @@ impl MessageStore for SqliteMessageRepo {
             let server_id: String = row.try_get("server_id").map_err(sqlx_err)?;
             let extra_raw: Option<String> = row.try_get("extra").map_err(sqlx_err)?;
             let mut extra = parse_extra(extra_raw.as_deref());
-            extra.insert("mark_type".to_string(), mark_type.to_string());
+            extra.insert("markType".to_string(), mark_type.to_string());
             if let Some(c) = color {
                 if !c.trim().is_empty() {
-                    extra.insert("mark_color".to_string(), c.trim().to_string());
+                    extra.insert("markColor".to_string(), c.trim().to_string());
                 } else {
-                    extra.remove("mark_color");
+                    extra.remove("markColor");
                 }
             } else {
-                extra.remove("mark_color");
+                extra.remove("markColor");
             }
             sqlx::query("UPDATE messages SET extra = ? WHERE server_id = ?")
                 .bind(extra_to_json(&extra))
@@ -1158,8 +1158,8 @@ impl MessageStore for SqliteMessageRepo {
             let server_id: String = row.try_get("server_id").map_err(sqlx_err)?;
             let extra_raw: Option<String> = row.try_get("extra").map_err(sqlx_err)?;
             let mut extra = parse_extra(extra_raw.as_deref());
-            extra.remove("mark_type");
-            extra.remove("mark_color");
+            extra.remove("markType");
+            extra.remove("markColor");
             sqlx::query("UPDATE messages SET extra = ? WHERE server_id = ?")
                 .bind(extra_to_json(&extra))
                 .bind(server_id)
@@ -1388,7 +1388,7 @@ mod tests {
         message.content_bytes = b"old".to_vec();
         message
             .extra
-            .insert("current_edit_version".to_string(), "2".to_string());
+            .insert("currentEditVersion".to_string(), "2".to_string());
         repo.save_batch(&[message.clone()]).await.unwrap();
 
         let stale = repo
@@ -1407,7 +1407,7 @@ mod tests {
         let after_new = repo.get("server-1").await.unwrap().unwrap();
         assert_eq!(after_new.content_bytes, b"new".to_vec());
         assert_eq!(
-            after_new.extra.get("current_edit_version").map(String::as_str),
+            after_new.extra.get("currentEditVersion").map(String::as_str),
             Some("3")
         );
     }
@@ -1447,7 +1447,7 @@ mod tests {
         assert_eq!(
             after_new
                 .extra
-                .get("last_pin_event_seq")
+                .get("lastPinEventSeq")
                 .map(String::as_str),
             Some("11")
         );
@@ -1476,8 +1476,8 @@ mod tests {
         assert_eq!(stale, OperationApplyResult::IgnoredStale);
 
         let after_stale = repo.get("server-3").await.unwrap().unwrap();
-        assert_eq!(after_stale.extra.get("mark_type").map(String::as_str), Some("7"));
-        assert_eq!(after_stale.extra.get("mark_color").map(String::as_str), Some("#ff0000"));
+        assert_eq!(after_stale.extra.get("markType").map(String::as_str), Some("7"));
+        assert_eq!(after_stale.extra.get("markColor").map(String::as_str), Some("#ff0000"));
 
         let newer = repo
             .apply_mark_event("server-3", 7, None, false, Some(21))
@@ -1486,12 +1486,12 @@ mod tests {
         assert_eq!(newer, OperationApplyResult::Applied);
 
         let after_new = repo.get("server-3").await.unwrap().unwrap();
-        assert!(after_new.extra.get("mark_type").is_none());
-        assert!(after_new.extra.get("mark_color").is_none());
+        assert!(after_new.extra.get("markType").is_none());
+        assert!(after_new.extra.get("markColor").is_none());
         assert_eq!(
             after_new
                 .extra
-                .get("last_mark_event_seq:7")
+                .get("lastMarkEventSeq:7")
                 .map(String::as_str),
             Some("21")
         );

@@ -2,7 +2,6 @@
 
 /// 单条缓存记录（展示层可用 `local_path` 拼 `file://`）
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct MediaCacheEntryVo {
     pub file_id: String,
     pub local_path: String,
@@ -15,7 +14,6 @@ pub struct MediaCacheEntryVo {
 
 /// 本地媒体缓存空间概览（供设置页 / 清理 UI）。
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct MediaCacheStatsVo {
     /// 当前实际使用的根目录（绝对路径）
     pub effective_root: String,

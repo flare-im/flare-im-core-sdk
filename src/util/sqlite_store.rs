@@ -7,12 +7,12 @@ use std::sync::{Arc, OnceLock};
 
 use flare_im_core_sdk_storage_sqlite::{database_url_from_path, open_pool, register_schema_init_with};
 
-use crate::domain::{MediaCacheAdmin, MediaCacheStore};
+use crate::domain::{MediaCacheAdmin, MediaCacheStore, UserFileDownloadStore};
 use crate::error::ErrorCode;
 use crate::store::{
     sqlite_init_schema, SqliteConversationRepo, SqliteMediaCacheRepo, SqliteMessageRepo,
-    SqlitePendingSendRepo, SqliteSyncCursorRepo, SqliteUploadManifestRepo, SqliteUserProfileRepo,
-    StoreProvider,
+    SqlitePendingSendRepo, SqliteSyncCursorRepo, SqliteUploadManifestRepo,
+    SqliteUserFileDownloadRepo, SqliteUserProfileRepo, StoreProvider,
 };
 use crate::util::paths::{resolve_media_cache_dir_next_to_db, resolve_user_db_path};
 use crate::FlareError;
@@ -56,6 +56,7 @@ pub async fn open_sqlite_store_provider(
 
     let pending_repo = Arc::new(SqlitePendingSendRepo::new(pool.clone()));
     let upload_manifest_repo = Arc::new(SqliteUploadManifestRepo::new(pool.clone()));
+    let user_download_repo = Arc::new(SqliteUserFileDownloadRepo::new(pool.clone()));
     let user_repo = Arc::new(SqliteUserProfileRepo::new(pool.clone()));
     let (media_cache_store, media_cache_admin) = if let Some(root) = media_cache_dir {
         let repo = Arc::new(
@@ -77,6 +78,7 @@ pub async fn open_sqlite_store_provider(
         upload_manifest_store: Some(upload_manifest_repo),
         media_cache_store,
         media_cache_admin,
+        user_file_download_store: Some(user_download_repo as Arc<dyn UserFileDownloadStore>),
         user_profiles_reader: Some(user_repo.clone()),
         user_profiles_writer: Some(user_repo),
     })

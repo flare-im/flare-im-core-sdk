@@ -28,12 +28,9 @@ Thumbs.db
 
 doc/
 certs/
-examples/tauri/node_modules/
-examples/tauri/dist/
-examples/tauri/target/
-examples/tauri/.vscode/
-examples/certs/
+examples/target/
 examples/temp-data/
+examples/certs/
 dist/
 
 # Data directories (database and logs)

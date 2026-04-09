@@ -313,6 +313,24 @@ impl HttpClient {
             .map_err(|e| FlareError::system(format!("http read body failed: {e}")))
     }
 
+    /// GET 任意 http(s) URL，返回成功响应体流（不附加鉴权头，适用于预签名直链）；调用方负责消费 `bytes_stream`。
+    #[cfg(not(target_arch = "wasm32"))]
+    pub async fn get_response_direct_url(&self, url: &str) -> Result<reqwest::Response> {
+        let resp = self
+            .client
+            .get(url)
+            .send()
+            .await
+            .map_err(|e| FlareError::system(format!("http get stream failed: {e}")))?;
+        let status = resp.status();
+        if !status.is_success() {
+            return Err(FlareError::general_error(format!(
+                "http get stream status not success: {status}"
+            )));
+        }
+        Ok(resp)
+    }
+
     #[cfg(not(target_arch = "wasm32"))]
     pub async fn send_bytes(&self, path: &str, data: &[u8]) -> Result<Vec<u8>> {
         let url = self.build_url(path);

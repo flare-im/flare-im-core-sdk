@@ -19,20 +19,22 @@ use flare_proto::common::{Message as ProtoMessage, OfflinePushInfo};
 use serde::{Deserialize, Serialize};
 
 use crate::model::decoder::decode_content_bytes;
-use crate::model::message_elem::{Elem, decoded_content_to_elem, elem_to_message_content};
+use crate::model::message_elem::{
+    Elem, decoded_content_to_elem, elem_to_message_content, image_elem_is_motion,
+};
 use crate::util::date::{ms_to_prost_timestamp, prost_timestamp_to_ms};
 use prost::Message as ProstMessage;
 
-/// 从下行 `Message.extra` 推断是否已编辑（与 storage writer / 编排写入的 `message_fsm_state`、`current_edit_version` 对齐）。
+/// 从下行 `Message.extra` 推断是否已编辑（与 storage writer 写入的 `messageFsmState`、`currentEditVersion` 对齐）。
 fn is_edited_from_extra(extra: &HashMap<String, String>) -> bool {
     if extra
-        .get("message_fsm_state")
+        .get("messageFsmState")
         .map(|s| s.as_str())
         == Some("EDITED")
     {
         return true;
     }
-    if let Some(v) = extra.get("current_edit_version") {
+    if let Some(v) = extra.get("currentEditVersion") {
         if v.trim().parse::<i32>().unwrap_or(0) > 0 {
             return true;
         }
@@ -40,13 +42,12 @@ fn is_edited_from_extra(extra: &HashMap<String, String>) -> bool {
     false
 }
 
-const REACTIONS_JSON_KEY: &str = "reactions_json";
+const REACTIONS_JSON_KEY: &str = "reactionsJson";
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-#[serde(rename_all = "camelCase")]
 pub struct ReactionEntry {
     pub emoji: String,
-    #[serde(default, alias = "user_ids")]
+    #[serde(default)]
     pub user_ids: Vec<String>,
     pub count: u32,
 }
@@ -74,8 +75,16 @@ fn write_reactions_to_extra(extra: &mut HashMap<String, String>, reactions: &[Re
 fn elem_preview_text(elem: &Elem) -> String {
     match elem {
         Elem::Text(t) => t.text.clone(),
-        Elem::Markdown(m) => m.text.clone(),
-        Elem::RichText(r) => r.content.clone(),
+        Elem::RichText(r) => {
+            let title = r.title.as_deref().map(str::trim).filter(|t| !t.is_empty());
+            let body = r.plain_text.trim();
+            match (title, !body.is_empty()) {
+                (Some(t), true) => format!("{t} {}", body),
+                (Some(t), false) => t.to_string(),
+                (None, true) => body.to_string(),
+                (None, false) => "[富文本]".to_string(),
+            }
+        }
         Elem::File(f) => {
             if f.file_name.is_empty() {
                 "[文件]".to_string()
@@ -83,22 +92,41 @@ fn elem_preview_text(elem: &Elem) -> String {
                 format!("[文件] {}", f.file_name)
             }
         }
-        Elem::Image(_) => "[图片]".to_string(),
+        Elem::Image(i) => {
+            if image_elem_is_motion(i) {
+                "[动图]".to_string()
+            } else {
+                "[图片]".to_string()
+            }
+        }
         Elem::Video(_) => "[视频]".to_string(),
         Elem::Audio(_) => "[语音]".to_string(),
-        Elem::Gif(_) => "[动图]".to_string(),
         Elem::Location(l) => {
-            if l.address.is_empty() {
+            let label = if !l.title.is_empty() {
+                l.title.as_str()
+            } else if !l.address.is_empty() {
+                l.address.as_str()
+            } else {
+                ""
+            };
+            if label.is_empty() {
                 "[位置]".to_string()
             } else {
-                format!("[位置] {}", l.address)
+                format!("[位置] {}", label)
             }
         }
         Elem::Card(c) => {
-            if c.nickname.is_empty() {
+            let label = if !c.title.is_empty() {
+                c.title.as_str()
+            } else if !c.id.is_empty() {
+                c.id.as_str()
+            } else {
+                ""
+            };
+            if label.is_empty() {
                 "[名片]".to_string()
             } else {
-                format!("[名片] {}", c.nickname)
+                format!("[名片] {}", label)
             }
         }
         Elem::Sticker(_) => "[贴纸]".to_string(),
@@ -121,10 +149,9 @@ pub struct MessageLocalState {
 
 /// SDK 层消息类型：与 message.proto 的 Message 属性一致，content 为解码后的 Elem；
 /// 另保留 content_bytes 与 proto 一致用于持久化/网络，并增加发送者展示字段。
-/// 序列化：camelCase；`content_bytes` 对 JSON `skip`（避免把二进制塞进 WebView）。**上行发送**时若仅有 `content`（Elem），
+/// 序列化：字段名为 snake_case（默认）；`content_bytes` 对 JSON `skip`（避免把二进制塞进 WebView）。**上行发送**时若仅有 `content`（Elem），
 /// [`to_proto`](IMMessage::to_proto) 会从 `content` 重编码为 `MessageContent` 字节，与协议一致。
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct IMMessage {
     // ==============================
     // Identity
@@ -254,7 +281,7 @@ impl IMMessage {
             if let Some(ref decoded) = decoded_opt {
                 let p = decoded.text_preview();
                 if !p.is_empty() && p != "[未知]" {
-                    extra.entry("content_text".into()).or_insert(p);
+                    extra.entry("contentText".into()).or_insert(p);
                 }
             }
         }
@@ -339,7 +366,7 @@ impl IMMessage {
         }
     }
 
-    /// 按 `ReactionAction`（1=ADD, 2=REMOVE）应用一次表情反应变更，并同步到 `extra.reactions_json`。
+    /// 按 `ReactionAction`（1=ADD, 2=REMOVE）应用一次表情反应变更，并同步到 `extra.reactionsJson`。
     pub fn apply_reaction_change(&mut self, user_id: &str, emoji: &str, action: i32) {
         if user_id.is_empty() || emoji.is_empty() {
             return;

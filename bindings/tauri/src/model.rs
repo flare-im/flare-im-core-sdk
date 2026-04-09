@@ -1,30 +1,33 @@
 //! Tauri IPC 用的可序列化类型与事件 payload；业务在 core-sdk。
+//!
+//! **命名**：本 crate 只使用 Rust 默认 JSON 形状（snake_case 字段名）。宿主若用 camelCase（如 WebView），在宿主侧做转换即可，bindings 不重复承担 rename。
+//!
+//! **去重**：多个 `im://*` 事件若 JSON 形状一致，共用同一 struct，并以 `type` 别名保留语义化名称供 `convert` 使用。
 
 use std::collections::HashMap;
 
 use flare_proto::common::SendAck as ProtoSendAck;
 use serde::{Deserialize, Serialize};
 
-// ---------- 上层可传入的 SDK 配置（camelCase，与 [flare_im_core_sdk::client::SdkConfigOverlay] 一致） ----------
+// ---------- 上层可传入的 SDK 配置（snake_case JSON，与 [flare_im_core_sdk::client::SdkConfigOverlay] 一致） ----------
 
 pub use flare_im_core_sdk::client::SdkConfigOverlay as SdkConfigOptions;
 
-/// sdk_init 入参：前端传对象 { environment?, sdkConfig? }，保证反序列化一致
+/// sdk_init 入参：`{ environment?, sdk_config? }`（snake_case）。
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", default)]
+#[serde(default)]
 pub struct SdkInitArgs {
     pub environment: Option<String>,
     pub sdk_config: Option<SdkConfigOptions>,
 }
 
-/// 消息：直接使用 SDK 的 IMMessage（序列化由 core-sdk 实现，camelCase + contentDecoded/content）
+/// 消息：直接使用 SDK 的 IMMessage（序列化由 core-sdk 实现，snake_case）
 pub use flare_im_core_sdk::model::IMMessage;
 
 // ---------- 事件 payload（Tauri emit） ----------
 
 /// 发消息回执（与 proto SendAck 字段对齐，供 command / `im://send_ack`）
 #[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
 pub struct SendAckPayload {
     pub client_msg_id: String,
     pub server_msg_id: String,
@@ -37,7 +40,6 @@ pub struct SendAckPayload {
 
 /// 媒体上传进度（sdk_send_with_media_progress 通过 im://upload_progress 推送）
 #[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
 pub struct UploadProgressPayload {
     pub file_name: String,
     pub upload_id: String,
@@ -83,29 +85,23 @@ impl From<ProtoSendAck> for SendAckPayload {
     }
 }
 
+/// `{ "state": "..." }` — `im://state`、部分 sync 状态（与 sync_state_changed 同形）
 #[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct StateChangedPayload {
+pub struct JsonStatePayload {
     pub state: String,
 }
 
-/// 同步状态变更（Idle / Syncing / CatchingUp / Error）
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SyncStateChangedPayload {
-    pub state: String,
-}
+pub type StateChangedPayload = JsonStatePayload;
+pub type SyncStateChangedPayload = JsonStatePayload;
 
 /// 消息发送失败（client_msg_id + 原因）
 #[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
 pub struct MessageSendFailedPayload {
     pub client_msg_id: String,
     pub reason: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
 pub struct MessageRecalledPayload {
     pub conversation_id: String,
     pub message_id: String,
@@ -114,7 +110,6 @@ pub struct MessageRecalledPayload {
 
 /// 消息已编辑（本地库已更新，前端宜按 conversationId 刷新列表或按 messageId 合并）
 #[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
 pub struct MessageEditedPayload {
     pub conversation_id: String,
     /// 服务端消息 id（与撤回事件的 message_id 语义一致）
@@ -125,7 +120,6 @@ pub struct MessageEditedPayload {
 
 /// 消息反应变更（添加/移除）
 #[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
 pub struct MessageReactionChangedPayload {
     pub conversation_id: String,
     pub message_id: String,
@@ -136,7 +130,6 @@ pub struct MessageReactionChangedPayload {
 }
 
 #[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
 pub struct MessageDeletedPayload {
     pub conversation_id: String,
     pub message_id: String,
@@ -144,7 +137,6 @@ pub struct MessageDeletedPayload {
 
 /// 已读回执事件
 #[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
 pub struct MessageReadReceiptPayload {
     pub conversation_id: String,
     pub user_id: String,
@@ -154,7 +146,6 @@ pub struct MessageReadReceiptPayload {
 
 /// 置顶事件
 #[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
 pub struct MessagePinnedPayload {
     pub conversation_id: String,
     pub message_id: String,
@@ -163,7 +154,6 @@ pub struct MessagePinnedPayload {
 
 /// 取消置顶事件
 #[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
 pub struct MessageUnpinnedPayload {
     pub conversation_id: String,
     pub message_id: String,
@@ -171,7 +161,6 @@ pub struct MessageUnpinnedPayload {
 
 /// 标记事件
 #[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
 pub struct MessageMarkedPayload {
     pub conversation_id: String,
     pub message_id: String,
@@ -182,7 +171,6 @@ pub struct MessageMarkedPayload {
 
 /// 取消标记事件
 #[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
 pub struct MessageUnmarkedPayload {
     pub conversation_id: String,
     pub message_id: String,
@@ -192,7 +180,6 @@ pub struct MessageUnmarkedPayload {
 
 /// 在线状态事件
 #[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
 pub struct PresenceChangedPayload {
     pub conversation_id: String,
     pub user_id: String,
@@ -202,7 +189,6 @@ pub struct PresenceChangedPayload {
 
 /// 通话信令事件
 #[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
 pub struct CallSignalPayload {
     pub conversation_id: String,
     pub call_id: String,
@@ -213,7 +199,6 @@ pub struct CallSignalPayload {
 
 /// 自定义领域事件
 #[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
 pub struct MessageCustomEventPayload {
     pub conversation_id: String,
     pub namespace: String,
@@ -224,13 +209,11 @@ pub struct MessageCustomEventPayload {
 }
 
 #[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
 pub struct ConversationsSyncedPayload {
     pub conversation_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
 pub struct SyncProgressPayload {
     pub task: String,
     pub progress: f32,
@@ -238,59 +221,47 @@ pub struct SyncProgressPayload {
 }
 
 #[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
 pub struct SyncCompletedPayload {
     pub task: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
 pub struct SyncFailedPayload {
     pub task: String,
     pub error: String,
 }
 
-/// 同步开始（无额外字段，前端用于显示「同步中」）
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SyncStartedPayload {}
-
 /// 同步阶段结束（Init / Background）
 #[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
 pub struct SyncFinishedPayload {
     pub phase: String,
 }
 
-/// 连接已建立
+/// `{}` — 无字段的 ACK 类事件（connected、sync_started 等）
 #[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ConnectedPayload {}
+pub struct EmptyPayload {}
 
-/// 连接断开
+pub type ConnectedPayload = EmptyPayload;
+/// 同步开始（无额外字段，前端用于显示「同步中」）
+pub type SyncStartedPayload = EmptyPayload;
+
+/// `{ "reason": "..." }` — disconnected、kicked_off
 #[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct DisconnectedPayload {
+pub struct ReasonPayload {
     pub reason: String,
 }
 
-/// 被踢下线
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct KickedOffPayload {
-    pub reason: String,
-}
+pub type DisconnectedPayload = ReasonPayload;
+pub type KickedOffPayload = ReasonPayload;
 
 /// Token 过期
 #[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
 pub struct TokenExpiredPayload {
     pub message: String,
 }
 
 /// 服务端错误
 #[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
 pub struct ServerErrorPayload {
     pub code: i32,
     pub message: String,
@@ -298,28 +269,21 @@ pub struct ServerErrorPayload {
 
 /// 重连中
 #[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
 pub struct ReconnectingPayload {
     pub attempt: u32,
 }
 
-/// 会话信息变更
+/// `{ "conversation_id": "..." }` — created / updated / deleted（仅 id）
 #[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ConversationUpdatedPayload {
+pub struct ConversationIdPayload {
     pub conversation_id: String,
 }
 
-/// 会话删除
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ConversationDeletedPayload {
-    pub conversation_id: String,
-}
+pub type ConversationUpdatedPayload = ConversationIdPayload;
+pub type ConversationDeletedPayload = ConversationIdPayload;
 
 /// 未读数变更
 #[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
 pub struct UnreadCountChangedPayload {
     pub conversation_id: String,
     pub unread_count: u32,
@@ -327,7 +291,6 @@ pub struct UnreadCountChangedPayload {
 
 /// 正在输入
 #[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
 pub struct TypingPayload {
     pub conversation_id: String,
     pub user_id: String,
@@ -336,7 +299,6 @@ pub struct TypingPayload {
 
 /// 扩展事件（payload 为原始字节，前端按需解码）
 #[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
 pub struct ExtensionPayload {
     pub source: String,
     pub event_type: String,

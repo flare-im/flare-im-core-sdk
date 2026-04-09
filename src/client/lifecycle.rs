@@ -11,9 +11,8 @@ pub use crate::util::paths::{
 use crate::client::SdkConfig;
 use crate::Result;
 
-/// 上层可选覆盖项（camelCase JSON）。
+/// 上层可选覆盖项（JSON 字段 snake_case，与 Rust 字段一致）。
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct SdkConfigOverlay {
     pub data_url: Option<String>,
     pub ws_url: Option<String>,

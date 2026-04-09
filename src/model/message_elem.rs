@@ -1,16 +1,16 @@
 //! 消息 content 解码后的可序列化结构，供各接入层（Tauri / FFI / 其他）按消息类型获取对应结构数据。
-//! 与 message_content.proto 的 Content oneof 一一对应，使用 camelCase 与 contentType 标签，便于 JSON 序列化。
+//! 与 message_content.proto 的 Content oneof 一一对应；JSON 字段与标签为 snake_case（如 `content_type`），接入层可自行转 camelCase。
 
 use serde::{Deserialize, Serialize};
 
 use crate::model::decoder::DecodedContent;
 use crate::util::date::{ms_to_prost_timestamp, prost_timestamp_to_ms};
+use flare_proto::common::ImageFormat;
 use flare_proto::common::message_content::Content as ProtoContent;
 
 // ---------- 通用子结构 ----------
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct MentionElem {
     pub r#type: i32,
     pub user_id: String,
@@ -21,7 +21,6 @@ pub struct MentionElem {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct ImageInfoElem {
     pub uuid: String,
     /// 媒体存储侧稳定 id（与 proto `ImageInfo.image_id` 一致；展示时走 GetFileUrl）
@@ -32,10 +31,14 @@ pub struct ImageInfoElem {
     pub size: i64,
     pub width: i32,
     pub height: i32,
+    /// 与 proto `ImageInfo.format` 一致（`ImageFormat` 枚举整型）
+    #[serde(default)]
+    pub format: i32,
+    #[serde(default)]
+    pub animated: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct VideoInfoElem {
     pub uuid: String,
     pub url: String,
@@ -47,7 +50,6 @@ pub struct VideoInfoElem {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct AudioInfoElem {
     pub uuid: String,
     pub url: String,
@@ -56,8 +58,7 @@ pub struct AudioInfoElem {
     pub duration_ms: i64,
 }
 
-#[derive(Debug, Clone, Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MessagePreviewElem {
     pub message_id: String,
     pub sender_id: String,
@@ -70,22 +71,22 @@ pub struct MessagePreviewElem {
 // ---------- 各 Content 类型的 Elem 结构 ----------
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct TextElem {
     pub text: String,
     pub mentions: Vec<MentionElem>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct ImageElem {
     pub source: Option<ImageInfoElem>,
     pub thumbnail: Option<ImageInfoElem>,
     pub description: String,
+    /// 动图时长（毫秒），可选
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct VideoElem {
     pub video_id: String,
     pub source: Option<VideoInfoElem>,
@@ -94,7 +95,6 @@ pub struct VideoElem {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct AudioElem {
     pub audio_id: String,
     pub source: Option<AudioInfoElem>,
@@ -102,7 +102,6 @@ pub struct AudioElem {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct FileElem {
     pub file_id: String,
     pub file_name: String,
@@ -112,38 +111,50 @@ pub struct FileElem {
     pub description: String,
 }
 
+/// 与 `LocationContent` / 业务 `LocationMessageContent` 对齐（JSON camelCase）
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct LocationElem {
-    pub longitude: f64,
     pub latitude: f64,
+    pub longitude: f64,
+    pub title: String,
     pub address: String,
-    pub description: String,
-    pub poi_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub zoom: Option<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snapshot_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snapshot_local_path: Option<String>,
 }
 
+/// 与 `CardContent` 一致；JSON camelCase（如 `cardType`）
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct CardElem {
-    pub user_id: String,
-    pub nickname: String,
-    pub avatar_url: String,
-    pub description: String,
+    #[serde(default)]
+    pub card_type: String,
+    pub id: String,
+    pub title: String,
+    pub subtitle: String,
+    pub avatar: String,
+    #[serde(default)]
     pub extra: std::collections::HashMap<String, String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct StickerElem {
     pub sticker_id: String,
+    #[serde(default)]
+    pub package_id: String,
     pub url: String,
     pub width: i32,
     pub height: i32,
+    /// 如 webp、png（JSON 键 `format`）
+    #[serde(default)]
+    pub format: String,
+    #[serde(default)]
     pub extra: std::collections::HashMap<String, String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct EmojiElem {
     pub emoji: String,
     pub description: String,
@@ -151,18 +162,6 @@ pub struct EmojiElem {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GifElem {
-    pub gif_id: String,
-    pub url: String,
-    pub thumbnail: Option<ImageInfoElem>,
-    pub duration_ms: i64,
-    pub width: i32,
-    pub height: i32,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct QuoteElem {
     pub quoted_message_id: String,
     pub quoted_sender_id: String,
@@ -172,7 +171,6 @@ pub struct QuoteElem {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct LinkCardElem {
     pub url: String,
     pub title: String,
@@ -182,15 +180,195 @@ pub struct LinkCardElem {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ForwardElem {
-    pub message_ids: Vec<String>,
-    pub forward_reason: String,
-    pub forwarded_previews: Vec<MessagePreviewElem>,
+pub struct ForwardItemElem {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_message_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_conversation_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_sender_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_sender_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_message_time_ms: Option<u64>,
+    pub message_type: i32,
+    pub plain_text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content: Option<Box<Elem>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+pub struct ForwardElem {
+    /// `ForwardMode` 枚举值（与 proto 一致）
+    pub mode: i32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    pub items: Vec<ForwardItemElem>,
+}
+
+/// 列表/转发条目摘要：与 decoder 的 proto 预览语义对齐，供构建 `ForwardItem.plain_text`。
+pub fn elem_plain_summary(elem: &Elem) -> String {
+    use Elem::*;
+    match elem {
+        Text(t) => t.text.clone(),
+        RichText(r) => {
+            let title = r.title.as_deref().map(str::trim).filter(|t| !t.is_empty());
+            let body = r.plain_text.trim();
+            match (title, !body.is_empty()) {
+                (Some(t), true) => format!("{t} {}", body),
+                (Some(t), false) => t.to_string(),
+                (None, true) => body.to_string(),
+                (None, false) => "[富文本]".to_string(),
+            }
+        }
+        File(f) => {
+            if f.file_name.is_empty() {
+                "[文件]".to_string()
+            } else {
+                format!("[文件] {}", f.file_name)
+            }
+        }
+        Image(i) => {
+            if image_elem_is_motion(i) {
+                "[动图]".to_string()
+            } else if !i.description.trim().is_empty() {
+                i.description.clone()
+            } else {
+                "[图片]".to_string()
+            }
+        }
+        Video(v) => {
+            if !v.description.trim().is_empty() {
+                v.description.clone()
+            } else {
+                "[视频]".to_string()
+            }
+        }
+        Audio(a) => {
+            if !a.description.trim().is_empty() {
+                a.description.clone()
+            } else {
+                "[语音]".to_string()
+            }
+        }
+        Location(l) => {
+            let label = if !l.title.is_empty() {
+                l.title.as_str()
+            } else if !l.address.is_empty() {
+                l.address.as_str()
+            } else {
+                ""
+            };
+            if label.is_empty() {
+                "[位置]".to_string()
+            } else {
+                format!("[位置] {}", label)
+            }
+        }
+        Card(c) => {
+            let label = if !c.title.is_empty() {
+                c.title.as_str()
+            } else if !c.id.is_empty() {
+                c.id.as_str()
+            } else {
+                ""
+            };
+            if label.is_empty() {
+                "[名片]".to_string()
+            } else {
+                format!("[名片] {}", label)
+            }
+        }
+        Sticker(_) => "[贴纸]".to_string(),
+        Emoji(e) => e.emoji.clone(),
+        Quote(q) => q
+            .current_content
+            .as_deref()
+            .map(elem_plain_summary)
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| q.quoted_text_preview.clone()),
+        LinkCard(l) => {
+            if !l.title.trim().is_empty() {
+                l.title.clone()
+            } else {
+                "[链接]".to_string()
+            }
+        }
+        Forward(f) => {
+            let n = f.items.len();
+            if n == 0 {
+                "[转发]".to_string()
+            } else if n == 1 {
+                f.items[0].plain_text.clone()
+            } else {
+                format!("[转发] {n} 条消息")
+            }
+        }
+        Thread(t) => {
+            if !t.thread_title.trim().is_empty() {
+                t.thread_title.clone()
+            } else {
+                "[话题]".to_string()
+            }
+        }
+        MiniProgram(m) => {
+            if !m.title.trim().is_empty() {
+                m.title.clone()
+            } else {
+                "[小程序]".to_string()
+            }
+        }
+        ImageGroup(_) => "[多图]".to_string(),
+        System(s) => {
+            if !s.body.trim().is_empty() {
+                s.body.clone()
+            } else {
+                "[系统消息]".to_string()
+            }
+        }
+        Notification(n) => {
+            if !n.body.trim().is_empty() {
+                n.body.clone()
+            } else if !n.title.trim().is_empty() {
+                n.title.clone()
+            } else {
+                "[通知]".to_string()
+            }
+        }
+        Vote(_) => "[投票]".to_string(),
+        Task(t) => {
+            if !t.title.trim().is_empty() {
+                format!("[任务] {}", t.title)
+            } else {
+                "[任务]".to_string()
+            }
+        }
+        Schedule(_) => "[日程]".to_string(),
+        Announcement(a) => {
+            if !a.title.trim().is_empty() {
+                format!("[公告] {}", a.title)
+            } else {
+                "[公告]".to_string()
+            }
+        }
+        Custom(c) => {
+            if !c.description.trim().is_empty() {
+                c.description.clone()
+            } else {
+                "[自定义]".to_string()
+            }
+        }
+        Placeholder(p) => {
+            if !p.fallback_text.trim().is_empty() {
+                p.fallback_text.clone()
+            } else {
+                "[占位]".to_string()
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ThreadElem {
     pub thread_id: String,
     pub thread_title: String,
@@ -199,7 +377,6 @@ pub struct ThreadElem {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct MiniProgramElem {
     pub app_id: String,
     pub title: String,
@@ -208,25 +385,29 @@ pub struct MiniProgramElem {
     pub extra: std::collections::HashMap<String, String>,
 }
 
+/// 与 `RichTextContent` 一致：Rich Doc JSON 主存储 + 必填 `plain_text`
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct RichTextElem {
-    pub content: String,
-    pub format: String,
-    pub mentions: Vec<MentionElem>,
-    pub metadata: std::collections::HashMap<String, String>,
+    pub doc_json: String,
+    pub content_schema: String,
+    pub plain_text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_format: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_format_version: Option<i32>,
+    #[serde(default)]
+    pub source_payload: std::collections::HashMap<String, String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// SDK 派生检索串（可选；与 proto `search_text` 对齐）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub search_text: Option<String>,
+    /// SDK 派生渲染提示 JSON 字符串（可选）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub render_hints_json: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct MarkdownElem {
-    pub text: String,
-    pub mentions: Vec<MentionElem>,
-    pub metadata: std::collections::HashMap<String, String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct ImageGroupElem {
     pub images: Vec<ImageInfoElem>,
     pub description: String,
@@ -234,7 +415,6 @@ pub struct ImageGroupElem {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct SystemElem {
     pub event_kind: String,
     pub body: String,
@@ -244,7 +424,6 @@ pub struct SystemElem {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct NotificationElem {
     pub title: String,
     pub body: String,
@@ -260,37 +439,38 @@ pub struct NotificationElem {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct VoteElem {
     pub vote_id: String,
     pub title: String,
     pub options: Vec<String>,
     pub metadata: std::collections::HashMap<String, String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub participant_user_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct TaskElem {
     pub task_id: String,
     pub title: String,
     pub status: String,
     pub metadata: std::collections::HashMap<String, String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub participant_user_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct ScheduleElem {
     pub schedule_id: String,
     pub title: String,
-    /// 毫秒时间戳
+    /// 毫秒时间戳（与 proto `start_time_ms` / `end_time_ms` 一致）
     pub start_time: u64,
-    /// 毫秒时间戳
     pub end_time: u64,
     pub metadata: std::collections::HashMap<String, String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub participant_user_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct AnnouncementElem {
     pub title: String,
     pub body: String,
@@ -299,7 +479,6 @@ pub struct AnnouncementElem {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct CustomElem {
     pub r#type: String,
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
@@ -309,7 +488,6 @@ pub struct CustomElem {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct PlaceholderElem {
     pub reason: String,
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
@@ -318,9 +496,9 @@ pub struct PlaceholderElem {
     pub metadata: std::collections::HashMap<String, String>,
 }
 
-/// 解码后的消息内容枚举，各接入层可根据 contentType 取得对应结构并序列化（如 JSON）。
+/// 解码后的消息内容枚举；JSON 为 `#[serde(tag = "content_type", rename_all = "snake_case")]`。
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "contentType", rename_all = "camelCase")]
+#[serde(tag = "content_type", rename_all = "snake_case")]
 pub enum Elem {
     Text(TextElem),
     Image(ImageElem),
@@ -331,14 +509,12 @@ pub enum Elem {
     Card(CardElem),
     Sticker(StickerElem),
     Emoji(EmojiElem),
-    Gif(GifElem),
     Quote(QuoteElem),
     LinkCard(LinkCardElem),
     Forward(ForwardElem),
     Thread(ThreadElem),
     MiniProgram(MiniProgramElem),
     RichText(RichTextElem),
-    Markdown(MarkdownElem),
     ImageGroup(ImageGroupElem),
     System(SystemElem),
     Notification(NotificationElem),
@@ -348,6 +524,49 @@ pub enum Elem {
     Announcement(AnnouncementElem),
     Custom(CustomElem),
     Placeholder(PlaceholderElem),
+}
+
+/// 是否按「动图」展示（GIF/APNG/animated 标记等）
+pub fn image_info_elem_is_motion(s: &ImageInfoElem) -> bool {
+    if s.animated {
+        return true;
+    }
+    if s.format == ImageFormat::Gif as i32 || s.format == ImageFormat::Apng as i32 {
+        return true;
+    }
+    let m = s.mime_type.to_lowercase();
+    m.contains("gif") || m.contains("apng")
+}
+
+/// `ImageContent` 层级：源图是否为动图类
+pub fn image_elem_is_motion(i: &ImageElem) -> bool {
+    i.source
+        .as_ref()
+        .map_or(false, image_info_elem_is_motion)
+}
+
+/// 解码前 proto `ImageContent` 是否视为动图（与 [image_elem_is_motion] 语义一致）
+pub fn proto_image_content_is_motion(i: &flare_proto::common::ImageContent) -> bool {
+    i.source.as_ref().map_or(false, |s| {
+        if s.animated {
+            return true;
+        }
+        if s.format == ImageFormat::Gif as i32 || s.format == ImageFormat::Apng as i32 {
+            return true;
+        }
+        let m = s.mime_type.to_lowercase();
+        m.contains("gif") || m.contains("apng")
+    })
+}
+
+#[inline]
+fn proto_ms_to_u64(ms: i64) -> u64 {
+    if ms > 0 { ms as u64 } else { 0 }
+}
+
+#[inline]
+fn elem_ms_to_i64(ms: u64) -> i64 {
+    i64::try_from(ms).unwrap_or(i64::MAX)
 }
 
 fn image_info_out(o: Option<&flare_proto::common::ImageInfo>) -> Option<ImageInfoElem> {
@@ -360,6 +579,8 @@ fn image_info_out(o: Option<&flare_proto::common::ImageInfo>) -> Option<ImageInf
         size: i.size,
         width: i.width,
         height: i.height,
+        format: i.format,
+        animated: i.animated,
     })
 }
 
@@ -396,10 +617,6 @@ fn mention_out(m: &flare_proto::common::Mention) -> MentionElem {
         start: m.start,
         length: m.length,
     }
-}
-
-fn message_preview_out(p: &flare_proto::common::MessagePreview) -> MessagePreviewElem {
-    message_preview_from_proto(p)
 }
 
 /// 从 proto MessagePreview 转为可序列化的 MessagePreviewElem（供会话列表等使用）
@@ -440,6 +657,7 @@ fn proto_content_to_out(c: &ProtoContent) -> Option<Elem> {
             source: image_info_out(i.source.as_ref()),
             thumbnail: image_info_out(i.thumbnail.as_ref()),
             description: i.description.clone(),
+            duration_ms: i.duration_ms,
         }),
         ProtoContent::Video(v) => Elem::Video(VideoElem {
             video_id: v.video_id.clone(),
@@ -461,38 +679,35 @@ fn proto_content_to_out(c: &ProtoContent) -> Option<Elem> {
             description: f.description.clone(),
         }),
         ProtoContent::Location(l) => Elem::Location(LocationElem {
-            longitude: l.longitude,
             latitude: l.latitude,
+            longitude: l.longitude,
+            title: l.title.clone(),
             address: l.address.clone(),
-            description: l.description.clone(),
-            poi_id: l.poi_id.clone(),
+            zoom: l.zoom.map(|z| z.clamp(0, 255) as u8),
+            snapshot_url: l.snapshot_url.clone(),
+            snapshot_local_path: l.snapshot_local_path.clone(),
         }),
         ProtoContent::Card(card) => Elem::Card(CardElem {
-            user_id: card.user_id.clone(),
-            nickname: card.nickname.clone(),
-            avatar_url: card.avatar_url.clone(),
-            description: card.description.clone(),
+            card_type: card.card_type.clone(),
+            id: card.id.clone(),
+            title: card.title.clone(),
+            subtitle: card.subtitle.clone(),
+            avatar: card.avatar.clone(),
             extra: card.extra.clone(),
         }),
         ProtoContent::Sticker(s) => Elem::Sticker(StickerElem {
             sticker_id: s.sticker_id.clone(),
+            package_id: s.package_id.clone(),
             url: s.url.clone(),
             width: s.width,
             height: s.height,
+            format: s.format.clone(),
             extra: s.extra.clone(),
         }),
         ProtoContent::Emoji(e) => Elem::Emoji(EmojiElem {
             emoji: e.emoji.clone(),
             description: e.description.clone(),
             extra: e.extra.clone(),
-        }),
-        ProtoContent::Gif(g) => Elem::Gif(GifElem {
-            gif_id: g.gif_id.clone(),
-            url: g.url.clone(),
-            thumbnail: image_info_out(g.thumbnail.as_ref()),
-            duration_ms: g.duration_ms,
-            width: g.width,
-            height: g.height,
         }),
         ProtoContent::Quote(q) => Elem::Quote(QuoteElem {
             quoted_message_id: q.quoted_message_id.clone(),
@@ -515,12 +730,32 @@ fn proto_content_to_out(c: &ProtoContent) -> Option<Elem> {
             site_name: l.site_name.clone(),
         }),
         ProtoContent::Forward(f) => Elem::Forward(ForwardElem {
-            message_ids: f.message_ids.clone(),
-            forward_reason: f.forward_reason.clone(),
-            forwarded_previews: f
-                .forwarded_previews
+            mode: f.mode,
+            title: f.title.clone(),
+            items: f
+                .items
                 .iter()
-                .map(message_preview_out)
+                .map(|it| ForwardItemElem {
+                    source_message_id: it.source_message_id.clone(),
+                    source_conversation_id: it.source_conversation_id.clone(),
+                    source_sender_id: it.source_sender_id.clone(),
+                    source_sender_name: it.source_sender_name.clone(),
+                    source_message_time_ms: {
+                        let ms = prost_timestamp_to_ms(it.source_message_time.as_ref());
+                        if ms == 0 {
+                            None
+                        } else {
+                            Some(ms)
+                        }
+                    },
+                    message_type: it.message_type,
+                    plain_text: it.plain_text.clone(),
+                    content: it
+                        .content
+                        .as_ref()
+                        .and_then(message_content_to_out)
+                        .map(Box::new),
+                })
                 .collect(),
         }),
         ProtoContent::Thread(t) => Elem::Thread(ThreadElem {
@@ -540,15 +775,15 @@ fn proto_content_to_out(c: &ProtoContent) -> Option<Elem> {
             extra: m.extra.clone(),
         }),
         ProtoContent::RichText(r) => Elem::RichText(RichTextElem {
-            content: r.content.clone(),
-            format: r.format.clone(),
-            mentions: r.mentions.iter().map(mention_out).collect(),
-            metadata: r.metadata.clone(),
-        }),
-        ProtoContent::Markdown(m) => Elem::Markdown(MarkdownElem {
-            text: m.text.clone(),
-            mentions: m.mentions.iter().map(mention_out).collect(),
-            metadata: m.metadata.clone(),
+            doc_json: r.doc_json.clone(),
+            content_schema: r.content_schema.clone(),
+            plain_text: r.plain_text.clone(),
+            input_format: r.input_format.clone(),
+            input_format_version: r.input_format_version,
+            source_payload: r.source_payload.clone(),
+            title: r.title.clone(),
+            search_text: r.search_text.clone(),
+            render_hints_json: r.render_hints_json.clone(),
         }),
         ProtoContent::ImageGroup(ig) => Elem::ImageGroup(ImageGroupElem {
             images: ig
@@ -583,19 +818,22 @@ fn proto_content_to_out(c: &ProtoContent) -> Option<Elem> {
             title: v.title.clone(),
             options: v.options.clone(),
             metadata: v.metadata.clone(),
+            participant_user_ids: v.participant_user_ids.clone(),
         }),
         ProtoContent::Task(t) => Elem::Task(TaskElem {
             task_id: t.task_id.clone(),
             title: t.title.clone(),
             status: t.status.clone(),
             metadata: t.metadata.clone(),
+            participant_user_ids: t.participant_user_ids.clone(),
         }),
         ProtoContent::Schedule(s) => Elem::Schedule(ScheduleElem {
             schedule_id: s.schedule_id.clone(),
             title: s.title.clone(),
-            start_time: prost_timestamp_to_ms(s.start_time.as_ref()),
-            end_time: prost_timestamp_to_ms(s.end_time.as_ref()),
+            start_time: proto_ms_to_u64(s.start_time_ms),
+            end_time: proto_ms_to_u64(s.end_time_ms),
             metadata: s.metadata.clone(),
+            participant_user_ids: s.participant_user_ids.clone(),
         }),
         ProtoContent::Announcement(a) => Elem::Announcement(AnnouncementElem {
             title: a.title.clone(),
@@ -638,6 +876,8 @@ fn image_info_in(e: &ImageInfoElem) -> flare_proto::common::ImageInfo {
         size: e.size,
         width: e.width,
         height: e.height,
+        format: e.format,
+        animated: e.animated,
     }
 }
 
@@ -674,6 +914,7 @@ fn elem_to_proto_content(elem: &Elem) -> ProtoContent {
             source: i.source.as_ref().map(image_info_in),
             thumbnail: i.thumbnail.as_ref().map(image_info_in),
             description: i.description.clone(),
+            duration_ms: i.duration_ms,
         }),
         Elem::Video(v) => ProtoContent::Video(flare_proto::common::VideoContent {
             video_id: v.video_id.clone(),
@@ -698,14 +939,17 @@ fn elem_to_proto_content(elem: &Elem) -> ProtoContent {
             longitude: l.longitude,
             latitude: l.latitude,
             address: l.address.clone(),
-            description: l.description.clone(),
-            poi_id: l.poi_id.clone(),
+            title: l.title.clone(),
+            zoom: l.zoom.map(|z| i32::from(z)),
+            snapshot_url: l.snapshot_url.clone(),
+            snapshot_local_path: l.snapshot_local_path.clone(),
         }),
         Elem::Card(card) => ProtoContent::Card(flare_proto::common::CardContent {
-            user_id: card.user_id.clone(),
-            nickname: card.nickname.clone(),
-            avatar_url: card.avatar_url.clone(),
-            description: card.description.clone(),
+            card_type: card.card_type.clone(),
+            id: card.id.clone(),
+            title: card.title.clone(),
+            subtitle: card.subtitle.clone(),
+            avatar: card.avatar.clone(),
             extra: card.extra.clone(),
         }),
         Elem::Sticker(s) => ProtoContent::Sticker(flare_proto::common::StickerContent {
@@ -714,19 +958,13 @@ fn elem_to_proto_content(elem: &Elem) -> ProtoContent {
             width: s.width,
             height: s.height,
             extra: s.extra.clone(),
+            package_id: s.package_id.clone(),
+            format: s.format.clone(),
         }),
         Elem::Emoji(e) => ProtoContent::Emoji(flare_proto::common::EmojiContent {
             emoji: e.emoji.clone(),
             description: e.description.clone(),
             extra: e.extra.clone(),
-        }),
-        Elem::Gif(g) => ProtoContent::Gif(flare_proto::common::GifContent {
-            gif_id: g.gif_id.clone(),
-            url: g.url.clone(),
-            thumbnail: g.thumbnail.as_ref().map(image_info_in),
-            duration_ms: g.duration_ms,
-            width: g.width,
-            height: g.height,
         }),
         Elem::Quote(q) => ProtoContent::Quote(Box::new(flare_proto::common::QuoteContent {
             quoted_message_id: q.quoted_message_id.clone(),
@@ -749,12 +987,26 @@ fn elem_to_proto_content(elem: &Elem) -> ProtoContent {
             site_name: l.site_name.clone(),
         }),
         Elem::Forward(f) => ProtoContent::Forward(flare_proto::common::ForwardContent {
-            message_ids: f.message_ids.clone(),
-            forward_reason: f.forward_reason.clone(),
-            forwarded_previews: f
-                .forwarded_previews
+            mode: f.mode,
+            title: f.title.clone(),
+            items: f
+                .items
                 .iter()
-                .map(message_preview_to_proto)
+                .map(|it| flare_proto::common::ForwardItem {
+                    source_message_id: it.source_message_id.clone(),
+                    source_conversation_id: it.source_conversation_id.clone(),
+                    source_sender_id: it.source_sender_id.clone(),
+                    source_sender_name: it.source_sender_name.clone(),
+                    source_message_time: it
+                        .source_message_time_ms
+                        .and_then(ms_to_prost_timestamp),
+                    message_type: it.message_type,
+                    plain_text: it.plain_text.clone(),
+                    content: it
+                        .content
+                        .as_ref()
+                        .map(|e| elem_to_message_content(e)),
+                })
                 .collect(),
         }),
         Elem::Thread(te) => ProtoContent::Thread(Box::new(flare_proto::common::ThreadContent {
@@ -774,15 +1026,15 @@ fn elem_to_proto_content(elem: &Elem) -> ProtoContent {
             extra: m.extra.clone(),
         }),
         Elem::RichText(r) => ProtoContent::RichText(flare_proto::common::RichTextContent {
-            content: r.content.clone(),
-            format: r.format.clone(),
-            mentions: r.mentions.iter().map(mention_in).collect(),
-            metadata: r.metadata.clone(),
-        }),
-        Elem::Markdown(m) => ProtoContent::Markdown(flare_proto::common::MarkdownContent {
-            text: m.text.clone(),
-            mentions: m.mentions.iter().map(mention_in).collect(),
-            metadata: m.metadata.clone(),
+            doc_json: r.doc_json.clone(),
+            content_schema: r.content_schema.clone(),
+            plain_text: r.plain_text.clone(),
+            input_format: r.input_format.clone(),
+            source_payload: r.source_payload.clone(),
+            input_format_version: r.input_format_version,
+            title: r.title.clone(),
+            search_text: r.search_text.clone(),
+            render_hints_json: r.render_hints_json.clone(),
         }),
         Elem::ImageGroup(ig) => ProtoContent::ImageGroup(flare_proto::common::ImageGroupContent {
             images: ig.images.iter().map(image_info_in).collect(),
@@ -815,19 +1067,22 @@ fn elem_to_proto_content(elem: &Elem) -> ProtoContent {
             title: v.title.clone(),
             options: v.options.clone(),
             metadata: v.metadata.clone(),
+            participant_user_ids: v.participant_user_ids.clone(),
         }),
         Elem::Task(t) => ProtoContent::Task(flare_proto::common::TaskContent {
             task_id: t.task_id.clone(),
             title: t.title.clone(),
             status: t.status.clone(),
             metadata: t.metadata.clone(),
+            participant_user_ids: t.participant_user_ids.clone(),
         }),
         Elem::Schedule(s) => ProtoContent::Schedule(flare_proto::common::ScheduleContent {
             schedule_id: s.schedule_id.clone(),
             title: s.title.clone(),
-            start_time: ms_to_prost_timestamp(s.start_time),
-            end_time: ms_to_prost_timestamp(s.end_time),
+            start_time_ms: elem_ms_to_i64(s.start_time),
+            end_time_ms: elem_ms_to_i64(s.end_time),
             metadata: s.metadata.clone(),
+            participant_user_ids: s.participant_user_ids.clone(),
         }),
         Elem::Announcement(a) => ProtoContent::Announcement(flare_proto::common::AnnouncementContent {
             title: a.title.clone(),

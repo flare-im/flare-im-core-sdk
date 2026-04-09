@@ -1,5 +1,5 @@
 //! 会话模型 — SDK 内部统一使用 Conversation；从 proto ConversationSummary 获取后即转换为 Conversation。
-//! 序列化用 serde 宏，camelCase，与前端约定一致。
+//! 序列化用 serde 默认字段名（snake_case JSON）；前端可通过桥接层转 camelCase。
 
 use std::collections::HashMap;
 
@@ -120,7 +120,6 @@ impl From<&str> for ConversationType {
 // ---------- 本地状态（不序列化到 JSON/DB，仅内存）----------
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct ConversationLocalState {
     /// 草稿光标等 UI 状态可放此处
     #[serde(default)]
@@ -128,9 +127,9 @@ pub struct ConversationLocalState {
 }
 
 /// SDK 层会话类型：内部统一使用，从 proto ConversationSummary 获取后即转换为此类型。
-/// 与 message.rs 的 IMMessage 一致：扁平字段、serde 宏序列化、camelCase。
+/// 与 message.rs 的 IMMessage 一致：扁平字段、serde 默认 snake_case。
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", default)]
+#[serde(default)]
 pub struct Conversation {
     // ===============================
     // Identity

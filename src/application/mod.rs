@@ -11,14 +11,17 @@ pub(crate) mod message_deduper;
 pub mod message_builder;
 pub mod queries;
 pub mod sync_task;
-pub mod upload_progress;
+pub mod sdk_callbacks;
 pub(crate) mod usecases;
 
 pub use commands::{RecallMessageCommand, SendMessageCommand};
-pub use adapters::{MediaUploadService, SyncProtocolAdapter};
+pub use adapters::{MediaService, SyncProtocolAdapter};
 pub use message_builder::MessageBuilderService;
 pub use queries::{
     GetConversationQuery, GetConversationsQuery, GetMessagesQuery, SearchMessagesQuery,
 };
 pub use sync_task::{ConversationsSyncTask, MessagesSyncTask, ReadStatesSyncTask};
-pub use upload_progress::{UploadPhase, UploadProgress, UploadProgressCallback};
+pub use sdk_callbacks::{
+    FileDownloadProgress, FileDownloadProgressCallback, UploadPhase, UploadProgress,
+    UploadProgressCallback,
+};

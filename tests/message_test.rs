@@ -28,6 +28,7 @@ use flare_im_core_sdk::model::IMMessage;
 use flare_im_core_sdk::model::message::*;
 use flare_im_core_sdk::prelude::*;
 use flare_proto::common::TypingEvent;
+use flare_proto::common::ImageFormat;
 use flare_proto::common::message_content::Content as ProtoContent;
 
 // =============================================================================
@@ -74,6 +75,8 @@ async fn test_content_builder_image() {
             size: 0,
             width: 0,
             height: 0,
+            format: ImageFormat::Unspecified as i32,
+            animated: false,
         })
         .description("photo")
         .build();
@@ -117,7 +120,7 @@ async fn test_content_builder_file() {
 
 #[tokio::test]
 async fn test_content_builder_location() {
-    let built = ContentBuilder::location(116.397, 39.916)
+    let built = ContentBuilder::location(39.916, 116.397)
         .address("天安门广场")
         .build();
     assert_eq!(built.message_type, MessageType::Location);
@@ -126,17 +129,20 @@ async fn test_content_builder_location() {
 #[tokio::test]
 async fn test_content_builder_card() {
     let built = ContentBuilder::card("user_123")
-        .nickname("Alice")
-        .avatar_url("https://example.com/avatar.jpg")
+        .card_type("user")
+        .title("Alice")
+        .avatar("https://example.com/avatar.jpg")
         .build();
     assert_eq!(built.message_type, MessageType::Card);
 }
 
 #[tokio::test]
 async fn test_content_builder_sticker() {
-    let built = ContentBuilder::sticker("stk_001")
-        .url("https://cdn.example.com/sticker.webp")
-        .size(120, 120)
+    let built = ContentBuilder::sticker("cat_001")
+        .package_id("cat")
+        .url("https://cdn.example.com/cat_001.webp")
+        .size(512, 512)
+        .sticker_format("webp")
         .build();
     assert_eq!(built.message_type, MessageType::Sticker);
 }
@@ -153,7 +159,7 @@ async fn test_content_builder_gif() {
         .url("https://cdn.example.com/funny.gif")
         .size(320, 240)
         .build();
-    assert_eq!(built.message_type, MessageType::Gif);
+    assert_eq!(built.message_type, MessageType::Image);
 }
 
 #[tokio::test]
@@ -170,14 +176,33 @@ async fn test_content_builder_link_card() {
     let built = ContentBuilder::link_card("https://example.com")
         .title("Example")
         .description("An example page")
+        .link_card_thumbnail_url("https://example.com/t.png")
+        .link_card_site_name("example.com")
         .build();
     assert_eq!(built.message_type, MessageType::LinkCard);
 }
 
 #[tokio::test]
 async fn test_content_builder_forward() {
-    let built = ContentBuilder::forward(vec!["msg_1".into(), "msg_2".into()])
-        .forward_reason("聊天记录")
+    use flare_proto::common::{ForwardItem, ForwardMode, MessageContent, TextContent};
+    let item = ForwardItem {
+        source_message_id: Some("m1".into()),
+        source_conversation_id: Some("c1".into()),
+        source_sender_id: Some("u1".into()),
+        source_sender_name: None,
+        source_message_time: None,
+        message_type: MessageType::Text as i32,
+        plain_text: "hi".into(),
+        content: Some(MessageContent {
+            content: Some(flare_proto::common::message_content::Content::Text(
+                TextContent {
+                    text: "hi".into(),
+                    mentions: vec![],
+                },
+            )),
+        }),
+    };
+    let built = ContentBuilder::forward(ForwardMode::Merged, Some("聊天记录".into()), vec![item])
         .build();
     assert_eq!(built.message_type, MessageType::MergeForward);
 }
@@ -192,23 +217,31 @@ async fn test_content_builder_thread() {
 
 #[tokio::test]
 async fn test_content_builder_mini_program() {
+    let mut ex = std::collections::HashMap::new();
+    ex.insert("scene".to_string(), "debug".to_string());
     let built = ContentBuilder::mini_program("app_001")
         .title("小程序")
         .page_path("/pages/index")
+        .mini_program_thumbnail_url("https://example.com/t.png")
+        .mini_program_extend_extra(ex)
         .build();
     assert_eq!(built.message_type, MessageType::MiniProgram);
 }
 
 #[tokio::test]
-async fn test_content_builder_rich_text() {
-    let built = ContentBuilder::rich_text("<b>Bold</b>", "html").build();
+async fn test_content_builder_rich_doc() {
+    let built = ContentBuilder::try_rich_doc(
+        r#"{"type":"doc","version":2,"children":[]}"#,
+        "rich_doc",
+        "摘要",
+    )
+    .unwrap()
+    .rich_text_title(Some("文章标题".into()))
+    .rich_text_input_format("markdown")
+    .rich_text_input_format_version(1)
+    .rich_text_source_payload_entry("markdown", "# Title\n")
+    .build();
     assert_eq!(built.message_type, MessageType::RichText);
-}
-
-#[tokio::test]
-async fn test_content_builder_markdown() {
-    let built = ContentBuilder::markdown("# Title\nContent").build();
-    assert_eq!(built.message_type, MessageType::Markdown);
 }
 
 #[tokio::test]
@@ -222,6 +255,8 @@ async fn test_content_builder_image_group() {
             size: 0,
             width: 0,
             height: 0,
+            format: ImageFormat::Unspecified as i32,
+            animated: false,
         },
         ImageInfo {
             uuid: String::new(),
@@ -231,6 +266,8 @@ async fn test_content_builder_image_group() {
             size: 0,
             width: 0,
             height: 0,
+            format: ImageFormat::Unspecified as i32,
+            animated: false,
         },
     ])
     .build();
@@ -313,7 +350,7 @@ async fn test_message_builder_full() {
         .channel("user_002")
         .single_chat()
         .offline_push("新消息", "Hello!")
-        .extra("thread_id", "t_001")
+        .extra("threadId", "t_001")
         .build()
         .unwrap();
 
@@ -325,7 +362,7 @@ async fn test_message_builder_full() {
     assert!(!msg.client_msg_id.is_empty());
     assert!(!msg.content.is_empty());
     assert!(msg.offline_push_info.is_some());
-    assert_eq!(msg.extra.get("thread_id"), Some(&"t_001".to_string()));
+    assert_eq!(msg.extra.get("threadId"), Some(&"t_001".to_string()));
 }
 
 #[tokio::test]
@@ -389,20 +426,41 @@ async fn test_content_roundtrip_all_types() {
         (ContentBuilder::audio("a").build(), MessageType::Audio),
         (ContentBuilder::file("f").build(), MessageType::File),
         (
-            ContentBuilder::location(0.0, 0.0).build(),
+            ContentBuilder::location(0.0, 0.0).build(), // lat, lon
             MessageType::Location,
         ),
         (ContentBuilder::card("u").build(), MessageType::Card),
         (ContentBuilder::sticker("s").build(), MessageType::Sticker),
         (ContentBuilder::emoji("😀").build(), MessageType::Emoji),
-        (ContentBuilder::gif("g").build(), MessageType::Gif),
+        (ContentBuilder::gif("g").build(), MessageType::Image),
         (ContentBuilder::quote("q").build(), MessageType::Quote),
         (
             ContentBuilder::link_card("https://example.com").build(),
             MessageType::LinkCard,
         ),
         (
-            ContentBuilder::forward(vec!["m".into()]).build(),
+            ContentBuilder::forward(
+                flare_proto::common::ForwardMode::Single,
+                None,
+                vec![flare_proto::common::ForwardItem {
+                    source_message_id: Some("m".into()),
+                    source_conversation_id: None,
+                    source_sender_id: None,
+                    source_sender_name: None,
+                    source_message_time: None,
+                    message_type: MessageType::Text as i32,
+                    plain_text: "x".into(),
+                    content: Some(flare_proto::common::MessageContent {
+                        content: Some(flare_proto::common::message_content::Content::Text(
+                            flare_proto::common::TextContent {
+                                text: "x".into(),
+                                mentions: vec![],
+                            },
+                        )),
+                    }),
+                }],
+            )
+            .build(),
             MessageType::MergeForward,
         ),
         (ContentBuilder::thread("t").build(), MessageType::Thread),
@@ -411,12 +469,14 @@ async fn test_content_roundtrip_all_types() {
             MessageType::MiniProgram,
         ),
         (
-            ContentBuilder::rich_text("rt", "html").build(),
+            ContentBuilder::try_rich_doc(
+                r#"{"type":"doc","version":2,"children":[]}"#,
+                "rich_doc",
+                "rt",
+            )
+            .unwrap()
+            .build(),
             MessageType::RichText,
-        ),
-        (
-            ContentBuilder::markdown("# md").build(),
-            MessageType::Markdown,
         ),
         (
             ContentBuilder::image_group(vec![]).build(),
@@ -483,7 +543,7 @@ async fn test_content_text_previews() {
             "[位置] 北京",
         ),
         (
-            ContentBuilder::card("u").nickname("Alice").build(),
+            ContentBuilder::card("u").card_type("user").title("Alice").build(),
             "[名片] Alice",
         ),
         (ContentBuilder::emoji("😀").build(), "😀"),
@@ -766,6 +826,8 @@ mod server_tests {
                 size: 102400,
                 width: 1920,
                 height: 1080,
+                format: ImageFormat::Jpeg as i32,
+                animated: false,
             })
             .description("测试图片")
             .build();

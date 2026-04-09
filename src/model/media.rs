@@ -1,13 +1,11 @@
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct MediaAccessUrl {
     pub url: String,
     pub cdn_url: Option<String>,
 }
 
-/// [`MediaUploadService::resolve_media_access`] 结果：优先本地缓存，否则返回短时远程地址。
+/// [`crate::application::MediaService::resolve_media_access`] 结果：优先本地缓存，否则返回短时远程地址。
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct MediaResolvedAccess {
     /// `"local"` 或 `"remote"`
     pub source: String,

@@ -11,7 +11,7 @@ use crate::application::usecases::{
     ConversationCommandUseCase, ConversationViewAssembler, MessageMutationUseCase,
     MessageSendUseCase, MessageViewAssembler,
 };
-use crate::application::{MediaUploadService, SyncProtocolAdapter};
+use crate::application::{MediaService, SyncProtocolAdapter};
 use crate::client::config::SdkConfig;
 use crate::client::im_client::{IMClient, IMClientInner};
 use crate::core::{
@@ -185,12 +185,13 @@ impl IMClientBuilder {
             .clone()
             .unwrap_or_else(|| "http://localhost:50050".to_string());
         let http_request_context = Arc::new(HttpRequestContext::new());
-        let media_upload_handler = Arc::new(MediaUploadService::new(
+        let media_service = Arc::new(MediaService::new(
             HttpClient::with_context(media_base_url, http_request_context.clone()),
             current_user_id.clone(),
             store_ref.upload_manifest_store.clone(),
             store_ref.media_cache_store.clone(),
             store_ref.media_cache_admin.clone(),
+            store_ref.user_file_download_store.clone(),
         ));
         let message_send_use_case = Arc::new(MessageSendUseCase::new(
             sender.clone(),
@@ -198,7 +199,7 @@ impl IMClientBuilder {
             chain_ref,
             current_user_id.clone(),
             reliable_queue,
-            media_upload_handler.clone(),
+            media_service.clone(),
         ));
         let message_mutation_use_case = Arc::new(MessageMutationUseCase::new(
             sender,
@@ -210,7 +211,7 @@ impl IMClientBuilder {
             store_ref.messages.clone(),
             profile_reader.clone(),
         ));
-        let media_api = Arc::new(MediaApi::from_handler(media_upload_handler));
+        let media_api = Arc::new(MediaApi::from_handler(media_service));
         let conversation_command_use_case = Arc::new(ConversationCommandUseCase::new(
             store_ref.conversations.clone(),
             current_user_id,

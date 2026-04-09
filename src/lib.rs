@@ -14,15 +14,15 @@
 //! ## 消息内容类型
 //!
 //! 支持 `message_content.proto` 定义的全部 26 种消息类型：
-//! - 基础 (1-15): Text / Image / Video / Audio / File / Location / Card / Sticker / Emoji / Gif / Quote / LinkCard / Forward / Thread / MiniProgram
-//! - 富媒体 (30-32): RichText / Markdown / ImageGroup
+//! - 基础 (1-15): Text / Image（含动图 GIF） / Video / Audio / File / Location / Card / Sticker / Emoji / Quote / LinkCard / Forward / Thread / MiniProgram
+//! - 富媒体 (30-32): RichText（Rich Doc 主存储）/ ImageGroup
 //! - 系统 (60-61): System / Notification
 //! - 业务 (80-83): Vote / Task / Schedule / Announcement
 //! - 自定义 (100): Custom
 //! - 平台 (111-115): Placeholder (E2E / DecryptFailed / External / Imported / Migration)
 //!
 //! 各接入层（Tauri / FFI / 其他）可将 `content` 字节通过 `decode_content_bytes` + `decoded_content_to_elem`
-//! 转为可序列化的 `Elem`（camelCase、`contentType` 标签），便于 JSON 等序列化供前端使用。
+//! 转为可序列化的 `Elem`（snake_case JSON、`content_type` 标签）；前端可自行转 camelCase。
 //!
 //! ## 消息操作
 //!
@@ -106,6 +106,8 @@ pub mod model;
 pub mod reliable_queue;
 pub mod types;
 pub mod util;
+/// RichDoc v2：归一化 / 校验 / `plain_text`·`search_text`·`render_hints` 派生。
+pub mod rich_doc_v2;
 
 // 与 flare-orchestrator 对齐的分层入口
 pub mod application;
@@ -132,7 +134,7 @@ pub mod prelude {
     // client（含 Facade：MessageApi / ConversationApi / MessageBuildApi）
     pub use crate::client::{
         ConversationApi, IMClient, IMClientBuilder, MessageApi, MessageBuildApi, SdkConfig,
-        SdkConfigBuilder, MediaApi, MediaAccessUrl, MediaCacheEntryVo, MediaCacheStatsVo, MediaResolvedAccess, UploadOptions, UploadedMedia, UploadPhase, UploadProgress,
+        SdkConfigBuilder, FileDownloadProgress, FileDownloadProgressCallback, MediaApi, MediaAccessUrl, MediaCacheEntryVo, MediaCacheStatsVo, MediaResolvedAccess, UploadOptions, UploadedMedia, UploadPhase, UploadProgress,
         UploadProgressCallback,
     };
     pub use crate::core::SdkState;

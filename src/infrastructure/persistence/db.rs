@@ -1,6 +1,7 @@
 use crate::domain::{
     ConversationStore, MediaCacheAdmin, MediaCacheStore, MessageStore, PendingSendReader,
-    PendingSendWriter, SyncCursorStore, UploadManifestStore, UserReader, UserWriter,
+    PendingSendWriter, SyncCursorStore, UploadManifestStore, UserFileDownloadStore, UserReader,
+    UserWriter,
 };
 use std::sync::Arc;
 
@@ -14,6 +15,7 @@ pub struct StoreProvider {
     pub upload_manifest_store: Option<Arc<dyn UploadManifestStore>>,
     pub media_cache_store: Option<Arc<dyn MediaCacheStore>>,
     pub media_cache_admin: Option<Arc<dyn MediaCacheAdmin>>,
+    pub user_file_download_store: Option<Arc<dyn UserFileDownloadStore>>,
     pub user_profiles_reader: Option<Arc<dyn UserReader>>,
     pub user_profiles_writer: Option<Arc<dyn UserWriter>>,
 }
@@ -48,6 +50,7 @@ impl Clone for StoreProvider {
             upload_manifest_store: self.upload_manifest_store.clone(),
             media_cache_store: self.media_cache_store.clone(),
             media_cache_admin: self.media_cache_admin.clone(),
+            user_file_download_store: self.user_file_download_store.clone(),
             user_profiles_reader: self.user_profiles_reader.clone(),
             user_profiles_writer: self.user_profiles_writer.clone(),
         }
