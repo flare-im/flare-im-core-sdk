@@ -33,6 +33,9 @@ examples/temp-data/
 examples/certs/
 dist/
 
+examples/flare/
+examples/tauri/
+
 # Data directories (database and logs)
 chat-data/
 temp-data/

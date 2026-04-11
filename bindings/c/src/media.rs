@@ -1,160 +1,226 @@
-//! 媒体 API 模块
-//!
-//! 实现媒体上传下载、缓存管理等功能
+//! 媒体 API - 透传 `MediaApi`。
 
-use std::ffi::c_void;
+use std::ffi::{c_char, c_void};
 
-use crate::callback::{invoke_result_callback, invoke_string_callback, CallbackContext, FlareResultCallback, FlareStringCallback};
-use crate::error::FlareErrorCode;
-use crate::handle::{get_instance, FlareImHandle};
-use crate::string::parse_string;
+use crate::abi;
+use crate::executor::{execute_async, execute_async_unit, return_error, CallbackContext};
+use crate::helpers::{c_str_to_string, to_json_string};
+use crate::registry::require_instance;
+use crate::types::{FlareHandle, FlareResultCallback};
 
-/// 获取媒体 URL
-///
-/// # Arguments
-/// * `handle` - SDK 句柄
-/// * `media_id` - 媒体 ID
-/// * `context` - 用户上下文
-/// * `callback` - 字符串回调，返回媒体 URL
 #[unsafe(no_mangle)]
-pub extern "C" fn flare_im_get_media_url(
-    handle: FlareImHandle,
-    media_id: *const i8,
+pub extern "C" fn flare_media_get_url(
+    handle: FlareHandle,
+    media_id: *const c_char,
+    expires_in: i32,
     context: *mut c_void,
-    callback: FlareStringCallback,
-) {
-    let result = get_media_url_inner(handle, media_id, context, callback);
-    if let Err(e) = result {
-        tracing::error!("Failed to get media url: {:?}", e);
-        let ctx = CallbackContext {
-            user_context: context,
-            callback,
+    callback: FlareResultCallback,
+) -> i32 {
+    abi::catch_ffi_i32(|| {
+        let instance = match require_instance(handle) {
+            Ok(i) => i,
+            Err(e) => return e,
         };
-        invoke_string_callback(ctx, Err(e));
-    }
+
+        let media_id = match c_str_to_string(media_id) {
+            Ok(s) => s,
+            Err(code) => {
+                let ctx = CallbackContext::new(context, callback);
+                return_error(&ctx, code, "Invalid media_id");
+                return code;
+            }
+        };
+
+        let ctx = CallbackContext::new(context, callback);
+        let client = instance.client.clone();
+
+        execute_async(
+            instance,
+            ctx,
+            async move {
+                let api = client.media()?;
+                api.get_file_url(&media_id, expires_in).await
+            },
+            |url| to_json_string(&url),
+        );
+
+        0
+    })
 }
 
-fn get_media_url_inner(
-    handle: FlareImHandle,
-    media_id: *const i8,
-    context: *mut c_void,
-    callback: FlareStringCallback,
-) -> Result<(), FlareErrorCode> {
-    let instance = get_instance(handle)?;
-    let media_id = parse_string(media_id)?;
-
-    let ctx = CallbackContext {
-        user_context: context,
-        callback,
-    };
-    let client = instance.client.clone();
-
-    instance.runtime.spawn(async move {
-        let result = async {
-            let api = client.media().map_err(|e| FlareErrorCode::from(&e))?;
-            let url = api.get_url(&media_id).await.map_err(|e| FlareErrorCode::from(&e))?;
-            Ok(url)
-        }
-        .await;
-        invoke_string_callback(ctx, result);
-    });
-
-    Ok(())
-}
-
-/// 设置媒体缓存大小
-///
-/// # Arguments
-/// * `handle` - SDK 句柄
-/// * `max_bytes` - 最大字节数
-/// * `context` - 用户上下文
-/// * `callback` - 结果回调
 #[unsafe(no_mangle)]
-pub extern "C" fn flare_im_set_media_cache_max_bytes(
-    handle: FlareImHandle,
+pub extern "C" fn flare_media_set_cache_max_bytes(
+    handle: FlareHandle,
     max_bytes: u64,
     context: *mut c_void,
     callback: FlareResultCallback,
-) {
-    let result = set_media_cache_max_bytes_inner(handle, max_bytes, context, callback);
-    if let Err(e) = result {
-        tracing::error!("Failed to set media cache max bytes: {:?}", e);
-        let ctx = CallbackContext {
-            user_context: context,
-            callback,
+) -> i32 {
+    abi::catch_ffi_i32(|| {
+        let instance = match require_instance(handle) {
+            Ok(i) => i,
+            Err(e) => return e,
         };
-        invoke_result_callback(ctx, Err(e));
-    }
+
+        let ctx = CallbackContext::new(context, callback);
+        let client = instance.client.clone();
+
+        execute_async_unit(instance, ctx, async move {
+            let api = client.media()?;
+            api.set_media_cache_max_bytes(max_bytes).await
+        });
+
+        0
+    })
 }
 
-fn set_media_cache_max_bytes_inner(
-    handle: FlareImHandle,
-    max_bytes: u64,
-    context: *mut c_void,
-    callback: FlareResultCallback,
-) -> Result<(), FlareErrorCode> {
-    let instance = get_instance(handle)?;
-
-    let ctx = CallbackContext {
-        user_context: context,
-        callback,
-    };
-    let client = instance.client.clone();
-
-    instance.runtime.spawn(async move {
-        let result = async {
-            let api = client.media().map_err(|e| FlareErrorCode::from(&e))?;
-            api.set_cache_max_bytes(max_bytes).await.map_err(|e| FlareErrorCode::from(&e))?;
-            Ok(())
-        }
-        .await;
-        invoke_result_callback(ctx, result);
-    });
-
-    Ok(())
-}
-
-/// 清理媒体缓存
-///
-/// # Arguments
-/// * `handle` - SDK 句柄
-/// * `context` - 用户上下文
-/// * `callback` - 结果回调
 #[unsafe(no_mangle)]
-pub extern "C" fn flare_im_clear_media_cache(handle: FlareImHandle, context: *mut c_void, callback: FlareResultCallback) {
-    let result = clear_media_cache_inner(handle, context, callback);
-    if let Err(e) = result {
-        tracing::error!("Failed to clear media cache: {:?}", e);
-        let ctx = CallbackContext {
-            user_context: context,
-            callback,
-        };
-        invoke_result_callback(ctx, Err(e));
-    }
-}
-
-fn clear_media_cache_inner(
-    handle: FlareImHandle,
+pub extern "C" fn flare_media_clear_cache(
+    handle: FlareHandle,
     context: *mut c_void,
     callback: FlareResultCallback,
-) -> Result<(), FlareErrorCode> {
-    let instance = get_instance(handle)?;
+) -> i32 {
+    abi::catch_ffi_i32(|| {
+        let instance = match require_instance(handle) {
+            Ok(i) => i,
+            Err(e) => return e,
+        };
 
-    let ctx = CallbackContext {
-        user_context: context,
-        callback,
-    };
-    let client = instance.client.clone();
+        let ctx = CallbackContext::new(context, callback);
+        let client = instance.client.clone();
 
-    instance.runtime.spawn(async move {
-        let result = async {
-            let api = client.media().map_err(|e| FlareErrorCode::from(&e))?;
-            api.clear_cache().await.map_err(|e| FlareErrorCode::from(&e))?;
-            Ok(())
-        }
-        .await;
-        invoke_result_callback(ctx, result);
-    });
+        execute_async_unit(instance, ctx, async move {
+            let api = client.media()?;
+            api.clear_media_cache().await
+        });
 
-    Ok(())
+        0
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn flare_media_resolve_access(
+    handle: FlareHandle,
+    file_id: *const c_char,
+    expires_in: i32,
+    context: *mut c_void,
+    callback: FlareResultCallback,
+) -> i32 {
+    abi::catch_ffi_i32(|| {
+        let instance = match require_instance(handle) {
+            Ok(i) => i,
+            Err(e) => return e,
+        };
+        let file_id = match c_str_to_string(file_id) {
+            Ok(s) => s,
+            Err(code) => {
+                let ctx = CallbackContext::new(context, callback);
+                return_error(&ctx, code, "Invalid file_id");
+                return code;
+            }
+        };
+        let ctx = CallbackContext::new(context, callback);
+        let client = instance.client.clone();
+        execute_async(
+            instance,
+            ctx,
+            async move {
+                let api = client.media()?;
+                api.resolve_media_access(&file_id, expires_in).await
+            },
+            |v| to_json_string(&v),
+        );
+        0
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn flare_media_cache_remote(
+    handle: FlareHandle,
+    file_id: *const c_char,
+    expires_in: i32,
+    context: *mut c_void,
+    callback: FlareResultCallback,
+) -> i32 {
+    abi::catch_ffi_i32(|| {
+        let instance = match require_instance(handle) {
+            Ok(i) => i,
+            Err(e) => return e,
+        };
+        let file_id = match c_str_to_string(file_id) {
+            Ok(s) => s,
+            Err(code) => {
+                let ctx = CallbackContext::new(context, callback);
+                return_error(&ctx, code, "Invalid file_id");
+                return code;
+            }
+        };
+        let ctx = CallbackContext::new(context, callback);
+        let client = instance.client.clone();
+        execute_async(
+            instance,
+            ctx,
+            async move {
+                let api = client.media()?;
+                api.cache_remote_media(&file_id, expires_in).await
+            },
+            |v| to_json_string(&v),
+        );
+        0
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn flare_media_cache_stats(
+    handle: FlareHandle,
+    context: *mut c_void,
+    callback: FlareResultCallback,
+) -> i32 {
+    abi::catch_ffi_i32(|| {
+        let instance = match require_instance(handle) {
+            Ok(i) => i,
+            Err(e) => return e,
+        };
+        let ctx = CallbackContext::new(context, callback);
+        let client = instance.client.clone();
+        execute_async(
+            instance,
+            ctx,
+            async move {
+                let api = client.media()?;
+                api.media_cache_stats().await
+            },
+            |v| to_json_string(&v),
+        );
+        0
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn flare_media_set_cache_root(
+    handle: FlareHandle,
+    absolute_path: *const c_char,
+    context: *mut c_void,
+    callback: FlareResultCallback,
+) -> i32 {
+    abi::catch_ffi_i32(|| {
+        let instance = match require_instance(handle) {
+            Ok(i) => i,
+            Err(e) => return e,
+        };
+        let path = match abi::read_c_str_opt(absolute_path) {
+            Ok(o) => o,
+            Err(code) => {
+                let ctx = CallbackContext::new(context, callback);
+                return_error(&ctx, code, "Invalid absolute_path");
+                return code;
+            }
+        };
+        let ctx = CallbackContext::new(context, callback);
+        let client = instance.client.clone();
+        execute_async_unit(instance, ctx, async move {
+            let api = client.media()?;
+            api.set_media_cache_root(path.as_deref()).await
+        });
+        0
+    })
 }

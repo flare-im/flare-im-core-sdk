@@ -3,6 +3,8 @@
 use crate::error::Result;
 use crate::model::content_builder::BuiltContent;
 use crate::model::message::{ConversationType, Message};
+use crate::util::date::ms_to_prost_timestamp;
+use crate::util::id::now_millis;
 use flare_proto::common::{MessageSource, OfflinePushInfo};
 
 /// 消息构建器
@@ -100,6 +102,9 @@ impl MessageBuilder {
             )
         })?;
         let message_type = content.message_type as i32;
+        // 未下行前 `timestamp` 为空会导致 `IMMessage::timestamp/client_timestamp` 均为 0，
+        // 前端按时间排序时会把待发消息误排到更早的对方消息之前。
+        let timestamp = ms_to_prost_timestamp(now_millis());
         Ok(Message {
             server_id: String::new(),
             conversation_id: self.conversation_id,
@@ -109,7 +114,7 @@ impl MessageBuilder {
             sender_avatar: self.sender_avatar,
             source: MessageSource::User as i32,
             seq: 0,
-            timestamp: None,
+            timestamp,
             conversation_type: self.conversation_type,
             message_type,
             channel_id: self.channel_id,

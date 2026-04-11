@@ -179,6 +179,20 @@ pub async fn init_schema(pool: &SqlitePool) -> Result<()> {
     .await
     .map_err(|e| FlareError::localized(ErrorCode::DatabaseError, e.to_string()))?;
 
+    // 覆盖 (enqueued_at_ms, client_msg_id)，便于「队首」子查询尽量走索引、再按主键取 BLOB。
+    sqlx::query(
+        r#"CREATE INDEX IF NOT EXISTS idx_pending_sends_queue_head
+           ON pending_sends (enqueued_at_ms ASC, client_msg_id ASC)"#,
+    )
+    .execute(pool)
+    .await
+    .map_err(|e| FlareError::localized(ErrorCode::DatabaseError, e.to_string()))?;
+
+    sqlx::query("ANALYZE pending_sends")
+        .execute(pool)
+        .await
+        .map_err(|e| FlareError::localized(ErrorCode::DatabaseError, e.to_string()))?;
+
     sqlx::query(
         r#"CREATE TABLE IF NOT EXISTS user_profiles (
             user_id TEXT PRIMARY KEY,

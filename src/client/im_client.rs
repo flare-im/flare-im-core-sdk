@@ -169,6 +169,14 @@ impl IMClient {
         self.inner.read().await.current_user_id.is_some()
     }
 
+    /// 与 [`Self::state`] / 传输层 `Ready` 不同：未登录时引擎可能仍存在，此时本方法为 `false`。
+    pub fn session_active_sync(&self) -> bool {
+        self.inner
+            .try_read()
+            .map(|g| g.current_user_id.as_ref().is_some_and(|s| !s.is_empty()))
+            .unwrap_or(false)
+    }
+
     /// 返回当前登录用户 ID；未登录时返回 `None`。
     pub async fn current_user_id(&self) -> Option<String> {
         self.inner.read().await.current_user_id.clone()

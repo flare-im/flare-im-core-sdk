@@ -12,6 +12,7 @@ use crate::domain::ConversationStore;
 use crate::error::{ErrorCode, FlareError, Result};
 use crate::model::content_builder::BuiltContent;
 use crate::model::message::IMMessage;
+use flare_proto::common::ImageInfo;
 
 /// 多类型消息的构建入口（不负责发送）。
 pub struct MessageBuildApi {
@@ -158,6 +159,25 @@ impl MessageBuildApi {
             &sender_id,
             source_image_id,
             thumbnail_image_id,
+            None,
+        )?;
+        self.apply_conversation_routing(conversation_id, msg).await
+    }
+
+    pub async fn create_image_group(
+        &self,
+        conversation_id: &str,
+        images: Vec<ImageInfo>,
+        description: impl Into<String>,
+        metadata: std::collections::HashMap<String, String>,
+    ) -> Result<IMMessage> {
+        let sender_id = self.current_sender_id().await?;
+        let msg = MessageBuilderService::build_image_group(
+            conversation_id,
+            &sender_id,
+            images,
+            description,
+            metadata,
             None,
         )?;
         self.apply_conversation_routing(conversation_id, msg).await

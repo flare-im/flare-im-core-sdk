@@ -279,6 +279,7 @@ impl MessageApi {
         self.view_assembler.get_raw(message_id).await
     }
 
+    /// `before_seq == 0`：会话首屏（本地最新一页）；否则 `seq < before_seq` 分页更早消息。
     pub async fn list(
         &self,
         conversation_id: &str,

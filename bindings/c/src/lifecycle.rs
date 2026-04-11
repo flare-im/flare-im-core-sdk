@@ -1,328 +1,269 @@
-//! 生命周期 API 模块
+//! 生命周期 API - SDK 初始化、登录、登出
 //!
-//! 实现 SDK 的创建、销毁、初始化、登录、登出、状态查询等功能
+//! 本模块仅做句柄/字符串/回调编排，业务在 `flare_im_core_sdk`。
 
-use std::ffi::c_void;
+use std::ffi::{c_char, c_void};
 use std::sync::Arc;
 
-use flare_im_core_sdk::client::IMClient;
+use flare_im_core_sdk::client::{IMClient, LoginDbKind};
 use flare_im_core_sdk::lifecycle::SdkConfigOverlay;
-use flare_im_core_sdk::prelude::SdkState;
+use flare_im_core_sdk::util::generate_test_token as util_generate_test_token;
 
-use crate::callback::{invoke_result_callback, CallbackContext, FlareResultCallback};
-use crate::error::FlareErrorCode;
-use crate::handle::{get_instance, next_handle_id, register_instance, remove_instance, FlareImHandle, SdkInstance};
-use crate::json::parse_json;
-use crate::string::{parse_string, string_to_c};
+use crate::abi;
+use crate::executor::{execute_async, execute_async_unit, return_error, CallbackContext};
+use crate::helpers::{c_str_to_string, parse_json, string_to_flare};
+use crate::registry::{
+    register_instance, release_all_instances, release_instance, require_instance, retain_instance, SdkInstance,
+};
+use crate::types::{FlareHandle, FlareResultCallback, FlareString};
 
-/// 创建 SDK 实例
-///
-/// # Returns
-/// SDK 句柄，id > 0 表示成功，id == 0 表示失败
+pub const FLARE_FFI_CONTRACT_VERSION: &str = "flare-im-ffi/v1";
+
 #[unsafe(no_mangle)]
-pub extern "C" fn flare_im_new() -> FlareImHandle {
-    match flare_im_new_inner() {
-        Ok(handle) => handle,
-        Err(e) => {
-            tracing::error!("Failed to create SDK instance: {:?}", e);
-            FlareImHandle::default()
-        }
-    }
+pub extern "C" fn flare_sdk_create() -> FlareHandle {
+    abi::catch_ffi_handle(|| {
+        let client = IMClient::new();
+        let runtime = crate::ffi_runtime::sdk_runtime_handle();
+        let instance = Arc::new(SdkInstance { client, runtime });
+        register_instance(instance)
+    })
 }
 
-fn flare_im_new_inner() -> Result<FlareImHandle, FlareErrorCode> {
-    // 生成句柄 ID
-    let id = next_handle_id();
+#[unsafe(no_mangle)]
+pub extern "C" fn flare_sdk_release(handle: FlareHandle) {
+    abi::catch_ffi_void(|| release_instance(handle));
+}
 
-    // 创建 IMClient
-    let client = IMClient::new();
-
-    // 获取当前 Tokio runtime handle
-    let runtime = tokio::runtime::Handle::try_current().map_err(|e| {
-        tracing::error!("No Tokio runtime available: {}", e);
-        FlareErrorCode::InternalError
-    })?;
-
-    // 创建实例
-    let instance = Arc::new(SdkInstance {
-        client,
-        runtime,
-        event_subscriptions: std::sync::RwLock::new(Vec::new()),
+/// FFI 全局硬重置：取消全部事件订阅并释放全部 SDK 句柄。
+///
+/// 用途：Flutter/iOS 热重启后，旧 isolate 的回调地址可能失效。
+/// 在新 isolate 初始化前调用可避免旧后台任务继续回调导致崩溃。
+#[unsafe(no_mangle)]
+pub extern "C" fn flare_sdk_hard_reset() {
+    abi::catch_ffi_void(|| {
+        crate::event::unsubscribe_all_events();
+        release_all_instances();
     });
-
-    // 注册到句柄表
-    register_instance(id, instance)?;
-
-    Ok(FlareImHandle { id })
 }
 
-/// 释放 SDK 实例
-///
-/// # Arguments
-/// * `handle` - SDK 句柄
-///
-/// # Note
-/// 释放后会断开连接并清理所有资源
 #[unsafe(no_mangle)]
-pub extern "C" fn flare_im_free(handle: FlareImHandle) {
-    match flare_im_free_inner(handle) {
-        Ok(()) => {}
-        Err(e) => tracing::error!("Failed to free SDK instance: {:?}", e),
-    }
-}
-
-fn flare_im_free_inner(handle: FlareImHandle) -> Result<(), FlareErrorCode> {
-    // 从句柄表移除实例
-    let instance = remove_instance(handle)?;
-
-    // 取消所有事件订阅
-    if let Ok(mut subs) = instance.event_subscriptions.write() {
-        for sub in subs.drain(..) {
-            let _ = sub.cancel_tx.send(());
-        }
-    }
-
-    Ok(())
-}
-
-/// 初始化 SDK
-///
-/// # Arguments
-/// * `handle` - SDK 句柄
-/// * `config_json` - 配置 JSON，格式见 SdkConfig
-/// * `context` - 用户上下文，将传递给 callback
-/// * `callback` - 结果回调
-#[unsafe(no_mangle)]
-pub extern "C" fn flare_im_init(
-    handle: FlareImHandle,
-    config_json: *const i8,
+pub extern "C" fn flare_sdk_init(
+    handle: FlareHandle,
+    config_json: *const c_char,
     context: *mut c_void,
     callback: FlareResultCallback,
-) {
-    let result = flare_im_init_inner(handle, config_json, context, callback);
-    if let Err(e) = result {
-        tracing::error!("Failed to init SDK: {:?}", e);
-        // 直接调用回调返回错误
-        let ctx = CallbackContext {
-            user_context: context,
-            callback,
+) -> i32 {
+    abi::catch_ffi_i32(|| {
+        let instance = match require_instance(handle) {
+            Ok(i) => i,
+            Err(e) => return e,
         };
-        invoke_result_callback(ctx, Err(e));
-    }
-}
 
-fn flare_im_init_inner(
-    handle: FlareImHandle,
-    config_json: *const i8,
-    context: *mut c_void,
-    callback: FlareResultCallback,
-) -> Result<(), FlareErrorCode> {
-    // 获取实例
-    let instance = get_instance(handle)?;
+        let config: SdkConfigOverlay = match parse_json(config_json) {
+            Ok(c) => c,
+            Err(code) => {
+                let ctx = CallbackContext::new(context, callback);
+                return_error(&ctx, code, "Failed to parse config JSON");
+                return code;
+            }
+        };
 
-    // 解析配置
-    let config: SdkConfigOverlay = parse_json(config_json)?;
+        let ctx = CallbackContext::new(context, callback);
+        let client = instance.client.clone();
 
-    // 创建回调上下文
-    let ctx = CallbackContext {
-        user_context: context,
-        callback,
-    };
-
-    // 克隆客户端
-    let client = instance.client.clone();
-
-    // 在 Tokio runtime 中执行异步初始化
-    instance.runtime.spawn(async move {
-        let result = client.init(None, Some(config)).await.map_err(|e| {
-            tracing::error!("Init failed: {}", e);
-            FlareErrorCode::from(&e)
+        execute_async_unit(instance, ctx, async move {
+            client.init(None, Some(config)).await
         });
-        invoke_result_callback(ctx, result);
-    });
 
-    Ok(())
+        0
+    })
 }
 
-/// 登录
-///
-/// # Arguments
-/// * `handle` - SDK 句柄
-/// * `user_id` - 用户 ID
-/// * `token` - JWT Token
-/// * `context` - 用户上下文
-/// * `callback` - 结果回调
 #[unsafe(no_mangle)]
-pub extern "C" fn flare_im_login(
-    handle: FlareImHandle,
-    user_id: *const i8,
-    token: *const i8,
+pub extern "C" fn flare_sdk_login(
+    handle: FlareHandle,
+    user_id: *const c_char,
+    token: *const c_char,
+    store_config_json: *const c_char,
     context: *mut c_void,
     callback: FlareResultCallback,
-) {
-    let result = flare_im_login_inner(handle, user_id, token, context, callback);
-    if let Err(e) = result {
-        tracing::error!("Failed to login: {:?}", e);
-        let ctx = CallbackContext {
-            user_context: context,
-            callback,
+) -> i32 {
+    abi::catch_ffi_i32(|| {
+        let instance = match require_instance(handle) {
+            Ok(i) => i,
+            Err(e) => return e,
         };
-        invoke_result_callback(ctx, Err(e));
-    }
-}
 
-fn flare_im_login_inner(
-    handle: FlareImHandle,
-    user_id: *const i8,
-    token: *const i8,
-    context: *mut c_void,
-    callback: FlareResultCallback,
-) -> Result<(), FlareErrorCode> {
-    // 获取实例
-    let instance = get_instance(handle)?;
-
-    // 解析参数
-    let user_id = parse_string(user_id)?;
-    let token = parse_string(token)?;
-
-    // 创建回调上下文
-    let ctx = CallbackContext {
-        user_context: context,
-        callback,
-    };
-
-    // 克隆客户端
-    let client = instance.client.clone();
-
-    // 在 Tokio runtime 中执行异步登录
-    instance.runtime.spawn(async move {
-        // 使用 IndexedDb 作为存储类型 (需要 StoreProvider)
-        // 注意: 这里需要根据实际情况提供 StoreProvider
-        // 暂时使用一个空的实现
-        let result = Err(FlareErrorCode::InternalError);
-
-        // TODO: 实现正确的登录逻辑
-        // let result = client
-        //     .login(&user_id, Some(&token), LoginDbKind::IndexedDb(store_provider), |_bus, _| {
-        //         // 事件转发在 subscribe_events 中处理
-        //     })
-        //     .await
-        //     .map_err(|e| {
-        //         tracing::error!("Login failed: {}", e);
-        //         FlareErrorCode::from(&e)
-        //     });
-        invoke_result_callback(ctx, result);
-    });
-
-    Ok(())
-}
-
-/// 登出
-///
-/// # Arguments
-/// * `handle` - SDK 句柄
-/// * `context` - 用户上下文
-/// * `callback` - 结果回调
-#[unsafe(no_mangle)]
-pub extern "C" fn flare_im_logout(handle: FlareImHandle, context: *mut c_void, callback: FlareResultCallback) {
-    let result = flare_im_logout_inner(handle, context, callback);
-    if let Err(e) = result {
-        tracing::error!("Failed to logout: {:?}", e);
-        let ctx = CallbackContext {
-            user_context: context,
-            callback,
+        let user_id = match c_str_to_string(user_id) {
+            Ok(s) => s,
+            Err(code) => {
+                let ctx = CallbackContext::new(context, callback);
+                return_error(&ctx, code, "Invalid user_id");
+                return code;
+            }
         };
-        invoke_result_callback(ctx, Err(e));
-    }
-}
 
-fn flare_im_logout_inner(
-    handle: FlareImHandle,
-    context: *mut c_void,
-    callback: FlareResultCallback,
-) -> Result<(), FlareErrorCode> {
-    // 获取实例
-    let instance = get_instance(handle)?;
+        let token = match c_str_to_string(token) {
+            Ok(s) => s,
+            Err(code) => {
+                let ctx = CallbackContext::new(context, callback);
+                return_error(&ctx, code, "Invalid token");
+                return code;
+            }
+        };
 
-    // 创建回调上下文
-    let ctx = CallbackContext {
-        user_context: context,
-        callback,
-    };
+        let _ = store_config_json;
 
-    // 克隆客户端
-    let client = instance.client.clone();
+        let ctx = CallbackContext::new(context, callback);
+        let client = instance.client.clone();
 
-    // 在 Tokio runtime 中执行异步登出
-    instance.runtime.spawn(async move {
-        let result = client.logout().await.map_err(|e| {
-            tracing::error!("Logout failed: {}", e);
-            FlareErrorCode::from(&e)
+        execute_async_unit(instance, ctx, async move {
+            client
+                .login(&user_id, Some(token.as_str()), LoginDbKind::Sqlite, |_, _| {})
+                .await
         });
-        invoke_result_callback(ctx, result);
-    });
 
-    Ok(())
+        0
+    })
 }
 
-/// 是否已连接（同步）
-///
-/// # Arguments
-/// * `handle` - SDK 句柄
-///
-/// # Returns
-/// true 表示已连接，false 表示未连接或无效句柄
 #[unsafe(no_mangle)]
-pub extern "C" fn flare_im_is_connected(handle: FlareImHandle) -> bool {
-    get_instance(handle)
-        .ok()
-        .map(|i| i.client.state() == SdkState::Ready)
-        .unwrap_or(false)
+pub extern "C" fn flare_sdk_logout(
+    handle: FlareHandle,
+    context: *mut c_void,
+    callback: FlareResultCallback,
+) -> i32 {
+    abi::catch_ffi_i32(|| {
+        let instance = match require_instance(handle) {
+            Ok(i) => i,
+            Err(e) => return e,
+        };
+
+        let ctx = CallbackContext::new(context, callback);
+        let client = instance.client.clone();
+
+        execute_async_unit(instance, ctx, async move { client.logout().await });
+
+        0
+    })
 }
 
-/// 当前用户 ID（同步）
-///
-/// # Arguments
-/// * `handle` - SDK 句柄
-///
-/// # Returns
-/// 用户 ID 字符串，需调用 flare_im_string_free 释放；未登录返回 NULL
 #[unsafe(no_mangle)]
-pub extern "C" fn flare_im_current_user_id(handle: FlareImHandle) -> *const i8 {
-    match flare_im_current_user_id_inner(handle) {
-        Ok(Some(user_id)) => string_to_c(user_id),
-        Ok(None) => std::ptr::null(),
-        Err(e) => {
-            tracing::error!("Failed to get current user id: {:?}", e);
-            std::ptr::null()
+pub extern "C" fn flare_sdk_version() -> FlareString {
+    abi::catch_ffi_flare_string(|| string_to_flare(env!("CARGO_PKG_VERSION").to_string()))
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn flare_sdk_ffi_contract_version() -> FlareString {
+    abi::catch_ffi_flare_string(|| string_to_flare(FLARE_FFI_CONTRACT_VERSION.to_string()))
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn flare_sdk_is_connected(handle: FlareHandle) -> bool {
+    abi::catch_ffi_bool(|| {
+        retain_instance(handle).is_some_and(|instance| {
+            matches!(
+                instance.client.state(),
+                flare_im_core_sdk::core::SdkState::Ready
+            )
+        })
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn flare_sdk_session_active(handle: FlareHandle) -> bool {
+    abi::catch_ffi_bool(|| {
+        retain_instance(handle)
+            .is_some_and(|instance| instance.client.session_active_sync())
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn flare_sdk_current_user_id(
+    handle: FlareHandle,
+    context: *mut c_void,
+    callback: FlareResultCallback,
+) -> i32 {
+    abi::catch_ffi_i32(|| {
+        let instance = match require_instance(handle) {
+            Ok(i) => i,
+            Err(e) => return e,
+        };
+
+        let ctx = CallbackContext::new(context, callback);
+        let client = instance.client.clone();
+
+        execute_async(
+            instance,
+            ctx,
+            async move {
+                let user_id = client.current_user_id().await;
+                Ok(user_id.unwrap_or_default())
+            },
+            |user_id| Ok(user_id),
+        );
+
+        0
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn flare_sdk_generate_test_token(
+    secret: *const c_char,
+    issuer: *const c_char,
+    user_id: *const c_char,
+    tenant_id: *const c_char,
+    ttl_secs: u64,
+) -> FlareString {
+    abi::catch_ffi_flare_string(|| {
+        let user_id = match c_str_to_string(user_id) {
+            Ok(s) if !s.is_empty() => s,
+            Ok(_) => {
+                tracing::warn!("flare_sdk_generate_test_token: empty user_id");
+                return FlareString::default();
+            }
+            Err(_) => return FlareString::default(),
+        };
+
+        let secret_s = match abi::read_c_str_opt(secret) {
+            Ok(o) => o.unwrap_or_default(),
+            Err(_) => return FlareString::default(),
+        };
+        let issuer_s = match abi::read_c_str_opt(issuer) {
+            Ok(o) => o.unwrap_or_default(),
+            Err(_) => return FlareString::default(),
+        };
+
+        let tenant = match abi::read_c_str_opt(tenant_id) {
+            Ok(o) => o.filter(|s| !s.is_empty()),
+            Err(_) => return FlareString::default(),
+        };
+
+        let secret_ref = if secret_s.is_empty() {
+            "insecure-secret"
+        } else {
+            secret_s.as_str()
+        };
+        let issuer_ref = if issuer_s.is_empty() {
+            "flare-im-core"
+        } else {
+            issuer_s.as_str()
+        };
+        let ttl = if ttl_secs == 0 { 3600 } else { ttl_secs };
+
+        match util_generate_test_token(
+            secret_ref,
+            issuer_ref,
+            &user_id,
+            ttl,
+            None,
+            tenant.as_deref(),
+        ) {
+            Ok(token) => string_to_flare(token),
+            Err(e) => {
+                tracing::warn!(error = %e, "flare_sdk_generate_test_token failed");
+                FlareString::default()
+            }
         }
-    }
-}
-
-fn flare_im_current_user_id_inner(handle: FlareImHandle) -> Result<Option<String>, FlareErrorCode> {
-    let instance = get_instance(handle)?;
-    Ok(instance.client.current_user_id())
-}
-
-/// SDK 状态（同步）
-///
-/// # Arguments
-/// * `handle` - SDK 句柄
-///
-/// # Returns
-/// 状态字符串，如 "Ready"、"Disconnected"、"Reconnecting"；无效句柄返回 NULL
-#[unsafe(no_mangle)]
-pub extern "C" fn flare_im_state(handle: FlareImHandle) -> *const i8 {
-    match flare_im_state_inner(handle) {
-        Ok(state) => string_to_c(state),
-        Err(e) => {
-            tracing::error!("Failed to get state: {:?}", e);
-            std::ptr::null()
-        }
-    }
-}
-
-fn flare_im_state_inner(handle: FlareImHandle) -> Result<String, FlareErrorCode> {
-    let instance = get_instance(handle)?;
-    Ok(format!("{:?}", instance.client.state()))
+    })
 }

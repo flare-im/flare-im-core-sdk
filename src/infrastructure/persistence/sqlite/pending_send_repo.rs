@@ -63,8 +63,13 @@ impl PendingSendReader for SqlitePendingSendRepo {
     }
 
     async fn take_oldest(&self) -> Result<Option<PendingSendVo>> {
+        // 先按索引解析队首 client_msg_id，再主键取 BLOB，避免单条语句对大表排序+拉全行。
         let row: Option<(Vec<u8>, i64)> = sqlx::query_as(
-            "SELECT data, enqueued_at_ms FROM pending_sends ORDER BY enqueued_at_ms ASC LIMIT 1",
+            r#"SELECT data, enqueued_at_ms FROM pending_sends
+               WHERE client_msg_id = (
+                 SELECT client_msg_id FROM pending_sends
+                 ORDER BY enqueued_at_ms ASC LIMIT 1
+               )"#,
         )
         .fetch_optional(&self.pool)
         .await

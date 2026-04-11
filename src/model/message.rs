@@ -19,8 +19,10 @@ use flare_proto::common::{Message as ProtoMessage, OfflinePushInfo};
 use serde::{Deserialize, Serialize};
 
 use crate::model::decoder::decode_content_bytes;
+use crate::model::preview_storage::is_redundant_content_text_extra;
 use crate::model::message_elem::{
-    Elem, decoded_content_to_elem, elem_to_message_content, image_elem_is_motion,
+    Elem, decoded_content_to_elem, elem_plain_summary, elem_preview_storage_payload,
+    elem_to_message_content,
 };
 use crate::util::date::{ms_to_prost_timestamp, prost_timestamp_to_ms};
 use prost::Message as ProstMessage;
@@ -72,69 +74,6 @@ fn write_reactions_to_extra(extra: &mut HashMap<String, String>, reactions: &[Re
     }
 }
 
-fn elem_preview_text(elem: &Elem) -> String {
-    match elem {
-        Elem::Text(t) => t.text.clone(),
-        Elem::RichText(r) => {
-            let title = r.title.as_deref().map(str::trim).filter(|t| !t.is_empty());
-            let body = r.plain_text.trim();
-            match (title, !body.is_empty()) {
-                (Some(t), true) => format!("{t} {}", body),
-                (Some(t), false) => t.to_string(),
-                (None, true) => body.to_string(),
-                (None, false) => "[富文本]".to_string(),
-            }
-        }
-        Elem::File(f) => {
-            if f.file_name.is_empty() {
-                "[文件]".to_string()
-            } else {
-                format!("[文件] {}", f.file_name)
-            }
-        }
-        Elem::Image(i) => {
-            if image_elem_is_motion(i) {
-                "[动图]".to_string()
-            } else {
-                "[图片]".to_string()
-            }
-        }
-        Elem::Video(_) => "[视频]".to_string(),
-        Elem::Audio(_) => "[语音]".to_string(),
-        Elem::Location(l) => {
-            let label = if !l.title.is_empty() {
-                l.title.as_str()
-            } else if !l.address.is_empty() {
-                l.address.as_str()
-            } else {
-                ""
-            };
-            if label.is_empty() {
-                "[位置]".to_string()
-            } else {
-                format!("[位置] {}", label)
-            }
-        }
-        Elem::Card(c) => {
-            let label = if !c.title.is_empty() {
-                c.title.as_str()
-            } else if !c.id.is_empty() {
-                c.id.as_str()
-            } else {
-                ""
-            };
-            if label.is_empty() {
-                "[名片]".to_string()
-            } else {
-                format!("[名片] {}", label)
-            }
-        }
-        Elem::Sticker(_) => "[贴纸]".to_string(),
-        Elem::Emoji(e) => e.emoji.clone(),
-        _ => String::new(),
-    }
-}
-
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct MessageLocalState {
     /// 是否发送中
@@ -143,7 +82,10 @@ pub struct MessageLocalState {
     pub failed: bool,
     /// 本地消息
     pub is_local: bool,
-    /// 本地排序时间
+    /// 本地列表排序时间（毫秒），**不是**服务端会话 `seq`。
+    ///
+    /// 用途：待发/未 ACK 消息常保持 `seq == 0`，会话列表「最新一页」在 SQLite 中按本字段与时间戳排序，
+    /// 避免仅占位 `seq`；持久化时若为 `0`，仓储层会回退为 `max(timestamp, client_timestamp, 墙钟)`。
     pub sort_ts: u64,
 }
 
@@ -280,7 +222,7 @@ impl IMMessage {
         if content.is_none() {
             if let Some(ref decoded) = decoded_opt {
                 let p = decoded.text_preview();
-                if !p.is_empty() && p != "[未知]" {
+                if !is_redundant_content_text_extra(&p) {
                     extra.entry("contentText".into()).or_insert(p);
                 }
             }
@@ -301,7 +243,7 @@ impl IMMessage {
             } else {
                 q.quoted_content
                     .as_deref()
-                    .map(elem_preview_text)
+                    .map(elem_plain_summary)
                     .unwrap_or_default()
             };
             if !preview.is_empty() {
@@ -463,17 +405,14 @@ impl IMMessage {
         self.status
     }
 
-    /// 供存储使用：仅文本消息返回 Some(text)，其余为 None。存库时只存 content_bytes + 可选 text，不存 content。
+    /// 供 `messages.text` 与 `conversations.last_message_preview`：JSON 字符串形态的 [`crate::model::preview_storage::PreviewStoragePayload`]（稳定 `k` + 参数 `a`），供应用端 i18n；与 [`elem_plain_summary`] / [`elem_preview_storage_payload`](crate::model::message_elem::elem_preview_storage_payload) 一致。
     pub fn text_for_storage(&self) -> Option<String> {
-        if self.message_type != flare_proto::common::MessageType::Text as i32 {
-            return None;
-        }
-        self.content.as_ref().and_then(|c| {
-            if let Elem::Text(t) = c {
-                Some(t.text.clone())
-            } else {
-                None
+        self.content.as_ref().and_then(|e| {
+            let p = elem_preview_storage_payload(e);
+            if p.is_empty_for_last_preview() {
+                return None;
             }
+            serde_json::to_string(&p).ok()
         })
     }
 

@@ -169,6 +169,9 @@ pub struct Conversation {
     pub unread_count: u32,
     /// 已读序列号（与 read_seq 同义）
     pub last_read_seq: u64,
+    /// 对端（其他成员）最大已读序列号；用于发送方已读双勾在重连/重登后恢复。
+    /// 由服务端同步摘要 `ext.peer_read_seq` 下发并持久化。
+    pub peer_read_seq: u64,
     pub max_seq: u64,
 
     // ===============================
@@ -230,6 +233,7 @@ impl Default for Conversation {
             last_sender_avatar_url: String::new(),
             unread_count: 0,
             last_read_seq: 0,
+            peer_read_seq: 0,
             max_seq: 0,
             is_pinned: false,
             is_muted: false,
@@ -270,7 +274,8 @@ impl Conversation {
 
     /// 转为 proto ConversationSummary（持久化/回写服务端用）
     pub fn to_proto_summary(&self) -> flare_proto::common::ConversationSummary {
-        let ext = self.ext.clone();
+        let mut ext = self.ext.clone();
+        ext.insert("peer_read_seq".to_string(), self.peer_read_seq.to_string());
         flare_proto::common::ConversationSummary {
             conversation_id: self.conversation_id.clone(),
             conversation_type: self.conversation_type.as_str().to_string(),
@@ -367,6 +372,11 @@ impl From<flare_proto::common::ConversationSummary> for Conversation {
     fn from(s: flare_proto::common::ConversationSummary) -> Self {
         let updated_at = prost_timestamp_to_ms(s.updated_at.as_ref());
         let created_at = prost_timestamp_to_ms(s.created_at.as_ref());
+        let peer_read_seq = s
+            .ext
+            .get("peer_read_seq")
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or_default();
         // 以服务端聚合后的 unread_count 为准：
         // 该值已按消息可见性/消息状态（删除、撤回等）处理，能正确覆盖历史未读统计。
         let unread_count = s.unread_count;
@@ -380,6 +390,7 @@ impl From<flare_proto::common::ConversationSummary> for Conversation {
             unread_count,
             max_seq: s.max_seq,
             last_read_seq: s.last_read_seq,
+            peer_read_seq,
             last_message: s.last_message.as_ref().map(message_preview_from_proto),
             updated_at,
             created_at,

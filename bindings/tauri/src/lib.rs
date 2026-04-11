@@ -40,7 +40,8 @@ use commands::{
     message::{
         sdk_add_reaction, sdk_create_announcement, sdk_create_audio, sdk_create_card,
         sdk_create_custom, sdk_create_emoji, sdk_create_file, sdk_create_forward,
-        sdk_create_image, sdk_create_image_with_thumbnail, sdk_create_link_card, sdk_create_location,
+        sdk_create_image, sdk_create_image_group, sdk_create_image_with_thumbnail,
+        sdk_create_link_card, sdk_create_location,
         sdk_create_mini_program, sdk_create_notification, sdk_create_placeholder,
         sdk_create_quote, sdk_create_schedule, sdk_create_sticker,
         sdk_create_system, sdk_create_task, sdk_create_text, sdk_create_thread_reply,
@@ -81,6 +82,7 @@ pub fn im_invoke_handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + 'stat
         sdk_create_thread_reply,
         sdk_create_forward,
         sdk_create_image,
+        sdk_create_image_group,
         sdk_create_image_with_thumbnail,
         sdk_create_video,
         sdk_create_audio,

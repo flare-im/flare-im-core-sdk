@@ -1,6 +1,7 @@
 use crate::model::message::{IMMessage, SendAck};
 use crate::model::message::MessageStatus;
 use crate::model::message::MessageLocalState;
+use crate::util::date::prost_timestamp_to_ms;
 
 pub const REASON_PENDING_ANOTHER_ACCOUNT: &str = "pending message belongs to another account";
 pub const REASON_MAX_RETRIES_EXCEEDED: &str = "max retries exceeded";
@@ -191,6 +192,12 @@ impl MessageDeliveryService {
             sent_message.server_id = ack.server_msg_id.clone();
         }
         sent_message.seq = ack.seq;
+        // 与下行消息时间轴对齐；否则 ACK 后仍持客户端建消息时间，`sort_ts`/首屏排序可能弱于服务端历史而掉出 LIMIT。
+        let server_ms = prost_timestamp_to_ms(ack.server_time.as_ref());
+        if server_ms > 0 {
+            sent_message.timestamp = server_ms;
+            sent_message.client_timestamp = server_ms;
+        }
         sent_message.local_state = MessageLocalState {
             sending: false,
             failed: false,

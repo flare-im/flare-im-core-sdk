@@ -43,3 +43,6 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
+
+# iOS：Rust FFI 构建产物（由 Xcode Run Script 生成）
+ios/FFI/build/

@@ -83,7 +83,7 @@
 //! // 监听推送 + 解码内容
 //! let _sub = client.on_message(|msg| {
 //!     if let Ok(decoded) = decode_content(msg) {
-//!         println!("{}", decoded.text_preview());
+//!         println!("{}", decoded.text_preview()); // JSON：`k` + `a`，见 `model::preview_storage`
 //!     }
 //! });
 //!

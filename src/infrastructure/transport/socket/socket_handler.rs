@@ -95,6 +95,9 @@ impl MessageListener for SocketHandler {
                                 frame_id = %frame.message_id,
                                 client_msg_id = %send_ack.client_msg_id,
                                 server_msg_id = %send_ack.server_msg_id,
+                                success = send_ack.success,
+                                error_code = send_ack.error_code,
+                                error_message = %send_ack.error_message,
                                 "received SendAck (PayloadCommand Ack), dispatching to bus"
                             );
                             let payload = DownlinkPayload::SendAck(send_ack.clone());

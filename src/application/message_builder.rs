@@ -6,7 +6,7 @@ use crate::model::message::IMMessage;
 use crate::model::message_builder::MessageBuilder;
 use crate::model::message_elem::{elem_plain_summary, elem_to_message_content};
 use crate::util::date::ms_to_prost_timestamp;
-use flare_proto::common::{ForwardItem, ForwardMode};
+use flare_proto::common::{ForwardItem, ForwardMode, ImageInfo};
 
 pub struct MessageBuilderService;
 
@@ -159,6 +159,28 @@ impl MessageBuilderService {
             conversation_id,
             sender_id,
             ContentBuilder::image_with_thumbnail(source_media_id, thumbnail_media_id).build(),
+            channel_id,
+        )
+    }
+
+    pub fn build_image_group(
+        conversation_id: impl Into<String>,
+        sender_id: impl Into<String>,
+        images: Vec<ImageInfo>,
+        description: impl Into<String>,
+        metadata: std::collections::HashMap<String, String>,
+        channel_id: Option<&str>,
+    ) -> Result<IMMessage> {
+        if images.is_empty() {
+            return Err(FlareError::localized(
+                ErrorCode::InvalidParameter,
+                "sdk.message.image_group.empty_images",
+            ));
+        }
+        Self::build_with_content(
+            conversation_id,
+            sender_id,
+            ContentBuilder::image_group_with_details(images, description, metadata).build(),
             channel_id,
         )
     }

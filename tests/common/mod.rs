@@ -75,12 +75,32 @@ impl MessageStore for MemoryMessageStore {
         limit: u32,
     ) -> Result<Vec<IMMessage>> {
         let data = self.data.read().await;
-        let mut msgs: Vec<_> = data
-            .values()
-            .filter(|m| m.conversation_id == conversation_id && m.seq < before_seq)
-            .cloned()
-            .collect();
-        msgs.sort_by(|a, b| b.seq.cmp(&a.seq));
+        let bound = if before_seq == 0 { u64::MAX } else { before_seq };
+        let is_latest = before_seq == 0 || before_seq >= i64::MAX as u64;
+        let mut msgs: Vec<_> = if is_latest {
+            data.values()
+                .filter(|m| m.conversation_id == conversation_id && m.seq < bound)
+                .cloned()
+                .collect()
+        } else {
+            data.values()
+                .filter(|m| {
+                    m.conversation_id == conversation_id && m.seq > 0 && m.seq < bound
+                })
+                .cloned()
+                .collect()
+        };
+        if is_latest {
+            let key = |m: &IMMessage| {
+                m.local_state
+                    .sort_ts
+                    .max(m.timestamp)
+                    .max(m.client_timestamp)
+            };
+            msgs.sort_by(|a, b| key(b).cmp(&key(a)).then_with(|| b.seq.cmp(&a.seq)));
+        } else {
+            msgs.sort_by(|a, b| b.seq.cmp(&a.seq));
+        }
         msgs.truncate(limit as usize);
         Ok(msgs)
     }

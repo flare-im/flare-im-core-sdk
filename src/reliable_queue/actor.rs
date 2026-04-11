@@ -184,16 +184,21 @@ async fn handle_command(
                 is_local: true,
                 sort_ts: enqueued_at_ms,
             };
-            if let Err(e) = st.message_store.save_batch(&[optimistic]).await {
-                warn!(%e, "save optimistic message on enqueue failed");
-            }
             let entry = PendingSendVo {
                 client_msg_id: msg.client_msg_id.clone(),
                 conversation_id: msg.conversation_id.clone(),
                 message: msg,
                 enqueued_at_ms,
             };
-            st.pending_writer.push(entry).await?;
+            // 持锁期间不要做 SQLite：与 1s ticker / check_timeout 争用会把整池拖死并触发 sqlx slow acquire。
+            let (message_store, pending_writer) =
+                (st.message_store.clone(), st.pending_writer.clone());
+            drop(st);
+            if let Err(e) = message_store.save_batch(&[optimistic]).await {
+                warn!(%e, "save optimistic message on enqueue failed");
+            }
+            pending_writer.push(entry).await?;
+            let mut st = state.lock().await;
             try_send_next(&mut st).await?;
         }
         QueueCommand::AckReceived(ack) => {
@@ -529,12 +534,30 @@ async fn do_send_one(sender: &PacketSender, entry: &PendingSendVo) -> Result<()>
 async fn apply_ack_and_publish(st: &mut QueueState, entry: &PendingSendVo, ack: SendAck) {
     let _ = st.pending_writer.pop(&ack.client_msg_id).await;
     st.retry_count.remove(&ack.client_msg_id);
-    let msg = MessageDeliveryService::mark_sent_from_ack(&entry.message, &ack);
-    let cid = ack.client_msg_id.clone();
-    if let Err(e) = st.message_store.update_after_ack(&cid, &msg).await {
-        warn!(%e, "update_after_ack failed");
+    if ack.success {
+        let msg = MessageDeliveryService::mark_sent_from_ack(&entry.message, &ack);
+        let cid = ack.client_msg_id.clone();
+        if let Err(e) = st.message_store.update_after_ack(&cid, &msg).await {
+            warn!(%e, "update_after_ack failed");
+        }
+        st.bus.publish(SdkEvent::Message(MessageEvent::SendAck { ack }));
+        return;
     }
+    let failed_msg = MessageDeliveryService::mark_failed(&entry.message);
+    if let Err(e) = st.message_store.save_batch(&[failed_msg]).await {
+        warn!(%e, "persist failed message state from ack failed");
+    }
+    let reason = if ack.error_message.trim().is_empty() {
+        "send ack reported failure".to_string()
+    } else {
+        ack.error_message.clone()
+    };
+    let client_msg_id = ack.client_msg_id.clone();
     st.bus.publish(SdkEvent::Message(MessageEvent::SendAck { ack }));
+    st.bus.publish(SdkEvent::Message(MessageEvent::SendFailed {
+        client_msg_id,
+        reason,
+    }));
 }
 
 #[cfg(all(test, feature = "storage-sqlite"))]

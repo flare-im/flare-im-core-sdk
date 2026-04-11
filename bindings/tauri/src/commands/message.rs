@@ -1,5 +1,8 @@
 //! 消息命令：透传 [MessageBuildApi] / [MessageApi]。
 
+use std::collections::HashMap;
+
+use serde::Deserialize;
 use tauri::State;
 
 use crate::model::SendAckPayload;
@@ -8,7 +11,7 @@ use flare_im_core_sdk::model::content_builder::BuiltContent;
 use flare_im_core_sdk::model::message::MarkType;
 use flare_im_core_sdk::model::message_elem::elem_to_message_content;
 use flare_im_core_sdk::model::IMMessage;
-use flare_proto::common::MessageType;
+use flare_proto::common::{ImageInfo, MessageType};
 
 fn build_content_from_message(m: &IMMessage) -> Option<BuiltContent> {
     let elem = m.content.as_ref()?;
@@ -123,6 +126,66 @@ pub async fn sdk_create_image_with_thumbnail(
     c.message_build()
         .map_err(|e| e.to_string())?
         .create_image_with_thumbnail(&conversation_id, &source_image_id, &thumbnail_image_id)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// IPC 入参：与 `ImageInfo` 字段一致（snake_case），由前端 `denormalizeToRust` 写入。
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct SdkImageGroupImageInput {
+    #[serde(default)]
+    pub uuid: String,
+    #[serde(default)]
+    pub url: String,
+    #[serde(default)]
+    pub mime_type: String,
+    #[serde(default)]
+    pub size: i64,
+    #[serde(default)]
+    pub width: i32,
+    #[serde(default)]
+    pub height: i32,
+    #[serde(default)]
+    pub image_id: String,
+    #[serde(default)]
+    pub format: i32,
+    #[serde(default)]
+    pub animated: bool,
+}
+
+fn sdk_image_group_row_to_proto(i: SdkImageGroupImageInput) -> ImageInfo {
+    ImageInfo {
+        uuid: i.uuid,
+        url: i.url,
+        mime_type: i.mime_type,
+        size: i.size,
+        width: i.width,
+        height: i.height,
+        image_id: i.image_id,
+        format: i.format,
+        animated: i.animated,
+    }
+}
+
+#[tauri::command]
+pub async fn sdk_create_image_group(
+    state: State<'_, SdkState>,
+    conversation_id: String,
+    images: Vec<SdkImageGroupImageInput>,
+    description: Option<String>,
+    metadata: Option<HashMap<String, String>>,
+) -> std::result::Result<IMMessage, String> {
+    if images.is_empty() {
+        return Err("ImageGroup 至少需要一张图片".to_string());
+    }
+    let images: Vec<ImageInfo> = images.into_iter().map(sdk_image_group_row_to_proto).collect();
+    let description = description.unwrap_or_default();
+    let metadata = metadata.unwrap_or_default();
+    let c = state.client();
+    c.message_build()
+        .map_err(|e| e.to_string())?
+        .create_image_group(&conversation_id, images, description, metadata)
         .await
         .map_err(|e| e.to_string())
 }

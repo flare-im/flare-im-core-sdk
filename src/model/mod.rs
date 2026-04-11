@@ -8,6 +8,7 @@ pub mod message;
 pub mod message_builder;
 pub mod message_elem;
 pub mod media;
+pub mod preview_storage;
 
 pub use content_builder::{BuiltContent, ContentBuilder, DEFAULT_STICKER_DISPLAY_SIDE};
 pub use conversation::{Conversation, ConversationSummary};
@@ -19,5 +20,6 @@ pub use message::{
 };
 pub use message_builder::MessageBuilder;
 pub use message_elem::{Elem, MessagePreviewElem, decoded_content_to_elem};
+pub use preview_storage::PreviewStoragePayload;
 pub use crate::domain::{MediaCacheEntryVo, MediaCacheStatsVo};
 pub use media::{MediaAccessUrl, MediaResolvedAccess, UploadOptions, UploadedMedia};

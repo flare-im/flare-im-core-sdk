@@ -92,6 +92,11 @@ impl SqliteConversationRepo {
         let mention_me: i32 = row.try_get("mention_me").map_err(sqlx_err)?;
         let badge: Option<String> = row.try_get("badge").map_err(sqlx_err)?;
         let role: Option<String> = row.try_get("role").map_err(sqlx_err)?;
+        let ext = parse_ext(ext_json.as_deref());
+        let peer_read_seq = ext
+            .get("peer_read_seq")
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or_default();
 
         let last_message = last_message_id.as_ref().map(|id| MessagePreviewElem {
             message_id: id.clone(),
@@ -120,6 +125,7 @@ impl SqliteConversationRepo {
             last_sender_avatar_url,
             unread_count: unread_count.max(0) as u32,
             last_read_seq: last_read_seq.max(0) as u64,
+            peer_read_seq,
             max_seq: max_seq.max(0) as u64,
             is_pinned: is_pinned != 0,
             is_muted: is_muted != 0,
@@ -128,7 +134,7 @@ impl SqliteConversationRepo {
             updated_at: updated_at.max(0) as u64,
             created_at: created_at.max(0) as u64,
             updated_at_ts: updated_at_ts.map(|t| t as u64),
-            ext: parse_ext(ext_json.as_deref()),
+            ext,
             draft,
             mention_count: mention_count.max(0) as u32,
             mention_me: mention_me != 0,

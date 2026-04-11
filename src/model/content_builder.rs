@@ -959,12 +959,20 @@ impl ContentBuilder {
     }
 
     pub fn image_group(images: Vec<ImageInfo>) -> Self {
+        Self::image_group_with_details(images, String::new(), std::collections::HashMap::new())
+    }
+
+    pub fn image_group_with_details(
+        images: Vec<ImageInfo>,
+        description: impl Into<String>,
+        metadata: std::collections::HashMap<String, String>,
+    ) -> Self {
         let content = MessageContent {
             content: Some(flare_proto::common::message_content::Content::ImageGroup(
                 ImageGroupContent {
                     images,
-                    description: String::new(),
-                    metadata: std::collections::HashMap::new(),
+                    description: description.into(),
+                    metadata,
                 },
             )),
         };

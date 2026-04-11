@@ -1,412 +1,230 @@
-//! 消息 API 模块
+//! 消息 API - 消息构建、发送、查询、操作
 //!
-//! 实现消息构建、发送、查询、操作等功能
+//! 透传 `MessageBuildApi` / `MessageApi`，无业务分支。
 
-use std::ffi::c_void;
+use std::ffi::{c_char, c_void};
 
-use flare_im_core_sdk::model::IMMessage;
+use crate::abi;
+use crate::executor::{execute_async, execute_async_unit, return_error, CallbackContext};
+use crate::dispatch::send_ack_to_json;
+use crate::helpers::{c_str_to_string, parse_json, to_json_string};
+use crate::registry::require_instance;
+use crate::types::{FlareHandle, FlareResultCallback};
 
-use crate::callback::{invoke_json_callback, invoke_result_callback, invoke_string_callback, CallbackContext, FlareJsonCallback, FlareResultCallback, FlareStringCallback};
-use crate::error::FlareErrorCode;
-use crate::handle::{get_instance, FlareImHandle};
-use crate::json::{parse_json, to_json};
-use crate::string::parse_string;
-
-/// 创建文本消息
-///
-/// # Arguments
-/// * `handle` - SDK 句柄
-/// * `conversation_id` - 会话 ID
-/// * `text` - 文本内容
-/// * `context` - 用户上下文
-/// * `callback` - JSON 回调，返回消息 JSON
 #[unsafe(no_mangle)]
-pub extern "C" fn flare_im_create_text_message(
-    handle: FlareImHandle,
-    conversation_id: *const i8,
-    text: *const i8,
+pub extern "C" fn flare_message_create_text(
+    handle: FlareHandle,
+    conversation_id: *const c_char,
+    text: *const c_char,
     context: *mut c_void,
-    callback: FlareJsonCallback,
-) {
-    let result = create_text_message_inner(handle, conversation_id, text, context, callback);
-    if let Err(e) = result {
-        tracing::error!("Failed to create text message: {:?}", e);
-        let ctx = CallbackContext {
-            user_context: context,
-            callback,
+    callback: FlareResultCallback,
+) -> i32 {
+    abi::catch_ffi_i32(|| {
+        let instance = match require_instance(handle) {
+            Ok(i) => i,
+            Err(e) => return e,
         };
-        invoke_json_callback(ctx, Err(e));
-    }
-}
 
-fn create_text_message_inner(
-    handle: FlareImHandle,
-    conversation_id: *const i8,
-    text: *const i8,
-    context: *mut c_void,
-    callback: FlareJsonCallback,
-) -> Result<(), FlareErrorCode> {
-    let instance = get_instance(handle)?;
-    let conversation_id = parse_string(conversation_id)?;
-    let text = parse_string(text)?;
-
-    let ctx = CallbackContext {
-        user_context: context,
-        callback,
-    };
-    let client = instance.client.clone();
-
-    instance.runtime.spawn(async move {
-        let result = async {
-            let build_api = client.message_build().map_err(|e| FlareErrorCode::from(&e))?;
-            let msg = build_api.create_text(&conversation_id, &text).await.map_err(|e| FlareErrorCode::from(&e))?;
-            to_json(&msg)
-        }
-        .await;
-        invoke_json_callback(ctx, result);
-    });
-
-    Ok(())
-}
-
-/// 发送消息
-///
-/// # Arguments
-/// * `handle` - SDK 句柄
-/// * `message_json` - 消息 JSON，由 create_*_message 返回
-/// * `context` - 用户上下文
-/// * `callback` - 字符串回调，返回 client_msg_id
-#[unsafe(no_mangle)]
-pub extern "C" fn flare_im_send_message(
-    handle: FlareImHandle,
-    message_json: *const i8,
-    context: *mut c_void,
-    callback: FlareStringCallback,
-) {
-    let result = send_message_inner(handle, message_json, context, callback);
-    if let Err(e) = result {
-        tracing::error!("Failed to send message: {:?}", e);
-        let ctx = CallbackContext {
-            user_context: context,
-            callback,
-        };
-        invoke_string_callback(ctx, Err(e));
-    }
-}
-
-fn send_message_inner(
-    handle: FlareImHandle,
-    message_json: *const i8,
-    context: *mut c_void,
-    callback: FlareStringCallback,
-) -> Result<(), FlareErrorCode> {
-    let instance = get_instance(handle)?;
-    let message: IMMessage = parse_json(message_json)?;
-
-    let ctx = CallbackContext {
-        user_context: context,
-        callback,
-    };
-    let client = instance.client.clone();
-
-    instance.runtime.spawn(async move {
-        let result = async {
-            let api = client.message().map_err(|e| FlareErrorCode::from(&e))?;
-            let client_msg_id = api.send(message).await.map_err(|e| FlareErrorCode::from(&e))?;
-            Ok(client_msg_id)
-        }
-        .await;
-        invoke_string_callback(ctx, result);
-    });
-
-    Ok(())
-}
-
-/// 获取消息
-///
-/// # Arguments
-/// * `handle` - SDK 句柄
-/// * `conversation_id` - 会话 ID
-/// * `message_id` - 消息 ID（server_msg_id 或 client_msg_id）
-/// * `context` - 用户上下文
-/// * `callback` - JSON 回调，返回消息 JSON
-#[unsafe(no_mangle)]
-pub extern "C" fn flare_im_get_message(
-    handle: FlareImHandle,
-    conversation_id: *const i8,
-    message_id: *const i8,
-    context: *mut c_void,
-    callback: FlareJsonCallback,
-) {
-    let result = get_message_inner(handle, conversation_id, message_id, context, callback);
-    if let Err(e) = result {
-        tracing::error!("Failed to get message: {:?}", e);
-        let ctx = CallbackContext {
-            user_context: context,
-            callback,
-        };
-        invoke_json_callback(ctx, Err(e));
-    }
-}
-
-fn get_message_inner(
-    handle: FlareImHandle,
-    conversation_id: *const i8,
-    message_id: *const i8,
-    context: *mut c_void,
-    callback: FlareJsonCallback,
-) -> Result<(), FlareErrorCode> {
-    let instance = get_instance(handle)?;
-    let conversation_id = parse_string(conversation_id)?;
-    let message_id = parse_string(message_id)?;
-
-    let ctx = CallbackContext {
-        user_context: context,
-        callback,
-    };
-    let client = instance.client.clone();
-
-    instance.runtime.spawn(async move {
-        let result = async {
-            let api = client.message().map_err(|e| FlareErrorCode::from(&e))?;
-            let msg = api.get(&conversation_id, &message_id).await.map_err(|e| FlareErrorCode::from(&e))?;
-            match msg {
-                Some(m) => to_json(&m),
-                None => Err(FlareErrorCode::NotFound),
+        let conversation_id = match c_str_to_string(conversation_id) {
+            Ok(s) => s,
+            Err(code) => {
+                let ctx = CallbackContext::new(context, callback);
+                return_error(&ctx, code, "Invalid conversation_id");
+                return code;
             }
-        }
-        .await;
-        invoke_json_callback(ctx, result);
-    });
+        };
 
-    Ok(())
+        let text = match c_str_to_string(text) {
+            Ok(s) => s,
+            Err(code) => {
+                let ctx = CallbackContext::new(context, callback);
+                return_error(&ctx, code, "Invalid text");
+                return code;
+            }
+        };
+
+        let ctx = CallbackContext::new(context, callback);
+        let client = instance.client.clone();
+
+        execute_async(
+            instance,
+            ctx,
+            async move {
+                let build_api = client.message_build()?;
+                build_api.create_text(&conversation_id, &text).await
+            },
+            |msg| to_json_string(&msg),
+        );
+
+        0
+    })
 }
 
-/// 获取消息列表
-///
-/// # Arguments
-/// * `handle` - SDK 句柄
-/// * `conversation_id` - 会话 ID
-/// * `before_seq` - 起始序列号，0 表示从最新开始
-/// * `limit` - 数量限制
-/// * `context` - 用户上下文
-/// * `callback` - JSON 回调，返回消息 JSON 数组
 #[unsafe(no_mangle)]
-pub extern "C" fn flare_im_list_messages(
-    handle: FlareImHandle,
-    conversation_id: *const i8,
+pub extern "C" fn flare_message_send(
+    handle: FlareHandle,
+    message_json: *const c_char,
+    context: *mut c_void,
+    callback: FlareResultCallback,
+) -> i32 {
+    abi::catch_ffi_i32(|| {
+        let instance = match require_instance(handle) {
+            Ok(i) => i,
+            Err(e) => return e,
+        };
+
+        let message: flare_im_core_sdk::model::IMMessage = match parse_json(message_json) {
+            Ok(m) => m,
+            Err(code) => {
+                let ctx = CallbackContext::new(context, callback);
+                return_error(&ctx, code, "Invalid message JSON");
+                return code;
+            }
+        };
+
+        let ctx = CallbackContext::new(context, callback);
+        let client = instance.client.clone();
+
+        execute_async(
+            instance,
+            ctx,
+            async move {
+                let api = client.message()?;
+                api.send(message).await
+            },
+            |send_ack| send_ack_to_json(&send_ack),
+        );
+
+        0
+    })
+}
+
+/// `before_seq == 0`：打开会话首屏，拉取本地最新一页；翻页时传当前已展示批次中的最小 `seq`。
+#[unsafe(no_mangle)]
+pub extern "C" fn flare_message_list(
+    handle: FlareHandle,
+    conversation_id: *const c_char,
     before_seq: u64,
     limit: i32,
     context: *mut c_void,
-    callback: FlareJsonCallback,
-) {
-    let result = list_messages_inner(handle, conversation_id, before_seq, limit, context, callback);
-    if let Err(e) = result {
-        tracing::error!("Failed to list messages: {:?}", e);
-        let ctx = CallbackContext {
-            user_context: context,
-            callback,
+    callback: FlareResultCallback,
+) -> i32 {
+    abi::catch_ffi_i32(|| {
+        let instance = match require_instance(handle) {
+            Ok(i) => i,
+            Err(e) => return e,
         };
-        invoke_json_callback(ctx, Err(e));
-    }
+
+        let conversation_id = match c_str_to_string(conversation_id) {
+            Ok(s) => s,
+            Err(code) => {
+                let ctx = CallbackContext::new(context, callback);
+                return_error(&ctx, code, "Invalid conversation_id");
+                return code;
+            }
+        };
+
+        let ctx = CallbackContext::new(context, callback);
+        let client = instance.client.clone();
+
+        execute_async(
+            instance,
+            ctx,
+            async move {
+                let api = client.message()?;
+                api.list(&conversation_id, before_seq, limit as u32).await
+            },
+            |messages| to_json_string(&messages),
+        );
+
+        0
+    })
 }
 
-fn list_messages_inner(
-    handle: FlareImHandle,
-    conversation_id: *const i8,
-    before_seq: u64,
-    limit: i32,
-    context: *mut c_void,
-    callback: FlareJsonCallback,
-) -> Result<(), FlareErrorCode> {
-    let instance = get_instance(handle)?;
-    let conversation_id = parse_string(conversation_id)?;
-
-    let ctx = CallbackContext {
-        user_context: context,
-        callback,
-    };
-    let client = instance.client.clone();
-
-    instance.runtime.spawn(async move {
-        let result = async {
-            let api = client.message().map_err(|e| FlareErrorCode::from(&e))?;
-            let messages = api.list(&conversation_id, before_seq, limit).await.map_err(|e| FlareErrorCode::from(&e))?;
-            to_json(&messages)
-        }
-        .await;
-        invoke_json_callback(ctx, result);
-    });
-
-    Ok(())
-}
-
-/// 撤回消息
-///
-/// # Arguments
-/// * `handle` - SDK 句柄
-/// * `conversation_id` - 会话 ID
-/// * `message_id` - 消息 ID
-/// * `context` - 用户上下文
-/// * `callback` - 结果回调
 #[unsafe(no_mangle)]
-pub extern "C" fn flare_im_recall_message(
-    handle: FlareImHandle,
-    conversation_id: *const i8,
-    message_id: *const i8,
+pub extern "C" fn flare_message_recall(
+    handle: FlareHandle,
+    conversation_id: *const c_char,
+    message_id: *const c_char,
     context: *mut c_void,
     callback: FlareResultCallback,
-) {
-    let result = recall_message_inner(handle, conversation_id, message_id, context, callback);
-    if let Err(e) = result {
-        tracing::error!("Failed to recall message: {:?}", e);
-        let ctx = CallbackContext {
-            user_context: context,
-            callback,
+) -> i32 {
+    abi::catch_ffi_i32(|| {
+        let instance = match require_instance(handle) {
+            Ok(i) => i,
+            Err(e) => return e,
         };
-        invoke_result_callback(ctx, Err(e));
-    }
+
+        let _conversation_id = match c_str_to_string(conversation_id) {
+            Ok(s) => s,
+            Err(code) => {
+                let ctx = CallbackContext::new(context, callback);
+                return_error(&ctx, code, "Invalid conversation_id");
+                return code;
+            }
+        };
+
+        let message_id = match c_str_to_string(message_id) {
+            Ok(s) => s,
+            Err(code) => {
+                let ctx = CallbackContext::new(context, callback);
+                return_error(&ctx, code, "Invalid message_id");
+                return code;
+            }
+        };
+
+        let ctx = CallbackContext::new(context, callback);
+        let client = instance.client.clone();
+
+        execute_async_unit(instance, ctx, async move {
+            let api = client.message()?;
+            api.recall(&message_id).await
+        });
+
+        0
+    })
 }
 
-fn recall_message_inner(
-    handle: FlareImHandle,
-    conversation_id: *const i8,
-    message_id: *const i8,
-    context: *mut c_void,
-    callback: FlareResultCallback,
-) -> Result<(), FlareErrorCode> {
-    let instance = get_instance(handle)?;
-    let conversation_id = parse_string(conversation_id)?;
-    let message_id = parse_string(message_id)?;
-
-    let ctx = CallbackContext {
-        user_context: context,
-        callback,
-    };
-    let client = instance.client.clone();
-
-    instance.runtime.spawn(async move {
-        let result = async {
-            let api = client.message().map_err(|e| FlareErrorCode::from(&e))?;
-            api.recall(&conversation_id, &message_id).await.map_err(|e| FlareErrorCode::from(&e))?;
-            Ok(())
-        }
-        .await;
-        invoke_result_callback(ctx, result);
-    });
-
-    Ok(())
-}
-
-/// 删除消息
-///
-/// # Arguments
-/// * `handle` - SDK 句柄
-/// * `conversation_id` - 会话 ID
-/// * `message_id` - 消息 ID
-/// * `context` - 用户上下文
-/// * `callback` - 结果回调
 #[unsafe(no_mangle)]
-pub extern "C" fn flare_im_delete_message(
-    handle: FlareImHandle,
-    conversation_id: *const i8,
-    message_id: *const i8,
+pub extern "C" fn flare_message_delete(
+    handle: FlareHandle,
+    conversation_id: *const c_char,
+    message_id: *const c_char,
     context: *mut c_void,
     callback: FlareResultCallback,
-) {
-    let result = delete_message_inner(handle, conversation_id, message_id, context, callback);
-    if let Err(e) = result {
-        tracing::error!("Failed to delete message: {:?}", e);
-        let ctx = CallbackContext {
-            user_context: context,
-            callback,
+) -> i32 {
+    abi::catch_ffi_i32(|| {
+        let instance = match require_instance(handle) {
+            Ok(i) => i,
+            Err(e) => return e,
         };
-        invoke_result_callback(ctx, Err(e));
-    }
-}
 
-fn delete_message_inner(
-    handle: FlareImHandle,
-    conversation_id: *const i8,
-    message_id: *const i8,
-    context: *mut c_void,
-    callback: FlareResultCallback,
-) -> Result<(), FlareErrorCode> {
-    let instance = get_instance(handle)?;
-    let conversation_id = parse_string(conversation_id)?;
-    let message_id = parse_string(message_id)?;
-
-    let ctx = CallbackContext {
-        user_context: context,
-        callback,
-    };
-    let client = instance.client.clone();
-
-    instance.runtime.spawn(async move {
-        let result = async {
-            let api = client.message().map_err(|e| FlareErrorCode::from(&e))?;
-            api.delete(&conversation_id, &message_id).await.map_err(|e| FlareErrorCode::from(&e))?;
-            Ok(())
-        }
-        .await;
-        invoke_result_callback(ctx, result);
-    });
-
-    Ok(())
-}
-
-/// 标记已读
-///
-/// # Arguments
-/// * `handle` - SDK 句柄
-/// * `conversation_id` - 会话 ID
-/// * `read_seq` - 已读序列号
-/// * `context` - 用户上下文
-/// * `callback` - 结果回调
-#[unsafe(no_mangle)]
-pub extern "C" fn flare_im_mark_read(
-    handle: FlareImHandle,
-    conversation_id: *const i8,
-    read_seq: u64,
-    context: *mut c_void,
-    callback: FlareResultCallback,
-) {
-    let result = mark_read_inner(handle, conversation_id, read_seq, context, callback);
-    if let Err(e) = result {
-        tracing::error!("Failed to mark read: {:?}", e);
-        let ctx = CallbackContext {
-            user_context: context,
-            callback,
+        let _conversation_id = match c_str_to_string(conversation_id) {
+            Ok(s) => s,
+            Err(code) => {
+                let ctx = CallbackContext::new(context, callback);
+                return_error(&ctx, code, "Invalid conversation_id");
+                return code;
+            }
         };
-        invoke_result_callback(ctx, Err(e));
-    }
-}
 
-fn mark_read_inner(
-    handle: FlareImHandle,
-    conversation_id: *const i8,
-    read_seq: u64,
-    context: *mut c_void,
-    callback: FlareResultCallback,
-) -> Result<(), FlareErrorCode> {
-    let instance = get_instance(handle)?;
-    let conversation_id = parse_string(conversation_id)?;
+        let message_id = match c_str_to_string(message_id) {
+            Ok(s) => s,
+            Err(code) => {
+                let ctx = CallbackContext::new(context, callback);
+                return_error(&ctx, code, "Invalid message_id");
+                return code;
+            }
+        };
 
-    let ctx = CallbackContext {
-        user_context: context,
-        callback,
-    };
-    let client = instance.client.clone();
+        let ctx = CallbackContext::new(context, callback);
+        let client = instance.client.clone();
 
-    instance.runtime.spawn(async move {
-        let result = async {
-            let api = client.message().map_err(|e| FlareErrorCode::from(&e))?;
-            api.mark_read(&conversation_id, read_seq).await.map_err(|e| FlareErrorCode::from(&e))?;
-            Ok(())
-        }
-        .await;
-        invoke_result_callback(ctx, result);
-    });
+        execute_async_unit(instance, ctx, async move {
+            let api = client.message()?;
+            api.delete(&message_id).await
+        });
 
-    Ok(())
+        0
+    })
 }

@@ -44,17 +44,33 @@ fn sqlx_err(e: sqlx::Error) -> FlareError {
 
 /// 将分页游标 `before_seq` 绑定为 SQLite INTEGER（`seq < ?`）。
 ///
-/// 不可直接 `before_seq as i64`：`u64::MAX as i64` 为 **-1**，条件变成 `seq < -1`，结果集恒为空。
-/// Rust 示例与部分调用方会用 `u64::MAX` 表示「无上限」，此处钳制到 `i64::MAX`。
+/// - **`0`**：表示客户端刚打开会话、尚无游标，等价于「上界无穷」，取当前库中 **最新一页**（与 Tauri `INITIAL_BEFORE_SEQ` 语义对齐，客户端可直接传 `0`）。
+///   最新一页在仓储层按 **`max(sort_ts, timestamp, client_timestamp) DESC`**（见 `get_by_conversation`），与 `effective_sort_ts_for_persist` 一致，**不**伪造服务端 `seq`。
+/// - **`u64::MAX`**：不可直接 `as i64`（会变成 `-1`，导致 `seq < -1` 恒空），钳制到 `i64::MAX`。
+/// - 其它正值：`seq < before_seq`，用于「加载更早消息」。
 fn before_seq_for_sqlite(before_seq: u64) -> i64 {
-    if before_seq >= i64::MAX as u64 {
+    if before_seq == 0 || before_seq >= i64::MAX as u64 {
         i64::MAX
     } else {
         before_seq as i64
     }
 }
 
-/// 从 `MessageContent` 字节提取纯文本，供编辑后更新 `messages.text` 列（与 `IMMessage::text_for_storage` 语义一致）。
+/// 写入 `messages.sort_ts` 的最终值：仅用于**本地列表**「最新一页」排序，**不**参与多端 `seq` 同步语义。
+///
+/// 取 `max(入队/本地 sort_ts, 服务端/客户端 timestamp, client_timestamp, 墙钟)`，避免仅保留较小入队时间而弱于历史消息、被 `LIMIT` 裁掉。
+fn effective_sort_ts_for_persist(message: &IMMessage) -> i64 {
+    let wall = now_ms_i64().max(0) as u64;
+    let merged = message
+        .local_state
+        .sort_ts
+        .max(message.timestamp)
+        .max(message.client_timestamp)
+        .max(wall);
+    (merged as i64).min(i64::MAX)
+}
+
+/// 从 `MessageContent` 字节解码后仅取 Text 正文，供编辑等路径更新 `messages.text`（会话列表/预览列为 JSON 载荷，见 [`IMMessage::text_for_storage`]）。
 fn text_for_sqlite_from_content_bytes(bytes: &[u8]) -> Option<String> {
     decode_content_bytes(bytes)
         .ok()
@@ -153,6 +169,16 @@ impl SqliteMessageRepo {
             }
         }
 
+        let mut ts_u = timestamp.max(0) as u64;
+        let mut cts_u = client_timestamp.max(0) as u64;
+        let sort_u = sort_ts.max(0) as u64;
+        // 待发/旧数据可能未写 `timestamp`，但 `sort_ts` 已在落库时规范化（见 `effective_sort_ts_for_persist`），
+        // 读出时回填给前端时间排序，避免 0 被当成「最早」。
+        if ts_u == 0 && cts_u == 0 && sort_u > 0 {
+            ts_u = sort_u;
+            cts_u = sort_u;
+        }
+
         Ok(IMMessage {
             server_id,
             client_msg_id,
@@ -162,8 +188,8 @@ impl SqliteMessageRepo {
             sender_id,
             source,
             seq: seq.max(0) as u64,
-            timestamp: timestamp.max(0) as u64,
-            client_timestamp: client_timestamp.max(0) as u64,
+            timestamp: ts_u,
+            client_timestamp: cts_u,
             message_type,
             content,
             content_bytes,
@@ -226,17 +252,38 @@ impl MessageReader for SqliteMessageRepo {
         before_seq: u64,
         limit: u32,
     ) -> Result<Vec<IMMessage>> {
-        let rows = sqlx::query(&format!(
-            r#"SELECT {} FROM messages
-               WHERE conversation_id = ? AND seq < ?
-               ORDER BY seq DESC LIMIT ?"#,
-            MESSAGE_SELECT_COLS
-        ))
-        .bind(conversation_id)
-        .bind(before_seq_for_sqlite(before_seq))
-        .bind(limit as i32)
-        .fetch_all(&self.pool)
-        .await
+        // 与 `before_seq_for_sqlite` 一致：`0` / `>= i64::MAX` 表示「最新一页」游标。
+        let is_latest_window = before_seq == 0 || before_seq >= i64::MAX as u64;
+        let bound = before_seq_for_sqlite(before_seq);
+
+        let rows = if is_latest_window {
+            // 待发/ACK 后仅 `sort_ts` 可能小于历史行的服务端时间，单按 sort_ts 会把**最新一条**挤出 LIMIT。
+            // 用列上 max 与 `effective_sort_ts_for_persist` 语义一致。
+            sqlx::query(&format!(
+                r#"SELECT {} FROM messages
+                   WHERE conversation_id = ? AND seq < ?
+                   ORDER BY max(max(sort_ts, timestamp), client_timestamp) DESC, seq DESC LIMIT ?"#,
+                MESSAGE_SELECT_COLS
+            ))
+            .bind(conversation_id)
+            .bind(bound)
+            .bind(limit as i32)
+            .fetch_all(&self.pool)
+            .await
+        } else {
+            // 翻页只拉已分配 seq 的历史消息，避免 `seq == 0` 的待发送行在第二页重复出现。
+            sqlx::query(&format!(
+                r#"SELECT {} FROM messages
+                   WHERE conversation_id = ? AND seq > 0 AND seq < ?
+                   ORDER BY seq DESC LIMIT ?"#,
+                MESSAGE_SELECT_COLS
+            ))
+            .bind(conversation_id)
+            .bind(bound)
+            .bind(limit as i32)
+            .fetch_all(&self.pool)
+            .await
+        }
         .map_err(|e| FlareError::localized(ErrorCode::DatabaseError, e.to_string()))?;
         let mut out = Vec::with_capacity(rows.len());
         for row in rows {
@@ -513,7 +560,7 @@ impl MessageWriter for SqliteMessageRepo {
             .bind(if m.local_state.sending { 1i32 } else { 0 })
             .bind(if m.local_state.failed { 1i32 } else { 0 })
             .bind(if m.local_state.is_local { 1i32 } else { 0 })
-            .bind(m.local_state.sort_ts as i64)
+            .bind(effective_sort_ts_for_persist(m))
             .execute(&mut *tx)
             .await
             .map_err(|e| FlareError::localized(ErrorCode::DatabaseError, e.to_string()))?;
@@ -700,7 +747,7 @@ impl MessageWriter for SqliteMessageRepo {
         .bind(if message.local_state.sending { 1i32 } else { 0 })
         .bind(if message.local_state.failed { 1i32 } else { 0 })
         .bind(if message.local_state.is_local { 1i32 } else { 0 })
-        .bind(message.local_state.sort_ts as i64)
+        .bind(effective_sort_ts_for_persist(message))
         .execute(&mut *tx)
         .await
         .map_err(|e| FlareError::localized(ErrorCode::DatabaseError, e.to_string()))?;

@@ -1,252 +1,272 @@
-//! 事件订阅 API 模块
+//! 事件 API - 事件订阅和监听
 //!
-//! 实现事件类型映射、订阅、转发等功能
+//! 统一事件总线,支持所有平台
 
-use std::ffi::{c_void, CString};
+use std::ffi::c_void;
 use std::sync::Arc;
 
-use flare_im_core_sdk::event::{
-    ConnectionEvent,
-    ConversationEvent,
-    MessageEvent,
-    SdkEvent,
-    SyncNotify,
-};
+use crate::abi;
+use crate::helpers::string_to_flare;
+use crate::registry::{require_instance, SdkInstance};
+use crate::types::{FlareEventCallback, FlareHandle, FlareSubscriptionHandle};
+use dashmap::DashMap;
+use tokio::sync::oneshot;
+use tokio::time::{sleep, Duration};
 
-use crate::callback::FlareEventCallback;
-use crate::error::FlareErrorCode;
-use crate::handle::{get_instance, next_subscription_id, EventSubscriptionInner, FlareEventSubscription, FlareImHandle};
+/// 事件类型码
+pub const FLARE_EVENT_CONNECTION_CONNECTED: i32 = 1001;
+pub const FLARE_EVENT_CONNECTION_DISCONNECTED: i32 = 1002;
+pub const FLARE_EVENT_MESSAGE_RECEIVED: i32 = 2001;
+pub const FLARE_EVENT_MESSAGE_SEND_ACK: i32 = 2002;
+pub const FLARE_EVENT_CONVERSATION_UPDATED: i32 = 3001;
 
-/// 事件类型字符串
-pub fn event_type_to_string(event: &SdkEvent) -> &'static str {
-    match event {
-        SdkEvent::Connection(ConnectionEvent::Connected) => "connection.connected",
-        SdkEvent::Connection(ConnectionEvent::Disconnected { .. }) => "connection.disconnected",
-        SdkEvent::Connection(ConnectionEvent::StateChanged { .. }) => "connection.state_changed",
-        SdkEvent::Connection(ConnectionEvent::SyncStateChanged { .. }) => "connection.sync_state_changed",
-        SdkEvent::Connection(ConnectionEvent::ServerError { .. }) => "connection.server_error",
-        SdkEvent::Connection(ConnectionEvent::Reconnecting { .. }) => "connection.reconnecting",
-        SdkEvent::Connection(ConnectionEvent::KickedOff { .. }) => "connection.kicked_off",
-        SdkEvent::Connection(ConnectionEvent::TokenExpired { .. }) => "connection.token_expired",
-        SdkEvent::Message(MessageEvent::Received { .. }) => "message.received",
-        SdkEvent::Message(MessageEvent::ReceivedBatch { .. }) => "message.received_batch",
-        SdkEvent::Message(MessageEvent::SendAck { .. }) => "message.send_ack",
-        SdkEvent::Message(MessageEvent::SendFailed { .. }) => "message.send_failed",
-        SdkEvent::Message(MessageEvent::Recalled { .. }) => "message.recalled",
-        SdkEvent::Message(MessageEvent::Typing { .. }) => "message.typing",
-        SdkEvent::Message(MessageEvent::Edited { .. }) => "message.edited",
-        SdkEvent::Message(MessageEvent::ReactionChanged { .. }) => "message.reaction_changed",
-        SdkEvent::Message(MessageEvent::Deleted { .. }) => "message.deleted",
-        SdkEvent::Message(MessageEvent::ReadReceipt { .. }) => "message.read_receipt",
-        SdkEvent::Message(MessageEvent::Pinned { .. }) => "message.pinned",
-        SdkEvent::Message(MessageEvent::Unpinned { .. }) => "message.unpinned",
-        SdkEvent::Conversation(ConversationEvent::Updated { .. }) => "conversation.updated",
-        SdkEvent::Conversation(ConversationEvent::Synced { .. }) => "conversation.synced",
-        SdkEvent::Sync(SyncNotify::Started) => "sync.started",
-        SdkEvent::Sync(SyncNotify::Finished { .. }) => "sync.finished",
-        _ => "unknown",
-    }
+lazy_static::lazy_static! {
+    static ref EVENT_SUBSCRIPTIONS: DashMap<u64, oneshot::Sender<()>> = DashMap::new();
 }
 
-/// 事件到 JSON
-pub fn event_to_json(event: &SdkEvent) -> Result<String, FlareErrorCode> {
-    serde_json::to_string(&EventPayload::from(event)).map_err(|e| {
-        tracing::error!("Failed to serialize event: {}", e);
-        FlareErrorCode::InternalError
-    })
-}
-
-/// 事件载荷（用于 JSON 序列化）
-#[derive(Debug, Clone, serde::Serialize)]
-pub struct EventPayload {
-    #[serde(rename = "type")]
-    pub event_type: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub data: Option<serde_json::Value>,
-}
-
-impl From<&SdkEvent> for EventPayload {
-    fn from(event: &SdkEvent) -> Self {
-        let event_type = event_type_to_string(event).to_string();
-        let data = match event {
-            SdkEvent::Connection(ConnectionEvent::Disconnected { reason }) => {
-                Some(serde_json::json!({ "reason": reason }))
-            }
-            SdkEvent::Connection(ConnectionEvent::StateChanged { state }) => {
-                Some(serde_json::json!({ "state": format!("{:?}", state) }))
-            }
-            SdkEvent::Connection(ConnectionEvent::SyncStateChanged { state }) => {
-                Some(serde_json::json!({ "state": format!("{:?}", state) }))
-            }
-            SdkEvent::Connection(ConnectionEvent::ServerError { code, message }) => {
-                Some(serde_json::json!({ "code": code, "message": message }))
-            }
-            SdkEvent::Connection(ConnectionEvent::Reconnecting { attempt }) => {
-                Some(serde_json::json!({ "attempt": attempt }))
-            }
-            SdkEvent::Connection(ConnectionEvent::KickedOff { reason }) => {
-                Some(serde_json::json!({ "reason": reason }))
-            }
-            SdkEvent::Connection(ConnectionEvent::TokenExpired { message }) => {
-                Some(serde_json::json!({ "message": message }))
-            }
-            SdkEvent::Message(MessageEvent::Received { message }) => {
-                Some(serde_json::json!({ "message": message }))
-            }
-            SdkEvent::Message(MessageEvent::ReceivedBatch { messages }) => {
-                Some(serde_json::json!({ "messages": messages }))
-            }
-            SdkEvent::Message(MessageEvent::SendAck { ack }) => {
-                Some(serde_json::json!({ "ack": ack }))
-            }
-            SdkEvent::Message(MessageEvent::SendFailed { client_msg_id, reason }) => {
-                Some(serde_json::json!({
-                    "client_msg_id": client_msg_id,
-                    "reason": reason,
-                }))
-            }
-            SdkEvent::Conversation(ConversationEvent::Updated { conversation_id }) => {
-                Some(serde_json::json!({ "conversation_id": conversation_id }))
-            }
-            SdkEvent::Conversation(ConversationEvent::Synced { conversation_ids }) => {
-                Some(serde_json::json!({ "conversation_ids": conversation_ids }))
-            }
-            SdkEvent::Sync(SyncNotify::Finished { phase }) => {
-                Some(serde_json::json!({ "phase": format!("{:?}", phase) }))
-            }
-            _ => None,
-        };
-        Self { event_type, data }
-    }
-}
-
-/// 订阅 SDK 事件
-///
-/// # Arguments
-/// * `handle` - SDK 句柄
-/// * `context` - 用户上下文，将传递给 callback
-/// * `callback` - 事件回调
-///
-/// # Returns
-/// 订阅句柄，用于取消订阅；id == 0 表示失败
-#[unsafe(no_mangle)]
-pub extern "C" fn flare_im_subscribe_events(
-    handle: FlareImHandle,
-    context: *mut c_void,
-    callback: FlareEventCallback,
-) -> FlareEventSubscription {
-    match subscribe_events_inner(handle, context, callback) {
-        Ok(sub) => sub,
-        Err(e) => {
-            tracing::error!("Failed to subscribe events: {:?}", e);
-            FlareEventSubscription::default()
+pub(crate) fn unsubscribe_all_events() {
+    let keys: Vec<u64> = EVENT_SUBSCRIPTIONS.iter().map(|e| *e.key()).collect();
+    for key in keys {
+        if let Some((_, tx)) = EVENT_SUBSCRIPTIONS.remove(&key) {
+            let _ = tx.send(());
         }
     }
 }
 
-fn subscribe_events_inner(
-    handle: FlareImHandle,
+/// 事件类型转换
+fn event_type_to_code(event: &flare_im_core_sdk::event::SdkEvent) -> i32 {
+    use flare_im_core_sdk::event::{ConnectionEvent, MessageEvent, ConversationEvent, SdkEvent};
+    
+    match event {
+        SdkEvent::Connection(ConnectionEvent::Connected) => FLARE_EVENT_CONNECTION_CONNECTED,
+        SdkEvent::Connection(ConnectionEvent::Disconnected { .. }) => FLARE_EVENT_CONNECTION_DISCONNECTED,
+        SdkEvent::Message(MessageEvent::SendAck { .. }) => FLARE_EVENT_MESSAGE_SEND_ACK,
+        SdkEvent::Message(MessageEvent::Received { .. })
+        | SdkEvent::Message(MessageEvent::ReceivedBatch { .. })
+        | SdkEvent::Message(MessageEvent::SendFailed { .. })
+        | SdkEvent::Message(MessageEvent::Recalled { .. })
+        | SdkEvent::Message(MessageEvent::Typing { .. })
+        | SdkEvent::Message(MessageEvent::Edited { .. })
+        | SdkEvent::Message(MessageEvent::ReactionChanged { .. })
+        | SdkEvent::Message(MessageEvent::Deleted { .. })
+        | SdkEvent::Message(MessageEvent::ReadReceipt { .. })
+        | SdkEvent::Message(MessageEvent::Pinned { .. })
+        | SdkEvent::Message(MessageEvent::Unpinned { .. })
+        | SdkEvent::Message(MessageEvent::Marked { .. })
+        | SdkEvent::Message(MessageEvent::Unmarked { .. })
+        | SdkEvent::Message(MessageEvent::PresenceChanged { .. })
+        | SdkEvent::Message(MessageEvent::CallSignal { .. })
+        | SdkEvent::Message(MessageEvent::Custom { .. }) => FLARE_EVENT_MESSAGE_RECEIVED,
+        SdkEvent::Conversation(ConversationEvent::Synced { .. })
+        | SdkEvent::Conversation(ConversationEvent::Created { .. })
+        | SdkEvent::Conversation(ConversationEvent::Updated { .. })
+        | SdkEvent::Conversation(ConversationEvent::UnreadCountChanged { .. })
+        | SdkEvent::Conversation(ConversationEvent::Deleted { .. }) => FLARE_EVENT_CONVERSATION_UPDATED,
+        _ => 0, // 保留给未来扩展；不会在下游被丢弃
+    }
+}
+
+/// 将事件转换为 JSON 字符串（手动序列化）
+fn event_to_json(event: &flare_im_core_sdk::event::SdkEvent) -> String {
+    use flare_im_core_sdk::event::{ConnectionEvent, MessageEvent, ConversationEvent, SdkEvent};
+    
+    match event {
+        SdkEvent::Connection(ConnectionEvent::Connected) => {
+            r#"{"type":"connection","event":"connected"}"#.to_string()
+        }
+        SdkEvent::Connection(ConnectionEvent::Disconnected { reason }) => {
+            format!(r#"{{"type":"connection","event":"disconnected","reason":"{}"}}"#, 
+                reason.replace('"', "\\\""))
+        }
+        SdkEvent::Message(MessageEvent::Received { message }) => {
+            match serde_json::to_string(message) {
+                Ok(msg_json) => format!(r#"{{"type":"message","event":"received","message":{}}}"#, msg_json),
+                Err(_) => r#"{"type":"message","event":"received","error":"serialize_failed"}"#.to_string(),
+            }
+        }
+        SdkEvent::Message(MessageEvent::ReceivedBatch { messages }) => {
+            match serde_json::to_string(messages) {
+                Ok(arr_json) => format!(
+                    r#"{{"type":"message","event":"received_batch","messages":{}}}"#,
+                    arr_json
+                ),
+                Err(_) => r#"{"type":"message","event":"received_batch","error":"serialize_failed"}"#
+                    .to_string(),
+            }
+        }
+        SdkEvent::Message(MessageEvent::SendAck { ack }) => {
+            // 手动序列化 SendAck
+            format!(
+                r#"{{"type":"message","event":"send_ack","ack":{{"client_msg_id":"{}","server_msg_id":"{}","seq":{},"conversation_id":"{}","success":{}}}}}"#,
+                ack.client_msg_id.replace('"', "\\\""),
+                ack.server_msg_id.replace('"', "\\\""),
+                ack.seq,
+                ack.conversation_id.replace('"', "\\\""),
+                ack.success
+            )
+        }
+        SdkEvent::Message(MessageEvent::Typing { conversation_id, event }) => {
+            format!(
+                r#"{{"type":"message","event":"typing","conversation_id":"{}","user_id":"{}","typing":{}}}"#,
+                conversation_id.replace('"', "\\\""),
+                event.user_id.replace('"', "\\\""),
+                event.typing
+            )
+        }
+        SdkEvent::Message(MessageEvent::Recalled { conversation_id, event }) => {
+            format!(
+                r#"{{"type":"message","event":"recalled","conversation_id":"{}","message_id":"{}","server_msg_id":"{}","reason":"{}"}}"#,
+                conversation_id.replace('"', "\\\""),
+                event.server_msg_id.replace('"', "\\\""),
+                event.server_msg_id.replace('"', "\\\""),
+                event.reason.replace('"', "\\\"")
+            )
+        }
+        SdkEvent::Message(MessageEvent::ReadReceipt { conversation_id, event }) => {
+            format!(
+                r#"{{"type":"message","event":"read_receipt","conversation_id":"{}","user_id":"{}","read_seq":{}}}"#,
+                conversation_id.replace('"', "\\\""),
+                event.user_id.replace('"', "\\\""),
+                event.read_seq
+            )
+        }
+        SdkEvent::Conversation(ConversationEvent::UnreadCountChanged { conversation_id, unread_count }) => {
+            format!(
+                r#"{{"type":"conversation","event":"unread_count_changed","conversation_id":"{}","unread_count":{}}}"#,
+                conversation_id.replace('"', "\\\""),
+                unread_count
+            )
+        }
+        SdkEvent::Conversation(ConversationEvent::Created { conversation_id }) => {
+            format!(r#"{{"type":"conversation","event":"created","conversation_id":"{}"}}"#, conversation_id)
+        }
+        SdkEvent::Conversation(ConversationEvent::Updated { conversation_id }) => {
+            format!(r#"{{"type":"conversation","event":"updated","conversation_id":"{}"}}"#, conversation_id)
+        }
+        SdkEvent::Conversation(ConversationEvent::Deleted { conversation_id }) => {
+            format!(r#"{{"type":"conversation","event":"deleted","conversation_id":"{}"}}"#, conversation_id)
+        }
+        SdkEvent::Conversation(ConversationEvent::Synced { conversation_ids }) => {
+            match serde_json::to_string(conversation_ids) {
+                Ok(ids) => format!(r#"{{"type":"conversation","event":"synced","conversation_ids":{}}}"#, ids),
+                Err(_) => r#"{"type":"conversation","event":"synced","conversation_ids":[]}"#.to_string(),
+            }
+        }
+        _ => r#"{"type":"unknown"}"#.to_string(),
+    }
+}
+
+/// 订阅事件
+///
+/// # Arguments
+/// * `handle` - SDK 句柄
+/// * `context` - 用户上下文
+/// * `callback` - 事件回调
+///
+/// # Returns
+/// 订阅句柄,0 表示失败
+#[unsafe(no_mangle)]
+pub extern "C" fn flare_event_subscribe(
+    handle: FlareHandle,
     context: *mut c_void,
     callback: FlareEventCallback,
-) -> Result<FlareEventSubscription, FlareErrorCode> {
-    // 获取实例
-    let instance = get_instance(handle)?;
+) -> FlareSubscriptionHandle {
+    abi::catch_ffi_subscription_handle(|| match subscribe_events_inner(handle, context, callback) {
+        Ok(sub) => sub,
+        Err(_) => 0,
+    })
+}
 
-    // 生成订阅 ID
-    let id = next_subscription_id();
-
+fn subscribe_events_inner(
+    handle: FlareHandle,
+    context: *mut c_void,
+    callback: FlareEventCallback,
+) -> Result<FlareSubscriptionHandle, i32> {
+    let instance = require_instance(handle)?;
+    
     // 创建取消通道
     let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
-
-    // 创建订阅内部状态
-    let inner = Arc::new(EventSubscriptionInner { id, cancel_tx });
-
+    
+    // 生成订阅 ID
+    let subscription_id = {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static NEXT_SUB_ID: AtomicU64 = AtomicU64::new(1);
+        NEXT_SUB_ID.fetch_add(1, Ordering::SeqCst)
+    };
+    EVENT_SUBSCRIPTIONS.insert(subscription_id, cancel_tx);
+    
     // 启动事件转发任务
-    spawn_event_forwarder(instance.clone(), inner.clone(), context, callback, cancel_rx);
-
-    // 注册到实例
-    instance.event_subscriptions.write().map_err(|_| FlareErrorCode::InternalError)?.push(inner);
-
-    Ok(FlareEventSubscription { id })
+    spawn_event_forwarder(instance, subscription_id, context as usize, callback, cancel_rx);
+    
+    Ok(subscription_id)
 }
 
 /// 启动事件转发任务
 fn spawn_event_forwarder(
-    instance: Arc<crate::handle::SdkInstance>,
-    _subscription: Arc<EventSubscriptionInner>,
-    user_context: *mut c_void,
+    instance: Arc<SdkInstance>,
+    subscription_id: u64,
+    user_context: usize, // 使用 usize 代替 *mut c_void
     callback: FlareEventCallback,
     mut cancel_rx: tokio::sync::oneshot::Receiver<()>,
 ) {
-    // 克隆客户端
     let client = instance.client.clone();
-
-    // 在 Tokio runtime 中启动事件转发任务
+    
     instance.runtime.spawn(async move {
-        // 获取事件总线
-        let Ok(bus) = client.bus() else {
-            tracing::error!("Failed to get event bus");
-            return;
+        // 等待事件总线可用，避免登录后瞬时竞态导致“订阅假成功、事件全丢”。
+        let mut rx = loop {
+            match client.bus() {
+                Ok(bus) => break bus.subscribe(),
+                Err(e) => {
+                    tracing::warn!(error = %e, "event bus not ready yet, retrying");
+                    tokio::select! {
+                        _ = &mut cancel_rx => {
+                            tracing::debug!("Event subscription cancelled before bus ready");
+                            EVENT_SUBSCRIPTIONS.remove(&subscription_id);
+                            return;
+                        }
+                        _ = sleep(Duration::from_millis(200)) => {}
+                    }
+                }
+            }
         };
-
-        // 订阅事件
-        let mut rx = bus.subscribe();
-
-        tracing::info!("Event forwarder started");
-
+        
         loop {
             tokio::select! {
                 // 处理取消信号
                 _ = &mut cancel_rx => {
-                    tracing::info!("Event forwarder cancelled");
+                    tracing::debug!("Event subscription cancelled");
+                    EVENT_SUBSCRIPTIONS.remove(&subscription_id);
                     break;
                 }
-
+                
                 // 接收事件
                 result = rx.recv() => {
                     match result {
                         Ok(event) => {
-                            // 转换事件类型
-                            let event_type = match CString::new(event_type_to_string(&event)) {
-                                Ok(s) => s,
-                                Err(e) => {
-                                    tracing::error!("Failed to create event type string: {}", e);
-                                    continue;
-                                }
-                            };
-
+                            let event_type = event_type_to_code(&event);
+                            if event_type == 0 {
+                                continue;
+                            }
                             // 序列化事件为 JSON
-                            let event_json = match event_to_json(&event) {
-                                Ok(json) => match CString::new(json) {
-                                    Ok(s) => s.into_raw(),
-                                    Err(e) => {
-                                        tracing::error!("Failed to create event json string: {}", e);
-                                        continue;
-                                    }
-                                },
-                                Err(e) => {
-                                    tracing::error!("Failed to serialize event: {:?}", e);
-                                    continue;
-                                }
-                            };
-
-                            // 调用回调
-                            callback(user_context, event_type.as_ptr(), event_json);
+                            let event_json = string_to_flare(event_to_json(&event));
+                            
+                            abi::invoke_user_c_callback("FlareEventCallback", || {
+                                callback(user_context as *mut c_void, event_type, event_json);
+                            });
                         }
                         Err(tokio::sync::broadcast::error::RecvError::Closed) => {
-                            tracing::info!("Event bus closed");
+                            tracing::debug!("Event bus closed");
+                            EVENT_SUBSCRIPTIONS.remove(&subscription_id);
                             break;
                         }
                         Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                            tracing::warn!("Event forwarder lagged, missed {} events", n);
+                            tracing::warn!("Event subscription lagged, missed {} events", n);
                             continue;
                         }
                     }
                 }
             }
         }
-
-        tracing::info!("Event forwarder stopped");
     });
 }
 
@@ -255,45 +275,18 @@ fn spawn_event_forwarder(
 /// # Arguments
 /// * `subscription` - 订阅句柄
 #[unsafe(no_mangle)]
-pub extern "C" fn flare_im_unsubscribe(subscription: FlareEventSubscription) {
-    // 注意：取消订阅需要从实例的订阅列表中移除并发送取消信号
-    // 由于订阅存储在实例中，这里需要遍历所有实例来查找
-    // 这是一个简化实现，实际可能需要维护一个全局订阅表
-    tracing::warn!("Unsubscribe called for subscription {}, but not fully implemented", subscription.id);
+pub extern "C" fn flare_event_unsubscribe(subscription: FlareSubscriptionHandle) {
+    abi::catch_ffi_void(|| {
+        if let Some((_, tx)) = EVENT_SUBSCRIPTIONS.remove(&subscription) {
+            let _ = tx.send(());
+        } else {
+            tracing::debug!("Unsubscribe {} ignored: not found", subscription);
+        }
+    });
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_event_type_to_string() {
-        let event = SdkEvent::Connection(ConnectionEvent::Connected);
-        assert_eq!(event_type_to_string(&event), "connection.connected");
-
-        let event = SdkEvent::Connection(ConnectionEvent::Disconnected { reason: "test".to_string() });
-        assert_eq!(event_type_to_string(&event), "connection.disconnected");
-    }
-
-    #[test]
-    fn test_event_to_json() {
-        let event = SdkEvent::Connection(ConnectionEvent::Connected);
-        let json = event_to_json(&event);
-        assert!(json.is_ok());
-        let json_str = json.unwrap();
-        assert!(json_str.contains("connection.connected"));
-    }
-
-    #[test]
-    fn test_event_payload_from_event() {
-        let event = SdkEvent::Connection(ConnectionEvent::Connected);
-        let payload = EventPayload::from(&event);
-        assert_eq!(payload.event_type, "connection.connected");
-        assert!(payload.data.is_none());
-
-        let event = SdkEvent::Connection(ConnectionEvent::Disconnected { reason: "test".to_string() });
-        let payload = EventPayload::from(&event);
-        assert_eq!(payload.event_type, "connection.disconnected");
-        assert!(payload.data.is_some());
-    }
+/// 取消全部事件订阅（用于 Flutter/iOS 热重启或宿主崩溃恢复后的兜底清理）。
+#[unsafe(no_mangle)]
+pub extern "C" fn flare_event_unsubscribe_all() {
+    abi::catch_ffi_void(unsubscribe_all_events);
 }

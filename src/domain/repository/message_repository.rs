@@ -25,6 +25,8 @@ pub trait MessageReader: Send + Sync {
     async fn get(&self, message_id: &str) -> Result<Option<IMMessage>>;
     /// 按 client_msg_id 查询（发送中/待 ACK 时可能仅有 client_msg_id）
     async fn get_by_client_msg_id(&self, client_msg_id: &str) -> Result<Option<IMMessage>>;
+    /// `before_seq == 0`：首屏，返回该会话最新 `limit` 条（`seq` 降序）。
+    /// `before_seq > 0`：返回满足 `seq < before_seq` 的更早消息。
     async fn get_by_conversation(
         &self,
         conversation_id: &str,

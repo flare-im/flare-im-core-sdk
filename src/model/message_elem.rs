@@ -2,8 +2,10 @@
 //! 与 message_content.proto 的 Content oneof 一一对应；JSON 字段与标签为 snake_case（如 `content_type`），接入层可自行转 camelCase。
 
 use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value, json};
 
 use crate::model::decoder::DecodedContent;
+use crate::model::preview_storage::{decode_or_user_text, keys, PreviewStoragePayload};
 use crate::util::date::{ms_to_prost_timestamp, prost_timestamp_to_ms};
 use flare_proto::common::ImageFormat;
 use flare_proto::common::message_content::Content as ProtoContent;
@@ -206,52 +208,77 @@ pub struct ForwardElem {
     pub items: Vec<ForwardItemElem>,
 }
 
-/// 列表/转发条目摘要：与 decoder 的 proto 预览语义对齐，供构建 `ForwardItem.plain_text`。
-pub fn elem_plain_summary(elem: &Elem) -> String {
+/// 将 [`Elem`] 转为存储用 i18n 载荷（稳定 `k` + 参数 `a`）。
+pub fn elem_preview_storage_payload(elem: &Elem) -> PreviewStoragePayload {
     use Elem::*;
     match elem {
-        Text(t) => t.text.clone(),
+        Text(t) => {
+            let mut a = Map::new();
+            a.insert("t".into(), Value::String(t.text.clone()));
+            PreviewStoragePayload {
+                k: keys::USER_TEXT.to_string(),
+                a,
+            }
+        }
         RichText(r) => {
-            let title = r.title.as_deref().map(str::trim).filter(|t| !t.is_empty());
+            let mut a = Map::new();
+            if let Some(title) = r.title.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
+                a.insert("title".into(), Value::String(title.to_string()));
+            }
             let body = r.plain_text.trim();
-            match (title, !body.is_empty()) {
-                (Some(t), true) => format!("{t} {}", body),
-                (Some(t), false) => t.to_string(),
-                (None, true) => body.to_string(),
-                (None, false) => "[富文本]".to_string(),
+            if !body.is_empty() {
+                a.insert("body".into(), Value::String(body.to_string()));
+            }
+            PreviewStoragePayload {
+                k: keys::RICH_TEXT.to_string(),
+                a,
             }
         }
         File(f) => {
-            if f.file_name.is_empty() {
-                "[文件]".to_string()
-            } else {
-                format!("[文件] {}", f.file_name)
+            let mut a = Map::new();
+            if !f.file_name.is_empty() {
+                a.insert("n".into(), Value::String(f.file_name.clone()));
+            }
+            PreviewStoragePayload {
+                k: keys::FILE.to_string(),
+                a,
             }
         }
         Image(i) => {
+            let mut a = Map::new();
             if image_elem_is_motion(i) {
-                "[动图]".to_string()
-            } else if !i.description.trim().is_empty() {
-                i.description.clone()
-            } else {
-                "[图片]".to_string()
+                a.insert("m".into(), Value::Bool(true));
+            }
+            if !i.description.trim().is_empty() {
+                a.insert("d".into(), Value::String(i.description.clone()));
+            }
+            PreviewStoragePayload {
+                k: keys::IMAGE.to_string(),
+                a,
             }
         }
         Video(v) => {
+            let mut a = Map::new();
             if !v.description.trim().is_empty() {
-                v.description.clone()
-            } else {
-                "[视频]".to_string()
+                a.insert("d".into(), Value::String(v.description.clone()));
+            }
+            PreviewStoragePayload {
+                k: keys::VIDEO.to_string(),
+                a,
             }
         }
-        Audio(a) => {
-            if !a.description.trim().is_empty() {
-                a.description.clone()
-            } else {
-                "[语音]".to_string()
+        Audio(aud) => {
+            let mut a = Map::new();
+            if !aud.description.trim().is_empty() {
+                a.insert("d".into(), Value::String(aud.description.clone()));
+            }
+            PreviewStoragePayload {
+                k: keys::AUDIO.to_string(),
+                a,
             }
         }
         Location(l) => {
+            let mut a = Map::new();
             let label = if !l.title.is_empty() {
                 l.title.as_str()
             } else if !l.address.is_empty() {
@@ -259,13 +286,16 @@ pub fn elem_plain_summary(elem: &Elem) -> String {
             } else {
                 ""
             };
-            if label.is_empty() {
-                "[位置]".to_string()
-            } else {
-                format!("[位置] {}", label)
+            if !label.is_empty() {
+                a.insert("label".into(), Value::String(label.to_string()));
+            }
+            PreviewStoragePayload {
+                k: keys::LOCATION.to_string(),
+                a,
             }
         }
         Card(c) => {
+            let mut a = Map::new();
             let label = if !c.title.is_empty() {
                 c.title.as_str()
             } else if !c.id.is_empty() {
@@ -273,99 +303,193 @@ pub fn elem_plain_summary(elem: &Elem) -> String {
             } else {
                 ""
             };
-            if label.is_empty() {
-                "[名片]".to_string()
-            } else {
-                format!("[名片] {}", label)
+            if !label.is_empty() {
+                a.insert("label".into(), Value::String(label.to_string()));
+            }
+            PreviewStoragePayload {
+                k: keys::CARD.to_string(),
+                a,
             }
         }
-        Sticker(_) => "[贴纸]".to_string(),
-        Emoji(e) => e.emoji.clone(),
-        Quote(q) => q
-            .current_content
-            .as_deref()
-            .map(elem_plain_summary)
-            .filter(|s| !s.is_empty())
-            .unwrap_or_else(|| q.quoted_text_preview.clone()),
-        LinkCard(l) => {
-            if !l.title.trim().is_empty() {
-                l.title.clone()
+        Sticker(_) => PreviewStoragePayload {
+            k: keys::STICKER.to_string(),
+            a: Map::new(),
+        },
+        Emoji(e) => {
+            let mut a = Map::new();
+            a.insert("e".into(), Value::String(e.emoji.clone()));
+            PreviewStoragePayload {
+                k: keys::EMOJI.to_string(),
+                a,
+            }
+        }
+        Quote(q) => {
+            if let Some(ref c) = q.current_content {
+                let inner = elem_preview_storage_payload(c);
+                if !inner.is_empty_for_last_preview() {
+                    let mut a = Map::new();
+                    a.insert(
+                        "inner".into(),
+                        serde_json::to_value(&inner).unwrap_or(Value::Null),
+                    );
+                    return PreviewStoragePayload {
+                        k: keys::QUOTE.to_string(),
+                        a,
+                    };
+                }
+            }
+            if !q.quoted_text_preview.trim().is_empty() {
+                decode_or_user_text(&q.quoted_text_preview)
             } else {
-                "[链接]".to_string()
+                PreviewStoragePayload {
+                    k: keys::QUOTE.to_string(),
+                    a: Map::new(),
+                }
+            }
+        }
+        LinkCard(l) => {
+            let mut a = Map::new();
+            if !l.title.trim().is_empty() {
+                a.insert("t".into(), Value::String(l.title.clone()));
+            }
+            PreviewStoragePayload {
+                k: keys::LINK.to_string(),
+                a,
             }
         }
         Forward(f) => {
             let n = f.items.len();
             if n == 0 {
-                "[转发]".to_string()
+                PreviewStoragePayload {
+                    k: keys::FORWARD_EMPTY.to_string(),
+                    a: Map::new(),
+                }
             } else if n == 1 {
-                f.items[0].plain_text.clone()
+                if let Some(ref c) = f.items[0].content {
+                    elem_preview_storage_payload(c)
+                } else {
+                    decode_or_user_text(&f.items[0].plain_text)
+                }
             } else {
-                format!("[转发] {n} 条消息")
+                let mut a = Map::new();
+                a.insert("n".into(), json!(n as u64));
+                if let Some(ref c) = f.items[0].content {
+                    let first = elem_preview_storage_payload(c);
+                    if let Ok(v) = serde_json::to_value(&first) {
+                        a.insert("first".into(), v);
+                    }
+                } else if !f.items[0].plain_text.is_empty() {
+                    let first = decode_or_user_text(&f.items[0].plain_text);
+                    if let Ok(v) = serde_json::to_value(&first) {
+                        a.insert("first".into(), v);
+                    }
+                }
+                PreviewStoragePayload {
+                    k: keys::FORWARD_MANY.to_string(),
+                    a,
+                }
             }
         }
         Thread(t) => {
+            let mut a = Map::new();
             if !t.thread_title.trim().is_empty() {
-                t.thread_title.clone()
-            } else {
-                "[话题]".to_string()
+                a.insert("t".into(), Value::String(t.thread_title.clone()));
+            }
+            PreviewStoragePayload {
+                k: keys::THREAD.to_string(),
+                a,
             }
         }
         MiniProgram(m) => {
+            let mut a = Map::new();
             if !m.title.trim().is_empty() {
-                m.title.clone()
-            } else {
-                "[小程序]".to_string()
+                a.insert("t".into(), Value::String(m.title.clone()));
+            }
+            PreviewStoragePayload {
+                k: keys::MINI_PROGRAM.to_string(),
+                a,
             }
         }
-        ImageGroup(_) => "[多图]".to_string(),
+        ImageGroup(_) => PreviewStoragePayload {
+            k: keys::IMAGE_GROUP.to_string(),
+            a: Map::new(),
+        },
         System(s) => {
+            let mut a = Map::new();
             if !s.body.trim().is_empty() {
-                s.body.clone()
-            } else {
-                "[系统消息]".to_string()
+                a.insert("t".into(), Value::String(s.body.clone()));
+            }
+            PreviewStoragePayload {
+                k: keys::SYSTEM.to_string(),
+                a,
             }
         }
         Notification(n) => {
+            let mut a = Map::new();
             if !n.body.trim().is_empty() {
-                n.body.clone()
+                a.insert("body".into(), Value::String(n.body.clone()));
             } else if !n.title.trim().is_empty() {
-                n.title.clone()
-            } else {
-                "[通知]".to_string()
+                a.insert("title".into(), Value::String(n.title.clone()));
+            }
+            PreviewStoragePayload {
+                k: keys::NOTIFICATION.to_string(),
+                a,
             }
         }
-        Vote(_) => "[投票]".to_string(),
+        Vote(_) => PreviewStoragePayload {
+            k: keys::VOTE.to_string(),
+            a: Map::new(),
+        },
         Task(t) => {
+            let mut a = Map::new();
             if !t.title.trim().is_empty() {
-                format!("[任务] {}", t.title)
-            } else {
-                "[任务]".to_string()
+                a.insert("t".into(), Value::String(t.title.clone()));
+            }
+            PreviewStoragePayload {
+                k: keys::TASK.to_string(),
+                a,
             }
         }
-        Schedule(_) => "[日程]".to_string(),
-        Announcement(a) => {
-            if !a.title.trim().is_empty() {
-                format!("[公告] {}", a.title)
-            } else {
-                "[公告]".to_string()
+        Schedule(_) => PreviewStoragePayload {
+            k: keys::SCHEDULE.to_string(),
+            a: Map::new(),
+        },
+        Announcement(ann) => {
+            let mut map = Map::new();
+            if !ann.title.trim().is_empty() {
+                map.insert("t".into(), Value::String(ann.title.clone()));
+            }
+            PreviewStoragePayload {
+                k: keys::ANNOUNCEMENT.to_string(),
+                a: map,
             }
         }
         Custom(c) => {
+            let mut a = Map::new();
             if !c.description.trim().is_empty() {
-                c.description.clone()
-            } else {
-                "[自定义]".to_string()
+                a.insert("d".into(), Value::String(c.description.clone()));
+            }
+            PreviewStoragePayload {
+                k: keys::CUSTOM.to_string(),
+                a,
             }
         }
         Placeholder(p) => {
+            let mut a = Map::new();
             if !p.fallback_text.trim().is_empty() {
-                p.fallback_text.clone()
-            } else {
-                "[占位]".to_string()
+                a.insert("t".into(), Value::String(p.fallback_text.clone()));
+            }
+            PreviewStoragePayload {
+                k: keys::PLACEHOLDER.to_string(),
+                a,
             }
         }
     }
+}
+
+/// 列表/转发条目摘要：JSON 字符串形态，与 [`elem_preview_storage_payload`] 一致；供 `ForwardItem.plain_text`、`quote_preview` 等持久化。
+pub fn elem_plain_summary(elem: &Elem) -> String {
+    serde_json::to_string(&elem_preview_storage_payload(elem)).unwrap_or_default()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

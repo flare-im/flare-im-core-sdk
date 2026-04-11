@@ -133,6 +133,25 @@ impl SyncApplyUseCase {
                         .conversations
                         .recompute_unread_for_user(&conversation.conversation_id, user_id)
                         .await;
+                    if conversation.peer_read_seq > 0 {
+                        if let Err(error) = self
+                            .stores
+                            .messages
+                            .mark_outgoing_read_upto_seq(
+                                &conversation.conversation_id,
+                                user_id,
+                                conversation.peer_read_seq,
+                            )
+                            .await
+                        {
+                            tracing::warn!(
+                                conversation_id = %conversation.conversation_id,
+                                peer_read_seq = conversation.peer_read_seq,
+                                error = %error,
+                                "同步会话时回填消息已读失败"
+                            );
+                        }
+                    }
                 }
             }
         } else {

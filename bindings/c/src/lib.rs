@@ -1,71 +1,135 @@
-//! Flare IM Core SDK - C FFI Bindings
+//! Flare IM SDK - C ABI Bindings
 //!
-//! 提供统一的 C ABI 绑定层，作为 Rust SDK 与各平台之间的唯一桥梁。
+//! 跨平台 C ABI SDK,支持 iOS、Android、Flutter、鸿蒙、C/C++、Node、Unity
 //!
 //! # 架构原则
 //!
-//! - **Rust 只维护一套核心业务** - 所有业务逻辑在 `flare-im-core-sdk` 中实现
-//! - **对外统一导出 C ABI** - 本模块是唯一的 FFI 层，所有平台共用
-//! - **平台极薄适配层** - 各平台适配层代码量控制在 200-400 LOC
-//! - **接口统一设计** - 采用"句柄 + 错误码 + JSON/bytes + 回调"统一模式
+//! - Rust 内部复杂,C ABI 外部简单
+//! - 所有对象通过 handle 管理
+//! - 异步 API 使用 callback
+//! - 统一 error code 错误模型
+//! - 显式内存管理
 //!
-//! # 模块结构
+//! # 线程安全
 //!
-//! - `error`: 错误码定义与映射
-//! - `handle`: 句柄管理（SDK 实例、订阅）
-//! - `callback`: 回调管理（存储、调度）
-//! - `lifecycle`: 生命周期 API（init/login/logout）
-//! - `message`: 消息 API（构建、发送、查询、操作）
-//! - `conversation`: 会话 API（列表、操作）
-//! - `media`: 媒体 API（上传、下载、缓存）
-//! - `event`: 事件订阅 API
-//! - `json`: JSON 辅助工具
-//! - `string`: 字符串内存管理
+//! - callback 可能来自任意线程
+//! - 禁止在 callback 中阻塞或持锁
+//! - 所有 API 线程安全
 
-// 模块声明
-pub mod callback;
-pub mod conversation;
-pub mod error;
-pub mod event;
-pub mod handle;
-pub mod json;
-pub mod lifecycle;
-pub mod media;
-pub mod message;
-pub mod string;
+// 核心模块
+mod abi;
+mod ffi_runtime;
+mod types;
+mod registry;
+mod error_convert;
+mod helpers;
+mod executor;
+
+// API 模块
+mod lifecycle;
+mod message;
+mod conversation;
+mod media;
+mod event;
+mod client_sync;
+mod dispatch;
 
 // 重新导出公开类型
-pub use error::FlareErrorCode;
-pub use handle::{FlareEventSubscription, FlareImHandle};
+pub use types::{
+    FlareBytes,
+    FlareBytesView,
+    FlareError,
+    FlareHandle,
+    FlareProgressCallback,
+    FlareResultCallback,
+    FlareString,
+    FlareStringView,
+    FlareSubscriptionHandle,
+    FlareTaskHandle,
+};
 
-/// FFI 边界 panic 捕获
-///
-/// 所有 `extern "C"` 函数必须使用此函数捕获 panic，不可让异常跨越 FFI。
-///
-/// # Safety
-/// 此函数确保 FFI 边界的安全，防止 panic 跨越 FFI 边界。
-pub fn catch_panic<F, R>(f: F) -> R
-where
-    F: FnOnce() -> Result<R, FlareErrorCode> + std::panic::UnwindSafe,
-    R: Default,
-{
-    match std::panic::catch_unwind(f) {
-        Ok(Ok(result)) => result,
-        Ok(Err(code)) => {
-            tracing::error!("FFI error: {:?}", code);
-            R::default()
-        }
-        Err(e) => {
-            tracing::error!("FFI panic: {:?}", e);
-            R::default()
-        }
-    }
-}
+// 重新导出生命周期 API
+pub use lifecycle::{
+    flare_sdk_create,
+    flare_sdk_current_user_id,
+    flare_sdk_generate_test_token,
+    flare_sdk_ffi_contract_version,
+    flare_sdk_init,
+    flare_sdk_is_connected,
+    flare_sdk_login,
+    flare_sdk_logout,
+    flare_sdk_hard_reset,
+    flare_sdk_release,
+    flare_sdk_session_active,
+    flare_sdk_version,
+};
 
-/// 初始化日志
+// 与 IMClient 直接方法对齐（状态、断开、同步、输入态等）
+pub use client_sync::{
+    flare_sdk_disconnect,
+    flare_sdk_mark_session_read,
+    flare_sdk_set_conversation_input_state,
+    flare_sdk_state,
+    flare_sdk_sync_conversation,
+    flare_sdk_sync_messages,
+};
+
+// 重新导出消息 API
+pub use message::{
+    flare_message_create_text,
+    flare_message_send,
+    flare_message_list,
+    flare_message_recall,
+    flare_message_delete,
+};
+
+// MessageApi / MessageBuildApi 其余能力：JSON 分发（op + params）
+pub use dispatch::{flare_message_build_json, flare_message_dispatch_json};
+
+// 重新导出会话 API
+pub use conversation::{
+    flare_conversation_delete,
+    flare_conversation_get,
+    flare_conversation_get_one,
+    flare_conversation_list,
+    flare_conversation_mark_all_read,
+    flare_conversation_mark_read,
+    flare_conversation_set_pinned,
+    flare_conversation_update_draft,
+};
+
+// 重新导出媒体 API
+pub use media::{
+    flare_media_cache_remote,
+    flare_media_cache_stats,
+    flare_media_clear_cache,
+    flare_media_get_url,
+    flare_media_resolve_access,
+    flare_media_set_cache_max_bytes,
+    flare_media_set_cache_root,
+};
+
+// 重新导出事件 API
+pub use event::{
+    flare_event_subscribe,
+    flare_event_unsubscribe_all,
+    flare_event_unsubscribe,
+};
+
+// 重新导出内存管理 API
+pub use helpers::{
+    flare_bytes_free,
+    flare_error_free,
+    flare_error_heap_free,
+    flare_string_free,
+};
+
+/// 初始化日志系统
 ///
-/// 应在首次使用 SDK 前调用，确保日志系统已初始化。
+/// 应在首次使用 SDK 前调用
 #[unsafe(no_mangle)]
-pub extern "C" fn flare_im_init_logging() {
-    let _ = tracing_subscriber::fmt::try_init();
+pub extern "C" fn flare_sdk_init_logging() {
+    abi::catch_ffi_void(|| {
+        let _ = tracing_subscriber::fmt::try_init();
+    });
 }

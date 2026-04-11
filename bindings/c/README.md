@@ -1,49 +1,84 @@
-# C ABI FFI Bindings
+# Flare IM SDK - C ABI Bindings
 
-提供 C 兼容的 API，供各平台自动生成绑定。
+跨平台 C ABI SDK,支持 iOS、Android、Flutter、鸿蒙、C/C++、Node、Unity。
 
-## 设计原则
+## 架构
 
-1. **最小化编码**：只做必要的类型转换
-2. **完全自动化**：各平台绑定自动生成
-3. **性能最优**：直接调用，无序列化开销
+- **Rust 内部复杂,C ABI 外部简单**
+- **所有对象通过 handle 管理**
+- **异步 API 使用 callback**
+- **统一 error code 错误模型**
+- **显式内存管理**
 
-## 使用方式
+## 文件结构
 
-1. 使用 `cbindgen` 生成 C 头文件
-2. 各平台从 C 头文件自动生成绑定
-3. 零编码，完全自动化
+```
+bindings/c/
+├── Cargo.toml          # 项目配置
+├── cbindgen.toml       # 头文件生成配置
+├── build.rs            # 构建脚本
+├── ARCHITECTURE.md     # 架构设计文档
+└── src/
+    ├── lib.rs           # 入口
+    ├── types.rs         # C ABI 类型定义
+    ├── registry.rs      # 句柄注册表
+    ├── error_convert.rs # 错误转换
+    ├── helpers.rs       # 辅助工具
+    ├── executor.rs      # 回调执行器
+    └── lifecycle.rs     # 生命周期 API
+```
+
+## API
+
+### 生命周期
+
+```c
+// 创建/释放
+FlareHandle flare_sdk_create();
+void flare_sdk_release(FlareHandle handle);
+
+// 初始化/登录/登出
+int32_t flare_sdk_init(FlareHandle handle, const char* config_json, void* context, FlareResultCallback callback);
+int32_t flare_sdk_login(FlareHandle handle, const char* user_id, const char* token, const char* store_config_json, void* context, FlareResultCallback callback);
+int32_t flare_sdk_logout(FlareHandle handle, void* context, FlareResultCallback callback);
+
+// 同步查询
+FlareString flare_sdk_version();
+bool flare_sdk_is_connected(FlareHandle handle);
+
+// 当前用户 ID（异步，走 callback）
+int32_t flare_sdk_current_user_id(FlareHandle handle, void* context, FlareResultCallback callback);
+
+// 开发用 JWT（同步，不依赖 handle；`secret`/`issuer` 可为 NULL 或空串用内置默认；`tenant_id` 可为 NULL；`ttl_secs==0` 表示 3600；须 flare_string_free）
+FlareString flare_sdk_generate_test_token(const char* secret, const char* issuer, const char* user_id, const char* tenant_id, uint64_t ttl_secs);
+```
+
+### 内存管理
+
+```c
+void flare_string_free(FlareString s);
+void flare_bytes_free(FlareBytes b);
+void flare_error_free(FlareError e);
+```
 
 ## 构建
 
 ```bash
-# 构建库
 cargo build -p flare-im-core-sdk-ffi --release
-
-# 生成 C 头文件（自动在 build.rs 中执行）
-cargo build -p flare-im-core-sdk-ffi
-# 头文件位置: target/flare_im_core_sdk_ffi.h
 ```
 
-## API 说明
+## 线程安全
 
-所有 API 都使用 callback 模式处理异步结果：
+- callback 可能来自任意线程
+- 禁止在 callback 中阻塞或持锁
+- 所有 API 线程安全
 
-```c
-typedef void (*Callback)(void* user_data, const char* result, const char* error);
-```
+## 平台支持
 
-### 主要函数
-
-- `flare_im_sdk_new` - 创建 SDK 实例
-- `flare_im_sdk_login` - 登录
-- `flare_im_sdk_create_text_message` - 创建文本消息
-- `flare_im_sdk_send_message` - 发送消息
-- `flare_im_sdk_get_conversations` - 获取会话列表
-- `flare_im_sdk_get_messages` - 获取消息列表
-- `flare_im_sdk_free` - 释放 SDK 实例
-
-## 安全性说明
-
-此模块包含 FFI 代码，虽然使用了 `#[unsafe(no_mangle)]` 和原始指针，
-但所有公共 API 都是安全的。所有 unsafe 操作都封装在 `safe` 模块中。
+- iOS (Swift/Objective-C)
+- Android (Kotlin/Java)
+- Flutter (Dart)
+- 鸿蒙 (ArkTS/C++)
+- C/C++
+- Node.js (N-API)
+- Unity (C# P/Invoke)

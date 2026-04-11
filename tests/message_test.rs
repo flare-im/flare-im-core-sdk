@@ -26,7 +26,9 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 use flare_im_core_sdk::model::IMMessage;
 use flare_im_core_sdk::model::message::*;
+use flare_im_core_sdk::model::preview_storage::{self, PreviewStoragePayload};
 use flare_im_core_sdk::prelude::*;
+use serde_json::json;
 use flare_proto::common::TypingEvent;
 use flare_proto::common::ImageFormat;
 use flare_proto::common::message_content::Content as ProtoContent;
@@ -406,7 +408,12 @@ async fn test_content_roundtrip_text() {
         .unwrap();
     let decoded = decode_content(&msg).unwrap();
     assert_eq!(decoded.message_type(), MessageType::Text);
-    assert_eq!(decoded.text_preview(), "Hello @Alice!");
+    let preview: PreviewStoragePayload = serde_json::from_str(&decoded.text_preview()).unwrap();
+    assert_eq!(preview.k, preview_storage::keys::USER_TEXT);
+    assert_eq!(
+        preview.a.get("t").and_then(|v| v.as_str()),
+        Some("Hello @Alice!")
+    );
 
     if let DecodedContent::Content(ProtoContent::Text(text)) = &decoded {
         assert_eq!(text.text, "Hello @Alice!");
@@ -529,42 +536,75 @@ async fn test_content_roundtrip_all_types() {
 
 #[tokio::test]
 async fn test_content_text_previews() {
-    let cases: Vec<(BuiltContent, &str)> = vec![
-        (ContentBuilder::text("hello").build(), "hello"),
-        (ContentBuilder::image("i").build(), "[图片]"),
-        (ContentBuilder::video("v").build(), "[视频]"),
-        (ContentBuilder::audio("a").build(), "[语音]"),
+    let cases: Vec<(BuiltContent, &'static str, serde_json::Value)> = vec![
+        (
+            ContentBuilder::text("hello").build(),
+            preview_storage::keys::USER_TEXT,
+            json!({ "t": "hello" }),
+        ),
+        (
+            ContentBuilder::image("i").build(),
+            preview_storage::keys::IMAGE,
+            json!({}),
+        ),
+        (
+            ContentBuilder::video("v").build(),
+            preview_storage::keys::VIDEO,
+            json!({}),
+        ),
+        (
+            ContentBuilder::audio("a").build(),
+            preview_storage::keys::AUDIO,
+            json!({}),
+        ),
         (
             ContentBuilder::file("f").file_name("a.pdf").build(),
-            "[文件] a.pdf",
+            preview_storage::keys::FILE,
+            json!({ "n": "a.pdf" }),
         ),
         (
             ContentBuilder::location(0.0, 0.0).address("北京").build(),
-            "[位置] 北京",
+            preview_storage::keys::LOCATION,
+            json!({ "label": "北京" }),
         ),
         (
             ContentBuilder::card("u").card_type("user").title("Alice").build(),
-            "[名片] Alice",
+            preview_storage::keys::CARD,
+            json!({ "label": "Alice" }),
         ),
-        (ContentBuilder::emoji("😀").build(), "😀"),
+        (
+            ContentBuilder::emoji("😀").build(),
+            preview_storage::keys::EMOJI,
+            json!({ "e": "😀" }),
+        ),
         (
             ContentBuilder::custom("red_packet")
                 .description("恭喜发财")
                 .build(),
-            "恭喜发财",
+            preview_storage::keys::CUSTOM,
+            json!({ "d": "恭喜发财" }),
         ),
     ];
 
-    for (built, expected_prefix) in cases {
+    for (built, expected_k, expected_a) in cases {
         let msg = MessageBuilder::new("c", "u")
             .content(built)
             .build()
             .unwrap();
         let decoded = decode_content(&msg).unwrap();
-        assert!(
-            decoded.text_preview().starts_with(expected_prefix),
-            "preview '{}' should start with '{expected_prefix}'",
-            decoded.text_preview(),
+        let p: PreviewStoragePayload =
+            serde_json::from_str(&decoded.text_preview()).unwrap_or_else(|e| {
+                panic!(
+                    "preview JSON parse failed: {e}; raw={}",
+                    decoded.text_preview()
+                )
+            });
+        assert_eq!(p.k, expected_k, "raw={}", decoded.text_preview());
+        let a_obj = serde_json::Value::Object(p.a.clone());
+        assert_eq!(
+            a_obj, expected_a,
+            "key={expected_k} raw={}",
+            decoded.text_preview()
         );
     }
 }
@@ -744,6 +784,11 @@ async fn test_message_store_get_by_conversation() {
     let list = store.get_by_conversation("conv_001", 100, 3).await.unwrap();
     assert_eq!(list.len(), 3);
     assert!(list[0].seq >= list[1].seq, "should be ordered desc");
+
+    let first_page = store.get_by_conversation("conv_001", 0, 2).await.unwrap();
+    assert_eq!(first_page.len(), 2);
+    assert_eq!(first_page[0].seq, 5);
+    assert_eq!(first_page[1].seq, 4);
 }
 
 #[tokio::test]

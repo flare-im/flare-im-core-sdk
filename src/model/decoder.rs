@@ -2,7 +2,8 @@
 
 use crate::error::Result;
 use crate::model::message::Message;
-use crate::model::message_elem::proto_image_content_is_motion;
+use crate::model::message_elem::{decoded_content_to_elem, elem_plain_summary};
+use crate::model::preview_storage;
 use flare_proto::MessageContentExt;
 use flare_proto::common::MessageType;
 use flare_proto::common::message_content::Content as ProtoContent;
@@ -16,11 +17,14 @@ pub enum DecodedContent {
 }
 
 impl DecodedContent {
-    /// 列表/搜索用短文案
+    /// 列表/搜索用短文案：与 [`crate::model::message_elem::elem_plain_summary`] 一致（JSON 载荷，稳定 `k` + `a`）。
     pub fn text_preview(&self) -> String {
         match self {
-            DecodedContent::Content(c) => content_text_preview(c),
-            DecodedContent::Unknown => "[未知]".to_string(),
+            DecodedContent::Content(_) => decoded_content_to_elem(self)
+                .map(|e| elem_plain_summary(&e))
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(preview_storage::unknown_preview_json),
+            DecodedContent::Unknown => preview_storage::unknown_preview_json(),
         }
     }
 
@@ -38,96 +42,6 @@ impl DecodedContent {
             DecodedContent::Content(c) => Some(c),
             DecodedContent::Unknown => None,
         }
-    }
-}
-
-fn rich_text_list_preview(r: &flare_proto::common::RichTextContent) -> String {
-    let body = non_empty(r.plain_text.trim()).unwrap_or_default();
-    match (
-        r.title
-            .as_deref()
-            .map(str::trim)
-            .filter(|t| !t.is_empty()),
-        body.is_empty(),
-    ) {
-        (Some(t), false) => format!("{t} {}", body),
-        (Some(t), true) => t.to_string(),
-        (None, false) => body,
-        (None, true) => "[富文本]".to_string(),
-    }
-}
-
-fn content_text_preview(c: &ProtoContent) -> String {
-    use ProtoContent as C;
-    match c {
-        C::Text(t) => t.text.clone(),
-        C::Image(i) => {
-            if proto_image_content_is_motion(i) {
-                "[动图]".to_string()
-            } else {
-                non_empty(&i.description).unwrap_or_else(|| "[图片]".to_string())
-            }
-        }
-        C::Video(v) => non_empty(&v.description).unwrap_or_else(|| "[视频]".to_string()),
-        C::Audio(a) => non_empty(&a.description).unwrap_or_else(|| "[语音]".to_string()),
-        C::File(f) => {
-            if f.file_name.is_empty() {
-                "[文件]".to_string()
-            } else {
-                format!("[文件] {}", f.file_name)
-            }
-        }
-        C::Location(l) => non_empty(&l.title)
-            .or(non_empty(&l.address))
-            .map(|s| format!("[位置] {}", s))
-            .unwrap_or_else(|| "[位置]".to_string()),
-        C::Card(card) => non_empty(&card.title)
-            .or(non_empty(&card.id))
-            .map(|s| format!("[名片] {}", s))
-            .unwrap_or_else(|| "[名片]".to_string()),
-        C::Sticker(_) => "[贴纸]".to_string(),
-        C::Emoji(e) => e.emoji.clone(),
-        C::Quote(q) => q
-            .current_content
-            .as_deref()
-            .and_then(|mc| mc.content.as_ref())
-            .map(content_text_preview)
-            .filter(|s| !s.is_empty())
-            .unwrap_or_else(|| q.quoted_text_preview.clone()),
-        C::LinkCard(l) => non_empty(&l.title).unwrap_or_else(|| "[链接]".to_string()),
-        C::Forward(f) => {
-            let n = f.items.len();
-            if n == 0 {
-                "[转发]".to_string()
-            } else if n == 1 {
-                f.items[0].plain_text.clone()
-            } else {
-                format!("[转发] {n} 条消息")
-            }
-        }
-        C::Thread(t) => t.thread_title.clone(),
-        C::MiniProgram(m) => non_empty(&m.title).unwrap_or_else(|| "[小程序]".to_string()),
-        C::RichText(r) => rich_text_list_preview(r),
-        C::ImageGroup(_) => "[多图]".to_string(),
-        C::System(s) => non_empty(&s.body).unwrap_or_else(|| "[系统消息]".to_string()),
-        C::Notification(n) => non_empty(&n.body)
-            .or(non_empty(&n.title))
-            .unwrap_or_else(|| "[通知]".to_string()),
-        C::Vote(_) => "[投票]".to_string(),
-        C::Task(t) => non_empty(&t.title).unwrap_or_else(|| "[任务]".to_string()),
-        C::Schedule(_) => "[日程]".to_string(),
-        C::Announcement(a) => non_empty(&a.title).unwrap_or_else(|| "[公告]".to_string()),
-        C::Custom(c) => non_empty(&c.description).unwrap_or_else(|| "[自定义]".to_string()),
-        C::Placeholder(p) => non_empty(&p.fallback_text).unwrap_or_else(|| "[占位]".to_string()),
-    }
-}
-
-#[inline]
-fn non_empty(s: &str) -> Option<String> {
-    if s.is_empty() {
-        None
-    } else {
-        Some(s.to_string())
     }
 }
 
