@@ -6,13 +6,16 @@ use async_trait::async_trait;
 use base64::prelude::*;
 use sqlx::{QueryBuilder, Row, Sqlite, SqlitePool};
 use flare_proto::common::ReactionAction;
+use tracing::debug;
 
 use crate::domain::{
     EditApplyResult, MessageReader, MessageStore, MessageWriter, OperationApplyResult,
 };
 use crate::error::{ErrorCode, FlareError, Result};
 use crate::model::conversation::ConversationType;
-use crate::model::message::{MessageLocalState, ReactionEntry, parse_reactions_from_extra};
+use crate::model::message::{
+    MessageLocalState, ReactionEntry, has_reaction_snapshot_in_extra, parse_reactions_from_extra,
+};
 use crate::model::{
     IMMessage, decode_content_bytes, decoded_content_to_elem, message_elem::TextElem, Elem,
 };
@@ -339,6 +342,87 @@ fn now_ms_i64() -> i64 {
         .unwrap_or(0)
 }
 
+async fn refresh_reactions_json_snapshot(
+    pool: &SqlitePool,
+    message_id: &str,
+) -> Result<()> {
+    let id = message_id.trim();
+    if id.is_empty() {
+        return Ok(());
+    }
+    let message_row = sqlx::query(
+        r#"SELECT server_id, extra FROM messages
+           WHERE server_id = ? OR client_msg_id = ?
+           LIMIT 1"#,
+    )
+    .bind(id)
+    .bind(id)
+    .fetch_optional(pool)
+    .await
+    .map_err(sqlx_err)?;
+    let Some(row) = message_row else {
+        return Ok(());
+    };
+    let server_id: String = row.try_get("server_id").map_err(sqlx_err)?;
+    if server_id.trim().is_empty() {
+        return Ok(());
+    }
+
+    let reaction_rows = sqlx::query(
+        r#"SELECT emoji, user_id
+           FROM message_reactions
+           WHERE message_server_id = ?
+           ORDER BY updated_at ASC"#,
+    )
+    .bind(server_id.trim())
+    .fetch_all(pool)
+    .await
+    .map_err(sqlx_err)?;
+
+    let mut grouped: HashMap<String, Vec<String>> = HashMap::new();
+    for rr in reaction_rows {
+        let emoji: String = rr.try_get("emoji").map_err(sqlx_err)?;
+        let user_id: String = rr.try_get("user_id").map_err(sqlx_err)?;
+        if emoji.trim().is_empty() || user_id.trim().is_empty() {
+            continue;
+        }
+        grouped
+            .entry(emoji.trim().to_string())
+            .or_default()
+            .push(user_id.trim().to_string());
+    }
+    let mut reactions: Vec<ReactionEntry> = grouped
+        .into_iter()
+        .map(|(emoji, user_ids)| ReactionEntry {
+            emoji,
+            count: user_ids.len() as u32,
+            user_ids,
+        })
+        .collect();
+    reactions.sort_by(|a, b| a.emoji.cmp(&b.emoji));
+    debug!(
+        message_id = %id,
+        server_id = %server_id,
+        reaction_group_count = reactions.len(),
+        "refresh_reactions_json_snapshot"
+    );
+
+    let extra_raw: Option<String> = row.try_get("extra").map_err(sqlx_err)?;
+    let mut extra = parse_extra(extra_raw.as_deref());
+    if reactions.is_empty() {
+        extra.remove("reactionsJson");
+    } else if let Ok(raw) = serde_json::to_string(&reactions) {
+        extra.insert("reactionsJson".to_string(), raw);
+    }
+    sqlx::query("UPDATE messages SET extra = ? WHERE server_id = ?")
+        .bind(extra_to_json(&extra))
+        .bind(server_id)
+        .execute(pool)
+        .await
+        .map_err(sqlx_err)?;
+    Ok(())
+}
+
 fn conversation_display_name_from_message(message: &IMMessage) -> String {
     if !message.channel_id.trim().is_empty() {
         return message.channel_id.trim().to_string();
@@ -468,6 +552,11 @@ async fn replace_reaction_snapshot_tx(
     message: &IMMessage,
 ) -> Result<()> {
     if message.server_id.is_empty() {
+        return Ok(());
+    }
+    let has_snapshot = has_reaction_snapshot_in_extra(&message.extra) || !message.reactions.is_empty();
+    if !has_snapshot {
+        // 下行消息通常不携带 reactions 快照，不能把已落库的反应误删。
         return Ok(());
     }
     sqlx::query("DELETE FROM message_reactions WHERE message_server_id = ?")
@@ -890,6 +979,14 @@ impl MessageStore for SqliteMessageRepo {
             .execute(&self.pool)
             .await
             .map_err(sqlx_err)?;
+            debug!(
+                conversation_id = %conversation_id,
+                message_server_id = %message_server_id,
+                user_id = %user_id,
+                emoji = %emoji,
+                action = action,
+                "apply_reaction remove"
+            );
             return Ok(());
         }
         sqlx::query(
@@ -906,6 +1003,15 @@ impl MessageStore for SqliteMessageRepo {
         .execute(&self.pool)
         .await
         .map_err(sqlx_err)?;
+        debug!(
+            conversation_id = %conversation_id,
+            message_server_id = %message_server_id,
+            user_id = %user_id,
+            emoji = %emoji,
+            action = action,
+            "apply_reaction add"
+        );
+        refresh_reactions_json_snapshot(&self.pool, message_server_id).await?;
         Ok(())
     }
 
@@ -936,8 +1042,8 @@ impl MessageStore for SqliteMessageRepo {
             |_| {},
         )
         .await?;
-        if applied != OperationApplyResult::Applied {
-            return Ok(applied);
+        if applied == OperationApplyResult::IgnoredStale {
+            return Ok(OperationApplyResult::IgnoredStale);
         }
 
         let now = now_ms_i64();
@@ -952,6 +1058,15 @@ impl MessageStore for SqliteMessageRepo {
             .execute(&self.pool)
             .await
             .map_err(sqlx_err)?;
+            debug!(
+                conversation_id = %conversation_id,
+                message_server_id = %message_server_id,
+                user_id = %user_id,
+                emoji = %emoji,
+                action = action,
+                "apply_reaction_event remove"
+            );
+            refresh_reactions_json_snapshot(&self.pool, message_server_id).await?;
             return Ok(OperationApplyResult::Applied);
         }
         sqlx::query(
@@ -968,6 +1083,15 @@ impl MessageStore for SqliteMessageRepo {
         .execute(&self.pool)
         .await
         .map_err(sqlx_err)?;
+        debug!(
+            conversation_id = %conversation_id,
+            message_server_id = %message_server_id,
+            user_id = %user_id,
+            emoji = %emoji,
+            action = action,
+            "apply_reaction_event add"
+        );
+        refresh_reactions_json_snapshot(&self.pool, message_server_id).await?;
         Ok(OperationApplyResult::Applied)
     }
 
@@ -1059,14 +1183,63 @@ impl MessageStore for SqliteMessageRepo {
         if message_server_ids.is_empty() {
             return Ok(HashMap::new());
         }
+        let mut id_keys: Vec<String> = message_server_ids
+            .iter()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+        if id_keys.is_empty() {
+            return Ok(HashMap::new());
+        }
+        id_keys.sort();
+        id_keys.dedup();
+
+        let mut alias_qb = QueryBuilder::<Sqlite>::new(
+            "SELECT server_id, client_msg_id FROM messages WHERE server_id IN (",
+        );
+        let mut alias_sep_a = alias_qb.separated(", ");
+        for id in &id_keys {
+            alias_sep_a.push_bind(id);
+        }
+        alias_qb.push(") OR client_msg_id IN (");
+        let mut alias_sep_b = alias_qb.separated(", ");
+        for id in &id_keys {
+            alias_sep_b.push_bind(id);
+        }
+        alias_qb.push(")");
+        let alias_rows = alias_qb
+            .build()
+            .fetch_all(&self.pool)
+            .await
+            .map_err(sqlx_err)?;
+
+        let mut canonical: HashMap<String, String> = HashMap::new();
+        for row in alias_rows {
+            let sid: String = row.try_get("server_id").map_err(sqlx_err)?;
+            let cid: String = row.try_get("client_msg_id").map_err(sqlx_err)?;
+            let sid_t = sid.trim();
+            let cid_t = cid.trim();
+            if !sid_t.is_empty() {
+                canonical.insert(sid_t.to_string(), sid_t.to_string());
+            }
+            if !cid_t.is_empty() {
+                canonical.insert(cid_t.to_string(), sid_t.to_string());
+            }
+        }
+
         let mut qb = QueryBuilder::<Sqlite>::new(
             "SELECT message_server_id, emoji, user_id FROM message_reactions WHERE message_server_id IN (",
         );
         let mut separated = qb.separated(", ");
-        for id in message_server_ids {
+        for id in &id_keys {
             separated.push_bind(id);
         }
-        qb.push(") ORDER BY updated_at ASC");
+        qb.push(") OR message_server_id IN (SELECT client_msg_id FROM messages WHERE server_id IN (");
+        let mut sid_sep = qb.separated(", ");
+        for id in &id_keys {
+            sid_sep.push_bind(id);
+        }
+        qb.push(")) ORDER BY updated_at ASC");
         let rows = qb
             .build()
             .fetch_all(&self.pool)
@@ -1078,8 +1251,15 @@ impl MessageStore for SqliteMessageRepo {
             let msg_id: String = row.try_get("message_server_id").map_err(sqlx_err)?;
             let emoji: String = row.try_get("emoji").map_err(sqlx_err)?;
             let user_id: String = row.try_get("user_id").map_err(sqlx_err)?;
+            let resolved_id = canonical
+                .get(msg_id.trim())
+                .cloned()
+                .unwrap_or_else(|| msg_id.trim().to_string());
+            if resolved_id.is_empty() {
+                continue;
+            }
             grouped
-                .entry(msg_id)
+                .entry(resolved_id)
                 .or_default()
                 .entry(emoji)
                 .or_default()
@@ -1610,5 +1790,96 @@ mod tests {
             .await
             .unwrap();
         assert!(reactions_after_remove.get("server-4").is_none());
+    }
+
+    #[tokio::test]
+    async fn save_batch_without_reaction_snapshot_keeps_existing_reactions() {
+        let repo = make_repo().await;
+        let mut message = IMMessage::new(flare_proto::common::Message::default());
+        message.server_id = "server-5".to_string();
+        message.client_msg_id = "client-5".to_string();
+        message.conversation_id = "conv-1".to_string();
+        message.sender_id = "u1".to_string();
+        repo.save_batch(&[message]).await.unwrap();
+
+        repo.apply_reaction_event("conv-1", "server-5", "u2", "👍", ReactionAction::Add as i32, Some(1))
+            .await
+            .unwrap();
+        let before = repo
+            .list_reactions(&["server-5".to_string()])
+            .await
+            .unwrap();
+        assert_eq!(
+            before
+                .get("server-5")
+                .and_then(|entries| entries.iter().find(|entry| entry.emoji == "👍"))
+                .map(|entry| entry.count),
+            Some(1)
+        );
+
+        // 模拟同步下行：消息不带 reactions 快照（extra 无 reactionsJson、reactions 为空）。
+        let mut sync_message = IMMessage::new(flare_proto::common::Message::default());
+        sync_message.server_id = "server-5".to_string();
+        sync_message.client_msg_id = "client-5".to_string();
+        sync_message.conversation_id = "conv-1".to_string();
+        sync_message.sender_id = "u1".to_string();
+        repo.save_batch(&[sync_message]).await.unwrap();
+
+        let after = repo
+            .list_reactions(&["server-5".to_string()])
+            .await
+            .unwrap();
+        assert_eq!(
+            after
+                .get("server-5")
+                .and_then(|entries| entries.iter().find(|entry| entry.emoji == "👍"))
+                .map(|entry| entry.count),
+            Some(1)
+        );
+    }
+
+    #[tokio::test]
+    async fn apply_reaction_event_before_message_arrival_is_not_lost() {
+        let repo = make_repo().await;
+
+        // 先收到 reaction 事件（消息主体尚未落库）
+        let applied = repo
+            .apply_reaction_event("conv-9", "server-9", "u9", "👍", ReactionAction::Add as i32, Some(9))
+            .await
+            .unwrap();
+        assert_eq!(applied, OperationApplyResult::Applied);
+
+        let before = repo
+            .list_reactions(&["server-9".to_string()])
+            .await
+            .unwrap();
+        assert_eq!(
+            before
+                .get("server-9")
+                .and_then(|entries| entries.iter().find(|entry| entry.emoji == "👍"))
+                .map(|entry| entry.count),
+            Some(1)
+        );
+
+        // 后续消息同步到本地
+        let mut message = IMMessage::new(flare_proto::common::Message::default());
+        message.server_id = "server-9".to_string();
+        message.client_msg_id = "client-9".to_string();
+        message.conversation_id = "conv-9".to_string();
+        message.sender_id = "u1".to_string();
+        repo.save_batch(&[message]).await.unwrap();
+
+        // 反应仍可通过消息 ID 聚合读取，确保 UI 可展示
+        let after = repo
+            .list_reactions(&["server-9".to_string()])
+            .await
+            .unwrap();
+        assert_eq!(
+            after
+                .get("server-9")
+                .and_then(|entries| entries.iter().find(|entry| entry.emoji == "👍"))
+                .map(|entry| entry.count),
+            Some(1)
+        );
     }
 }

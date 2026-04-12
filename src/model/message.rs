@@ -50,6 +50,7 @@ const REACTIONS_JSON_KEY: &str = "reactionsJson";
 pub struct ReactionEntry {
     pub emoji: String,
     #[serde(default)]
+    #[serde(alias = "userIds")]
     pub user_ids: Vec<String>,
     pub count: u32,
 }
@@ -61,7 +62,22 @@ pub(crate) fn parse_reactions_from_extra(
         Some(v) if !v.trim().is_empty() => v,
         _ => return Vec::new(),
     };
-    serde_json::from_str(raw).unwrap_or_default()
+    // 兼容两种形态：
+    // 1) 直接数组 JSON：`[{"emoji":"👍","user_ids":["u1"],"count":1}]`
+    // 2) 二次编码字符串：`"[{\"emoji\":\"👍\",\"user_ids\":[\"u1\"],\"count\":1]"`
+    if let Ok(list) = serde_json::from_str::<Vec<ReactionEntry>>(raw) {
+        return list;
+    }
+    match serde_json::from_str::<serde_json::Value>(raw) {
+        Ok(serde_json::Value::String(inner)) => {
+            serde_json::from_str::<Vec<ReactionEntry>>(&inner).unwrap_or_default()
+        }
+        _ => Vec::new(),
+    }
+}
+
+pub(crate) fn has_reaction_snapshot_in_extra(extra: &HashMap<String, String>) -> bool {
+    extra.contains_key(REACTIONS_JSON_KEY)
 }
 
 fn write_reactions_to_extra(extra: &mut HashMap<String, String>, reactions: &[ReactionEntry]) {

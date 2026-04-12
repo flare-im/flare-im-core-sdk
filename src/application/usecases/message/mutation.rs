@@ -198,7 +198,26 @@ impl MessageMutationUseCase {
             emoji,
             action,
         );
-        self.dispatch_transport_action(&plan.transport_action).await
+        self.dispatch_transport_action(&plan.transport_action).await?;
+        self.store
+            .apply_reaction(
+                resolved.conversation_id(),
+                resolved.server_id(),
+                &actor.user_id,
+                emoji,
+                action as i32,
+            )
+            .await?;
+        if let Some(bus) = &self.bus {
+            bus.publish(SdkEvent::Message(MessageEvent::ReactionChanged {
+                conversation_id: resolved.conversation_id().to_string(),
+                server_msg_id: resolved.server_id().to_string(),
+                user_id: actor.user_id.clone(),
+                emoji: emoji.to_string(),
+                action: action as i32,
+            }));
+        }
+        Ok(())
     }
 
     pub async fn pin(&self, conversation_id: &str, message_id: &str) -> Result<()> {

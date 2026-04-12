@@ -70,25 +70,39 @@ impl MessageViewAssembler {
     }
 
     async fn hydrate_reactions_for_messages(&self, views: &mut [IMMessage]) -> Result<()> {
-        let message_ids: Vec<String> = views
-            .iter()
-            .filter_map(|message| {
-                if message.server_id.is_empty() {
-                    None
-                } else {
-                    Some(message.server_id.clone())
-                }
-            })
-            .collect();
+        let mut message_ids: Vec<String> = Vec::with_capacity(views.len() * 2);
+        for message in views.iter() {
+            let sid = message.server_id.trim();
+            if !sid.is_empty() {
+                message_ids.push(sid.to_string());
+            }
+            let cid = message.client_msg_id.trim();
+            if !cid.is_empty() {
+                message_ids.push(cid.to_string());
+            }
+        }
+        message_ids.sort();
+        message_ids.dedup();
         if message_ids.is_empty() {
             return Ok(());
         }
         let reaction_map = self.store.list_reactions(&message_ids).await?;
         for view in views.iter_mut() {
-            if view.server_id.is_empty() {
-                continue;
+            let sid = view.server_id.trim();
+            let cid = view.client_msg_id.trim();
+            let reactions = if !sid.is_empty() {
+                reaction_map.get(sid)
+            } else {
+                None
             }
-            if let Some(reactions) = reaction_map.get(&view.server_id) {
+            .or_else(|| {
+                if cid.is_empty() {
+                    None
+                } else {
+                    reaction_map.get(cid)
+                }
+            });
+            if let Some(reactions) = reactions {
                 view.reactions = reactions.clone();
             }
         }

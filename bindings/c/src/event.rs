@@ -130,6 +130,22 @@ fn event_to_json(event: &flare_im_core_sdk::event::SdkEvent) -> String {
                 event.read_seq
             )
         }
+        SdkEvent::Message(MessageEvent::ReactionChanged {
+            conversation_id,
+            server_msg_id,
+            user_id,
+            emoji,
+            action,
+        }) => serde_json::json!({
+            "type": "message",
+            "event": "reaction_changed",
+            "conversation_id": conversation_id,
+            "server_msg_id": server_msg_id,
+            "user_id": user_id,
+            "emoji": emoji,
+            "action": action,
+        })
+        .to_string(),
         SdkEvent::Conversation(ConversationEvent::UnreadCountChanged { conversation_id, unread_count }) => {
             format!(
                 r#"{{"type":"conversation","event":"unread_count_changed","conversation_id":"{}","unread_count":{}}}"#,

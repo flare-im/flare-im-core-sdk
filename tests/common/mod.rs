@@ -15,6 +15,10 @@ use async_trait::async_trait;
 use once_cell::sync::Lazy;
 use tokio::sync::RwLock;
 
+use flare_im_core_sdk::domain::{
+    ConversationReader, ConversationWriter, MessageReader, MessageStore, MessageWriter,
+    SyncCursorReader, SyncCursorWriter,
+};
 use flare_im_core_sdk::model::Conversation;
 use flare_im_core_sdk::model::IMMessage;
 use flare_im_core_sdk::model::{decode_content_bytes, decoded_content_to_elem};
@@ -41,20 +45,7 @@ impl MemoryMessageStore {
 }
 
 #[async_trait]
-impl MessageStore for MemoryMessageStore {
-    async fn save_batch(&self, messages: &[IMMessage]) -> Result<()> {
-        let mut data = self.data.write().await;
-        for msg in messages {
-            let key = if !msg.server_id.is_empty() {
-                msg.server_id.clone()
-            } else {
-                msg.client_msg_id.clone()
-            };
-            data.insert(key, msg.clone());
-        }
-        Ok(())
-    }
-
+impl MessageReader for MemoryMessageStore {
     async fn get(&self, message_id: &str) -> Result<Option<IMMessage>> {
         let data = self.data.read().await;
         Ok(data.get(message_id).cloned())
@@ -103,6 +94,32 @@ impl MessageStore for MemoryMessageStore {
         }
         msgs.truncate(limit as usize);
         Ok(msgs)
+    }
+
+    async fn search(&self, _keyword: &str, limit: u32) -> Result<Vec<IMMessage>> {
+        let data = self.data.read().await;
+        let results: Vec<_> = data.values().cloned().take(limit as usize).collect();
+        Ok(results)
+    }
+}
+
+#[async_trait]
+impl MessageWriter for MemoryMessageStore {
+    async fn save_batch(&self, messages: &[IMMessage]) -> Result<()> {
+        let mut data = self.data.write().await;
+        for msg in messages {
+            let key = if !msg.server_id.is_empty() {
+                msg.server_id.clone()
+            } else {
+                msg.client_msg_id.clone()
+            };
+            data.insert(key, msg.clone());
+        }
+        Ok(())
+    }
+
+    async fn save_one(&self, message: &IMMessage) -> Result<()> {
+        MessageWriter::save_batch(self, &[message.clone()]).await
     }
 
     async fn update_status(&self, message_id: &str, status: i32) -> Result<()> {
@@ -160,12 +177,6 @@ impl MessageStore for MemoryMessageStore {
         Ok(())
     }
 
-    async fn search(&self, _keyword: &str, limit: u32) -> Result<Vec<IMMessage>> {
-        let data = self.data.read().await;
-        let results: Vec<_> = data.values().cloned().take(limit as usize).collect();
-        Ok(results)
-    }
-
     async fn update_after_ack(&self, client_msg_id: &str, message: &IMMessage) -> Result<()> {
         let mut data = self.data.write().await;
         data.remove(client_msg_id);
@@ -178,6 +189,8 @@ impl MessageStore for MemoryMessageStore {
         Ok(())
     }
 }
+
+impl MessageStore for MemoryMessageStore {}
 
 // =============================================================================
 // MemoryConversationStore
@@ -196,19 +209,7 @@ impl MemoryConversationStore {
 }
 
 #[async_trait]
-impl ConversationStore for MemoryConversationStore {
-    async fn save_batch(&self, conversations: &[Conversation]) -> Result<()> {
-        let mut data = self.data.write().await;
-        for conv in conversations {
-            data.insert(conv.conversation_id.clone(), conv.clone());
-        }
-        Ok(())
-    }
-
-    async fn save_one(&self, conversation: &Conversation) -> Result<()> {
-        self.save_batch(&[conversation.clone()]).await
-    }
-
+impl ConversationReader for MemoryConversationStore {
     async fn get(&self, conversation_id: &str) -> Result<Option<Conversation>> {
         let data = self.data.read().await;
         Ok(data.get(conversation_id).cloned())
@@ -227,6 +228,21 @@ impl ConversationStore for MemoryConversationStore {
             }
         });
         Ok(list)
+    }
+}
+
+#[async_trait]
+impl ConversationWriter for MemoryConversationStore {
+    async fn save_batch(&self, conversations: &[Conversation]) -> Result<()> {
+        let mut data = self.data.write().await;
+        for conv in conversations {
+            data.insert(conv.conversation_id.clone(), conv.clone());
+        }
+        Ok(())
+    }
+
+    async fn save_one(&self, conversation: &Conversation) -> Result<()> {
+        ConversationWriter::save_batch(self, &[conversation.clone()]).await
     }
 
     async fn update_unread(
@@ -345,16 +361,10 @@ impl MemoryCursorStore {
 }
 
 #[async_trait]
-impl SyncCursorStore for MemoryCursorStore {
+impl SyncCursorReader for MemoryCursorStore {
     async fn get_raw(&self, key: &str) -> Result<Option<String>> {
         let data = self.data.read().await;
         Ok(data.get(key).cloned())
-    }
-
-    async fn save_raw(&self, key: &str, cursor: &str) -> Result<()> {
-        let mut data = self.data.write().await;
-        data.insert(key.to_string(), cursor.to_string());
-        Ok(())
     }
 
     async fn get_conversation_cursor(
@@ -380,6 +390,15 @@ impl SyncCursorStore for MemoryCursorStore {
         }
         Ok(None)
     }
+}
+
+#[async_trait]
+impl SyncCursorWriter for MemoryCursorStore {
+    async fn save_raw(&self, key: &str, cursor: &str) -> Result<()> {
+        let mut data = self.data.write().await;
+        data.insert(key.to_string(), cursor.to_string());
+        Ok(())
+    }
 
     async fn save_conversation_cursor(
         &self,
@@ -387,7 +406,8 @@ impl SyncCursorStore for MemoryCursorStore {
     ) -> Result<()> {
         let key = format!("{}:{}", cursor.user_id, cursor.conversation_id);
         let cursor_str = format!("{}:{}", cursor.last_seq, cursor.synced_at);
-        self.data.write().await.insert(key, cursor_str);
+        let mut data = self.data.write().await;
+        data.insert(key, cursor_str);
         Ok(())
     }
 }

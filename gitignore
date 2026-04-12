@@ -1,0 +1,44 @@
+# Rust
+target/
+Cargo.lock
+**/*.rs.bk
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.cargo/
+platforms/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build
+*.so
+*.dylib
+*.dll
+*.a
+*.sh
+*.db
+*db-*
+*.log
+
+doc/
+certs/
+examples/target/
+examples/temp-data/
+examples/certs/
+dist/
+
+examples/flare/
+examples/tauri/
+
+# Data directories (database and logs)
+chat-data/
+temp-data/
+
+# Tauri ignore file (for file watching)
+.taurignore
