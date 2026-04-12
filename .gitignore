@@ -42,3 +42,5 @@ temp-data/
 
 # Tauri ignore file (for file watching)
 .taurignore
+
+*.zip
