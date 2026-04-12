@@ -3,6 +3,11 @@
 # 本 crate 属于 workspace：`flare-im-core-sdk`，产物在 workspace 根目录的 `target/`，
 # 而非 `bindings/c/target/`。
 #
+# Flutter 完整示例工程已迁至单仓根目录（与 `flare-im-core-sdk` 同级）：
+#   examples/flare-core-flutter/
+# 相对本 workspace 根目录为：../examples/flare-core-flutter
+#（变量 FLUTTER_EXAMPLE_DIR，见下方；`make help` 会打印路径。）
+#
 # 用法（在 `bindings/c` 目录）:
 #   make                    # 本机 host triple，release 静态库
 #   make ios-sim            # Apple Silicon 模拟器 (aarch64-apple-ios-sim)
@@ -17,6 +22,8 @@ SHELL := /bin/bash
 MAKEFILE_DIR := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
 # workspace 根目录（bindings/c -> ../..）
 WORKSPACE_ROOT := $(abspath $(MAKEFILE_DIR)/../..)
+# 单仓根下 Flutter 示例（原 flare-im-core-sdk/examples/flare 已迁至此）
+FLUTTER_EXAMPLE_DIR := $(abspath $(WORKSPACE_ROOT)/../examples/flare-core-flutter)
 
 PACKAGE := flare-im-core-sdk-ffi
 LIB_NAME := flare_im_core_sdk_ffi
@@ -36,7 +43,7 @@ endef
 
 HOST_TRIPLE := $(shell rustc -vV | sed -n 's/^host: //p')
 
-.PHONY: all help setup-targets host ios-device ios-sim ios-sim-x86 ios-all android \
+.PHONY: all help help-flutter setup-targets host ios-device ios-sim ios-sim-x86 ios-all android \
 	all-mobile dist dist-ios dist-android clean check
 
 help:
@@ -50,8 +57,14 @@ help:
 	@echo "  make all-mobile      ios-all + android"
 	@echo "  make dist            dist-ios（复制 iOS 三目标 .a 到 dist/）"
 	@echo "  make dist-android    复制 aarch64-linux-android .a（需先 make android）"
+	@echo "  make help-flutter    打印 Flutter 示例目录（$(FLUTTER_EXAMPLE_DIR)）"
 	@echo "  make clean           cargo clean -p $(PACKAGE)"
 	@echo "Workspace target dir: $(CARGO_TARGET_DIR)"
+
+help-flutter:
+	@echo "Flutter 示例工程（C FFI / macOS-iOS 链库脚本等）:"
+	@echo "  $(FLUTTER_EXAMPLE_DIR)"
+	@if [ -d "$(FLUTTER_EXAMPLE_DIR)" ]; then echo "  (目录存在)"; else echo "  (未找到目录，请确认 monorepo 路径)"; fi
 
 all: host
 

@@ -77,7 +77,7 @@ cargo build -p flare-im-core-sdk-ffi --release
 
 - iOS (Swift/Objective-C)
 - Android (Kotlin/Java)
-- Flutter (Dart)
+- Flutter (Dart)：完整示例在 monorepo **`examples/flare-core-flutter/`**（从 `bindings/c/` 起为 `../../../examples/flare-core-flutter`）；构建 FFI 后按该工程内 `macOS`/`iOS` 脚本链入产物
 - 鸿蒙 (ArkTS/C++)
 - C/C++
 - Node.js (N-API)
