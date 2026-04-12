@@ -1,3 +1,0 @@
-#include? "Pods/Target Support Files/Pods-Runner/Pods-Runner.release.xcconfig"
-#include "Generated.xcconfig"
-OTHER_LDFLAGS=$(inherited) -Wl,-force_load,$(SRCROOT)/FFI/build/libflare_im_core_sdk_ffi.a -lc++
