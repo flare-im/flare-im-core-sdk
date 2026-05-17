@@ -11,8 +11,8 @@ pub mod pipeline;
 pub mod validate;
 
 pub use error::RichDocV2Error;
-pub use extract::{derive_from_json_str, derive_from_value, RichDocDerived};
+pub use extract::{RichDocDerived, derive_from_json_str, derive_from_value};
 pub use pipeline::{
-    normalize_from_doc_json, normalize_from_html, normalize_from_markdown, NormalizeOutput,
+    NormalizeOutput, normalize_from_doc_json, normalize_from_html, normalize_from_markdown,
 };
 pub use validate::validate_doc_json;

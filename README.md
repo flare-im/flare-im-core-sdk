@@ -152,6 +152,27 @@ flare-im-core-sdk = { path = "../flare-im-core-sdk", features = ["extensions"] }
 - `storage-tools` — 存储调试工具  
 - `lifecycle-sqlite` — 与 SQLite 生命周期相关的集成能力（见 `Cargo.toml`）  
 
+## 能力插件（付费模块）
+
+SDK 已内建能力插件框架（`src/capability`），默认注册 `sdk.plugin.av`（RTC/SFU）：
+
+- 统一能力调用：`client.capability()?.dispatch("rtc.call.video", ...)`
+- 查询开通状态：`client.capability()?.list_user_capabilities(...)`
+- 运营开通/回收：`grant_user_capability` / `revoke_user_capability`
+
+配置项新增：
+
+- `capability_url`：能力 **gRPC** 端点（默认 `http://localhost:50051`，与 `flare-capability` 监听端口一致；生产环境通常指向网关后端）
+- `tenant_id`：默认租户（能力授权校验）
+
+FFI `flare_message_dispatch_json` 同步新增操作：
+
+- `capability_list`
+- `capability_list_user`
+- `capability_dispatch`
+- `capability_grant`
+- `capability_revoke`
+
 ---
 
 ## 📦 相关仓库（同 monorepo）

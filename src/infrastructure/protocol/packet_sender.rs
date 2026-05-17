@@ -6,11 +6,13 @@ use std::time::Duration;
 
 use flare_core::client::builder::flare::FlareClient;
 use flare_core::common::protocol::{
-    PayloadCommand, Reliability, builder,
+    PayloadCommand, Reliability, builder, flare::core::commands::command::Type as CommandType,
     flare::core::commands::payload_command::Type as PayloadType,
 };
 use flare_proto::common::data_packet::Payload as DataPacketPayload;
-use flare_proto::common::{Ack, CustomData, DataKind, DataPacket, Event, Message as ProtoMessage};
+use flare_proto::common::{
+    Ack, CustomData, DataKind, DataPacket, Event, Message as ProtoMessage, SyncRes,
+};
 use prost::Message;
 use tokio::sync::Mutex;
 
@@ -21,13 +23,11 @@ use crate::util::system_time_to_prost_timestamp;
 /// 上行包发送器 — Message / Event / Ack / DataPacket（同步与用户扩展）
 pub struct PacketSender {
     client: Arc<Mutex<Option<FlareClient>>>,
-    #[allow(dead_code)]
-    codec: Arc<dyn Codec>,
 }
 
 impl PacketSender {
-    pub fn new(client: Arc<Mutex<Option<FlareClient>>>, codec: Arc<dyn Codec>) -> Self {
-        Self { client, codec }
+    pub fn new(client: Arc<Mutex<Option<FlareClient>>>, _codec: Arc<dyn Codec>) -> Self {
+        Self { client }
     }
 
     /// 发送领域事件（event.proto Event）。PayloadCommand.type=Event，网关回 EventAck。
@@ -145,7 +145,31 @@ impl PacketSender {
         Ok(())
     }
 
-    /// 发送同步请求（`DataPacket.sync_request` + `common/sync.proto` `Sync`）。
+    /// 发送同步请求并等待 DATA 回包（网关对 DATA 为 request-response，须 `send_frame_and_wait`）。
+    pub async fn send_sync_and_wait(
+        &self,
+        sync: &flare_proto::common::Sync,
+        timeout: Duration,
+    ) -> Result<SyncRes> {
+        let packet = DataPacket {
+            kind: DataKind::SyncRequest as i32,
+            payload: Some(DataPacketPayload::SyncRequest(sync.clone())),
+        };
+        let payload = packet.encode_to_vec();
+        let mut guard = self.client.lock().await;
+        let client = guard.as_mut().ok_or_else(|| {
+            FlareError::localized(flare_core::common::ErrorCode::NotConnected, "未连接")
+        })?;
+        let cmd = builder::data_message(builder::generate_message_id(), payload, None, None);
+        let frame = builder::frame_with_payload_command(cmd, Reliability::AtLeastOnce);
+        let response = client
+            .send_frame_and_wait(&frame, timeout)
+            .await
+            .map_err(|e| FlareError::general_error(e.to_string()))?;
+        decode_sync_response_frame(&response)
+    }
+
+    /// 发送同步请求（仅发不等；遗留路径，新代码请用 [`Self::send_sync_and_wait`]）。
     pub async fn send_sync(&self, sync: &flare_proto::common::Sync) -> Result<()> {
         let packet = DataPacket {
             kind: DataKind::SyncRequest as i32,
@@ -163,5 +187,38 @@ impl PacketSender {
             .await
             .map_err(|e| FlareError::connection_failed(e.to_string()))?;
         Ok(())
+    }
+}
+
+fn decode_sync_response_frame(frame: &flare_core::common::protocol::Frame) -> Result<SyncRes> {
+    let payload = frame
+        .command
+        .as_ref()
+        .and_then(|cmd| match &cmd.r#type {
+            Some(CommandType::Payload(pc)) => Some(pc.payload.as_slice()),
+            _ => None,
+        })
+        .ok_or_else(|| {
+            FlareError::deserialization_error(
+                "sync response frame has no payload command".to_string(),
+            )
+        })?;
+    let packet = DataPacket::decode(payload).map_err(|e| {
+        FlareError::deserialization_error(format!("decode sync DataPacket response: {e}"))
+    })?;
+    match (packet.kind, packet.payload) {
+        (k, Some(DataPacketPayload::SyncResponse(res))) if k == DataKind::SyncResponse as i32 => {
+            Ok(res)
+        }
+        (k, Some(DataPacketPayload::UserCustom(data)))
+            if k == DataKind::UserCustom as i32 && data.r#type == "error" =>
+        {
+            Err(FlareError::general_error(
+                String::from_utf8_lossy(&data.payload).into_owned(),
+            ))
+        }
+        _ => Err(FlareError::general_error(
+            "unexpected sync response payload".to_string(),
+        )),
     }
 }

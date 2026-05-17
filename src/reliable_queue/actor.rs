@@ -7,7 +7,7 @@ use std::time::Duration;
 use flare_proto::common::SendAck;
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::{Instant, interval_at};
-use tracing::{info, warn};
+use tracing::{debug, warn};
 
 use crate::domain::{
     DeliveryLocalSnapshot, InFlightReconcileDecision, MessageDeliveryService, MessageStore,
@@ -26,7 +26,10 @@ use crate::util::{RELIABLE_QUEUE_MAX_RETRIES, RELIABLE_QUEUE_TIMEOUT_SECS};
 #[derive(Debug)]
 pub enum QueueCommand {
     /// 入队发送（SDK 内部统一 IMMessage）
-    Enqueue(IMMessage),
+    Enqueue {
+        message: IMMessage,
+        resp: oneshot::Sender<Result<()>>,
+    },
     /// 收到 SendAck（由外部收到下行后注入）
     AckReceived(SendAck),
     /// 登录时清空队列（包含 in_flight + pending），并将本地消息收敛为 failed
@@ -119,10 +122,15 @@ impl ReliableSendQueue {
 
     /// 入队发送（持久化后由 worker 按序发送，SDK 内部仅 IMMessage）
     pub async fn enqueue(&self, message: IMMessage) -> Result<()> {
+        let (resp, rx) = oneshot::channel();
         self.tx
-            .send(QueueCommand::Enqueue(message))
+            .send(QueueCommand::Enqueue { message, resp })
             .await
-            .map_err(|_| FlareError::localized(ErrorCode::InternalError, "reliable queue closed"))
+            .map_err(|_| {
+                FlareError::localized(ErrorCode::InternalError, "reliable queue closed")
+            })?;
+        rx.await
+            .map_err(|_| FlareError::localized(ErrorCode::InternalError, "reliable queue closed"))?
     }
 
     /// 将收到的 SendAck 注入队列（由 Dispatcher 或 Engine 在收到下行 ack 时调用）
@@ -139,9 +147,14 @@ impl ReliableSendQueue {
         self.tx
             .send(QueueCommand::ResetPendingOnLogin { resp: tx })
             .await
-            .map_err(|_| FlareError::localized(ErrorCode::InternalError, "reliable queue closed"))?;
+            .map_err(|_| {
+                FlareError::localized(ErrorCode::InternalError, "reliable queue closed")
+            })?;
         rx.await.map_err(|_| {
-            FlareError::localized(ErrorCode::InternalError, "reliable queue reset response dropped")
+            FlareError::localized(
+                ErrorCode::InternalError,
+                "reliable queue reset response dropped",
+            )
         })?
     }
 
@@ -151,7 +164,9 @@ impl ReliableSendQueue {
         self.tx
             .send(QueueCommand::RecoverPendingForCurrentUser { resp: tx })
             .await
-            .map_err(|_| FlareError::localized(ErrorCode::InternalError, "reliable queue closed"))?;
+            .map_err(|_| {
+                FlareError::localized(ErrorCode::InternalError, "reliable queue closed")
+            })?;
         rx.await.map_err(|_| {
             FlareError::localized(
                 ErrorCode::InternalError,
@@ -174,7 +189,7 @@ async fn handle_command(
 ) -> Result<()> {
     let mut st = state.lock().await;
     match cmd {
-        QueueCommand::Enqueue(msg) => {
+        QueueCommand::Enqueue { message: msg, resp } => {
             let enqueued_at_ms = id::now_millis();
             let mut optimistic = msg.clone();
             optimistic.server_id = msg.client_msg_id.clone();
@@ -195,9 +210,14 @@ async fn handle_command(
                 (st.message_store.clone(), st.pending_writer.clone());
             drop(st);
             if let Err(e) = message_store.save_batch(&[optimistic]).await {
-                warn!(%e, "save optimistic message on enqueue failed");
+                let _ = resp.send(Err(e));
+                return Ok(());
             }
-            pending_writer.push(entry).await?;
+            if let Err(e) = pending_writer.push(entry).await {
+                let _ = resp.send(Err(e));
+                return Ok(());
+            }
+            let _ = resp.send(Ok(()));
             let mut st = state.lock().await;
             try_send_next(&mut st).await?;
         }
@@ -251,15 +271,23 @@ async fn reset_pending_on_login(st: &mut QueueState) -> Result<Vec<String>> {
 
     if let Some((in_flight, _)) = st.in_flight.take() {
         let id = in_flight.client_msg_id.clone();
-        mark_send_failed_and_publish(st, &in_flight, "pending queue dropped during login session reset")
-            .await?;
+        mark_send_failed_and_publish(
+            st,
+            &in_flight,
+            "pending queue dropped during login session reset",
+        )
+        .await?;
         dropped.push(id);
     }
 
     let pending_entries = st.pending_reader.list().await?;
     for entry in pending_entries {
-        mark_send_failed_and_publish(st, &entry, "pending queue dropped during login session reset")
-            .await?;
+        mark_send_failed_and_publish(
+            st,
+            &entry,
+            "pending queue dropped during login session reset",
+        )
+        .await?;
         dropped.push(entry.client_msg_id);
     }
 
@@ -383,10 +411,8 @@ async fn reconcile_in_flight_terminal_state(st: &mut QueueState) -> Result<bool>
         .await?;
     let local_snapshot = local.as_ref().map(DeliveryLocalSnapshot::from);
 
-    match MessageDeliveryService::reconcile_in_flight(
-        local_snapshot.as_ref(),
-        &entry.client_msg_id,
-    ) {
+    match MessageDeliveryService::reconcile_in_flight(local_snapshot.as_ref(), &entry.client_msg_id)
+    {
         InFlightReconcileDecision::KeepWaiting => {
             st.in_flight = Some((entry, deadline));
             Ok(false)
@@ -446,7 +472,7 @@ async fn try_send_next(st: &mut QueueState) -> Result<()> {
             st.max_retries,
         ) {
             PendingDispatchDecision::DropAsCrossAccount { reason } => {
-                info!(
+                debug!(
                     client_msg_id = %entry.client_msg_id,
                     sender_id = %entry.message.sender_id,
                     connected_user_id = %connected_user_id,
@@ -465,7 +491,7 @@ async fn try_send_next(st: &mut QueueState) -> Result<()> {
                 continue;
             }
             PendingDispatchDecision::DropAsTerminal => {
-                info!(
+                debug!(
                     client_msg_id = %entry.client_msg_id,
                     "reliable queue: drop stale pending entry"
                 );
@@ -540,7 +566,8 @@ async fn apply_ack_and_publish(st: &mut QueueState, entry: &PendingSendVo, ack: 
         if let Err(e) = st.message_store.update_after_ack(&cid, &msg).await {
             warn!(%e, "update_after_ack failed");
         }
-        st.bus.publish(SdkEvent::Message(MessageEvent::SendAck { ack }));
+        st.bus
+            .publish(SdkEvent::Message(MessageEvent::SendAck { ack }));
         return;
     }
     let failed_msg = MessageDeliveryService::mark_failed(&entry.message);
@@ -553,7 +580,8 @@ async fn apply_ack_and_publish(st: &mut QueueState, entry: &PendingSendVo, ack: 
         ack.error_message.clone()
     };
     let client_msg_id = ack.client_msg_id.clone();
-    st.bus.publish(SdkEvent::Message(MessageEvent::SendAck { ack }));
+    st.bus
+        .publish(SdkEvent::Message(MessageEvent::SendAck { ack }));
     st.bus.publish(SdkEvent::Message(MessageEvent::SendFailed {
         client_msg_id,
         reason,
@@ -564,23 +592,61 @@ async fn apply_ack_and_publish(st: &mut QueueState, entry: &PendingSendVo, ack: 
 mod tests {
     use super::ReliableSendQueue;
     use crate::core::CurrentUserIdStore;
-    use crate::domain::{MessageWriter, PendingSendReader, PendingSendVo, PendingSendWriter};
+    use crate::domain::{
+        MessageReader, MessageWriter, PendingSendReader, PendingSendVo, PendingSendWriter,
+    };
     use crate::event::{EventBus, MessageEvent, SdkEvent};
+    use crate::infrastructure::persistence::sqlite::{
+        SqliteMessageRepo, SqlitePendingSendRepo, init_schema as sqlite_init_schema,
+    };
     use crate::model::IMMessage;
     use crate::protocol::{Codec, PacketSender, ProtobufCodec};
+    use sqlx::SqlitePool;
     use std::sync::Arc;
     use tokio::sync::{Mutex, RwLock};
-    use tokio::time::{timeout, Duration};
-    use crate::infrastructure::persistence::sqlite::{
-        init_schema as sqlite_init_schema, SqliteMessageRepo, SqlitePendingSendRepo,
-    };
-    use sqlx::SqlitePool;
+    use tokio::time::{Duration, timeout};
 
     fn dummy_sender() -> Arc<PacketSender> {
         Arc::new(PacketSender::new(
             Arc::new(Mutex::new(None)),
             Arc::new(ProtobufCodec) as Arc<dyn Codec>,
         ))
+    }
+
+    #[cfg(feature = "storage-sqlite")]
+    #[tokio::test]
+    async fn enqueue_returns_after_optimistic_message_is_persisted() {
+        let bus = EventBus::new();
+        let current_user_id: CurrentUserIdStore = Arc::new(RwLock::new("u1".to_string()));
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        sqlite_init_schema(&pool).await.unwrap();
+        let pending_store = Arc::new(SqlitePendingSendRepo::new(pool.clone()));
+        let message_store = Arc::new(SqliteMessageRepo::new(pool));
+        let queue = ReliableSendQueue::new(
+            pending_store.clone(),
+            pending_store,
+            dummy_sender(),
+            message_store.clone(),
+            current_user_id,
+            bus,
+            Some(60),
+            Some(3),
+        );
+        let mut message = IMMessage::new(flare_proto::common::Message::default());
+        message.client_msg_id = "client-1".to_string();
+        message.conversation_id = "conv-1".to_string();
+        message.sender_id = "u1".to_string();
+
+        queue.enqueue(message).await.unwrap();
+
+        let stored = message_store
+            .get_by_client_msg_id("client-1")
+            .await
+            .unwrap()
+            .expect("optimistic message should be visible after enqueue returns");
+        assert_eq!(stored.server_id, "client-1");
+        assert!(stored.local_state.sending);
+        assert!(stored.local_state.is_local);
     }
 
     #[cfg(feature = "storage-sqlite")]
@@ -674,7 +740,10 @@ mod tests {
             .expect("expected orphan send failed")
             .expect("bus closed");
         match event {
-            SdkEvent::Message(MessageEvent::SendFailed { client_msg_id, reason }) => {
+            SdkEvent::Message(MessageEvent::SendFailed {
+                client_msg_id,
+                reason,
+            }) => {
                 assert_eq!(client_msg_id, "orphan-1");
                 assert!(reason.contains("orphan"));
             }

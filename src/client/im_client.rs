@@ -7,22 +7,29 @@ use std::sync::Arc;
 
 use tokio::sync::RwLock;
 
+use crate::FlareError;
+use crate::Result;
+use crate::capability::SdkCapabilityRegistry;
+use crate::client::api::{
+    CapabilityApi, CapabilityDispatchResult, ConversationApi, MediaApi, MessageApi,
+    MessageBuildApi, PresenceApi, UserCapabilityGrantDto, UserPresenceDto,
+};
 use crate::client::builder::IMClientBuilder;
 use crate::client::lifecycle::{
-    default_ws_url, merge_sdk_config, parse_data_url_to_path, resolve_connect_token, LoginDbKind,
-    SdkConfigOverlay,
+    LoginDbKind, SdkConfigOverlay, default_ws_url, merge_sdk_config, parse_data_url_to_path,
+    resolve_connect_token,
 };
 use crate::core::{SdkEngine, SdkState};
 use crate::error::ErrorCode;
 use crate::event::{ConnectionEvent, EventBus, MessageEvent, SdkEvent};
-use crate::client::api::{ConversationApi, MediaApi, MessageApi, MessageBuildApi};
 use crate::model::message::MessageLocalState;
 use crate::store::StoreProvider;
 use crate::transport::http::HttpRequestContext;
 use crate::util::generate_test_token as util_generate_test_token;
-use crate::FlareError;
-use crate::Result;
+use flare_proto::common::CallSignalEvent;
 use flare_proto::common::MessageStatus;
+use serde_json::Value;
+use std::time::Duration;
 
 #[derive(Default)]
 pub(crate) struct IMClientInner {
@@ -30,9 +37,13 @@ pub(crate) struct IMClientInner {
     pub sdk_config: Option<SdkConfigOverlay>,
     pub data_root: Option<PathBuf>,
     pub current_user_id: Option<String>,
+    pub connect_token: Option<String>,
     pub engine: Option<SdkEngine>,
     pub message_api: Option<MessageApi>,
     pub media_api: Option<Arc<MediaApi>>,
+    pub capability_api: Option<Arc<CapabilityApi>>,
+    pub presence_api: Option<Arc<PresenceApi>>,
+    pub capability_registry: Option<Arc<SdkCapabilityRegistry>>,
     pub message_build_api: Option<Arc<MessageBuildApi>>,
     pub conversation_api: Option<Arc<ConversationApi>>,
     pub http_request_context: Option<Arc<HttpRequestContext>>,
@@ -84,9 +95,7 @@ impl IMClient {
     }
 
     /// 同步 API 使用的读锁：在 Tokio worker 上 **禁止** `blocking_read`，必须用 `try_read`。
-    pub(crate) fn read_inner(
-        &self,
-    ) -> Result<tokio::sync::RwLockReadGuard<'_, IMClientInner>> {
+    pub(crate) fn read_inner(&self) -> Result<tokio::sync::RwLockReadGuard<'_, IMClientInner>> {
         self.inner.try_read().map_err(|_| Self::lock_busy())
     }
 
@@ -209,18 +218,28 @@ impl IMClient {
     /// 该操作会断开连接、推进会话代际并清理 `message/conversation` API 句柄；
     /// 调用后需重新 `login` 或 `connect` 才可继续收发消息。
     pub async fn logout(&self) -> Result<()> {
-        let (engine, http_request_context) = {
+        let (engine, presence_api, http_request_context) = {
             let mut g = self.inner.write().await;
+            let presence_api = g.presence_api.clone();
             g.session_generation = g.session_generation.wrapping_add(1);
             g.current_user_id = None;
+            g.connect_token = None;
             g.message_api = None;
             g.media_api = None;
+            g.capability_api = None;
+            g.presence_api = None;
+            g.capability_registry = None;
             g.message_build_api = None;
             g.conversation_api = None;
             let engine = g.engine.take();
             let http_request_context = g.http_request_context.clone();
-            (engine, http_request_context)
+            (engine, presence_api, http_request_context)
         };
+        if let Some(api) = presence_api.as_ref()
+            && let Err(err) = api.logout_current_device_presence().await
+        {
+            tracing::warn!(%err, "active presence logout failed; falling back to transport disconnect");
+        }
         if let Some(context) = http_request_context.as_ref() {
             context.set_auth_context(String::new(), None).await;
         }
@@ -273,7 +292,9 @@ impl IMClient {
         let bus = child.bus()?.clone();
         let msg_store = child.stores()?.messages.clone();
         before_connect(bus, msg_store);
-        child.connect_internal(user_id, explicit_token, false).await?;
+        child
+            .connect_internal(user_id, explicit_token, false)
+            .await?;
         child.reset_pending_queue_on_login().await?;
         let mut inner = child.into_inner();
         let next_generation = {
@@ -284,11 +305,17 @@ impl IMClient {
         inner.sdk_config = snap.1;
         inner.data_root = snap.2;
         inner.current_user_id = Some(user_id.to_string());
+        inner.connect_token = explicit_token
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(ToOwned::to_owned)
+            .or_else(|| resolve_connect_token(user_id, None).ok());
         inner.session_generation = next_generation;
         let login_bus = inner.engine.as_ref().map(|e| e.bus().clone());
         *self.inner.write().await = inner;
         if let Some(bus) = login_bus {
-            self.spawn_terminal_session_watcher(next_generation, bus);
+            self.spawn_terminal_session_watcher(next_generation, bus.clone());
+            self.spawn_reconnect_session_watcher(next_generation, bus);
         }
         Ok(())
     }
@@ -314,11 +341,18 @@ impl IMClient {
         let mut e = engine.ok_or_else(|| {
             FlareError::localized(ErrorCode::NotConnected, "no engine; use builder or login")
         })?;
-        e.connect(user_id, &token).await?;
+        if let Err(error) = e.connect(user_id, &token).await {
+            let mut g = self.inner.write().await;
+            if g.engine.is_none() {
+                g.engine = Some(e);
+            }
+            return Err(error);
+        }
         let bus = e.bus().clone();
         let mut g = self.inner.write().await;
         g.engine = Some(e);
         g.current_user_id = Some(user_id.to_string());
+        g.connect_token = Some(token.clone());
         g.session_generation = g.session_generation.wrapping_add(1);
         let current_generation = g.session_generation;
         drop(g);
@@ -326,7 +360,8 @@ impl IMClient {
             context.set_auth_context(token.clone(), None).await;
         }
         if install_watcher {
-            self.spawn_terminal_session_watcher(current_generation, bus);
+            self.spawn_terminal_session_watcher(current_generation, bus.clone());
+            self.spawn_reconnect_session_watcher(current_generation, bus);
         }
         Ok(())
     }
@@ -337,8 +372,12 @@ impl IMClient {
             let mut g = self.inner.write().await;
             g.session_generation = g.session_generation.wrapping_add(1);
             g.current_user_id = None;
+            g.connect_token = None;
             g.message_api = None;
             g.media_api = None;
+            g.capability_api = None;
+            g.presence_api = None;
+            g.capability_registry = None;
             g.message_build_api = None;
             g.conversation_api = None;
             let engine = g.engine.take();
@@ -401,6 +440,67 @@ impl IMClient {
             .ok_or_else(Self::not_connected)
     }
 
+    /// 获取能力插件 API（付费模块入口，包含 RTC/SFU 能力）。
+    pub fn capability(&self) -> Result<Arc<CapabilityApi>> {
+        self.read_inner()?
+            .capability_api
+            .clone()
+            .ok_or_else(Self::not_connected)
+    }
+
+    /// 获取用户在线状态 API。
+    pub fn presence(&self) -> Result<Arc<PresenceApi>> {
+        self.read_inner()?
+            .presence_api
+            .clone()
+            .ok_or_else(Self::not_connected)
+    }
+
+    /// 获取 SDK 能力插件注册表（支持多付费插件扩展）。
+    pub fn capability_registry(&self) -> Result<Arc<SdkCapabilityRegistry>> {
+        self.read_inner()?
+            .capability_registry
+            .clone()
+            .ok_or_else(Self::not_connected)
+    }
+
+    /// 经注册表派发扩展能力（等价于 `capability_registry()?.invoke(...).await`）。
+    pub async fn invoke_capability(
+        &self,
+        capability_id: &str,
+        payload: Value,
+        conversation_id: Option<&str>,
+        tenant_id: Option<&str>,
+    ) -> Result<CapabilityDispatchResult> {
+        self.capability_registry()?
+            .invoke(capability_id, payload, conversation_id, tenant_id)
+            .await
+    }
+
+    /// 经注册表查询某 `capability_id` 所属命名空间插件的用户授权列表。
+    pub async fn list_capability_grants(
+        &self,
+        capability_id: &str,
+        tenant_id: Option<&str>,
+        user_id: Option<&str>,
+    ) -> Result<Vec<UserCapabilityGrantDto>> {
+        self.capability_registry()?
+            .list_user_grants_for_capability(capability_id, tenant_id, user_id)
+            .await
+    }
+
+    /// 上行发送通话信令（`EVENT_CALL_SIGNAL`，经 WebSocket `PacketSender::send_event`）。
+    pub async fn send_call_signal(
+        &self,
+        conversation_id: &str,
+        call: CallSignalEvent,
+    ) -> Result<()> {
+        let wire =
+            crate::capability::call_event::event_call_signal_uplink(conversation_id, 0, call);
+        let sender = self.with_engine(|e| e.sender().clone())?;
+        sender.send_event(&wire, Duration::from_secs(30)).await
+    }
+
     /// 获取 SDK 事件总线（用于原始事件订阅或桥接到宿主事件系统）。
     pub fn bus(&self) -> Result<EventBus> {
         self.with_engine(|e| e.bus().clone())
@@ -437,6 +537,178 @@ impl IMClient {
         });
     }
 
+    fn spawn_reconnect_session_watcher(&self, generation: u64, bus: EventBus) {
+        let client = self.clone();
+        let mut rx = bus.subscribe_raw();
+        tokio::spawn(async move {
+            loop {
+                let event = match rx.recv().await {
+                    Ok(ev) => ev,
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                };
+
+                let reason = match event {
+                    SdkEvent::Connection(ConnectionEvent::Disconnected { reason }) => reason,
+                    _ => continue,
+                };
+                if should_skip_reconnect_for_disconnect_reason(&reason) {
+                    continue;
+                }
+
+                let (user_id, token, interval_secs, max_attempts) =
+                    match client.reconnect_snapshot(generation).await {
+                        Some(snapshot) => snapshot,
+                        None => break,
+                    };
+
+                let mut attempt = 0u32;
+                loop {
+                    if !client.is_generation_current(generation).await {
+                        break;
+                    }
+                    if let Some(max_attempts) = max_attempts
+                        && attempt >= max_attempts
+                    {
+                        tracing::warn!(
+                            session_generation = generation,
+                            max_attempts,
+                            "SDK reconnect attempts exhausted"
+                        );
+                        client.mark_current_engine_disconnected(generation).await;
+                        bus.publish(SdkEvent::Connection(ConnectionEvent::Disconnected {
+                            reason: "reconnect attempts exhausted".to_string(),
+                        }));
+                        break;
+                    }
+
+                    attempt += 1;
+                    bus.publish(SdkEvent::Connection(ConnectionEvent::Reconnecting {
+                        attempt,
+                    }));
+                    let delay_secs = reconnect_delay_secs(interval_secs, attempt);
+                    tokio::time::sleep(Duration::from_secs(delay_secs)).await;
+
+                    if client.is_current_transport_connected(generation).await {
+                        tracing::debug!(
+                            session_generation = generation,
+                            attempt,
+                            reason = %reason,
+                            "skip stale reconnect event because transport is already connected"
+                        );
+                        break;
+                    }
+
+                    match client
+                        .reconnect_current_engine(generation, &user_id, &token)
+                        .await
+                    {
+                        Ok(()) => {
+                            tracing::info!(
+                                session_generation = generation,
+                                attempt,
+                                "SDK reconnect succeeded"
+                            );
+                            break;
+                        }
+                        Err(err) => {
+                            tracing::warn!(
+                                session_generation = generation,
+                                attempt,
+                                error = %err,
+                                "SDK reconnect failed"
+                            );
+                        }
+                    }
+                }
+            }
+        });
+    }
+
+    async fn reconnect_snapshot(
+        &self,
+        generation: u64,
+    ) -> Option<(String, String, u64, Option<u32>)> {
+        let g = self.inner.read().await;
+        if g.session_generation != generation {
+            return None;
+        }
+        let user_id = g.current_user_id.clone()?;
+        let token = g
+            .connect_token
+            .clone()
+            .or_else(|| resolve_connect_token(&user_id, None).ok())?;
+        let interval_secs = g
+            .sdk_config
+            .as_ref()
+            .and_then(|c| c.reconnect_interval_secs)
+            .unwrap_or(5)
+            .max(1);
+        let max_attempts = g
+            .sdk_config
+            .as_ref()
+            .and_then(|c| c.max_reconnect_attempts)
+            .map(|attempts| attempts.max(1));
+        Some((user_id, token, interval_secs, max_attempts))
+    }
+
+    async fn is_generation_current(&self, generation: u64) -> bool {
+        self.inner.read().await.session_generation == generation
+    }
+
+    async fn is_current_transport_connected(&self, generation: u64) -> bool {
+        let g = self.inner.read().await;
+        if g.session_generation != generation {
+            return false;
+        }
+        match g.engine.as_ref() {
+            Some(engine) => engine.transport_connected().await,
+            None => false,
+        }
+    }
+
+    async fn reconnect_current_engine(
+        &self,
+        generation: u64,
+        user_id: &str,
+        token: &str,
+    ) -> Result<()> {
+        let mut engine = {
+            let mut g = self.inner.write().await;
+            if g.session_generation != generation {
+                return Ok(());
+            }
+            g.engine.take().ok_or_else(Self::not_connected)?
+        };
+
+        let result = engine.reconnect(user_id, token).await;
+
+        let mut g = self.inner.write().await;
+        if g.session_generation == generation {
+            g.engine = Some(engine);
+        }
+        result
+    }
+
+    async fn mark_current_engine_disconnected(&self, generation: u64) {
+        let engine = {
+            let mut g = self.inner.write().await;
+            if g.session_generation != generation {
+                return;
+            }
+            g.engine.take()
+        };
+        let Some(engine) = engine else {
+            return;
+        };
+        engine.mark_transport_disconnected().await;
+
+        let mut g = self.inner.write().await;
+        if g.session_generation == generation {
+            g.engine = Some(engine);
+        }
+    }
+
     async fn terminate_session_if_generation(&self, generation: u64) -> bool {
         let engine = {
             let mut g = self.inner.write().await;
@@ -448,8 +720,12 @@ impl IMClient {
             }
             g.session_generation = g.session_generation.wrapping_add(1);
             g.current_user_id = None;
+            g.connect_token = None;
             g.message_api = None;
             g.media_api = None;
+            g.capability_api = None;
+            g.presence_api = None;
+            g.capability_registry = None;
             g.message_build_api = None;
             g.conversation_api = None;
             g.engine.take()
@@ -537,9 +813,23 @@ impl IMClient {
 
     /// 触发指定会话的增量消息同步（从服务端拉取该会话最新数据）。
     pub async fn sync_conversation(&self, conversation_id: &str) -> Result<()> {
-        let runner = self.with_engine(|e| e.session_sync_runner())?
+        let runner = self
+            .with_engine(|e| e.session_sync_runner())?
             .ok_or_else(|| FlareError::localized(ErrorCode::NotConnected, "未配置同步"))?;
         runner.request_message_sync(conversation_id).await
+    }
+
+    pub async fn sync_conversation_participants(
+        &self,
+        conversation_id: &str,
+        limit: i32,
+    ) -> Result<Vec<crate::model::ConversationParticipant>> {
+        let runner = self
+            .with_engine(|e| e.session_sync_runner())?
+            .ok_or_else(|| FlareError::localized(ErrorCode::NotConnected, "未配置同步"))?;
+        runner
+            .request_participants_sync(conversation_id, limit)
+            .await
     }
 
     /// 从指定序列号开始拉取会话消息。
@@ -551,7 +841,8 @@ impl IMClient {
         last_seq: u64,
         limit: i32,
     ) -> Result<()> {
-        let runner = self.with_engine(|e| e.session_sync_runner())?
+        let runner = self
+            .with_engine(|e| e.session_sync_runner())?
             .ok_or_else(|| FlareError::localized(ErrorCode::NotConnected, "未配置同步"))?;
         runner
             .request_message_sync_from_seq(conversation_id, last_seq, limit)
@@ -569,7 +860,7 @@ impl IMClient {
             .await?
             .map(|conv| conv.last_read_seq)
             .unwrap_or(read_seq);
-        tracing::info!(
+        tracing::debug!(
             conversation_id = %conversation_id,
             requested_read_seq = read_seq,
             effective_read_seq = effective_read_seq,
@@ -582,16 +873,14 @@ impl IMClient {
             // 历史上 read_seq=0 会直接上报 0，但后端并未统一按“全部已读”解释 0，
             // 会导致重登后 last_read_seq 未推进、已读双勾丢失。
             let ack_read_seq = effective_read_seq;
-            tracing::info!(
+            tracing::debug!(
                 conversation_id = %conversation_id,
                 requested_read_seq = read_seq,
                 effective_read_seq = effective_read_seq,
                 ack_read_seq = ack_read_seq,
                 "mark_session_read dispatch ack"
             );
-            runner
-                .send_read_ack(conversation_id, ack_read_seq)
-                .await?;
+            runner.send_read_ack(conversation_id, ack_read_seq).await?;
         }
         Ok(())
     }
@@ -604,10 +893,76 @@ impl IMClient {
     ) -> Result<()> {
         self.message()?.typing(conversation_id, is_typing).await
     }
+
+    pub async fn get_user_presence(&self, user_id: &str) -> Result<UserPresenceDto> {
+        self.presence()?.get_user_presence(user_id).await
+    }
+
+    pub async fn batch_get_user_presence(
+        &self,
+        user_ids: &[String],
+    ) -> Result<std::collections::HashMap<String, UserPresenceDto>> {
+        self.presence()?.batch_get_user_presence(user_ids).await
+    }
+
+    pub async fn subscribe_user_presence(&self, user_ids: Vec<String>) -> Result<()> {
+        self.presence()?.subscribe_user_presence(user_ids).await
+    }
+}
+
+fn should_skip_reconnect_for_disconnect_reason(reason: &str) -> bool {
+    let lower = reason.trim().to_lowercase();
+    lower.contains("client disconnected")
+        || lower.contains("closed by client")
+        || lower.contains("reconnect attempts exhausted")
+        || lower.contains("kick")
+        || lower.contains("设备冲突")
+        || lower.contains("device_conflict")
+        || lower.contains("token_expired")
+        || lower.contains("token expired")
+        || lower.contains("401")
+        || lower.contains("credential expired")
+}
+
+fn reconnect_delay_secs(base_interval_secs: u64, attempt: u32) -> u64 {
+    let shift = attempt.saturating_sub(1).min(4);
+    base_interval_secs
+        .saturating_mul(1_u64 << shift)
+        .clamp(1, 30)
 }
 
 impl Default for IMClient {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{reconnect_delay_secs, should_skip_reconnect_for_disconnect_reason};
+
+    #[test]
+    fn reconnect_delay_uses_capped_exponential_backoff() {
+        assert_eq!(reconnect_delay_secs(5, 1), 5);
+        assert_eq!(reconnect_delay_secs(5, 2), 10);
+        assert_eq!(reconnect_delay_secs(5, 3), 20);
+        assert_eq!(reconnect_delay_secs(5, 4), 30);
+        assert_eq!(reconnect_delay_secs(5, 10), 30);
+    }
+
+    #[test]
+    fn local_client_disconnect_reasons_do_not_schedule_reconnect() {
+        assert!(should_skip_reconnect_for_disconnect_reason(
+            "Client disconnected"
+        ));
+        assert!(should_skip_reconnect_for_disconnect_reason(
+            "Closed by client"
+        ));
+        assert!(should_skip_reconnect_for_disconnect_reason(
+            " transport: Client disconnected "
+        ));
+        assert!(should_skip_reconnect_for_disconnect_reason(
+            "websocket Closed by client"
+        ));
     }
 }

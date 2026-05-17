@@ -10,7 +10,7 @@ description = "Flare IM Core SDK - Tauri Plugin"
 [dependencies]
 anyhow = "1.0"
 base64 = "0.22"
-flare-im-core-sdk = { path = "../..", features = ["lifecycle-sqlite"] }
+flare-im-core-sdk = { path = "../..", features = ["lifecycle-sqlite", "plugin-call"] }
 flare-proto = { path = "../../../flare-proto" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

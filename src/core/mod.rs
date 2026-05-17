@@ -13,8 +13,9 @@ mod sync;
 pub use dispatcher::Dispatcher;
 pub use engine::{SdkEngine, SdkState};
 pub use sync::{
-    SessionSyncRunner, SyncContext, SyncManager, SyncMode, SyncPhase, SyncProgress,
-    SyncResponseHandler, SyncResult, SyncTask, SyncTaskResult,
+    SessionSyncRunner, SyncContext, SyncFailurePolicy, SyncManager, SyncMode, SyncPhase,
+    SyncProgress, SyncReason, SyncResponseHandler, SyncResult, SyncRunContext, SyncScope, SyncTask,
+    SyncTaskResult, SyncTrigger, SyncVisibility,
 };
 
 use std::sync::Arc;

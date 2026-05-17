@@ -3,7 +3,7 @@
 //! 原则：不在此模块调用 SDK 业务 API；仅提供跨 C ABI 的机械转换与安全护栏。
 
 use std::ffi::c_char;
-use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use serde::de::DeserializeOwned;
 
@@ -121,7 +121,9 @@ pub fn catch_ffi_handle(f: impl FnOnce() -> FlareHandle) -> FlareHandle {
 }
 
 #[inline]
-pub fn catch_ffi_subscription_handle(f: impl FnOnce() -> FlareSubscriptionHandle) -> FlareSubscriptionHandle {
+pub fn catch_ffi_subscription_handle(
+    f: impl FnOnce() -> FlareSubscriptionHandle,
+) -> FlareSubscriptionHandle {
     match catch_unwind(AssertUnwindSafe(f)) {
         Ok(v) => v,
         Err(_) => {

@@ -1,0 +1,119 @@
+# Flutter 打包说明
+
+本文说明如何将 `flare-im-core-sdk/bindings/c` 生成的 C ABI 产物打包给 `examples/flare-core-flutter` 使用。
+
+Flutter 示例工程位于：
+
+```bash
+examples/flare-core-flutter
+```
+
+Dart 侧通过 `dart:ffi` 加载 `libflare_im_core_sdk_ffi`：
+
+- macOS 加载 `libflare_im_core_sdk_ffi.dylib`
+- iOS 静态链接 `libflare_im_core_sdk_ffi.a`，运行时用 `DynamicLibrary.process()` 查符号
+- Android 加载 `libflare_im_core_sdk_ffi.so`
+
+因此 Rust FFI 产物必须先构建，再同步到 Flutter 工程的固定目录。
+
+## 一键同步
+
+在 `flare-im-core-sdk/bindings/c` 目录执行：
+
+```bash
+make flutter-sync
+```
+
+该命令会执行：
+
+- `host-flutter`：构建本机 release 产物，并在 macOS 上把 `libflare_im_core_sdk_ffi.dylib` 复制到 `examples/flare-core-flutter/macos/Runner/`
+- `flutter-sync-ios`：在 macOS 上构建 `aarch64-apple-ios-sim` 静态库，并复制到 `examples/flare-core-flutter/ios/FFI/build/libflare_im_core_sdk_ffi.a`
+- `flutter-sync-android`：仅当已设置 `ANDROID_NDK_ROOT` 时构建 Android arm64 `.so`，并复制到 `examples/flare-core-flutter/android/app/src/main/jniLibs/arm64-v8a/`
+
+## 按平台打包
+
+macOS 调试：
+
+```bash
+make host-flutter
+cd ../../../examples/flare-core-flutter
+flutter run -d macos
+```
+
+iOS Apple Silicon 模拟器：
+
+```bash
+make flutter-sync-ios
+cd ../../../examples/flare-core-flutter
+flutter devices
+flutter run -d "<simulator name or device id>"
+```
+
+例如当前机器发现的模拟器是 `iPhone 17 Pro`，可执行：
+
+```bash
+flutter run -d "iPhone 17 Pro"
+```
+
+也可以使用 `flutter devices` 输出中的完整设备 ID：
+
+```bash
+flutter run -d 96084A9D-1314-4BD5-B6BD-3D867ACE5909
+```
+
+iOS 真机：
+
+```bash
+make flutter-sync-ios-device
+cd ../../../examples/flare-core-flutter
+flutter build ios
+```
+
+Intel iOS 模拟器或需要通用模拟器静态库：
+
+```bash
+make flutter-sync-ios-universal
+```
+
+Android arm64：
+
+```bash
+export ANDROID_NDK_ROOT=/path/to/android-ndk
+make flutter-sync-android
+cd ../../../examples/flare-core-flutter
+flutter run -d android
+```
+
+## 产物路径
+
+| 平台 | Rust 产物 | Flutter 目标路径 |
+| --- | --- | --- |
+| macOS | `target/release/libflare_im_core_sdk_ffi.dylib` | `examples/flare-core-flutter/macos/Runner/libflare_im_core_sdk_ffi.dylib` |
+| iOS 模拟器 | `target/aarch64-apple-ios-sim/release/libflare_im_core_sdk_ffi.a` | `examples/flare-core-flutter/ios/FFI/build/libflare_im_core_sdk_ffi.a` |
+| iOS 真机 | `target/aarch64-apple-ios/release/libflare_im_core_sdk_ffi.a` | `examples/flare-core-flutter/ios/FFI/build/libflare_im_core_sdk_ffi.a` |
+| Android arm64 | `target/aarch64-linux-android/release/libflare_im_core_sdk_ffi.so` | `examples/flare-core-flutter/android/app/src/main/jniLibs/arm64-v8a/libflare_im_core_sdk_ffi.so` |
+
+## 依赖和注意事项
+
+- 首次构建会自动执行 `rustup target add aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios aarch64-linux-android`，也可以手动执行 `make setup-targets`。
+- Android 必须设置 `ANDROID_NDK_ROOT`，否则 `make flutter-sync` 会跳过 Android。
+- iOS 使用静态库链接，Flutter 工程需要通过 Xcode 配置把 `ios/FFI/build/libflare_im_core_sdk_ffi.a` 以 `-force_load` 方式链接进 Runner。
+- Xcode 不再内置 `build_rust_ffi.sh`；每次修改 `bindings/c`、SDK API 或 Rust 依赖后，提交/打包前都要重新执行对应 `make flutter-sync*` 目标。
+- 如果 Dart FFI 新增函数，必须同时更新 `examples/flare-core-flutter/lib/infrastructure/ffi/bindings/flare_im_sdk_bindings.dart`，否则运行时会因找不到符号或绑定缺失失败。
+
+## 验证
+
+Rust FFI 编译检查：
+
+```bash
+make check
+```
+
+Flutter 侧静态检查：
+
+```bash
+cd ../../../examples/flare-core-flutter
+flutter analyze
+```
+
+如果 macOS 运行时报 `无法加载 libflare_im_core_sdk_ffi.dylib`，先确认已执行 `make host-flutter`，并检查 `.app/Contents/MacOS/` 或 `.app/Contents/Frameworks/` 是否能找到该 dylib。

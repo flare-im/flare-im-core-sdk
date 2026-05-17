@@ -64,7 +64,10 @@ impl ConversationViewAssembler {
     ) -> Result<Vec<Conversation>> {
         let list = self.list().await?;
         let skip = cursor
-            .and_then(|value| list.iter().position(|conversation| conversation.conversation_id == value))
+            .and_then(|value| {
+                list.iter()
+                    .position(|conversation| conversation.conversation_id == value)
+            })
             .map(|index| index + 1)
             .unwrap_or(0);
         let take = limit.map(|value| value as usize).unwrap_or(usize::MAX);

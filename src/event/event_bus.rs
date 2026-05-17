@@ -5,7 +5,7 @@
 
 use std::sync::{Arc, RwLock};
 
-use flare_proto::common::{MessageRecallEvent, SendAck, TypingEvent};
+use flare_proto::common::{CallSignalEvent, MessageRecallEvent, SendAck, TypingEvent};
 
 use crate::model::IMMessage;
 use tokio::sync::broadcast;
@@ -35,6 +35,7 @@ type FnSendAck = Arc<dyn Fn(SendAck) + Send + Sync>;
 type FnSendFailed = Arc<dyn Fn(String, String) + Send + Sync>;
 type FnRecalled = Arc<dyn Fn(String, MessageRecallEvent) + Send + Sync>;
 type FnTyping = Arc<dyn Fn(String, TypingEvent) + Send + Sync>;
+type FnCallSignal = Arc<dyn Fn(String, CallSignalEvent) + Send + Sync>;
 type FnConversationIds = Arc<dyn Fn(Vec<String>) + Send + Sync>;
 type FnConversationId = Arc<dyn Fn(String) + Send + Sync>;
 type FnExtension = Arc<dyn Fn(String, String, Vec<u8>) + Send + Sync>;
@@ -60,6 +61,7 @@ pub struct EventBus {
     on_send_failed: Arc<RwLock<Vec<FnSendFailed>>>,
     on_recalled: Arc<RwLock<Vec<FnRecalled>>>,
     on_typing: Arc<RwLock<Vec<FnTyping>>>,
+    call_signal_listeners: Arc<RwLock<Vec<FnCallSignal>>>,
     // Conversation
     on_conversation_synced: Arc<RwLock<Vec<FnConversationIds>>>,
     on_conversation_created: Arc<RwLock<Vec<FnConversationId>>>,
@@ -95,6 +97,7 @@ impl EventBus {
         let on_send_failed = Arc::new(RwLock::new(Vec::new()));
         let on_recalled = Arc::new(RwLock::new(Vec::new()));
         let on_typing = Arc::new(RwLock::new(Vec::new()));
+        let call_signal_listeners = Arc::new(RwLock::new(Vec::new()));
         let on_conversation_synced = Arc::new(RwLock::new(Vec::new()));
         let on_conversation_created = Arc::new(RwLock::new(Vec::new()));
         let on_conversation_updated = Arc::new(RwLock::new(Vec::new()));
@@ -123,6 +126,7 @@ impl EventBus {
             on_send_failed: on_send_failed.clone(),
             on_recalled: on_recalled.clone(),
             on_typing: on_typing.clone(),
+            call_signal_listeners: call_signal_listeners.clone(),
             on_conversation_synced: on_conversation_synced.clone(),
             on_conversation_created: on_conversation_created.clone(),
             on_conversation_updated: on_conversation_updated.clone(),
@@ -304,6 +308,19 @@ impl EventBus {
                                 }
                             });
                         }
+                        MessageEvent::CallSignal {
+                            conversation_id,
+                            event,
+                        } => {
+                            let (cid, e) = (conversation_id.clone(), event.clone());
+                            let list = call_signal_listeners.clone();
+                            tokio::task::spawn_blocking(move || {
+                                let list = list.read().unwrap();
+                                for f in list.iter() {
+                                    f(cid.clone(), e.clone());
+                                }
+                            });
+                        }
                         MessageEvent::Edited { .. }
                         | MessageEvent::ReactionChanged { .. }
                         | MessageEvent::Deleted { .. }
@@ -313,7 +330,6 @@ impl EventBus {
                         | MessageEvent::Marked { .. }
                         | MessageEvent::Unmarked { .. }
                         | MessageEvent::PresenceChanged { .. }
-                        | MessageEvent::CallSignal { .. }
                         | MessageEvent::Custom { .. } => {}
                     },
                     SdkEvent::Conversation(ce) => match ce {
@@ -372,7 +388,7 @@ impl EventBus {
                         }
                     },
                     SdkEvent::Sync(se) => match se {
-                        SyncNotify::Started => {
+                        SyncNotify::Started { run } if run.visibility.is_user_visible() => {
                             let list = on_sync_started.clone();
                             tokio::task::spawn_blocking(move || {
                                 let list = list.read().unwrap();
@@ -381,7 +397,7 @@ impl EventBus {
                                 }
                             });
                         }
-                        SyncNotify::Finished { phase } => {
+                        SyncNotify::Finished { run, phase } if run.visibility.is_user_visible() => {
                             let p = phase.clone();
                             let list = on_sync_finished.clone();
                             tokio::task::spawn_blocking(move || {
@@ -391,7 +407,9 @@ impl EventBus {
                                 }
                             });
                         }
-                        SyncNotify::Failed { task, message } => {
+                        SyncNotify::Failed { run, task, message }
+                            if run.visibility.is_user_visible() =>
+                        {
                             let (t, m) = (task.clone(), message.clone());
                             let list = on_sync_failed.clone();
                             tokio::task::spawn_blocking(move || {
@@ -402,10 +420,11 @@ impl EventBus {
                             });
                         }
                         SyncNotify::Progress {
+                            run,
                             task,
                             progress,
                             detail,
-                        } => {
+                        } if run.visibility.is_user_visible() => {
                             let (t, p, d) = (task.clone(), *progress, detail.clone());
                             let list = on_sync_progress.clone();
                             tokio::task::spawn_blocking(move || {
@@ -415,7 +434,9 @@ impl EventBus {
                                 }
                             });
                         }
-                        SyncNotify::TaskCompleted { task } => {
+                        SyncNotify::TaskCompleted { run, task }
+                            if run.visibility.is_user_visible() =>
+                        {
                             let t = task.clone();
                             let list = on_sync_task_completed.clone();
                             tokio::task::spawn_blocking(move || {
@@ -425,7 +446,9 @@ impl EventBus {
                                 }
                             });
                         }
-                        SyncNotify::StateChanged { state } => {
+                        SyncNotify::StateChanged { run, state }
+                            if run.visibility.is_user_visible() =>
+                        {
                             let s = *state;
                             let list = on_sync_state_changed.clone();
                             tokio::task::spawn_blocking(move || {
@@ -435,6 +458,7 @@ impl EventBus {
                                 }
                             });
                         }
+                        _ => {}
                     },
                     SdkEvent::Extension(ext) => {
                         let (src, ty, payload) = (
@@ -467,6 +491,9 @@ impl EventBus {
     }
 
     pub fn publish(&self, event: SdkEvent) {
+        if matches!(&event, SdkEvent::Sync(sync) if !sync.is_user_visible()) {
+            return;
+        }
         let _ = self.tx.send(event);
     }
 
@@ -612,6 +639,16 @@ impl EventBus {
         self.subscription()
     }
 
+    /// 注册「通话信令」下行（`EVENT_CALL_SIGNAL` → [`MessageEvent::CallSignal`]）。
+    pub fn on_call_signal<F>(&self, f: F) -> Subscription
+    where
+        F: Fn(&str, &CallSignalEvent) + Send + Sync + 'static,
+    {
+        let f: FnCallSignal = Arc::new(move |cid, e| f(cid.as_str(), &e));
+        self.call_signal_listeners.write().unwrap().push(f);
+        self.subscription()
+    }
+
     // ---------- Conversation ----------
     /// 注册「会话列表同步完成」回调
     pub fn on_conversation_synced<F>(&self, f: F) -> Subscription
@@ -751,4 +788,40 @@ pub type EventReceiver = broadcast::Receiver<SdkEvent>;
 /// 持有即保持对总线的引用；可用于取消订阅的占位（当前实现中不主动移除回调，仅防止总线被 drop）
 pub struct Subscription {
     pub(crate) _tx: broadcast::Sender<SdkEvent>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::EventBus;
+    use crate::core::SyncRunContext;
+    use crate::event::{SdkEvent, SyncNotify};
+    use tokio::sync::broadcast::error::TryRecvError;
+
+    #[tokio::test]
+    async fn publish_drops_silent_sync_events_before_raw_subscribers() {
+        let bus = EventBus::new();
+        let mut rx = bus.subscribe_raw();
+
+        bus.publish(SdkEvent::Sync(SyncNotify::Started {
+            run: SyncRunContext::silent_gap_repair(),
+        }));
+
+        assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
+    }
+
+    #[tokio::test]
+    async fn publish_keeps_user_visible_sync_events() {
+        let bus = EventBus::new();
+        let mut rx = bus.subscribe_raw();
+
+        bus.publish(SdkEvent::Sync(SyncNotify::Started {
+            run: SyncRunContext::initial_login(),
+        }));
+
+        let received = rx.try_recv().expect("user visible sync event emitted");
+        assert!(matches!(
+            received,
+            SdkEvent::Sync(SyncNotify::Started { .. })
+        ));
+    }
 }

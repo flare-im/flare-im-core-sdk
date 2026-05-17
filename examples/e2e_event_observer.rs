@@ -11,8 +11,8 @@ use std::time::Duration;
 
 use anyhow::Context;
 use flare_im_core_sdk::client::{
-    dev_data_dir_relative_to_cwd, parse_data_url_to_path, sanitize_user_id_for_dir, LoginDbKind,
-    SdkConfigOverlay, IMClient,
+    IMClient, LoginDbKind, SdkConfigOverlay, dev_data_dir_relative_to_cwd, parse_data_url_to_path,
+    sanitize_user_id_for_dir,
 };
 use flare_im_core_sdk::core::SdkState;
 use flare_im_core_sdk::event::{MessageEvent, SdkEvent};
@@ -73,8 +73,8 @@ async fn main() -> anyhow::Result<()> {
         .await
         .context("client.init")?;
 
-    let token = IMClient::generate_test_token("", "", &my_user_id, None)
-        .context("generate_test_token")?;
+    let token =
+        IMClient::generate_test_token("", "", &my_user_id, None).context("generate_test_token")?;
     client
         .login(&my_user_id, Some(&token), LoginDbKind::Sqlite, |_, _| {})
         .await

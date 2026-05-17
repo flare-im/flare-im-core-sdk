@@ -2,9 +2,9 @@
 
 use std::path::PathBuf;
 
-use crate::error::ErrorCode;
 use crate::FlareError;
 use crate::Result;
+use crate::error::ErrorCode;
 
 /// 将 `user_id` 转为可安全用作目录名的片段。
 pub fn sanitize_user_id_for_dir(user_id: &str) -> String {

@@ -4,8 +4,8 @@ use std::collections::HashMap;
 
 use async_trait::async_trait;
 use base64::prelude::*;
-use sqlx::{QueryBuilder, Row, Sqlite, SqlitePool};
 use flare_proto::common::ReactionAction;
+use sqlx::{QueryBuilder, Row, Sqlite, SqlitePool};
 use tracing::debug;
 
 use crate::domain::{
@@ -17,7 +17,7 @@ use crate::model::message::{
     MessageLocalState, ReactionEntry, has_reaction_snapshot_in_extra, parse_reactions_from_extra,
 };
 use crate::model::{
-    IMMessage, decode_content_bytes, decoded_content_to_elem, message_elem::TextElem, Elem,
+    Elem, IMMessage, decode_content_bytes, decoded_content_to_elem, message_elem::TextElem,
 };
 use flare_proto::common::{MessageStatus, MessageType};
 
@@ -342,10 +342,7 @@ fn now_ms_i64() -> i64 {
         .unwrap_or(0)
 }
 
-async fn refresh_reactions_json_snapshot(
-    pool: &SqlitePool,
-    message_id: &str,
-) -> Result<()> {
+async fn refresh_reactions_json_snapshot(pool: &SqlitePool, message_id: &str) -> Result<()> {
     let id = message_id.trim();
     if id.is_empty() {
         return Ok(());
@@ -463,8 +460,16 @@ async fn upsert_conversation_snapshot_tx(
     let preview = message.text_for_storage().unwrap_or_default();
     let max_seq = message.seq as i64;
     let now = now_ms_i64();
-    let created_at = if last_message_at > 0 { last_message_at } else { now };
-    let updated_at = if last_message_at > 0 { last_message_at } else { now };
+    let created_at = if last_message_at > 0 {
+        last_message_at
+    } else {
+        now
+    };
+    let updated_at = if last_message_at > 0 {
+        last_message_at
+    } else {
+        now
+    };
 
     sqlx::query(
         r#"INSERT INTO conversations (
@@ -554,7 +559,8 @@ async fn replace_reaction_snapshot_tx(
     if message.server_id.is_empty() {
         return Ok(());
     }
-    let has_snapshot = has_reaction_snapshot_in_extra(&message.extra) || !message.reactions.is_empty();
+    let has_snapshot =
+        has_reaction_snapshot_in_extra(&message.extra) || !message.reactions.is_empty();
     if !has_snapshot {
         // 下行消息通常不携带 reactions 快照，不能把已落库的反应误删。
         return Ok(());
@@ -706,14 +712,12 @@ impl MessageWriter for SqliteMessageRepo {
             .execute(&self.pool)
             .await
         } else {
-            sqlx::query(
-                "UPDATE messages SET status = ? WHERE server_id = ? OR client_msg_id = ?",
-            )
-            .bind(status)
-            .bind(message_id)
-            .bind(message_id)
-            .execute(&self.pool)
-            .await
+            sqlx::query("UPDATE messages SET status = ? WHERE server_id = ? OR client_msg_id = ?")
+                .bind(status)
+                .bind(message_id)
+                .bind(message_id)
+                .execute(&self.pool)
+                .await
         }
         .map_err(|e| FlareError::localized(ErrorCode::DatabaseError, e.to_string()))?;
         Ok(())
@@ -890,7 +894,10 @@ impl MessageStore for SqliteMessageRepo {
         } else {
             current_edit_version.max(1)
         };
-        extra.insert("currentEditVersion".to_string(), next_edit_version.to_string());
+        extra.insert(
+            "currentEditVersion".to_string(),
+            next_edit_version.to_string(),
+        );
         extra.insert("messageFsmState".to_string(), "EDITED".to_string());
         extra.insert("lastEditedAt".to_string(), now_ms.to_string());
 
@@ -1234,17 +1241,15 @@ impl MessageStore for SqliteMessageRepo {
         for id in &id_keys {
             separated.push_bind(id);
         }
-        qb.push(") OR message_server_id IN (SELECT client_msg_id FROM messages WHERE server_id IN (");
+        qb.push(
+            ") OR message_server_id IN (SELECT client_msg_id FROM messages WHERE server_id IN (",
+        );
         let mut sid_sep = qb.separated(", ");
         for id in &id_keys {
             sid_sep.push_bind(id);
         }
         qb.push(")) ORDER BY updated_at ASC");
-        let rows = qb
-            .build()
-            .fetch_all(&self.pool)
-            .await
-            .map_err(sqlx_err)?;
+        let rows = qb.build().fetch_all(&self.pool).await.map_err(sqlx_err)?;
 
         let mut grouped: HashMap<String, HashMap<String, Vec<String>>> = HashMap::new();
         for row in rows {
@@ -1281,7 +1286,12 @@ impl MessageStore for SqliteMessageRepo {
         Ok(out)
     }
 
-    async fn set_message_flag(&self, message_id: &str, flag_key: &str, enabled: bool) -> Result<()> {
+    async fn set_message_flag(
+        &self,
+        message_id: &str,
+        flag_key: &str,
+        enabled: bool,
+    ) -> Result<()> {
         if message_id.trim().is_empty() || flag_key.trim().is_empty() {
             return Ok(());
         }
@@ -1428,9 +1438,8 @@ impl MessageStore for SqliteMessageRepo {
         }
 
         let orphan_client_ids: Vec<String> = orphan_rows.into_iter().map(|(id,)| id).collect();
-        let mut update_qb = QueryBuilder::<Sqlite>::new(
-            "UPDATE messages SET sending = 0, failed = 1, status = ",
-        );
+        let mut update_qb =
+            QueryBuilder::<Sqlite>::new("UPDATE messages SET sending = 0, failed = 1, status = ");
         update_qb.push_bind(MessageStatus::Failed as i32);
         update_qb.push(", updated_at = ");
         update_qb.push_bind(now_ms_i64());
@@ -1478,9 +1487,8 @@ impl MessageStore for SqliteMessageRepo {
             mismatched_rows.into_iter().map(|(id,)| id).collect();
 
         let mut tx = self.pool.begin().await.map_err(sqlx_err)?;
-        let mut update_qb = QueryBuilder::<Sqlite>::new(
-            "UPDATE messages SET sending = 0, failed = 1, status = ",
-        );
+        let mut update_qb =
+            QueryBuilder::<Sqlite>::new("UPDATE messages SET sending = 0, failed = 1, status = ");
         update_qb.push_bind(MessageStatus::Failed as i32);
         update_qb.push(", updated_at = ");
         update_qb.push_bind(now_ms_i64());
@@ -1634,7 +1642,10 @@ mod tests {
         let after_new = repo.get("server-1").await.unwrap().unwrap();
         assert_eq!(after_new.content_bytes, b"new".to_vec());
         assert_eq!(
-            after_new.extra.get("currentEditVersion").map(String::as_str),
+            after_new
+                .extra
+                .get("currentEditVersion")
+                .map(String::as_str),
             Some("3")
         );
     }
@@ -1662,7 +1673,10 @@ mod tests {
         assert_eq!(stale, OperationApplyResult::IgnoredStale);
 
         let after_stale = repo.get("server-2").await.unwrap().unwrap();
-        assert_eq!(after_stale.extra.get("pinned").map(String::as_str), Some("true"));
+        assert_eq!(
+            after_stale.extra.get("pinned").map(String::as_str),
+            Some("true")
+        );
 
         let newer = repo
             .apply_pin_event("server-2", false, Some(11))
@@ -1670,12 +1684,12 @@ mod tests {
             .unwrap();
         assert_eq!(newer, OperationApplyResult::Applied);
         let after_new = repo.get("server-2").await.unwrap().unwrap();
-        assert_eq!(after_new.extra.get("pinned").map(String::as_str), Some("false"));
         assert_eq!(
-            after_new
-                .extra
-                .get("lastPinEventSeq")
-                .map(String::as_str),
+            after_new.extra.get("pinned").map(String::as_str),
+            Some("false")
+        );
+        assert_eq!(
+            after_new.extra.get("lastPinEventSeq").map(String::as_str),
             Some("11")
         );
     }
@@ -1703,8 +1717,14 @@ mod tests {
         assert_eq!(stale, OperationApplyResult::IgnoredStale);
 
         let after_stale = repo.get("server-3").await.unwrap().unwrap();
-        assert_eq!(after_stale.extra.get("markType").map(String::as_str), Some("7"));
-        assert_eq!(after_stale.extra.get("markColor").map(String::as_str), Some("#ff0000"));
+        assert_eq!(
+            after_stale.extra.get("markType").map(String::as_str),
+            Some("7")
+        );
+        assert_eq!(
+            after_stale.extra.get("markColor").map(String::as_str),
+            Some("#ff0000")
+        );
 
         let newer = repo
             .apply_mark_event("server-3", 7, None, false, Some(21))
@@ -1802,9 +1822,16 @@ mod tests {
         message.sender_id = "u1".to_string();
         repo.save_batch(&[message]).await.unwrap();
 
-        repo.apply_reaction_event("conv-1", "server-5", "u2", "👍", ReactionAction::Add as i32, Some(1))
-            .await
-            .unwrap();
+        repo.apply_reaction_event(
+            "conv-1",
+            "server-5",
+            "u2",
+            "👍",
+            ReactionAction::Add as i32,
+            Some(1),
+        )
+        .await
+        .unwrap();
         let before = repo
             .list_reactions(&["server-5".to_string()])
             .await
@@ -1844,7 +1871,14 @@ mod tests {
 
         // 先收到 reaction 事件（消息主体尚未落库）
         let applied = repo
-            .apply_reaction_event("conv-9", "server-9", "u9", "👍", ReactionAction::Add as i32, Some(9))
+            .apply_reaction_event(
+                "conv-9",
+                "server-9",
+                "u9",
+                "👍",
+                ReactionAction::Add as i32,
+                Some(9),
+            )
             .await
             .unwrap();
         assert_eq!(applied, OperationApplyResult::Applied);

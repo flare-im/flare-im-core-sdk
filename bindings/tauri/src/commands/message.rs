@@ -7,10 +7,10 @@ use tauri::State;
 
 use crate::model::SendAckPayload;
 use crate::state::SdkState;
+use flare_im_core_sdk::model::IMMessage;
 use flare_im_core_sdk::model::content_builder::BuiltContent;
 use flare_im_core_sdk::model::message::MarkType;
 use flare_im_core_sdk::model::message_elem::elem_to_message_content;
-use flare_im_core_sdk::model::IMMessage;
 use flare_proto::common::{ImageInfo, MessageType};
 
 fn build_content_from_message(m: &IMMessage) -> Option<BuiltContent> {
@@ -91,12 +91,7 @@ pub async fn sdk_create_forward(
     let c = state.client();
     c.message_build()
         .map_err(|e| e.to_string())?
-        .create_forward(
-            &conversation_id,
-            merge,
-            &forward_title,
-            source_messages,
-        )
+        .create_forward(&conversation_id, merge, &forward_title, source_messages)
         .await
         .map_err(|e| e.to_string())
 }
@@ -179,7 +174,10 @@ pub async fn sdk_create_image_group(
     if images.is_empty() {
         return Err("ImageGroup 至少需要一张图片".to_string());
     }
-    let images: Vec<ImageInfo> = images.into_iter().map(sdk_image_group_row_to_proto).collect();
+    let images: Vec<ImageInfo> = images
+        .into_iter()
+        .map(sdk_image_group_row_to_proto)
+        .collect();
     let description = description.unwrap_or_default();
     let metadata = metadata.unwrap_or_default();
     let c = state.client();

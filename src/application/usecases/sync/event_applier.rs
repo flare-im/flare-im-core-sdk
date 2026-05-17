@@ -3,9 +3,8 @@ use prost::Message;
 
 use crate::application::event_deduper::EventDeduper;
 use crate::domain::{EditApplyResult, OperationApplyResult, SyncPolicy};
-use crate::event::{
-    ConversationEvent, EventBus, ExtensionEvent, MessageEvent, SdkEvent,
-};
+use crate::error::Result;
+use crate::event::{ConversationEvent, EventBus, ExtensionEvent, MessageEvent, SdkEvent};
 use crate::store::StoreProvider;
 
 use super::models::ReplayMode;
@@ -30,13 +29,37 @@ impl SyncEventApplier {
         user_id: &str,
         events: &[flare_proto::common::Event],
         mode: ReplayMode,
-    ) {
+    ) -> Vec<u64> {
+        let mut applied_seqs = Vec::new();
         for event in events {
             if !self.event_deduper.record_if_new(event).await {
+                applied_seqs.push(event.seq);
                 continue;
             }
-            self.apply_event(user_id, event, mode).await;
+            match self.apply_event(user_id, event, mode).await {
+                Ok(true) => applied_seqs.push(event.seq),
+                Ok(false) => {
+                    self.event_deduper.forget(event).await;
+                    tracing::warn!(
+                        conversation_id = %event.conversation_id,
+                        seq = event.seq,
+                        event_type = event.r#type,
+                        "关键事件目标状态暂不可用，保留后续重放机会"
+                    );
+                }
+                Err(error) => {
+                    self.event_deduper.forget(event).await;
+                    tracing::warn!(
+                        conversation_id = %event.conversation_id,
+                        seq = event.seq,
+                        event_type = event.r#type,
+                        error = %error,
+                        "关键事件应用失败，保留后续重放机会"
+                    );
+                }
+            }
         }
+        applied_seqs
     }
 
     async fn apply_event(
@@ -44,13 +67,15 @@ impl SyncEventApplier {
         user_id: &str,
         event: &flare_proto::common::Event,
         mode: ReplayMode,
-    ) {
+    ) -> Result<bool> {
         if let Some(DomainEventPayload::Recall(recall)) = &event.payload {
-            let _ = self
-                .stores
+            let Some(_) = self.stores.messages.get(&recall.server_msg_id).await? else {
+                return self.missing_target_is_already_covered(user_id, event).await;
+            };
+            self.stores
                 .messages
                 .update_status(&recall.server_msg_id, MessageStatus::Recalled as i32)
-                .await;
+                .await?;
             if matches!(mode, ReplayMode::SingleConversation) {
                 self.bus.publish(SdkEvent::Message(MessageEvent::Recalled {
                     conversation_id: event.conversation_id.clone(),
@@ -58,19 +83,27 @@ impl SyncEventApplier {
                 }));
             }
             self.publish_extension_if_needed(event, mode, false);
-            return;
+            return Ok(true);
         }
         if let Some(DomainEventPayload::Edit(edit)) = &event.payload {
             match self
                 .stores
                 .messages
-                .apply_edit_event(&edit.server_msg_id, edit.new_content.clone(), edit.edit_version)
+                .apply_edit_event(
+                    &edit.server_msg_id,
+                    edit.new_content.clone(),
+                    edit.edit_version,
+                )
                 .await
             {
                 Ok(EditApplyResult::IgnoredStale) => {
-                    return;
+                    return Ok(true);
                 }
-                Ok(_) | Err(_) => {}
+                Ok(EditApplyResult::NotFound) => {
+                    return self.missing_target_is_already_covered(user_id, event).await;
+                }
+                Ok(EditApplyResult::Applied) => {}
+                Err(error) => return Err(error),
             }
             self.bus.publish(SdkEvent::Message(MessageEvent::Edited {
                 conversation_id: event.conversation_id.clone(),
@@ -78,7 +111,7 @@ impl SyncEventApplier {
                 edit_version: Some(edit.edit_version),
             }));
             self.publish_extension_if_needed(event, mode, false);
-            return;
+            return Ok(true);
         }
         if let Some(DomainEventPayload::Reaction(reaction)) = &event.payload {
             let applied = self
@@ -94,7 +127,15 @@ impl SyncEventApplier {
                 )
                 .await;
             if matches!(applied, Ok(OperationApplyResult::IgnoredStale)) {
-                return;
+                return Ok(true);
+            }
+            match applied {
+                Ok(OperationApplyResult::Applied) => {}
+                Ok(OperationApplyResult::NotFound) => {
+                    return self.missing_target_is_already_covered(user_id, event).await;
+                }
+                Ok(OperationApplyResult::IgnoredStale) => unreachable!(),
+                Err(error) => return Err(error),
             }
             self.bus
                 .publish(SdkEvent::Message(MessageEvent::ReactionChanged {
@@ -105,7 +146,7 @@ impl SyncEventApplier {
                     action: reaction.action,
                 }));
             self.publish_extension_if_needed(event, mode, false);
-            return;
+            return Ok(true);
         }
         if let Some(DomainEventPayload::Delete(delete)) = &event.payload {
             let operation_seq = operation_seq(event);
@@ -122,8 +163,12 @@ impl SyncEventApplier {
                     .apply_delete_event(&delete.server_msg_id, operation_seq)
                     .await
                 {
-                    Ok(OperationApplyResult::IgnoredStale) => return,
-                    Ok(_) | Err(_) => {}
+                    Ok(OperationApplyResult::IgnoredStale) => return Ok(true),
+                    Ok(OperationApplyResult::NotFound) => {
+                        return self.missing_target_is_already_covered(user_id, event).await;
+                    }
+                    Ok(OperationApplyResult::Applied) => {}
+                    Err(error) => return Err(error),
                 }
                 self.bus.publish(SdkEvent::Message(MessageEvent::Deleted {
                     conversation_id: event.conversation_id.clone(),
@@ -138,7 +183,7 @@ impl SyncEventApplier {
                 }
             }
             self.publish_extension_if_needed(event, mode, true);
-            return;
+            return Ok(true);
         }
         if let Some(DomainEventPayload::Read(read)) = &event.payload {
             if !user_id.is_empty()
@@ -146,22 +191,18 @@ impl SyncEventApplier {
                 && read.user_id != user_id
                 && read.read_seq > 0
             {
-                let _ = self
-                    .stores
+                self.stores
                     .messages
-                    .mark_outgoing_read_upto_seq(
-                        &event.conversation_id,
-                        user_id,
-                        read.read_seq,
-                    )
-                    .await;
+                    .mark_outgoing_read_upto_seq(&event.conversation_id, user_id, read.read_seq)
+                    .await?;
             }
-            self.bus.publish(SdkEvent::Message(MessageEvent::ReadReceipt {
-                conversation_id: event.conversation_id.clone(),
-                event: read.clone(),
-            }));
+            self.bus
+                .publish(SdkEvent::Message(MessageEvent::ReadReceipt {
+                    conversation_id: event.conversation_id.clone(),
+                    event: read.clone(),
+                }));
             self.publish_extension_if_needed(event, mode, false);
-            return;
+            return Ok(true);
         }
         if let Some(DomainEventPayload::Pin(pin)) = &event.payload {
             let applied = self
@@ -170,14 +211,22 @@ impl SyncEventApplier {
                 .apply_pin_event(&pin.server_msg_id, true, operation_seq(event))
                 .await;
             if matches!(applied, Ok(OperationApplyResult::IgnoredStale)) {
-                return;
+                return Ok(true);
+            }
+            match applied {
+                Ok(OperationApplyResult::Applied) => {}
+                Ok(OperationApplyResult::NotFound) => {
+                    return self.missing_target_is_already_covered(user_id, event).await;
+                }
+                Ok(OperationApplyResult::IgnoredStale) => unreachable!(),
+                Err(error) => return Err(error),
             }
             self.bus.publish(SdkEvent::Message(MessageEvent::Pinned {
                 conversation_id: event.conversation_id.clone(),
                 event: pin.clone(),
             }));
             self.publish_extension_if_needed(event, mode, false);
-            return;
+            return Ok(true);
         }
         if let Some(DomainEventPayload::Unpin(unpin)) = &event.payload {
             let applied = self
@@ -186,14 +235,22 @@ impl SyncEventApplier {
                 .apply_pin_event(&unpin.server_msg_id, false, operation_seq(event))
                 .await;
             if matches!(applied, Ok(OperationApplyResult::IgnoredStale)) {
-                return;
+                return Ok(true);
+            }
+            match applied {
+                Ok(OperationApplyResult::Applied) => {}
+                Ok(OperationApplyResult::NotFound) => {
+                    return self.missing_target_is_already_covered(user_id, event).await;
+                }
+                Ok(OperationApplyResult::IgnoredStale) => unreachable!(),
+                Err(error) => return Err(error),
             }
             self.bus.publish(SdkEvent::Message(MessageEvent::Unpinned {
                 conversation_id: event.conversation_id.clone(),
                 event: unpin.clone(),
             }));
             self.publish_extension_if_needed(event, mode, false);
-            return;
+            return Ok(true);
         }
         if let Some(DomainEventPayload::Mark(mark)) = &event.payload {
             let applied = self
@@ -212,14 +269,22 @@ impl SyncEventApplier {
                 )
                 .await;
             if matches!(applied, Ok(OperationApplyResult::IgnoredStale)) {
-                return;
+                return Ok(true);
+            }
+            match applied {
+                Ok(OperationApplyResult::Applied) => {}
+                Ok(OperationApplyResult::NotFound) => {
+                    return self.missing_target_is_already_covered(user_id, event).await;
+                }
+                Ok(OperationApplyResult::IgnoredStale) => unreachable!(),
+                Err(error) => return Err(error),
             }
             self.bus.publish(SdkEvent::Message(MessageEvent::Marked {
                 conversation_id: event.conversation_id.clone(),
                 event: mark.clone(),
             }));
             self.publish_extension_if_needed(event, mode, false);
-            return;
+            return Ok(true);
         }
         if let Some(DomainEventPayload::Unmark(unmark)) = &event.payload {
             let applied = self
@@ -234,14 +299,22 @@ impl SyncEventApplier {
                 )
                 .await;
             if matches!(applied, Ok(OperationApplyResult::IgnoredStale)) {
-                return;
+                return Ok(true);
+            }
+            match applied {
+                Ok(OperationApplyResult::Applied) => {}
+                Ok(OperationApplyResult::NotFound) => {
+                    return self.missing_target_is_already_covered(user_id, event).await;
+                }
+                Ok(OperationApplyResult::IgnoredStale) => unreachable!(),
+                Err(error) => return Err(error),
             }
             self.bus.publish(SdkEvent::Message(MessageEvent::Unmarked {
                 conversation_id: event.conversation_id.clone(),
                 event: unmark.clone(),
             }));
             self.publish_extension_if_needed(event, mode, false);
-            return;
+            return Ok(true);
         }
         if let Some(DomainEventPayload::Presence(presence)) = &event.payload {
             self.bus
@@ -250,15 +323,16 @@ impl SyncEventApplier {
                     event: presence.clone(),
                 }));
             self.publish_extension_if_needed(event, mode, false);
-            return;
+            return Ok(true);
         }
         if let Some(DomainEventPayload::CallSignal(call)) = &event.payload {
-            self.bus.publish(SdkEvent::Message(MessageEvent::CallSignal {
-                conversation_id: event.conversation_id.clone(),
-                event: call.clone(),
-            }));
-            self.publish_extension_if_needed(event, mode, false);
-            return;
+            self.bus
+                .publish(SdkEvent::Message(MessageEvent::CallSignal {
+                    conversation_id: event.conversation_id.clone(),
+                    event: call.clone(),
+                }));
+            // EVENT_CALL_SIGNAL 已由 MessageEvent::CallSignal 承载，不再走 Extension 重复下发。
+            return Ok(true);
         }
         if let Some(DomainEventPayload::Custom(custom)) = &event.payload {
             self.bus.publish(SdkEvent::Message(MessageEvent::Custom {
@@ -266,23 +340,48 @@ impl SyncEventApplier {
                 event: custom.clone(),
             }));
             self.publish_extension_if_needed(event, mode, false);
-            return;
+            return Ok(true);
         }
         if let Some(DomainEventPayload::ConversationDelete(_)) = &event.payload {
-            self.bus.publish(SdkEvent::Conversation(ConversationEvent::Deleted {
-                conversation_id: event.conversation_id.clone(),
-            }));
+            self.bus
+                .publish(SdkEvent::Conversation(ConversationEvent::Deleted {
+                    conversation_id: event.conversation_id.clone(),
+                }));
             self.publish_extension_if_needed(event, mode, false);
-            return;
+            return Ok(true);
         }
         if let Some(DomainEventPayload::Conversation(_)) = &event.payload {
-            self.bus.publish(SdkEvent::Conversation(ConversationEvent::Updated {
-                conversation_id: event.conversation_id.clone(),
-            }));
+            self.bus
+                .publish(SdkEvent::Conversation(ConversationEvent::Updated {
+                    conversation_id: event.conversation_id.clone(),
+                }));
             self.publish_extension_if_needed(event, mode, false);
-            return;
+            return Ok(true);
         }
         self.publish_extension_if_needed(event, mode, false);
+        Ok(true)
+    }
+
+    async fn missing_target_is_already_covered(
+        &self,
+        user_id: &str,
+        event: &flare_proto::common::Event,
+    ) -> Result<bool> {
+        let target_seq = event
+            .event_seq
+            .or(if event.seq > 0 { Some(event.seq) } else { None })
+            .unwrap_or_default();
+        if user_id.is_empty() || event.conversation_id.trim().is_empty() || target_seq == 0 {
+            return Ok(false);
+        }
+        let message_cursor = self
+            .stores
+            .cursors
+            .get_conversation_cursor(user_id, &event.conversation_id)
+            .await?
+            .map(|cursor| cursor.last_seq)
+            .unwrap_or_default();
+        Ok(message_cursor >= target_seq)
     }
 
     fn publish_extension_if_needed(
@@ -291,13 +390,16 @@ impl SyncEventApplier {
         mode: ReplayMode,
         is_delete: bool,
     ) {
+        if event.r#type == flare_proto::common::EventType::EventCallSignal as i32 {
+            return;
+        }
         match mode {
             ReplayMode::SingleConversation => {
                 if is_delete {
                     return;
                 }
                 match event.r#type {
-                    10..=15 | 99 => {
+                    11..=15 | 99 => {
                         self.bus.publish(SdkEvent::Extension(ExtensionEvent {
                             source: "sync_replay".to_string(),
                             event_type: format!("event_type_{}", event.r#type),
@@ -321,6 +423,7 @@ impl SyncEventApplier {
 #[cfg(all(test, feature = "storage-sqlite"))]
 mod tests {
     use super::{ReplayMode, SyncEventApplier};
+    use crate::Result;
     use crate::application::event_deduper::EventDeduper;
     use crate::domain::{
         ConversationReader, ConversationWriter, MessageReader, MessageWriter, SyncCursorReader,
@@ -328,11 +431,10 @@ mod tests {
     };
     use crate::event::EventBus;
     use crate::store::StoreProvider;
-    use crate::Result;
+    use crate::store::{SqliteMessageRepo, sqlite_init_schema};
     use async_trait::async_trait;
-    use std::sync::Arc;
-    use crate::store::{sqlite_init_schema, SqliteMessageRepo};
     use sqlx::SqlitePool;
+    use std::sync::Arc;
 
     struct NoopConversationStore;
     struct NoopSyncCursorStore;
@@ -435,6 +537,7 @@ mod tests {
             StoreProvider {
                 messages: message_repo.clone(),
                 conversations: Arc::new(NoopConversationStore),
+                conversation_participants: None,
                 cursors: Arc::new(NoopSyncCursorStore),
                 pending_send_reader: None,
                 pending_send_writer: None,
@@ -471,14 +574,25 @@ mod tests {
             ..Default::default()
         };
 
-        applier.apply_events("u1", &[event], ReplayMode::CriticalEvents).await;
+        applier
+            .apply_events("u1", &[event], ReplayMode::CriticalEvents)
+            .await;
 
-        let updated = message_repo.get("server-outgoing-1").await.unwrap().unwrap();
-        assert_eq!(updated.status, flare_proto::common::MessageStatus::Read as i32);
+        let updated = message_repo
+            .get("server-outgoing-1")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            updated.status,
+            flare_proto::common::MessageStatus::Read as i32
+        );
         assert!(updated.is_read);
     }
 }
 
 fn operation_seq(event: &flare_proto::common::Event) -> Option<u64> {
-    event.event_seq.or(if event.seq > 0 { Some(event.seq) } else { None })
+    event
+        .event_seq
+        .or(if event.seq > 0 { Some(event.seq) } else { None })
 }

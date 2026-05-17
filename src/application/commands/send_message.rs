@@ -1,12 +1,12 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::domain::MessageStore;
 use crate::error::Result;
 use crate::middleware::MiddlewareChain;
 use crate::model::message::{IMMessage, SendAck};
 use crate::protocol::PacketSender;
 use crate::reliable_queue::ReliableSendQueue;
-use crate::domain::MessageStore;
 
 const TIMEOUT_SECS: u64 = 15;
 

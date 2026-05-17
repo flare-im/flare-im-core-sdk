@@ -16,7 +16,7 @@ use flare_proto::common::Ack;
 use flare_proto::common::ack::Payload as AckPayload;
 use prost::Message;
 use tokio::sync::Notify;
-use tracing::{info, warn};
+use tracing::{debug, warn};
 
 use crate::core::Dispatcher;
 use crate::event::{ConnectionEvent, SdkEvent};
@@ -91,7 +91,7 @@ impl MessageListener for SocketHandler {
                 if let Ok(ack) = Ack::decode(payload.as_slice()) {
                     match ack.payload {
                         Some(AckPayload::Send(send_ack)) => {
-                            info!(
+                            debug!(
                                 frame_id = %frame.message_id,
                                 client_msg_id = %send_ack.client_msg_id,
                                 server_msg_id = %send_ack.server_msg_id,
@@ -104,7 +104,7 @@ impl MessageListener for SocketHandler {
                             let _ = self.dispatcher.dispatch(payload).await;
                         }
                         Some(AckPayload::Event(event_ack)) => {
-                            info!(
+                            debug!(
                                 frame_id = %frame.message_id,
                                 event_id = %event_ack.event_id,
                                 metadata = ?event_ack.metadata,
@@ -130,7 +130,7 @@ impl MessageListener for SocketHandler {
                 let payload = ensure_decompressed_payload(&payload_cmd.payload);
                 match self.codec.decode_server(&payload) {
                     Ok(downlink) => {
-                        info!(
+                        debug!(
                             frame_id = %frame.message_id,
                             payload_type = pt,
                             "received push/data/event frame, dispatching to bus"

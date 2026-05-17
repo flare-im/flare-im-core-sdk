@@ -4,16 +4,16 @@ use std::collections::HashMap;
 use std::path::Path;
 #[cfg(not(target_arch = "wasm32"))]
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 #[cfg(not(target_arch = "wasm32"))]
 use futures_util::StreamExt;
 use sha2::{Digest, Sha256};
-use tokio::io::{AsyncReadExt, AsyncSeekExt, SeekFrom};
 #[cfg(not(target_arch = "wasm32"))]
 use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncReadExt, AsyncSeekExt, SeekFrom};
 use tokio::sync::RwLock;
 
 use crate::application::sdk_callbacks::{
@@ -29,12 +29,12 @@ use crate::error::{ErrorCode, FlareError, Result};
 use crate::model::{MediaAccessUrl, MediaResolvedAccess, UploadOptions, UploadedMedia};
 use crate::transport::{
     CommitDirectUploadPartsHttpRequest, CommitDirectUploadPartsHttpResponse,
-    CompleteDirectUploadHttpRequest, DirectUploadTransportKindHttp, DeleteFileHttpRequest,
-    DeleteFileHttpResponse, GetDirectUploadStatusHttpResponse, GetFileUrlHttpRequest,
-    GetFileUrlHttpResponse, HttpApiResponse, HttpClient,
-    InitiateDirectUploadHttpRequest, InitiateDirectUploadHttpResponse,
-    PresignDirectUploadPartsHttpRequest, PresignDirectUploadPartsHttpResponse,
-    UploadFileHttpResponse, UploadFileMetadataHttp, UploadedPartInfoHttp, unwrap_api_response,
+    CompleteDirectUploadHttpRequest, DeleteFileHttpRequest, DeleteFileHttpResponse,
+    DirectUploadTransportKindHttp, GetDirectUploadStatusHttpResponse, GetFileUrlHttpRequest,
+    GetFileUrlHttpResponse, HttpApiResponse, HttpClient, InitiateDirectUploadHttpRequest,
+    InitiateDirectUploadHttpResponse, PresignDirectUploadPartsHttpRequest,
+    PresignDirectUploadPartsHttpResponse, UploadFileHttpResponse, UploadFileMetadataHttp,
+    UploadedPartInfoHttp, unwrap_api_response,
 };
 
 #[derive(Clone)]
@@ -101,8 +101,10 @@ impl MediaService {
             file_id: file_id.to_string(),
             hard_delete,
         };
-        let body: HttpApiResponse<DeleteFileHttpResponse> =
-            self.http.delete_with_body("/api/v1/medias/file", &req).await?;
+        let body: HttpApiResponse<DeleteFileHttpResponse> = self
+            .http
+            .delete_with_body("/api/v1/medias/file", &req)
+            .await?;
         let data = unwrap_api_response(body, "delete file")?;
         Ok(data.success)
     }
@@ -229,7 +231,9 @@ impl MediaService {
         _file_id: &str,
         _expires_in: i32,
     ) -> Result<MediaCacheEntryVo> {
-        Err(FlareError::system("cache_remote_media is not supported on wasm"))
+        Err(FlareError::system(
+            "cache_remote_media is not supported on wasm",
+        ))
     }
 
     pub async fn media_cache_stats(&self) -> Result<crate::domain::MediaCacheStatsVo> {
@@ -379,12 +383,18 @@ impl MediaService {
                 store.upsert_manifest(&manifest).await?;
                 if manifest.transport_kind == Some(DirectUploadTransportKindVo::MultipartPut) {
                     let parts = build_upload_parts(&manifest);
-                    store.replace_parts(&manifest.local_upload_id, &parts).await?;
+                    store
+                        .replace_parts(&manifest.local_upload_id, &parts)
+                        .await?;
                 }
             }
         }
 
-        match manifest.transport_kind.clone().unwrap_or(DirectUploadTransportKindVo::SinglePut) {
+        match manifest
+            .transport_kind
+            .clone()
+            .unwrap_or(DirectUploadTransportKindVo::SinglePut)
+        {
             DirectUploadTransportKindVo::SinglePut => {
                 let upload_url = manifest.upload_url.clone().ok_or_else(|| {
                     FlareError::localized(
@@ -435,7 +445,10 @@ impl MediaService {
                     .http
                     .get_with_headers(
                         "/api/v1/medias/uploads/status",
-                        Some(&HashMap::from([("upload_id".to_string(), upload_id.clone())])),
+                        Some(&HashMap::from([(
+                            "upload_id".to_string(),
+                            upload_id.clone(),
+                        )])),
                         &headers,
                     )
                     .await?;
@@ -445,7 +458,9 @@ impl MediaService {
                     let existing = store.list_parts(&manifest.local_upload_id).await?;
                     if existing.is_empty() {
                         let generated = build_upload_parts(&manifest);
-                        store.replace_parts(&manifest.local_upload_id, &generated).await?;
+                        store
+                            .replace_parts(&manifest.local_upload_id, &generated)
+                            .await?;
                         generated
                     } else {
                         existing
@@ -483,7 +498,8 @@ impl MediaService {
                             &headers,
                         )
                         .await?;
-                    let presigned = unwrap_api_response(presign_body, "presign direct upload parts")?;
+                    let presigned =
+                        unwrap_api_response(presign_body, "presign direct upload parts")?;
                     let presigned_map = presigned
                         .parts
                         .into_iter()
@@ -497,9 +513,10 @@ impl MediaService {
                         .sum::<u64>();
 
                     for part in parts.iter_mut().filter(|part| !part.uploaded) {
-                        let presigned_part = presigned_map.get(&part.part_number).ok_or_else(|| {
-                            FlareError::general_error("missing presigned url for upload part")
-                        })?;
+                        let presigned_part =
+                            presigned_map.get(&part.part_number).ok_or_else(|| {
+                                FlareError::general_error("missing presigned url for upload part")
+                            })?;
                         emit_progress(
                             on_progress,
                             UploadProgress {
@@ -516,7 +533,11 @@ impl MediaService {
                         part.sha256 = hex::encode(Sha256::digest(&data));
                         let headers_map = self
                             .http
-                            .put_bytes_full_url(&presigned_part.upload_url, &data, &presigned_part.headers)
+                            .put_bytes_full_url(
+                                &presigned_part.upload_url,
+                                &data,
+                                &presigned_part.headers,
+                            )
                             .await?;
                         let etag = headers_map
                             .get("etag")
@@ -525,22 +546,22 @@ impl MediaService {
                             .ok_or_else(|| {
                                 FlareError::general_error("object storage response missing ETag")
                             })?;
-                        let commit_body: HttpApiResponse<CommitDirectUploadPartsHttpResponse> = self
-                            .http
-                            .post_with_headers(
-                                "/api/v1/medias/uploads/commit-parts",
-                                &CommitDirectUploadPartsHttpRequest {
-                                    upload_id: upload_id.clone(),
-                                    parts: vec![UploadedPartInfoHttp {
-                                        part_number: part.part_number,
-                                        etag: etag.clone(),
-                                        size: part.size as i64,
-                                        sha256: Some(part.sha256.clone()),
-                                    }],
-                                },
-                                &headers,
-                            )
-                            .await?;
+                        let commit_body: HttpApiResponse<CommitDirectUploadPartsHttpResponse> =
+                            self.http
+                                .post_with_headers(
+                                    "/api/v1/medias/uploads/commit-parts",
+                                    &CommitDirectUploadPartsHttpRequest {
+                                        upload_id: upload_id.clone(),
+                                        parts: vec![UploadedPartInfoHttp {
+                                            part_number: part.part_number,
+                                            etag: etag.clone(),
+                                            size: part.size as i64,
+                                            sha256: Some(part.sha256.clone()),
+                                        }],
+                                    },
+                                    &headers,
+                                )
+                                .await?;
                         let _ = unwrap_api_response(commit_body, "commit direct upload part")?;
                         part.uploaded = true;
                         part.etag = Some(etag);
@@ -551,13 +572,18 @@ impl MediaService {
                     }
                 }
                 if let Some(store) = &self.upload_manifest_store {
-                    store.replace_parts(&manifest.local_upload_id, &parts).await?;
+                    store
+                        .replace_parts(&manifest.local_upload_id, &parts)
+                        .await?;
                 }
             }
         }
 
         let upload_id = manifest.remote_upload_id.clone().ok_or_else(|| {
-            FlareError::localized(ErrorCode::GeneralError, "remote_upload_id missing for complete")
+            FlareError::localized(
+                ErrorCode::GeneralError,
+                "remote_upload_id missing for complete",
+            )
         })?;
         let headers = self.build_control_headers(&upload_id);
         let complete_body: HttpApiResponse<UploadFileHttpResponse> = self
@@ -698,10 +724,12 @@ async fn compute_file_fingerprints(path: &Path) -> Result<(String, String, Optio
 
     let head_hash = hex::encode(Sha256::digest(&head));
     let tail_hash = hex::encode(Sha256::digest(&tail));
-    let head_tail_sha256 =
-        hex::encode(Sha256::digest(format!("{head_hash}:{tail_hash}:{file_size}").as_bytes()));
-    let fingerprint =
-        hex::encode(Sha256::digest(format!("{file_size}:{head_hash}:{tail_hash}").as_bytes()));
+    let head_tail_sha256 = hex::encode(Sha256::digest(
+        format!("{head_hash}:{tail_hash}:{file_size}").as_bytes(),
+    ));
+    let fingerprint = hex::encode(Sha256::digest(
+        format!("{file_size}:{head_hash}:{tail_hash}").as_bytes(),
+    ));
 
     Ok((fingerprint, head_tail_sha256, Some(full_sha256)))
 }
@@ -735,7 +763,8 @@ async fn read_part_bytes(path: &Path, offset: u64, size: u64) -> Result<Vec<u8>>
     file.seek(SeekFrom::Start(offset))
         .await
         .map_err(|e| FlareError::general_error(format!("seek file failed: {e}")))?;
-    let mut data = vec![0_u8; usize::try_from(size).map_err(|_| FlareError::general_error("part too large"))?];
+    let mut data =
+        vec![0_u8; usize::try_from(size).map_err(|_| FlareError::general_error("part too large"))?];
     file.read_exact(&mut data)
         .await
         .map_err(|e| FlareError::general_error(format!("read file part failed: {e}")))?;
@@ -917,13 +946,8 @@ impl MediaService {
             let rf = remote_file_id.map(str::trim).filter(|s| !s.is_empty());
 
             let out_path = if let Some(p) = sp {
-                Self::user_download_copy_from_path(
-                    p,
-                    &dest_path,
-                    &run_flag,
-                    on_progress.as_ref(),
-                )
-                .await?
+                Self::user_download_copy_from_path(p, &dest_path, &run_flag, on_progress.as_ref())
+                    .await?
             } else if let Some(u) = su {
                 if !(u.starts_with("http://") || u.starts_with("https://")) {
                     return Err(FlareError::localized(
@@ -996,12 +1020,12 @@ impl MediaService {
             .map_err(|e| FlareError::general_error(format!("metadata: {e}")))?
             .len();
         emit_file_download_progress(on_progress, 0, Some(total));
-        let mut reader = tokio::fs::File::open(&src).await.map_err(|e| {
-            FlareError::general_error(format!("open source: {e}"))
-        })?;
-        let mut writer = tokio::fs::File::create(dest).await.map_err(|e| {
-            FlareError::general_error(format!("create dest: {e}"))
-        })?;
+        let mut reader = tokio::fs::File::open(&src)
+            .await
+            .map_err(|e| FlareError::general_error(format!("open source: {e}")))?;
+        let mut writer = tokio::fs::File::create(dest)
+            .await
+            .map_err(|e| FlareError::general_error(format!("create dest: {e}")))?;
         let mut buf = vec![0u8; 256 * 1024];
         let mut downloaded: u64 = 0;
         loop {
@@ -1010,15 +1034,17 @@ impl MediaService {
                 let _ = tokio::fs::remove_file(dest).await;
                 return Err(FlareError::general_error("下载已取消"));
             }
-            let n = reader.read(&mut buf).await.map_err(|e| {
-                FlareError::general_error(format!("read: {e}"))
-            })?;
+            let n = reader
+                .read(&mut buf)
+                .await
+                .map_err(|e| FlareError::general_error(format!("read: {e}")))?;
             if n == 0 {
                 break;
             }
-            writer.write_all(&buf[..n]).await.map_err(|e| {
-                FlareError::general_error(format!("write: {e}"))
-            })?;
+            writer
+                .write_all(&buf[..n])
+                .await
+                .map_err(|e| FlareError::general_error(format!("write: {e}")))?;
             downloaded += n as u64;
             emit_file_download_progress(on_progress, downloaded, Some(total));
         }
@@ -1038,9 +1064,9 @@ impl MediaService {
         let total = resp.content_length();
         emit_file_download_progress(on_progress, 0, total);
         let mut stream = resp.bytes_stream();
-        let mut file = tokio::fs::File::create(dest).await.map_err(|e| {
-            FlareError::general_error(format!("create dest: {e}"))
-        })?;
+        let mut file = tokio::fs::File::create(dest)
+            .await
+            .map_err(|e| FlareError::general_error(format!("create dest: {e}")))?;
         let mut downloaded: u64 = 0;
         while let Some(item) = stream.next().await {
             if !run_flag.load(Ordering::Relaxed) {
@@ -1049,15 +1075,15 @@ impl MediaService {
                 return Err(FlareError::general_error("下载已取消"));
             }
             let chunk = item.map_err(|e| FlareError::system(format!("http chunk: {e}")))?;
-            file.write_all(&chunk).await.map_err(|e| {
-                FlareError::general_error(format!("write: {e}"))
-            })?;
+            file.write_all(&chunk)
+                .await
+                .map_err(|e| FlareError::general_error(format!("write: {e}")))?;
             downloaded += chunk.len() as u64;
             emit_file_download_progress(on_progress, downloaded, total);
         }
-        file.flush().await.map_err(|e| {
-            FlareError::general_error(format!("flush: {e}"))
-        })?;
+        file.flush()
+            .await
+            .map_err(|e| FlareError::general_error(format!("flush: {e}")))?;
         Ok(dest.to_path_buf())
     }
 }
@@ -1250,9 +1276,18 @@ mod tests {
 
         let parts = build_upload_parts(&manifest);
         assert_eq!(parts.len(), 3);
-        assert_eq!((parts[0].part_number, parts[0].offset, parts[0].size), (1, 0, 4));
-        assert_eq!((parts[1].part_number, parts[1].offset, parts[1].size), (2, 4, 4));
-        assert_eq!((parts[2].part_number, parts[2].offset, parts[2].size), (3, 8, 2));
+        assert_eq!(
+            (parts[0].part_number, parts[0].offset, parts[0].size),
+            (1, 0, 4)
+        );
+        assert_eq!(
+            (parts[1].part_number, parts[1].offset, parts[1].size),
+            (2, 4, 4)
+        );
+        assert_eq!(
+            (parts[2].part_number, parts[2].offset, parts[2].size),
+            (3, 8, 2)
+        );
     }
 
     #[test]

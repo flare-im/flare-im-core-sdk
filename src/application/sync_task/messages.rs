@@ -5,10 +5,10 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use futures::stream::{self, StreamExt};
-use tracing::info;
+use tracing::debug;
 
 use super::super::SyncProtocolAdapter;
-use crate::core::{SyncContext, SyncMode, SyncResult, SyncTask, SyncTaskResult};
+use crate::core::{SyncContext, SyncFailurePolicy, SyncMode, SyncResult, SyncTask, SyncTaskResult};
 
 pub struct MessagesSyncTask(pub(crate) Arc<SyncProtocolAdapter>);
 const MAX_SYNC_CONCURRENCY: usize = 8;
@@ -30,22 +30,32 @@ impl SyncTask for MessagesSyncTask {
     fn weight(&self) -> u32 {
         20
     }
+    fn failure_policy(&self) -> SyncFailurePolicy {
+        SyncFailurePolicy::Continue
+    }
     fn execute(
         &self,
         ctx: SyncContext,
     ) -> Pin<Box<dyn std::future::Future<Output = SyncResult<SyncTaskResult>> + Send>> {
         let handler = self.0.clone();
         Box::pin(async move {
-            info!(task = "messages", "sync phase: messages start");
+            debug!(task = "messages", "sync phase: messages start");
             ctx.report_progress("syncing messages");
             let list: Vec<crate::model::Conversation> = ctx.store.conversations.list().await?;
             let ids: Vec<String> = list.into_iter().map(|c| c.conversation_id).collect();
+            let run = ctx.run.clone();
 
             let mut failed = 0usize;
             let mut synced = 0usize;
             let mut jobs = stream::iter(ids.into_iter().map(|id| {
                 let handler = handler.clone();
-                async move { (id.clone(), handler.sync_conversation(&id).await) }
+                let run = run.clone();
+                async move {
+                    (
+                        id.clone(),
+                        handler.sync_conversation_with_context(&id, run).await,
+                    )
+                }
             }))
             .buffer_unordered(MAX_SYNC_CONCURRENCY);
 
@@ -60,11 +70,11 @@ impl SyncTask for MessagesSyncTask {
                     }
                 }
             }
-            info!(
+            debug!(
                 task = "messages",
                 synced, failed, "sync phase: messages result"
             );
-            info!(task = "messages", "sync phase: messages done");
+            debug!(task = "messages", "sync phase: messages done");
             Ok(SyncTaskResult::ok())
         })
     }

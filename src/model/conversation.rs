@@ -126,6 +126,53 @@ pub struct ConversationLocalState {
     pub draft_cursor: Option<u32>,
 }
 
+/// SDK 本地会话参与者快照。单聊不依赖该结构；群聊/频道/客服等非单聊用它支撑群通话、成员面板和后续设置页。
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ConversationParticipant {
+    pub user_id: String,
+    pub roles: Vec<String>,
+    pub muted: bool,
+    pub pinned: bool,
+    pub attributes: HashMap<String, String>,
+    pub joined_at: u64,
+    pub nickname: String,
+}
+
+impl From<flare_proto::common::ConversationParticipant> for ConversationParticipant {
+    fn from(p: flare_proto::common::ConversationParticipant) -> Self {
+        let nickname = p.attributes.get("nickname").cloned().unwrap_or_default();
+        Self {
+            user_id: p.user_id,
+            roles: p.roles,
+            muted: p.muted,
+            pinned: p.pinned,
+            attributes: p.attributes,
+            joined_at: prost_timestamp_to_ms(p.joined_at.as_ref()),
+            nickname,
+        }
+    }
+}
+
+impl From<ConversationParticipant> for flare_proto::common::ConversationParticipant {
+    fn from(p: ConversationParticipant) -> Self {
+        let mut attributes = p.attributes.clone();
+        if !p.nickname.is_empty() {
+            attributes
+                .entry("nickname".to_string())
+                .or_insert_with(|| p.nickname.clone());
+        }
+        Self {
+            user_id: p.user_id,
+            roles: p.roles,
+            muted: p.muted,
+            pinned: p.pinned,
+            attributes,
+            joined_at: ms_to_prost_timestamp(p.joined_at),
+        }
+    }
+}
+
 /// SDK 层会话类型：内部统一使用，从 proto ConversationSummary 获取后即转换为此类型。
 /// 与 message.rs 的 IMMessage 一致：扁平字段、serde 默认 snake_case。
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -195,6 +242,10 @@ pub struct Conversation {
     // ===============================
     /// 扩展键值（与 proto ext 对应）
     pub ext: HashMap<String, String>,
+    /// 服务端成员读模型版本。完整成员通过独立 participants 同步拉取。
+    pub participant_version: u64,
+    /// 摘要级成员预览，最多少量成员，不能作为完整成员列表使用。
+    pub member_preview: Vec<ConversationParticipant>,
 
     // ===============================
     // 草稿 / @ / 徽标 / 群角色
@@ -204,6 +255,8 @@ pub struct Conversation {
     pub mention_me: bool,
     pub badge: Option<String>,
     pub role: Option<String>,
+    /// 已按需同步到本地的完整成员快照；会话摘要同步不会填充该字段。
+    pub participants: Vec<ConversationParticipant>,
 
     // ===============================
     // Local State（SDK 内部，不序列化到 DB）
@@ -243,11 +296,14 @@ impl Default for Conversation {
             created_at: 0,
             updated_at_ts: None,
             ext: HashMap::new(),
+            participant_version: 0,
+            member_preview: Vec::new(),
             draft: None,
             mention_count: 0,
             mention_me: false,
             badge: None,
             role: None,
+            participants: Vec::new(),
             local_state: ConversationLocalState::default(),
         }
     }
@@ -291,6 +347,13 @@ impl Conversation {
             updated_at: ms_to_prost_timestamp(self.updated_at),
             created_at: ms_to_prost_timestamp(self.created_at),
             member_count: self.members_count as i32,
+            participant_version: self.participant_version,
+            member_preview: self
+                .member_preview
+                .clone()
+                .into_iter()
+                .map(Into::into)
+                .collect(),
             ext,
             ..Default::default()
         }
@@ -372,11 +435,14 @@ impl From<flare_proto::common::ConversationSummary> for Conversation {
     fn from(s: flare_proto::common::ConversationSummary) -> Self {
         let updated_at = prost_timestamp_to_ms(s.updated_at.as_ref());
         let created_at = prost_timestamp_to_ms(s.created_at.as_ref());
+        let last_message = s.last_message.as_ref().map(message_preview_from_proto);
         let peer_read_seq = s
             .ext
             .get("peer_read_seq")
             .and_then(|v| v.parse::<u64>().ok())
             .unwrap_or_default();
+        let member_preview: Vec<ConversationParticipant> =
+            s.member_preview.into_iter().map(Into::into).collect();
         // 以服务端聚合后的 unread_count 为准：
         // 该值已按消息可见性/消息状态（删除、撤回等）处理，能正确覆盖历史未读统计。
         let unread_count = s.unread_count;
@@ -391,7 +457,31 @@ impl From<flare_proto::common::ConversationSummary> for Conversation {
             max_seq: s.max_seq,
             last_read_seq: s.last_read_seq,
             peer_read_seq,
-            last_message: s.last_message.as_ref().map(message_preview_from_proto),
+            last_message_id: last_message.as_ref().and_then(|m| {
+                if m.message_id.trim().is_empty() {
+                    None
+                } else {
+                    Some(m.message_id.clone())
+                }
+            }),
+            last_sender_id: last_message.as_ref().and_then(|m| {
+                if m.sender_id.trim().is_empty() {
+                    None
+                } else {
+                    Some(m.sender_id.clone())
+                }
+            }),
+            last_message_at: last_message
+                .as_ref()
+                .and_then(|m| if m.time > 0 { Some(m.time) } else { None }),
+            last_message_preview: last_message.as_ref().and_then(|m| {
+                if m.text.trim().is_empty() {
+                    None
+                } else {
+                    Some(m.text.clone())
+                }
+            }),
+            last_message,
             updated_at,
             created_at,
             last_sender_nickname: String::new(),
@@ -399,7 +489,10 @@ impl From<flare_proto::common::ConversationSummary> for Conversation {
             ext: s.ext.clone(),
             is_pinned: s.is_pinned,
             is_muted: s.is_muted,
-            members_count: s.member_count.max(0) as u32,
+            members_count: (s.member_count.max(0) as u32).max(member_preview.len() as u32),
+            participant_version: s.participant_version,
+            member_preview,
+            participants: Vec::new(),
             draft: None,
             mention_count: 0,
             mention_me: false,
@@ -412,3 +505,34 @@ impl From<flare_proto::common::ConversationSummary> for Conversation {
 
 /// 仅边界使用：持久化/网络层解码得到 proto，应即转为 [Conversation]
 pub use flare_proto::common::ConversationSummary;
+
+#[cfg(test)]
+mod tests {
+    use super::Conversation;
+    use flare_proto::common::{ConversationSummary, MessagePreview};
+
+    #[test]
+    fn summary_conversion_populates_persisted_last_message_fields() {
+        let conversation = Conversation::from(ConversationSummary {
+            conversation_id: "conv-1".to_string(),
+            conversation_type: "single".to_string(),
+            max_seq: 7,
+            last_message: Some(MessagePreview {
+                message_id: "msg-7".to_string(),
+                sender_id: "u2".to_string(),
+                text: "latest".to_string(),
+                time: Some(prost_types::Timestamp {
+                    seconds: 12,
+                    nanos: 345_000_000,
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+
+        assert_eq!(conversation.last_message_id.as_deref(), Some("msg-7"));
+        assert_eq!(conversation.last_sender_id.as_deref(), Some("u2"));
+        assert_eq!(conversation.last_message_preview.as_deref(), Some("latest"));
+        assert_eq!(conversation.last_message_at, Some(12_345));
+    }
+}

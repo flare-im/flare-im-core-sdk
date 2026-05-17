@@ -2,6 +2,7 @@
 //!
 //! 仅负责 CRUD 与表结构；连接池由调用方创建（见 [storage/sqlite] 的 `create_pool`）。
 
+mod conversation_participant_repo;
 mod conversation_repo;
 mod cursor_repo;
 mod media_cache_repo;
@@ -12,6 +13,7 @@ mod upload_manifest_repo;
 mod user_file_download_repo;
 mod user_repo;
 
+pub use conversation_participant_repo::SqliteConversationParticipantRepo;
 pub use conversation_repo::SqliteConversationRepo;
 pub use cursor_repo::SqliteSyncCursorRepo;
 pub use media_cache_repo::SqliteMediaCacheRepo;

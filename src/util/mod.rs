@@ -2,9 +2,9 @@ pub mod constants;
 pub mod date;
 pub mod id;
 pub mod paths;
-pub mod token;
 #[cfg(feature = "lifecycle-sqlite")]
 pub mod sqlite_store;
+pub mod token;
 
 pub use constants::{
     RELIABLE_QUEUE_MAX_RETRIES, RELIABLE_QUEUE_TIMEOUT_SECS, REQUEST_TIMEOUT_SECS,

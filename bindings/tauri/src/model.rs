@@ -13,6 +13,15 @@ use serde::{Deserialize, Serialize};
 
 pub use flare_im_core_sdk::client::SdkConfigOverlay as SdkConfigOptions;
 
+/// 供前端 WebRTC 使用的 ICE 公共配置快照。
+#[derive(Debug, Clone, Serialize)]
+pub struct RtcIceConfigSnapshotPayload {
+    pub source: String,
+    pub turn_enabled: bool,
+    pub default_ice_tf: String,
+    pub ice_servers: serde_json::Value,
+}
+
 /// sdk_init 入参：`{ environment?, sdk_config? }`（snake_case）。
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
@@ -92,7 +101,13 @@ pub struct JsonStatePayload {
 }
 
 pub type StateChangedPayload = JsonStatePayload;
-pub type SyncStateChangedPayload = JsonStatePayload;
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SyncStateChangedPayload {
+    #[serde(flatten)]
+    pub run: SyncRunPayload,
+    pub state: String,
+}
 
 /// 消息发送失败（client_msg_id + 原因）
 #[derive(Debug, Clone, Serialize)]
@@ -187,14 +202,132 @@ pub struct PresenceChangedPayload {
     pub extra: HashMap<String, String>,
 }
 
-/// 通话信令事件
+// ---------- 通话插件 · Tauri 命令入参（snake_case JSON，与 `flare-sdk-plugin-call` 语义对齐） ----------
+
+/// [`commands::call_signal::sdk_send_call_invite`]
+#[derive(Debug, Clone, Deserialize)]
+pub struct CallPluginInviteRequest {
+    pub conversation_id: String,
+    pub call_id: String,
+    pub to_user_id: String,
+    /// 非单聊会话下的额外被叫（与 `to_user_id` 合并去重）。若两者在去主叫后 **均为空**，则上行 **`broadcast` 全员响铃**。
+    #[serde(default, alias = "participantUserIds")]
+    pub participant_user_ids: Vec<String>,
+    pub video: bool,
+    #[serde(default)]
+    pub sfu_room_id: Option<String>,
+    #[serde(default)]
+    pub sfu_peer_id: Option<String>,
+    #[serde(default)]
+    pub sfu_signaling_ws_base: Option<String>,
+    #[serde(default)]
+    pub sfu_join_token: Option<String>,
+}
+
+/// [`commands::call_signal::sdk_send_call_accept`]
+#[derive(Debug, Clone, Deserialize)]
+pub struct CallPluginAcceptRequest {
+    pub conversation_id: String,
+    pub call_id: String,
+    pub video: bool,
+    #[serde(default)]
+    pub to_user_id: Option<String>,
+    #[serde(default)]
+    pub sfu_room_id: Option<String>,
+    #[serde(default)]
+    pub sfu_peer_id: Option<String>,
+    #[serde(default)]
+    pub sfu_signaling_ws_base: Option<String>,
+    #[serde(default)]
+    pub sfu_join_token: Option<String>,
+}
+
+/// [`commands::call_signal::sdk_send_call_hangup`]
+#[derive(Debug, Clone, Deserialize)]
+pub struct CallPluginHangupRequest {
+    pub conversation_id: String,
+    pub call_id: String,
+    #[serde(default)]
+    pub mode: Option<String>,
+    pub reason: String,
+    #[serde(default, alias = "durationSeconds")]
+    pub duration_seconds: Option<i32>,
+    #[serde(default, alias = "reasonCode")]
+    pub reason_code: Option<String>,
+    #[serde(default, alias = "visibilityScope")]
+    pub visibility_scope: Option<String>,
+    #[serde(default, alias = "timeoutSeconds")]
+    pub timeout_seconds: Option<u32>,
+    #[serde(default)]
+    pub to_user_id: Option<String>,
+    #[serde(default)]
+    pub close_room_if_vacant: Option<bool>,
+}
+
+/// [`commands::call_signal::sdk_send_call_reject`]
+#[derive(Debug, Clone, Deserialize)]
+pub struct CallPluginRejectRequest {
+    pub conversation_id: String,
+    pub call_id: String,
+    pub reason: String,
+    pub code: i32,
+    #[serde(default)]
+    pub to_user_id: Option<String>,
+}
+
+/// [`commands::call_signal::sdk_send_call_ice_candidate`]
+#[derive(Debug, Clone, Deserialize)]
+pub struct CallPluginIceCandidateRequest {
+    pub conversation_id: String,
+    pub call_id: String,
+    #[serde(default)]
+    pub to_user_id: Option<String>,
+    pub candidate: String,
+    pub sdp_mid: String,
+    pub sdp_mline_index: i32,
+}
+
+/// [`commands::call_signal::sdk_send_call_webrtc_sdp`] — P2P SDP，`sdp_type` = `offer` \| `answer`。
+#[derive(Debug, Clone, Deserialize)]
+pub struct CallPluginWebrtcSdpRequest {
+    pub conversation_id: String,
+    pub call_id: String,
+    #[serde(default)]
+    pub to_user_id: Option<String>,
+    pub sdp_type: String,
+    pub sdp: String,
+}
+
+/// [`commands::call_signal::sdk_build_call_media_constraints`]
+#[derive(Debug, Clone, Deserialize)]
+pub struct CallPluginMediaConstraintsRequest {
+    pub include_video: bool,
+    #[serde(default)]
+    pub profile_json: Option<String>,
+}
+
+/// 通话信令事件（与 `flare.common.v1.CallSignalEvent` 对齐：`signal` → `variant` + `body` JSON）
 #[derive(Debug, Clone, Serialize)]
 pub struct CallSignalPayload {
     pub conversation_id: String,
     pub call_id: String,
-    pub signal_type: String,
-    pub payload: Vec<u8>,
-    pub metadata: HashMap<String, String>,
+    pub from_user_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub to_user_id: Option<String>,
+    #[serde(default)]
+    pub audience: serde_json::Value,
+    #[serde(default)]
+    pub media_session: serde_json::Value,
+    #[serde(default)]
+    pub transport: serde_json::Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub invite_expires_at_unix: Option<i64>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub ext: HashMap<String, String>,
+    /// `signal` oneof 分支名（与 `flare_sdk_plugin_call::signaling::variant_name` 一致）
+    pub variant: String,
+    /// 与 `variant` 对应的结构化体（camelCase）
+    pub body: serde_json::Value,
 }
 
 /// 自定义领域事件
@@ -214,7 +347,18 @@ pub struct ConversationsSyncedPayload {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct SyncRunPayload {
+    pub run_id: String,
+    pub trigger: String,
+    pub scope: String,
+    pub visibility: String,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct SyncProgressPayload {
+    #[serde(flatten)]
+    pub run: SyncRunPayload,
     pub task: String,
     pub progress: f32,
     pub detail: String,
@@ -222,11 +366,15 @@ pub struct SyncProgressPayload {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct SyncCompletedPayload {
+    #[serde(flatten)]
+    pub run: SyncRunPayload,
     pub task: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub struct SyncFailedPayload {
+    #[serde(flatten)]
+    pub run: SyncRunPayload,
     pub task: String,
     pub error: String,
 }
@@ -234,16 +382,22 @@ pub struct SyncFailedPayload {
 /// 同步阶段结束（Init / Background）
 #[derive(Debug, Clone, Serialize)]
 pub struct SyncFinishedPayload {
+    #[serde(flatten)]
+    pub run: SyncRunPayload,
     pub phase: String,
 }
 
-/// `{}` — 无字段的 ACK 类事件（connected、sync_started 等）
+#[derive(Debug, Clone, Serialize)]
+pub struct SyncStartedPayload {
+    #[serde(flatten)]
+    pub run: SyncRunPayload,
+}
+
+/// `{}` — 无字段的 ACK 类事件（connected 等）
 #[derive(Debug, Clone, Serialize)]
 pub struct EmptyPayload {}
 
 pub type ConnectedPayload = EmptyPayload;
-/// 同步开始（无额外字段，前端用于显示「同步中」）
-pub type SyncStartedPayload = EmptyPayload;
 
 /// `{ "reason": "..." }` — disconnected、kicked_off
 #[derive(Debug, Clone, Serialize)]

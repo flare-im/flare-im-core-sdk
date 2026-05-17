@@ -135,11 +135,14 @@ impl SqliteConversationRepo {
             created_at: created_at.max(0) as u64,
             updated_at_ts: updated_at_ts.map(|t| t as u64),
             ext,
+            participant_version: 0,
+            member_preview: Vec::new(),
             draft,
             mention_count: mention_count.max(0) as u32,
             mention_me: mention_me != 0,
             badge,
             role,
+            participants: Vec::new(),
             local_state: ConversationLocalState::default(),
         })
     }
@@ -200,7 +203,8 @@ impl ConversationWriter for SqliteConversationRepo {
             // 保护读位单调性：服务端摘要偶发滞后时，不允许把本地 last_read_seq 回退。
             // 这样 read_states 能继续把更高读位回推服务端，避免重登未读“回弹”。
             let existing = sqlx::query(
-                r#"SELECT last_read_seq, max_seq, unread_count
+                r#"SELECT last_read_seq, max_seq, unread_count,
+                          last_message_id, last_sender_id, last_message_at, last_message_preview
                    FROM conversations
                    WHERE conversation_id = ?"#,
             )
@@ -211,15 +215,59 @@ impl ConversationWriter for SqliteConversationRepo {
 
             let mut merged = c.clone();
             if let Some(row) = existing {
-                let prev_last_read_seq = row.try_get::<i64, _>("last_read_seq").unwrap_or(0).max(0) as u64;
+                let prev_last_read_seq =
+                    row.try_get::<i64, _>("last_read_seq").unwrap_or(0).max(0) as u64;
                 let prev_max_seq = row.try_get::<i64, _>("max_seq").unwrap_or(0).max(0) as u64;
                 let prev_unread = row.try_get::<i64, _>("unread_count").unwrap_or(0).max(0) as u32;
+                let prev_last_message_id = row
+                    .try_get::<Option<String>, _>("last_message_id")
+                    .unwrap_or(None);
+                let prev_last_sender_id = row
+                    .try_get::<Option<String>, _>("last_sender_id")
+                    .unwrap_or(None);
+                let prev_last_message_at = row
+                    .try_get::<Option<i64>, _>("last_message_at")
+                    .unwrap_or(None)
+                    .map(|t| t.max(0) as u64);
+                let prev_last_message_preview = row
+                    .try_get::<Option<String>, _>("last_message_preview")
+                    .unwrap_or(None);
 
                 merged.last_read_seq = merged
                     .last_read_seq
                     .max(incoming_derived_last_read)
                     .max(prev_last_read_seq);
                 merged.max_seq = merged.max_seq.max(prev_max_seq);
+
+                let prev_has_last_message = prev_last_message_id
+                    .as_deref()
+                    .map(str::trim)
+                    .is_some_and(|v| !v.is_empty())
+                    || prev_last_message_preview
+                        .as_deref()
+                        .map(str::trim)
+                        .is_some_and(|v| !v.is_empty())
+                    || prev_last_message_at.unwrap_or_default() > 0;
+                let incoming_has_last_message = c
+                    .last_message_id
+                    .as_deref()
+                    .map(str::trim)
+                    .is_some_and(|v| !v.is_empty())
+                    || c.last_message_preview
+                        .as_deref()
+                        .map(str::trim)
+                        .is_some_and(|v| !v.is_empty())
+                    || c.last_message_at.unwrap_or_default() > 0;
+                // 会话摘要只是服务端投影；本地消息表同步出来的最新消息更权威。
+                // 避免服务端摘要滞后时把会话列表预览回滚到旧消息或空消息。
+                if prev_has_last_message
+                    && (c.max_seq <= prev_max_seq || !incoming_has_last_message)
+                {
+                    merged.last_message_id = prev_last_message_id;
+                    merged.last_sender_id = prev_last_sender_id;
+                    merged.last_message_at = prev_last_message_at;
+                    merged.last_message_preview = prev_last_message_preview;
+                }
 
                 // 若本次摘要没有提供更新的序列位点，且 read_seq 反而更旧，则保持本地 unread，防止未读突增。
                 if c.max_seq <= prev_max_seq && c.last_read_seq < prev_last_read_seq {
@@ -363,8 +411,9 @@ impl ConversationWriter for SqliteConversationRepo {
     ) -> Result<()> {
         sqlx::query(
             r#"UPDATE conversations SET
-               last_message_id = ?, last_sender_id = ?, last_message_at = ?, last_message_preview = ?, max_seq = ?
-               WHERE conversation_id = ?"#,
+               last_message_id = ?, last_sender_id = ?, last_message_at = ?, last_message_preview = ?,
+               max_seq = MAX(COALESCE(max_seq, 0), ?)
+               WHERE conversation_id = ? AND COALESCE(max_seq, 0) <= ?"#,
         )
         .bind(last_message_id)
         .bind(last_sender_id)
@@ -372,6 +421,7 @@ impl ConversationWriter for SqliteConversationRepo {
         .bind(last_message_preview.unwrap_or(""))
         .bind(max_seq as i64)
         .bind(conversation_id)
+        .bind(max_seq as i64)
         .execute(&self.pool)
         .await
         .map_err(|e| FlareError::localized(ErrorCode::DatabaseError, e.to_string()))?;
@@ -423,5 +473,77 @@ impl ConversationWriter for SqliteConversationRepo {
         .map_err(|e| FlareError::localized(ErrorCode::DatabaseError, e.to_string()))?;
         let max_seq = row.try_get::<i64, _>("max_seq").unwrap_or(0).max(0) as u64;
         Ok(max_seq)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SqliteConversationRepo;
+    use crate::domain::{ConversationReader, ConversationWriter};
+    use crate::model::{Conversation, MessagePreviewElem};
+    use sqlx::SqlitePool;
+
+    async fn repo() -> SqliteConversationRepo {
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        super::super::schema::init_schema(&pool).await.unwrap();
+        SqliteConversationRepo::new(pool)
+    }
+
+    fn conversation(conversation_id: &str, seq: u64, text: &str) -> Conversation {
+        Conversation {
+            conversation_id: conversation_id.to_string(),
+            business_type: "chat".to_string(),
+            channel_id: conversation_id.to_string(),
+            display_name: conversation_id.to_string(),
+            last_message_id: Some(format!("msg-{seq}")),
+            last_sender_id: Some("u1".to_string()),
+            last_message_at: Some(seq * 1000),
+            last_message_preview: Some(text.to_string()),
+            last_message: Some(MessagePreviewElem {
+                message_id: format!("msg-{seq}"),
+                sender_id: "u1".to_string(),
+                r#type: 1,
+                text: text.to_string(),
+                time: seq * 1000,
+            }),
+            max_seq: seq,
+            updated_at: seq * 1000,
+            created_at: 1,
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn save_batch_keeps_local_latest_message_when_summary_is_stale() {
+        let repo = repo().await;
+        repo.save_one(&conversation("conv-1", 10, "new-local"))
+            .await
+            .unwrap();
+
+        repo.save_one(&conversation("conv-1", 8, "old-server"))
+            .await
+            .unwrap();
+
+        let loaded = repo.get("conv-1").await.unwrap().unwrap();
+        assert_eq!(loaded.max_seq, 10);
+        assert_eq!(loaded.last_message_preview.as_deref(), Some("new-local"));
+        assert_eq!(loaded.last_message_id.as_deref(), Some("msg-10"));
+    }
+
+    #[tokio::test]
+    async fn update_last_message_does_not_roll_back_newer_projection() {
+        let repo = repo().await;
+        repo.save_one(&conversation("conv-1", 10, "new-local"))
+            .await
+            .unwrap();
+
+        repo.update_last_message("conv-1", "msg-8", "u2", 8000, Some("old-server"), 8)
+            .await
+            .unwrap();
+
+        let loaded = repo.get("conv-1").await.unwrap().unwrap();
+        assert_eq!(loaded.max_seq, 10);
+        assert_eq!(loaded.last_message_preview.as_deref(), Some("new-local"));
+        assert_eq!(loaded.last_message_id.as_deref(), Some("msg-10"));
     }
 }

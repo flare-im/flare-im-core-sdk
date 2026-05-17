@@ -2,7 +2,7 @@
 //!
 //! 安全策略：仅解析标签白名单；映射规则见 `docs/RICHDOC_V2.md` 第 10 节。
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use super::RichDocV2Error;
 
@@ -90,9 +90,8 @@ fn map_element(el: &ElementRef, out: &mut Vec<Value>) -> Result<(), RichDocV2Err
             }));
         }
         "ul" => {
-            let li_sel = Selector::parse("li").map_err(|e| {
-                RichDocV2Error::Html(format!("selector: {e}"))
-            })?;
+            let li_sel = Selector::parse("li")
+                .map_err(|e| RichDocV2Error::Html(format!("selector: {e}")))?;
             let mut items = Vec::new();
             for li in el.select(&li_sel) {
                 let mut item_children = Vec::new();
@@ -102,9 +101,8 @@ fn map_element(el: &ElementRef, out: &mut Vec<Value>) -> Result<(), RichDocV2Err
             out.push(json!({"type": "bullet_list", "children": items}));
         }
         "ol" => {
-            let li_sel = Selector::parse("li").map_err(|e| {
-                RichDocV2Error::Html(format!("selector: {e}"))
-            })?;
+            let li_sel = Selector::parse("li")
+                .map_err(|e| RichDocV2Error::Html(format!("selector: {e}")))?;
             let mut items = Vec::new();
             for li in el.select(&li_sel) {
                 let mut item_children = Vec::new();
@@ -153,9 +151,8 @@ fn map_phrasing_node(node: NodeRef<'_, Node>, out: &mut Vec<Value>) -> Result<()
             }
         }
         Node::Element(_) => {
-            let el = ElementRef::wrap(node).ok_or_else(|| {
-                RichDocV2Error::Html("wrap phrasing".into())
-            })?;
+            let el = ElementRef::wrap(node)
+                .ok_or_else(|| RichDocV2Error::Html("wrap phrasing".into()))?;
             let name = el.value().name();
             match name {
                 "br" => out.push(json!({"type": "hard_break"})),

@@ -14,11 +14,8 @@ pub trait UploadManifestStore: Send + Sync {
     async fn delete_manifest(&self, local_upload_id: &str) -> Result<()>;
 
     async fn list_parts(&self, local_upload_id: &str) -> Result<Vec<MediaUploadPartVo>>;
-    async fn replace_parts(
-        &self,
-        local_upload_id: &str,
-        parts: &[MediaUploadPartVo],
-    ) -> Result<()>;
+    async fn replace_parts(&self, local_upload_id: &str, parts: &[MediaUploadPartVo])
+    -> Result<()>;
     async fn upsert_part(&self, part: &MediaUploadPartVo) -> Result<()>;
     async fn delete_parts(&self, local_upload_id: &str) -> Result<()>;
 }

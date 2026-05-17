@@ -6,7 +6,7 @@ use serde::Serialize;
 
 use crate::error::Result;
 
-/// 与 flare-server-core `TokenClaims` 保持一致的 JWT Claims
+/// 与 Flare IM 接入侧约定的 JWT Claims（字段与网关校验一致）
 #[derive(Debug, Clone, Serialize)]
 struct TokenClaims {
     sub: String,
@@ -33,7 +33,7 @@ fn generate_jti() -> String {
 
 /// 生成测试用 JWT token（HS256）
 ///
-/// 产出的 token 与 `flare-server-core::TokenService::generate_token` 格式一致，
+/// 产出的 token 与服务端签发的 access token 字段布局一致，
 /// 可直接用于 flare-im-core access-gateway 的认证。
 ///
 /// # 参数
@@ -55,7 +55,7 @@ fn generate_jti() -> String {
 ///     "user_001",
 ///     3600,
 ///     None,
-///     Some("default"),
+///     Some("0"),
 /// ).unwrap();
 /// ```
 pub fn generate_test_token(

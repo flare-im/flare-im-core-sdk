@@ -3,7 +3,7 @@
 //! 映射细则见仓库 `docs/RICHDOC_V2.md` 第 9 节。
 
 use pulldown_cmark::{CodeBlockKind, Event, LinkType, Options, Parser, Tag, TagEnd};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use super::RichDocV2Error;
 
@@ -146,9 +146,7 @@ where
                                 break;
                             }
                             None => {
-                                return Err(RichDocV2Error::Markdown(
-                                    "unclosed list item".into(),
-                                ));
+                                return Err(RichDocV2Error::Markdown("unclosed list item".into()));
                             }
                             _ => {
                                 if let Some(b) = self.next_block()? {
@@ -173,9 +171,7 @@ where
         loop {
             match self.events.peek() {
                 None => {
-                    return Err(RichDocV2Error::Markdown(
-                        "unclosed block container".into(),
-                    ));
+                    return Err(RichDocV2Error::Markdown("unclosed block container".into()));
                 }
                 Some(Event::End(e)) if *e == end => {
                     self.events.next();
@@ -205,9 +201,7 @@ where
                 Some(Event::Text(t)) => body.push_str(&t),
                 Some(Event::End(TagEnd::CodeBlock)) => break,
                 None => {
-                    return Err(RichDocV2Error::Markdown(
-                        "unclosed code block".into(),
-                    ));
+                    return Err(RichDocV2Error::Markdown("unclosed code block".into()));
                 }
                 _ => {}
             }
@@ -220,9 +214,7 @@ where
         loop {
             match self.events.next() {
                 None => {
-                    return Err(RichDocV2Error::Markdown(
-                        "unclosed inline container".into(),
-                    ));
+                    return Err(RichDocV2Error::Markdown("unclosed inline container".into()));
                 }
                 Some(Event::End(e)) if e == end => break,
                 Some(Event::Text(t)) => b.push_text(&t),
@@ -361,11 +353,7 @@ impl InlineBuf {
         if self.text.is_empty() {
             return;
         }
-        let marks: Vec<Value> = self
-            .marks
-            .iter()
-            .map(|m| json!({ "type": m }))
-            .collect();
+        let marks: Vec<Value> = self.marks.iter().map(|m| json!({ "type": m })).collect();
         let node = if marks.is_empty() {
             json!({
                 "type": "text",

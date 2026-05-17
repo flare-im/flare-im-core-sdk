@@ -1,9 +1,9 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use crate::application::commands::SendMessageCommand;
-use crate::application::UploadProgressCallback;
 use crate::application::MediaService;
+use crate::application::UploadProgressCallback;
+use crate::application::commands::SendMessageCommand;
 use crate::core::CurrentUserIdStore;
 use crate::domain::{MessageActor, MessageDraftService, MessageStore};
 use crate::error::{ErrorCode, FlareError, Result};
@@ -137,7 +137,11 @@ impl MessageSendUseCase {
                     if let Some(ref path) = source_path {
                         let uploaded = self
                             .media_service
-                            .upload_file_from_path_with_progress(path.as_path(), None, on_progress.clone())
+                            .upload_file_from_path_with_progress(
+                                path.as_path(),
+                                None,
+                                on_progress.clone(),
+                            )
                             .await?;
                         let desc = uploaded_media_to_image_descriptor(&uploaded);
                         image.source = desc.clone();
@@ -162,7 +166,11 @@ impl MessageSendUseCase {
                     } else if let Some(ref path) = thumb_path {
                         let uploaded = self
                             .media_service
-                            .upload_file_from_path_with_progress(path.as_path(), None, on_progress.clone())
+                            .upload_file_from_path_with_progress(
+                                path.as_path(),
+                                None,
+                                on_progress.clone(),
+                            )
                             .await?;
                         let desc = uploaded_media_to_image_descriptor(&uploaded);
                         image.source = desc.clone();
@@ -323,7 +331,7 @@ fn uploaded_media_to_audio_descriptor(uploaded: &UploadedMedia) -> Option<AudioI
 
 #[cfg(test)]
 mod tests {
-    use super::{extract_local_path, uploaded_media_to_image_descriptor, ImageFormat};
+    use super::{ImageFormat, extract_local_path, uploaded_media_to_image_descriptor};
     use crate::model::UploadedMedia;
 
     #[test]

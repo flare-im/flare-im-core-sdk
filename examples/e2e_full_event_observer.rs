@@ -73,8 +73,8 @@ async fn main() -> anyhow::Result<()> {
         .await
         .context("client.init")?;
 
-    let token = IMClient::generate_test_token("", "", &my_user_id, None)
-        .context("generate_test_token")?;
+    let token =
+        IMClient::generate_test_token("", "", &my_user_id, None).context("generate_test_token")?;
     client
         .login(&my_user_id, Some(&token), LoginDbKind::Sqlite, |_, _| {})
         .await
@@ -215,4 +215,3 @@ async fn main() -> anyhow::Result<()> {
     info!("observer done");
     Ok(())
 }
-

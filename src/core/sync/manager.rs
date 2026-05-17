@@ -6,8 +6,8 @@ use tokio::task::JoinHandle;
 use crate::event::EventBus;
 use crate::store::StoreProvider;
 
-use super::SyncTask;
 use super::orchestrator::Orchestrator;
+use super::{SyncRunContext, SyncTask};
 
 pub struct SyncManager {
     tasks: Mutex<Vec<Arc<dyn SyncTask>>>,
@@ -32,8 +32,18 @@ impl SyncManager {
         }
     }
 
-    /// 执行全部已注册任务（任务内自行调用注入的 SyncProtocolAdapter 等）。
     pub fn run_sync(&self, user_id: &str, store: StoreProvider, bus: EventBus) {
+        self.run_with_context(user_id, SyncRunContext::initial_login(), store, bus);
+    }
+
+    /// 执行全部已注册任务（任务内自行调用注入的 SyncProtocolAdapter 等）。
+    pub fn run_with_context(
+        &self,
+        user_id: &str,
+        run: SyncRunContext,
+        store: StoreProvider,
+        bus: EventBus,
+    ) {
         self.stop_sync();
         let tasks = match self.tasks.lock() {
             Ok(guard) => guard.clone(),
@@ -42,7 +52,7 @@ impl SyncManager {
                 poisoned.into_inner().clone()
             }
         };
-        let handle = Orchestrator::new(store, bus).run(user_id, tasks);
+        let handle = Orchestrator::new(store, bus).run(user_id, run, tasks);
         match self.running.lock() {
             Ok(mut guard) => *guard = Some(handle),
             Err(poisoned) => {

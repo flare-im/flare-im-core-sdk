@@ -89,16 +89,17 @@ impl HttpClient {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    pub async fn get<T>(
-        &self,
-        path: &str,
-        query: Option<&HashMap<String, String>>,
-    ) -> Result<T>
+    pub async fn get<T>(&self, path: &str, query: Option<&HashMap<String, String>>) -> Result<T>
     where
         T: serde::de::DeserializeOwned,
     {
-        self.request(reqwest::Method::GET, self.build_url(path), query, None::<&()>)
-            .await
+        self.request(
+            reqwest::Method::GET,
+            self.build_url(path),
+            query,
+            None::<&()>,
+        )
+        .await
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -140,8 +141,13 @@ impl HttpClient {
         B: serde::Serialize + ?Sized,
         T: serde::de::DeserializeOwned,
     {
-        self.request(reqwest::Method::POST, self.build_url(path), None, Some(body))
-            .await
+        self.request(
+            reqwest::Method::POST,
+            self.build_url(path),
+            None,
+            Some(body),
+        )
+        .await
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -231,16 +237,17 @@ impl HttpClient {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    pub async fn delete<T>(
-        &self,
-        path: &str,
-        query: Option<&HashMap<String, String>>,
-    ) -> Result<T>
+    pub async fn delete<T>(&self, path: &str, query: Option<&HashMap<String, String>>) -> Result<T>
     where
         T: serde::de::DeserializeOwned,
     {
-        self.request(reqwest::Method::DELETE, self.build_url(path), query, None::<&()>)
-            .await
+        self.request(
+            reqwest::Method::DELETE,
+            self.build_url(path),
+            query,
+            None::<&()>,
+        )
+        .await
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -355,7 +362,9 @@ impl HttpClient {
 
     #[cfg(target_arch = "wasm32")]
     pub async fn send_bytes(&self, _path: &str, _data: &[u8]) -> Result<Vec<u8>> {
-        Err(FlareError::system("HTTP transport not supported in wasm build"))
+        Err(FlareError::system(
+            "HTTP transport not supported in wasm build",
+        ))
     }
 
     fn build_url(&self, path: &str) -> String {

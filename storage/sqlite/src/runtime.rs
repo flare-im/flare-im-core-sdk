@@ -5,8 +5,8 @@ use std::sync::Arc;
 use anyhow::Result as AnyhowResult;
 use sqlx::SqlitePool;
 
-use crate::schema_registry;
 use crate::create_pool;
+use crate::schema_registry;
 
 /// SQLite 存储运行时：持有连接池，创建后执行所有已注册的 schema 初始化。
 #[derive(Clone)]

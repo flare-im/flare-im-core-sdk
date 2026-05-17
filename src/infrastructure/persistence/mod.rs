@@ -26,8 +26,7 @@ pub use memory::{MemoryPendingSendStore, MemoryUserProfileStore};
 
 #[cfg(feature = "storage-sqlite")]
 pub use sqlite::{
-    SqliteConversationRepo, SqliteMediaCacheRepo, SqliteMessageRepo, SqlitePendingSendRepo,
-    SqliteSyncCursorRepo, SqliteUploadManifestRepo, SqliteUserFileDownloadRepo,
-    SqliteUserProfileRepo,
-    init_schema as sqlite_init_schema,
+    SqliteConversationParticipantRepo, SqliteConversationRepo, SqliteMediaCacheRepo,
+    SqliteMessageRepo, SqlitePendingSendRepo, SqliteSyncCursorRepo, SqliteUploadManifestRepo,
+    SqliteUserFileDownloadRepo, SqliteUserProfileRepo, init_schema as sqlite_init_schema,
 };

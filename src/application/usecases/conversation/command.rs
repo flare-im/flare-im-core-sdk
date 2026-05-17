@@ -1,12 +1,10 @@
 use std::sync::Arc;
 
 use crate::core::CurrentUserIdStore;
-use crate::domain::{
-    ConversationIdentityService, ConversationReadService, ConversationStore,
-};
+use crate::domain::{ConversationIdentityService, ConversationReadService, ConversationStore};
 use crate::error::{ErrorCode, FlareError, Result};
-use crate::model::Conversation;
 use crate::model::conversation::ConversationType;
+use crate::model::{Conversation, ConversationParticipant};
 
 pub struct ConversationCommandUseCase {
     store: Arc<dyn ConversationStore>,
@@ -16,10 +14,7 @@ pub struct ConversationCommandUseCase {
 }
 
 impl ConversationCommandUseCase {
-    pub fn new(
-        store: Arc<dyn ConversationStore>,
-        current_user_id: CurrentUserIdStore,
-    ) -> Self {
+    pub fn new(store: Arc<dyn ConversationStore>, current_user_id: CurrentUserIdStore) -> Self {
         Self {
             store,
             current_user_id,
@@ -58,6 +53,73 @@ impl ConversationCommandUseCase {
         if save && needs_persist {
             self.store.save_batch(&[conversation.clone()]).await?;
         }
+        Ok(conversation)
+    }
+
+    pub async fn get_group_by_user_ids(
+        &self,
+        user_ids: &[String],
+        display_name: Option<&str>,
+    ) -> Result<Conversation> {
+        let current_user_id = self.current_user_id().await?;
+        let mut members = user_ids
+            .iter()
+            .map(|id| id.trim().to_string())
+            .filter(|id| !id.is_empty())
+            .collect::<Vec<_>>();
+        members.push(current_user_id.clone());
+        members.sort();
+        members.dedup();
+        if members.len() < 2 {
+            return Err(FlareError::localized(
+                ErrorCode::InvalidParameter,
+                "群聊至少需要 2 个成员",
+            ));
+        }
+
+        let group_key = format!("users:{}", members.join(","));
+        let conversation_id = self.identity_service.resolve_conversation_id(
+            "",
+            &group_key,
+            &ConversationType::Group,
+        )?;
+        let existing = self.store.get(&conversation_id).await?;
+        let (mut conversation, _) = self.identity_service.merge_or_create(
+            existing,
+            conversation_id,
+            &group_key,
+            &ConversationType::Group,
+        );
+        if let Some(name) = display_name.map(str::trim).filter(|name| !name.is_empty()) {
+            conversation.display_name = name.to_string();
+        } else if conversation.display_name.trim().is_empty()
+            || conversation.display_name == group_key
+        {
+            conversation.display_name = format!("群聊({})", members.join("、"));
+        }
+        conversation.members_count = members.len() as u32;
+        let participants = members
+            .iter()
+            .map(|user_id| ConversationParticipant {
+                user_id: user_id.clone(),
+                roles: if user_id == &current_user_id {
+                    vec!["owner".to_string()]
+                } else {
+                    vec!["member".to_string()]
+                },
+                ..Default::default()
+            })
+            .collect::<Vec<_>>();
+        conversation.participant_version = participants.len() as u64;
+        conversation.member_preview = participants.iter().take(10).cloned().collect();
+        conversation.participants = participants;
+        conversation
+            .ext
+            .insert("group_member_ids".to_string(), members.join(","));
+        conversation
+            .ext
+            .insert("group_source".to_string(), "user_ids".to_string());
+        self.store.save_batch(&[conversation.clone()]).await?;
         Ok(conversation)
     }
 

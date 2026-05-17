@@ -4,10 +4,10 @@
 use std::pin::Pin;
 use std::sync::Arc;
 
-use tracing::info;
+use tracing::debug;
 
 use super::super::SyncProtocolAdapter;
-use crate::core::{SyncContext, SyncMode, SyncResult, SyncTask, SyncTaskResult};
+use crate::core::{SyncContext, SyncFailurePolicy, SyncMode, SyncResult, SyncTask, SyncTaskResult};
 
 pub struct ReadStatesSyncTask(pub(crate) Arc<SyncProtocolAdapter>);
 
@@ -27,13 +27,16 @@ impl SyncTask for ReadStatesSyncTask {
     fn weight(&self) -> u32 {
         5
     }
+    fn failure_policy(&self) -> SyncFailurePolicy {
+        SyncFailurePolicy::Continue
+    }
     fn execute(
         &self,
         ctx: SyncContext,
     ) -> Pin<Box<dyn std::future::Future<Output = SyncResult<SyncTaskResult>> + Send>> {
         let handler = self.0.clone();
         Box::pin(async move {
-            info!(task = "read_states", "sync phase: read_states start");
+            debug!(task = "read_states", "sync phase: read_states start");
             ctx.report_progress("syncing read states");
             let list = ctx.store.conversations.list().await?;
             let mut ack_count = 0usize;
@@ -48,7 +51,7 @@ impl SyncTask for ReadStatesSyncTask {
                     read_seq = c.max_seq;
                 }
                 if read_seq > 0 {
-                    info!(
+                    debug!(
                         task = "read_states",
                         conversation_id = %c.conversation_id,
                         unread_count = c.unread_count,
@@ -61,8 +64,12 @@ impl SyncTask for ReadStatesSyncTask {
                     ack_count = ack_count.saturating_add(1);
                 }
             }
-            info!(task = "read_states", ack_count = ack_count, "read_states ack dispatched");
-            info!(task = "read_states", "sync phase: read_states done");
+            debug!(
+                task = "read_states",
+                ack_count = ack_count,
+                "read_states ack dispatched"
+            );
+            debug!(task = "read_states", "sync phase: read_states done");
             Ok(SyncTaskResult::ok())
         })
     }

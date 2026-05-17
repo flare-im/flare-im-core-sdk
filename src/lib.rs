@@ -104,15 +104,23 @@ pub mod fsm;
 pub mod middleware;
 pub mod model;
 pub mod reliable_queue;
-pub mod types;
-pub mod util;
 /// RichDoc v2：归一化 / 校验 / `plain_text`·`search_text`·`render_hints` 派生。
 pub mod rich_doc_v2;
+pub mod types;
+pub mod util;
 
 // 与 flare-orchestrator 对齐的分层入口
 pub mod application;
+pub mod capability;
 pub mod config;
 pub mod infrastructure;
+
+/// 通话 / RTC 插件 crate 再导出（需启用 **`plugin-call`** feature）。
+#[cfg(feature = "plugin-call")]
+pub use flare_sdk_plugin_call;
+/// 通话插件 **生产 API 边界**（[`flare_sdk_plugin_call::production`]）。
+#[cfg(feature = "plugin-call")]
+pub use flare_sdk_plugin_call::production as call_plugin;
 
 /// 与旧路径 `crate::lifecycle::*` 对齐：配置在 [`client::lifecycle`]；路径工具源实现在 [`util::paths`]（经 lifecycle 再导出）；SQLite 仓储在 [`util::sqlite_store`]（`lifecycle-sqlite`）。
 pub mod lifecycle {
@@ -132,10 +140,20 @@ pub use types::{ConversationId, UserId};
 /// 常用类型预导出
 pub mod prelude {
     // client（含 Facade：MessageApi / ConversationApi / MessageBuildApi）
+    #[cfg(feature = "plugin-call")]
+    pub use crate::capability::AvCapabilityPlugin;
+    #[cfg(feature = "plugin-call")]
+    pub use crate::capability::{
+        AvExperienceSpec, CallControlSet, CallLayoutMode, ExperienceEdition,
+        default_call_experience_spec, sanitize_experience_spec_for_edition,
+    };
+    pub use crate::capability::{SdkCapabilityPlugin, SdkCapabilityRegistry};
     pub use crate::client::{
-        ConversationApi, IMClient, IMClientBuilder, MessageApi, MessageBuildApi, SdkConfig,
-        SdkConfigBuilder, FileDownloadProgress, FileDownloadProgressCallback, MediaApi, MediaAccessUrl, MediaCacheEntryVo, MediaCacheStatsVo, MediaResolvedAccess, UploadOptions, UploadedMedia, UploadPhase, UploadProgress,
-        UploadProgressCallback,
+        CapabilityApi, CapabilityDescriptorDto, CapabilityDispatchResult, ConversationApi,
+        FileDownloadProgress, FileDownloadProgressCallback, IMClient, IMClientBuilder,
+        MediaAccessUrl, MediaApi, MediaCacheEntryVo, MediaCacheStatsVo, MediaResolvedAccess,
+        MessageApi, MessageBuildApi, SdkConfig, SdkConfigBuilder, UploadOptions, UploadPhase,
+        UploadProgress, UploadProgressCallback, UploadedMedia, UserCapabilityGrantDto,
     };
     pub use crate::core::SdkState;
     pub use crate::error::{ErrorCode, FlareError, Result, from_rpc_status};
@@ -151,7 +169,8 @@ pub mod prelude {
 
     // sync（任务抽象与 SyncManager 位于 core::sync）
     pub use crate::core::{
-        SyncContext, SyncMode, SyncPhase, SyncProgress, SyncTask, SyncTaskResult,
+        SyncContext, SyncFailurePolicy, SyncMode, SyncPhase, SyncProgress, SyncReason,
+        SyncRunContext, SyncScope, SyncTask, SyncTaskResult, SyncTrigger, SyncVisibility,
     };
     pub use crate::fsm::SyncState;
 

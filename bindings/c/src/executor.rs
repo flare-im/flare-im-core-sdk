@@ -40,7 +40,7 @@ impl CallbackContext {
             callback,
         }
     }
-    
+
     pub fn user_context_ptr(&self) -> *mut std::ffi::c_void {
         self.user_context as *mut std::ffi::c_void
     }
@@ -53,19 +53,17 @@ impl CallbackContext {
 /// * `ctx` - 回调上下文
 /// * `op` - 异步操作,返回 Result<T, SdkError>
 /// * `to_json` - 将结果转换为 JSON 字符串
-pub fn execute_async<T, F, G>(
-    instance: Arc<SdkInstance>,
-    ctx: CallbackContext,
-    op: F,
-    to_json: G,
-) where
+pub fn execute_async<T, F, G>(instance: Arc<SdkInstance>, ctx: CallbackContext, op: F, to_json: G)
+where
     T: Send + 'static,
-    F: std::future::Future<Output = Result<T, flare_im_core_sdk::error::FlareError>> + Send + 'static,
+    F: std::future::Future<Output = Result<T, flare_im_core_sdk::error::FlareError>>
+        + Send
+        + 'static,
     G: FnOnce(T) -> Result<String, i32> + Send + 'static,
 {
     instance.runtime.spawn(async move {
         let result = op.await;
-        
+
         match result {
             Ok(value) => {
                 // 成功,转换为 JSON
@@ -96,16 +94,15 @@ pub fn execute_async<T, F, G>(
 /// * `instance` - SDK 实例
 /// * `ctx` - 回调上下文
 /// * `op` - 异步操作,返回 Result<(), SdkError>
-pub fn execute_async_unit<F>(
-    instance: Arc<SdkInstance>,
-    ctx: CallbackContext,
-    op: F,
-) where
-    F: std::future::Future<Output = Result<(), flare_im_core_sdk::error::FlareError>> + Send + 'static,
+pub fn execute_async_unit<F>(instance: Arc<SdkInstance>, ctx: CallbackContext, op: F)
+where
+    F: std::future::Future<Output = Result<(), flare_im_core_sdk::error::FlareError>>
+        + Send
+        + 'static,
 {
     instance.runtime.spawn(async move {
         let result = op.await;
-        
+
         match result {
             Ok(()) => {
                 invoke_result_callback(&ctx, make_success(), FlareString::default());

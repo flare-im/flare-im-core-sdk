@@ -1,5 +1,5 @@
-use std::path::PathBuf;
 use std::env;
+use std::path::PathBuf;
 
 fn main() {
     let crate_dir = env::var("CARGO_MANIFEST_DIR").unwrap();
@@ -19,7 +19,9 @@ fn main() {
     // 尝试生成 C 绑定，如果失败则跳过
     match cbindgen::Builder::new()
         .with_crate(&crate_dir)
-        .with_config(cbindgen::Config::from_file(&config_file).expect("Failed to read cbindgen.toml"))
+        .with_config(
+            cbindgen::Config::from_file(&config_file).expect("Failed to read cbindgen.toml"),
+        )
         .generate()
     {
         Ok(bindings) => {
@@ -29,7 +31,9 @@ fn main() {
         }
         Err(e) => {
             println!("cargo:warning=Failed to generate C header: {:?}", e);
-            println!("cargo:warning=This is expected during initial build, header will be generated later");
+            println!(
+                "cargo:warning=This is expected during initial build, header will be generated later"
+            );
         }
     }
 

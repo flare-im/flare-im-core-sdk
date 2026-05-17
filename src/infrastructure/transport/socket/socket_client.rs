@@ -5,14 +5,11 @@ use flare_core::client::builder::flare::{FlareClient, FlareClientBuilder, Messag
 use flare_core::common::config_types::TransportProtocol as CoreTransport;
 use flare_core::common::device::{DeviceInfo, DevicePlatform};
 use tokio::sync::{Mutex, Notify};
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::client::config::SdkConfig;
 use crate::error::{ErrorCode, FlareError, Result};
 use crate::infrastructure::protocol::{Codec, PacketSender, ProtobufCodec};
-
-/// 等待 CONNACK 的默认超时（秒）
-const CONNACK_WAIT_SECS: u64 = 10;
 
 /// Socket 传输层 — 基于 flare-core 的多协议长连接封装
 pub struct SocketTransport {
@@ -86,21 +83,40 @@ impl SocketTransport {
             .await
             .map_err(|e| FlareError::connection_failed(e.to_string()))?;
 
+        if let Some(old_client) = self.client.lock().await.take() {
+            if let Err(error) = old_client.disconnect().await {
+                warn!(error = %error, "closing stale socket client before reconnect failed");
+            }
+        }
+
         *self.client.lock().await = Some(flare_client);
 
-        let wait = Duration::from_secs(CONNACK_WAIT_SECS);
-        tokio::time::timeout(wait, ready_notify.notified())
+        let wait = Duration::from_secs(self.config.connect_timeout_secs().max(1));
+        if tokio::time::timeout(wait, ready_notify.notified())
             .await
-            .map_err(|_| {
-                FlareError::connection_failed(format!("CONNACK not received within {wait:?}"))
-            })?;
+            .is_err()
+        {
+            let timed_out_client = self.client.lock().await.take();
+            if let Some(client) = timed_out_client
+                && let Err(error) = client.disconnect().await
+            {
+                warn!(error = %error, "closing socket after CONNACK timeout failed");
+            }
+            return Err(FlareError::connection_failed(format!(
+                "CONNACK not received within {wait:?}"
+            )));
+        }
 
         info!(user_id, "socket connected (CONNACK received)");
         Ok(())
     }
 
     pub async fn disconnect(&self) -> Result<()> {
-        let _ = self.client.lock().await.take();
+        if let Some(client) = self.client.lock().await.take()
+            && let Err(error) = client.disconnect().await
+        {
+            warn!(error = %error, "socket client disconnect failed");
+        }
         info!("socket disconnected");
         Ok(())
     }

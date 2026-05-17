@@ -12,17 +12,86 @@ use crate::application::usecases::{
     MessageSendUseCase, MessageViewAssembler,
 };
 use crate::application::{MediaService, SyncProtocolAdapter};
+use crate::capability::AvCapabilityPlugin;
+use crate::capability::{
+    SdkCapabilityPlugin, SdkCapabilityRegistry, reserved_namespaces_of_plugin,
+};
+use crate::client::api::{
+    CapabilityApi, ConversationApi, MediaApi, MessageApi, MessageBuildApi, PresenceApi,
+};
 use crate::client::config::SdkConfig;
 use crate::client::im_client::{IMClient, IMClientInner};
 use crate::core::{
     CurrentUserIdStore, SdkEngine, SessionSyncRunner, SyncResponseHandler, SyncTask,
 };
 use crate::event::EventBus;
-use crate::client::api::{ConversationApi, MediaApi, MessageApi, MessageBuildApi};
 use crate::middleware::{EventInterceptor, MessageInterceptor, MiddlewareChain};
 use crate::protocol::{Codec, ProtobufCodec};
 use crate::store::StoreProvider;
 use crate::transport::{HttpClient, HttpRequestContext, SocketTransport};
+use flare_proto::common::CallSignalEvent;
+
+#[cfg(not(target_arch = "wasm32"))]
+fn derive_capability_url(config: &SdkConfig) -> String {
+    if let Ok(url) = std::env::var("FLARE_CAPABILITY_GRPC_URI")
+        .or_else(|_| std::env::var("FLARE_IM_CAPABILITY_GRPC_URI"))
+    {
+        let url = url.trim();
+        if !url.is_empty() {
+            return url.to_string();
+        }
+    }
+    if let Some(url) = config
+        .capability_url
+        .as_ref()
+        .filter(|u| !u.trim().is_empty())
+    {
+        return url.clone();
+    }
+    if let Some(http_url) = config.http_url.as_ref()
+        && let Ok(mut parsed) = url::Url::parse(http_url)
+    {
+        let _ = parsed.set_port(Some(50110));
+        parsed.set_path("");
+        parsed.set_query(None);
+        parsed.set_fragment(None);
+        return parsed.to_string().trim_end_matches('/').to_string();
+    }
+    "http://localhost:50110".to_string()
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn derive_online_url(config: &SdkConfig) -> String {
+    if let Some(url) = config.online_url.as_ref().filter(|u| !u.trim().is_empty()) {
+        return url.clone();
+    }
+    if let Some(http_url) = config.http_url.as_ref()
+        && let Ok(mut parsed) = url::Url::parse(http_url)
+    {
+        let _ = parsed.set_port(Some(50061));
+        parsed.set_path("");
+        parsed.set_query(None);
+        parsed.set_fragment(None);
+        return parsed.to_string().trim_end_matches('/').to_string();
+    }
+    "http://localhost:50061".to_string()
+}
+
+#[cfg(target_arch = "wasm32")]
+fn derive_capability_url(config: &SdkConfig) -> String {
+    config
+        .capability_url
+        .clone()
+        .unwrap_or_else(|| "http://localhost:50110".to_string())
+}
+
+#[cfg(target_arch = "wasm32")]
+fn derive_online_url(config: &SdkConfig) -> String {
+    config
+        .online_url
+        .clone()
+        .unwrap_or_else(|| "http://localhost:50061".to_string())
+}
 
 /// IMClient 构建器
 ///
@@ -46,6 +115,8 @@ pub struct IMClientBuilder {
     sync_tasks: Vec<Arc<dyn SyncTask>>,
     message_interceptors: Vec<Arc<dyn MessageInterceptor>>,
     event_interceptors: Vec<Arc<dyn EventInterceptor>>,
+    capability_plugins: Vec<Arc<dyn SdkCapabilityPlugin>>,
+    allow_reserved_capability_namespace_override: bool,
 }
 
 impl IMClientBuilder {
@@ -58,6 +129,8 @@ impl IMClientBuilder {
             sync_tasks: Vec::new(),
             message_interceptors: Vec::new(),
             event_interceptors: Vec::new(),
+            capability_plugins: Vec::new(),
+            allow_reserved_capability_namespace_override: false,
         }
     }
 
@@ -105,6 +178,33 @@ impl IMClientBuilder {
     /// 注册事件拦截器
     pub fn add_event_interceptor(mut self, interceptor: impl EventInterceptor + 'static) -> Self {
         self.event_interceptors.push(Arc::new(interceptor));
+        self
+    }
+
+    /// 注册自定义能力插件（开源核心与商业扩展统一入口）。
+    ///
+    /// 默认策略下，插件不得覆盖核心保留命名空间（如 `rtc`）；
+    /// 若确需覆盖，请显式调用
+    /// [`Self::allow_reserved_capability_namespace_override_for_private_distribution`]。
+    pub fn add_capability_plugin(mut self, plugin: impl SdkCapabilityPlugin + 'static) -> Self {
+        self.capability_plugins.push(Arc::new(plugin));
+        self
+    }
+
+    /// 注册已装箱能力插件。
+    pub fn add_capability_plugin_arc(mut self, plugin: Arc<dyn SdkCapabilityPlugin>) -> Self {
+        self.capability_plugins.push(plugin);
+        self
+    }
+
+    /// 私有发行开关：允许外部插件覆盖核心保留命名空间。
+    ///
+    /// 开源默认应保持关闭，避免核心路由被意外替换。
+    pub fn allow_reserved_capability_namespace_override_for_private_distribution(
+        mut self,
+        enabled: bool,
+    ) -> Self {
+        self.allow_reserved_capability_namespace_override = enabled;
         self
     }
 
@@ -184,6 +284,14 @@ impl IMClientBuilder {
             .http_url
             .clone()
             .unwrap_or_else(|| "http://localhost:50050".to_string());
+        let capability_base_url = derive_capability_url(&self.config);
+        let online_base_url = derive_online_url(&self.config);
+        let tenant_id = self
+            .config
+            .tenant_id
+            .clone()
+            .or_else(|| std::env::var("FLARE_IM_TENANT_ID").ok())
+            .unwrap_or_else(|| "0".to_string());
         let http_request_context = Arc::new(HttpRequestContext::new());
         let media_service = Arc::new(MediaService::new(
             HttpClient::with_context(media_base_url, http_request_context.clone()),
@@ -212,6 +320,65 @@ impl IMClientBuilder {
             profile_reader.clone(),
         ));
         let media_api = Arc::new(MediaApi::from_handler(media_service));
+        let capability_api = Arc::new(CapabilityApi::new(
+            capability_base_url,
+            current_user_id.clone(),
+            tenant_id.clone(),
+            http_request_context.clone(),
+        ));
+        let presence_api = Arc::new(PresenceApi::new(
+            online_base_url,
+            current_user_id.clone(),
+            tenant_id,
+            http_request_context.clone(),
+            bus.clone(),
+        ));
+        let capability_registry = Arc::new(SdkCapabilityRegistry::new());
+        let _ =
+            capability_registry.register(Arc::new(AvCapabilityPlugin::new(capability_api.clone())));
+        capability_registry.register_call_signal_observer(|cid, _| {
+            tracing::debug!(
+                target = "flare_sdk.plugin.call",
+                conversation_id = %cid,
+                "call_signal (observer)"
+            );
+        });
+        let reg = capability_registry.clone();
+        let _call_signal_plugin_bridge =
+            bus.on_call_signal(move |conversation_id: &str, event: &CallSignalEvent| {
+                reg.dispatch_call_signal_to_observers(conversation_id, event);
+            });
+        for plugin in self.capability_plugins {
+            let plugin_id = plugin.plugin_id();
+            let reserved = reserved_namespaces_of_plugin(plugin.as_ref());
+            let register_result = if reserved.is_empty() {
+                capability_registry.register(plugin.clone())
+            } else if self.allow_reserved_capability_namespace_override {
+                tracing::warn!(
+                    target = "flare_sdk.capability",
+                    plugin_id = plugin_id,
+                    namespaces = ?reserved,
+                    "register plugin with reserved namespace override (private distribution)"
+                );
+                capability_registry.register_with_namespace_override(plugin.clone())
+            } else {
+                tracing::warn!(
+                    target = "flare_sdk.capability",
+                    plugin_id = plugin_id,
+                    namespaces = ?reserved,
+                    "skip plugin registration: reserved namespace conflict"
+                );
+                continue;
+            };
+            if let Err(err) = register_result {
+                tracing::warn!(
+                    target = "flare_sdk.capability",
+                    plugin_id = plugin_id,
+                    error = %err,
+                    "register capability plugin failed"
+                );
+            }
+        }
         let conversation_command_use_case = Arc::new(ConversationCommandUseCase::new(
             store_ref.conversations.clone(),
             current_user_id,
@@ -235,6 +402,9 @@ impl IMClientBuilder {
                 message_view_assembler,
             )),
             media_api: Some(media_api),
+            capability_api: Some(capability_api),
+            presence_api: Some(presence_api),
+            capability_registry: Some(capability_registry),
             message_build_api: Some(message_build_api),
             conversation_api: Some(conversation_api),
             http_request_context: Some(http_request_context),

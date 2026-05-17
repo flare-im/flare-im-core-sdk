@@ -1,7 +1,7 @@
 //! 辅助工具 - 字符串、字节、JSON 处理（安全侧）；裸指针读取委托 [`crate::abi`]。
 
-use std::ffi::{c_char, CString};
 use serde::de::DeserializeOwned;
+use std::ffi::{CString, c_char};
 
 use crate::abi;
 use crate::error_convert::FLARE_ERR_JSON_PARSE;
@@ -83,7 +83,11 @@ pub unsafe extern "C" fn flare_error_heap_free(ptr: *mut FlareError) {
     abi::catch_ffi_void(|| {
         // SAFETY: 与上方约定一致；`ptr` 非 null 且由 `Box::into_raw` 产出。
         unsafe {
-            let FlareError { message, details_json, .. } = *Box::from_raw(ptr);
+            let FlareError {
+                message,
+                details_json,
+                ..
+            } = *Box::from_raw(ptr);
             flare_string_free(message);
             flare_string_free(details_json);
         }

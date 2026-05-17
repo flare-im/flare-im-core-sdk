@@ -18,8 +18,9 @@ license = "MIT"
 
 [workspace.dependencies]
 flare-proto = { path = "../flare-proto" }
+flare-grpc-proto = { path = "../flare-grpc-proto" }
 flare-core = { path = "../flare-core" }
-flare-server-core = { path = "../flare-server-core" }
+tonic = "0.14"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 anyhow = "1.0"
@@ -52,16 +53,20 @@ path = "src/lib.rs"
 crate-type = ["rlib", "cdylib", "staticlib"]
 
 [features]
+# 默认仅启用 IM 基础能力；通话/RTC 通过可选插件接入。
 default = []
 integration-tests = []
 # SQLite 持久化实现（Message/Conversation/PendingSend/UserProfile 仓储）
 storage-sqlite = ["dep:sqlx"]
 # 跨平台 SQLite 登录编排（依赖 storage/sqlite 连接池与 schema 注册）
 lifecycle-sqlite = ["storage-sqlite", "dep:flare-im-core-sdk-storage-sqlite"]
+# 通话信令 + `rtc.*` 能力插件（独立 crate `flare-sdk-plugin-call`）
+plugin-call = ["dep:flare-sdk-plugin-call"]
 
 [dependencies]
 flare-core = { workspace = true }
 flare-proto = { workspace = true }
+flare-sdk-plugin-call = { path = "../flare-sdk-plugin/flare-sdk-plugin-call", optional = true }
 chrono = { workspace = true }
 
 serde = { workspace = true }
@@ -90,6 +95,9 @@ unicode-normalization = "0.1"
 tokio = { workspace = true }
 tokio-util = { version = "0.7", features = ["rt"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+flare-grpc-proto = { workspace = true }
+tonic = { workspace = true }
+uuid = { version = "1", features = ["v4"] }
 dirs = "5.0"
 futures-util = "0.3"
 bytes = "1"

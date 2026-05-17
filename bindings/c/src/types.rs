@@ -1,6 +1,6 @@
 //! C ABI 类型定义（含与 `flare_*_free` 配对的构造方法）。
 
-use std::ffi::{c_char, c_void, CString};
+use std::ffi::{CString, c_char, c_void};
 
 /// 句柄类型
 pub type FlareHandle = u64;
@@ -49,17 +49,22 @@ pub struct FlareError {
 }
 
 /// 结果回调
-pub type FlareResultCallback = extern "C" fn(context: *mut c_void, error: *const FlareError, result_json: FlareString);
+pub type FlareResultCallback =
+    extern "C" fn(context: *mut c_void, error: *const FlareError, result_json: FlareString);
 
 /// 事件回调
-pub type FlareEventCallback = extern "C" fn(context: *mut c_void, event_type: i32, event_json: FlareString);
+pub type FlareEventCallback =
+    extern "C" fn(context: *mut c_void, event_type: i32, event_json: FlareString);
 
 /// 进度回调
 pub type FlareProgressCallback = extern "C" fn(context: *mut c_void, current: u64, total: u64);
 
 impl Default for FlareString {
     fn default() -> Self {
-        Self { ptr: std::ptr::null_mut(), len: 0 }
+        Self {
+            ptr: std::ptr::null_mut(),
+            len: 0,
+        }
     }
 }
 
@@ -83,7 +88,11 @@ impl FlareString {
 
 impl Default for FlareBytes {
     fn default() -> Self {
-        Self { ptr: std::ptr::null_mut(), len: 0, cap: 0 }
+        Self {
+            ptr: std::ptr::null_mut(),
+            len: 0,
+            cap: 0,
+        }
     }
 }
 
@@ -104,7 +113,11 @@ impl FlareBytes {
 
 impl Default for FlareError {
     fn default() -> Self {
-        Self { code: 0, message: FlareString::default(), details_json: FlareString::default() }
+        Self {
+            code: 0,
+            message: FlareString::default(),
+            details_json: FlareString::default(),
+        }
     }
 }
 

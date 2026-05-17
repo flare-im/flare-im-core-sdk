@@ -2,6 +2,7 @@
 //! SdkEvent → `im://*` 由 `sdk_login` 内 `spawn` 转发，无绑定层业务逻辑。
 //!
 //! IPC JSON 字段为 **snake_case**（与 core-sdk 一致）。Web 宿主若希望业务层只用 camelCase，在宿主侧加薄封装即可，bindings 不维护第二套 serde 命名。
+//! **通话插件** `sdk_send_call_*` / `sdk_build_call_media_constraints` 使用 [`model`] 中 `CallPlugin*` 请求体，与 `flare-sdk-plugin-call::production` 对齐。
 //!
 //! ## 性能
 //! - [`SdkState`](state::SdkState) 仅持有一个 [`IMClient`]，命令热路径为 `Arc` 克隆，无绑定层异步锁。
@@ -12,21 +13,38 @@ pub mod convert;
 pub mod model;
 pub mod state;
 
-pub use model::{SdkConfigOptions, SendAckPayload};
+pub use model::{
+    CallPluginAcceptRequest, CallPluginHangupRequest, CallPluginIceCandidateRequest,
+    CallPluginInviteRequest, CallPluginMediaConstraintsRequest, CallPluginRejectRequest,
+    CallPluginWebrtcSdpRequest, SdkConfigOptions, SendAckPayload,
+};
 pub use state::SdkState;
 
 use commands::{
+    call_signal::{
+        sdk_build_call_media_constraints, sdk_send_call_accept, sdk_send_call_hangup,
+        sdk_send_call_ice_candidate, sdk_send_call_invite, sdk_send_call_reject,
+        sdk_send_call_webrtc_sdp,
+    },
+    capability::{
+        sdk_rtc_accept_call, sdk_rtc_end_call, sdk_rtc_reject_call, sdk_rtc_sfu_add_ice_candidate,
+        sdk_rtc_sfu_get_room_state, sdk_rtc_sfu_handle_sdp_offer, sdk_rtc_sfu_join_room,
+        sdk_rtc_sfu_leave_room, sdk_rtc_sfu_set_subscription, sdk_rtc_start_audio,
+        sdk_rtc_start_video,
+    },
     conversation::{
-        sdk_conversation_delete, sdk_conversation_get, sdk_conversation_get_multiple,
-        sdk_conversation_get_one, sdk_conversation_list, sdk_conversation_list_paginated,
+        sdk_conversation_delete, sdk_conversation_get, sdk_conversation_get_group_by_user_ids,
+        sdk_conversation_get_multiple, sdk_conversation_get_one, sdk_conversation_list,
+        sdk_conversation_list_paginated, sdk_conversation_list_participants,
         sdk_conversation_list_raw, sdk_conversation_mark_all_read, sdk_conversation_mark_read,
-        sdk_conversation_set_pinned, sdk_conversation_update_draft,
+        sdk_conversation_set_pinned, sdk_conversation_sync_participants,
+        sdk_conversation_update_draft,
     },
     host_util::sdk_save_preview_jpeg_temp,
     lifecycle::{
         sdk_current_user_id, sdk_engine_state, sdk_generate_test_token, sdk_init, sdk_is_connected,
-        sdk_login, sdk_logout, sdk_mark_session_read, sdk_set_conversation_input_state,
-        sdk_sync_conversation, sdk_sync_messages,
+        sdk_login, sdk_logout, sdk_mark_session_read, sdk_rtc_ice_config_snapshot,
+        sdk_set_conversation_input_state, sdk_sync_conversation, sdk_sync_messages,
     },
     media::{
         sdk_cache_remote_media, sdk_cancel_user_file_download, sdk_clear_media_cache,
@@ -34,24 +52,23 @@ use commands::{
         sdk_media_cache_stats, sdk_media_temp_download_url, sdk_path_exists,
         sdk_resolve_media_access, sdk_send_with_media_progress, sdk_set_file_download_subfolder,
         sdk_set_media_cache_max_bytes, sdk_set_media_cache_root,
-        sdk_user_file_download_get_saved_path,
-        sdk_user_file_download_delete_record,
+        sdk_user_file_download_delete_record, sdk_user_file_download_get_saved_path,
     },
     message::{
         sdk_add_reaction, sdk_create_announcement, sdk_create_audio, sdk_create_card,
-        sdk_create_custom, sdk_create_emoji, sdk_create_file, sdk_create_forward,
-        sdk_create_image, sdk_create_image_group, sdk_create_image_with_thumbnail,
-        sdk_create_link_card, sdk_create_location,
-        sdk_create_mini_program, sdk_create_notification, sdk_create_placeholder,
-        sdk_create_quote, sdk_create_schedule, sdk_create_sticker,
+        sdk_create_custom, sdk_create_emoji, sdk_create_file, sdk_create_forward, sdk_create_image,
+        sdk_create_image_group, sdk_create_image_with_thumbnail, sdk_create_link_card,
+        sdk_create_location, sdk_create_mini_program, sdk_create_notification,
+        sdk_create_placeholder, sdk_create_quote, sdk_create_schedule, sdk_create_sticker,
         sdk_create_system, sdk_create_task, sdk_create_text, sdk_create_thread_reply,
         sdk_create_video, sdk_create_vote, sdk_delete_message, sdk_edit,
-        sdk_edit_text_by_message_id,
-        sdk_get_message, sdk_get_message_raw, sdk_list_messages, sdk_mark, sdk_mark_by_message_id,
-        sdk_mark_read, sdk_mark_read_with_ids, sdk_mark_with_color, sdk_pin, sdk_pin_by_message_id,
-        sdk_recall, sdk_remove_reaction, sdk_search_messages, sdk_send, sdk_typing, sdk_unmark,
-        sdk_unmark_by_message_id, sdk_unpin, sdk_unpin_by_message_id,
+        sdk_edit_text_by_message_id, sdk_get_message, sdk_get_message_raw, sdk_list_messages,
+        sdk_mark, sdk_mark_by_message_id, sdk_mark_read, sdk_mark_read_with_ids,
+        sdk_mark_with_color, sdk_pin, sdk_pin_by_message_id, sdk_recall, sdk_remove_reaction,
+        sdk_search_messages, sdk_send, sdk_typing, sdk_unmark, sdk_unmark_by_message_id, sdk_unpin,
+        sdk_unpin_by_message_id,
     },
+    presence::{sdk_batch_get_user_presence, sdk_get_user_presence, sdk_subscribe_user_presence},
     rich_doc_v2::{
         sdk_rich_doc_v2_create_message, sdk_rich_doc_v2_edit_message,
         sdk_rich_doc_v2_normalize_from_doc_json, sdk_rich_doc_v2_normalize_from_html,
@@ -72,10 +89,32 @@ pub fn im_invoke_handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + 'stat
         sdk_current_user_id,
         sdk_generate_test_token,
         sdk_engine_state,
+        sdk_rtc_ice_config_snapshot,
         sdk_sync_conversation,
         sdk_sync_messages,
         sdk_mark_session_read,
         sdk_set_conversation_input_state,
+        sdk_get_user_presence,
+        sdk_batch_get_user_presence,
+        sdk_subscribe_user_presence,
+        sdk_rtc_start_audio,
+        sdk_rtc_start_video,
+        sdk_rtc_accept_call,
+        sdk_rtc_end_call,
+        sdk_rtc_reject_call,
+        sdk_rtc_sfu_join_room,
+        sdk_rtc_sfu_leave_room,
+        sdk_rtc_sfu_handle_sdp_offer,
+        sdk_rtc_sfu_add_ice_candidate,
+        sdk_rtc_sfu_get_room_state,
+        sdk_rtc_sfu_set_subscription,
+        sdk_send_call_invite,
+        sdk_send_call_accept,
+        sdk_send_call_hangup,
+        sdk_send_call_reject,
+        sdk_send_call_ice_candidate,
+        sdk_send_call_webrtc_sdp,
+        sdk_build_call_media_constraints,
         // message build + send
         sdk_create_text,
         sdk_create_quote,
@@ -149,6 +188,9 @@ pub fn im_invoke_handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + 'stat
         sdk_conversation_list,
         sdk_conversation_get,
         sdk_conversation_get_one,
+        sdk_conversation_get_group_by_user_ids,
+        sdk_conversation_sync_participants,
+        sdk_conversation_list_participants,
         sdk_conversation_get_multiple,
         sdk_conversation_list_paginated,
         sdk_conversation_list_raw,

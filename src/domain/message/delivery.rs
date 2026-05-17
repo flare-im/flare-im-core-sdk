@@ -1,17 +1,15 @@
-use crate::model::message::{IMMessage, SendAck};
-use crate::model::message::MessageStatus;
 use crate::model::message::MessageLocalState;
+use crate::model::message::MessageStatus;
+use crate::model::message::{IMMessage, SendAck};
 use crate::util::date::prost_timestamp_to_ms;
 
 pub const REASON_PENDING_ANOTHER_ACCOUNT: &str = "pending message belongs to another account";
 pub const REASON_MAX_RETRIES_EXCEEDED: &str = "max retries exceeded";
 pub const REASON_TIMEOUT_AFTER_RETRIES: &str = "timeout after retries";
-pub const REASON_RECONCILED_FAILED: &str =
-    "in-flight reconciled to failed by local terminal state";
+pub const REASON_RECONCILED_FAILED: &str = "in-flight reconciled to failed by local terminal state";
 pub const REASON_SEND_FAILED_BEFORE_ACK_MAX_RETRIES: &str =
     "send failed before ack; max retries exceeded";
-pub const REASON_ORPHAN_RECOVERED: &str =
-    "orphan sending message reconciled during queue recovery";
+pub const REASON_ORPHAN_RECOVERED: &str = "orphan sending message reconciled during queue recovery";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeliveryLocalSnapshot {
@@ -284,7 +282,12 @@ mod tests {
     fn timeout_decision_retries_before_max() {
         let decision = MessageDeliveryService::decide_timeout_expiry(1, 3);
 
-        assert_eq!(decision, RetryDecision::Retry { next_retry_count: 2 });
+        assert_eq!(
+            decision,
+            RetryDecision::Retry {
+                next_retry_count: 2
+            }
+        );
     }
 
     #[test]

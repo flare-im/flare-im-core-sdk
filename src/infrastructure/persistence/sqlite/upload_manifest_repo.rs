@@ -76,12 +76,12 @@ fn row_to_manifest(row: &sqlx::sqlite::SqliteRow) -> Result<MediaUploadManifestV
         file_size: row.get::<i64, _>("file_size") as u64,
         part_size: row.get::<i64, _>("part_size") as u32,
         total_parts: row.get::<i64, _>("total_parts") as u32,
-        transport_kind: row
-            .get::<Option<String>, _>("transport_kind")
-            .map(|value| match value.as_str() {
+        transport_kind: row.get::<Option<String>, _>("transport_kind").map(|value| {
+            match value.as_str() {
                 "single_put" => crate::domain::DirectUploadTransportKindVo::SinglePut,
                 _ => crate::domain::DirectUploadTransportKindVo::MultipartPut,
-            }),
+            }
+        }),
         bucket: row.get("bucket"),
         object_key: row.get("object_key"),
         upload_url: row.get("upload_url"),

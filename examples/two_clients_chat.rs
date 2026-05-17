@@ -44,8 +44,8 @@ use std::time::Duration;
 
 use anyhow::Context;
 use flare_im_core_sdk::client::{
-    dev_data_dir_relative_to_cwd, parse_data_url_to_path, sanitize_user_id_for_dir, LoginDbKind,
-    SdkConfigOverlay, IMClient,
+    IMClient, LoginDbKind, SdkConfigOverlay, dev_data_dir_relative_to_cwd, parse_data_url_to_path,
+    sanitize_user_id_for_dir,
 };
 use flare_im_core_sdk::core::SdkState;
 use flare_im_core_sdk::event::{SdkEvent, SyncPhase};
@@ -309,7 +309,11 @@ async fn main() -> anyhow::Result<()> {
                                     Ok(msgs) => {
                                         info!("recent {} messages:", msgs.len());
                                         for m in msgs.iter().take(10) {
-                                            info!("  [{}] {}", m.sender_id(), text_preview_from_message(m));
+                                            info!(
+                                                "  [{}] {}",
+                                                m.sender_id(),
+                                                text_preview_from_message(m)
+                                            );
                                         }
                                     }
                                     Err(e) => warn!("history: {}", e),

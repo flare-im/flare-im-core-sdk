@@ -3,7 +3,7 @@
 use std::ffi::{c_char, c_void};
 
 use crate::abi;
-use crate::executor::{execute_async_unit, return_error, CallbackContext};
+use crate::executor::{CallbackContext, execute_async, execute_async_unit, return_error};
 use crate::helpers::c_str_to_string;
 use crate::registry::{require_instance, retain_instance};
 use crate::types::{FlareHandle, FlareResultCallback};
@@ -175,6 +175,115 @@ pub extern "C" fn flare_sdk_set_conversation_input_state(
             client
                 .set_conversation_input_state(&conversation_id, is_typing)
                 .await
+        });
+        0
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn flare_sdk_get_user_presence(
+    handle: FlareHandle,
+    user_id: *const c_char,
+    context: *mut c_void,
+    callback: FlareResultCallback,
+) -> i32 {
+    abi::catch_ffi_i32(|| {
+        let instance = match require_instance(handle) {
+            Ok(i) => i,
+            Err(e) => return e,
+        };
+        let user_id = match c_str_to_string(user_id) {
+            Ok(s) => s,
+            Err(code) => {
+                let ctx = CallbackContext::new(context, callback);
+                return_error(&ctx, code, "Invalid user_id");
+                return code;
+            }
+        };
+        let ctx = CallbackContext::new(context, callback);
+        let client = instance.client.clone();
+        execute_async(
+            instance,
+            ctx,
+            async move { client.get_user_presence(&user_id).await },
+            |value| serde_json::to_string(&value).map_err(|_| -1),
+        );
+        0
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn flare_sdk_batch_get_user_presence(
+    handle: FlareHandle,
+    user_ids_json: *const c_char,
+    context: *mut c_void,
+    callback: FlareResultCallback,
+) -> i32 {
+    abi::catch_ffi_i32(|| {
+        let instance = match require_instance(handle) {
+            Ok(i) => i,
+            Err(e) => return e,
+        };
+        let user_ids_json = match c_str_to_string(user_ids_json) {
+            Ok(s) => s,
+            Err(code) => {
+                let ctx = CallbackContext::new(context, callback);
+                return_error(&ctx, code, "Invalid user_ids_json");
+                return code;
+            }
+        };
+        let user_ids = match serde_json::from_str::<Vec<String>>(&user_ids_json) {
+            Ok(ids) => ids,
+            Err(_) => {
+                let ctx = CallbackContext::new(context, callback);
+                return_error(&ctx, -1, "Invalid user_ids_json");
+                return -1;
+            }
+        };
+        let ctx = CallbackContext::new(context, callback);
+        let client = instance.client.clone();
+        execute_async(
+            instance,
+            ctx,
+            async move { client.batch_get_user_presence(&user_ids).await },
+            |value| serde_json::to_string(&value).map_err(|_| -1),
+        );
+        0
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn flare_sdk_subscribe_user_presence(
+    handle: FlareHandle,
+    user_ids_json: *const c_char,
+    context: *mut c_void,
+    callback: FlareResultCallback,
+) -> i32 {
+    abi::catch_ffi_i32(|| {
+        let instance = match require_instance(handle) {
+            Ok(i) => i,
+            Err(e) => return e,
+        };
+        let user_ids_json = match c_str_to_string(user_ids_json) {
+            Ok(s) => s,
+            Err(code) => {
+                let ctx = CallbackContext::new(context, callback);
+                return_error(&ctx, code, "Invalid user_ids_json");
+                return code;
+            }
+        };
+        let user_ids = match serde_json::from_str::<Vec<String>>(&user_ids_json) {
+            Ok(ids) => ids,
+            Err(_) => {
+                let ctx = CallbackContext::new(context, callback);
+                return_error(&ctx, -1, "Invalid user_ids_json");
+                return -1;
+            }
+        };
+        let ctx = CallbackContext::new(context, callback);
+        let client = instance.client.clone();
+        execute_async_unit(instance, ctx, async move {
+            client.subscribe_user_presence(user_ids).await
         });
         0
     })

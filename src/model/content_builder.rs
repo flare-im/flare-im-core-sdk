@@ -1,15 +1,14 @@
 //! 消息内容构建器 — 与 message_content.proto 对应，构建 MessageContent
 
 use crate::rich_doc_v2::pipeline::CONTENT_SCHEMA_RICH_DOC;
-use crate::rich_doc_v2::{validate_doc_json, RichDocV2Error};
+use crate::rich_doc_v2::{RichDocV2Error, validate_doc_json};
 use flare_proto::common::{
     AnnouncementContent, AudioContent, AudioInfo, CardContent, CustomContent, EmojiContent,
     FileContent, ForwardContent, ForwardItem, ForwardMode, ImageContent, ImageFormat,
-    ImageGroupContent, ImageInfo,
-    LinkCardContent, LocationContent, Mention, MentionType, MessageContent, MessageType,
-    MiniProgramContent, NotificationContent, PlaceholderContent, QuoteContent, RichTextContent,
-    ScheduleContent, StickerContent, SystemContent, TaskContent, TextContent, ThreadContent,
-    VideoContent, VideoInfo, VoteContent,
+    ImageGroupContent, ImageInfo, LinkCardContent, LocationContent, Mention, MentionType,
+    MessageContent, MessageType, MiniProgramContent, NotificationContent, PlaceholderContent,
+    QuoteContent, RichTextContent, ScheduleContent, StickerContent, SystemContent, TaskContent,
+    TextContent, ThreadContent, VideoContent, VideoInfo, VoteContent,
 };
 
 /// 已构建的消息内容（协议层 MessageContent + 类型，便于 encode 与预览）
@@ -652,7 +651,11 @@ impl ContentBuilder {
                     content.content,
                     Some(flare_proto::common::message_content::Content::Quote(_))
                 );
-                q.current_content = if is_quote { None } else { Some(Box::new(content)) };
+                q.current_content = if is_quote {
+                    None
+                } else {
+                    Some(Box::new(content))
+                };
             }
         }
         self
@@ -716,11 +719,7 @@ impl ContentBuilder {
                 c.content
             {
                 let t = s.into();
-                f.title = if t.trim().is_empty() {
-                    None
-                } else {
-                    Some(t)
-                };
+                f.title = if t.trim().is_empty() { None } else { Some(t) };
             }
         }
         self

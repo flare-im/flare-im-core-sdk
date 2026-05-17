@@ -45,11 +45,7 @@ impl MessageBuildApi {
         conversation_id: &str,
         mut msg: IMMessage,
     ) -> Result<IMMessage> {
-        let Some(conv) = self
-            .conversations
-            .get(conversation_id)
-            .await?
-        else {
+        let Some(conv) = self.conversations.get(conversation_id).await? else {
             if conversation::is_single_chat_conversation(conversation_id) {
                 return Err(FlareError::localized(
                     ErrorCode::InvalidParameter,
@@ -61,6 +57,28 @@ impl MessageBuildApi {
 
         msg.channel_id = conv.channel_id.clone();
         msg.conversation_type = conv.conversation_type.to_proto_int();
+        if conv.conversation_type.is_group_chat_conversation() {
+            let participant_ids = conv
+                .participants
+                .iter()
+                .map(|p| p.user_id.trim())
+                .filter(|id| !id.is_empty())
+                .collect::<Vec<_>>()
+                .join(",");
+            let member_ids = if participant_ids.is_empty() {
+                conv.ext
+                    .get("group_member_ids")
+                    .cloned()
+                    .unwrap_or_default()
+            } else {
+                participant_ids
+            };
+            if !member_ids.trim().is_empty() {
+                msg.extra
+                    .entry("group_member_ids".to_string())
+                    .or_insert(member_ids);
+            }
+        }
 
         if conversation::is_single_chat_conversation(conversation_id) && msg.channel_id.is_empty() {
             return Err(FlareError::localized(
@@ -107,8 +125,12 @@ impl MessageBuildApi {
         text: &str,
     ) -> Result<IMMessage> {
         let sender_id = self.current_sender_id().await?;
-        let msg =
-            MessageBuilderService::build_thread_reply(conversation_id, &sender_id, thread_id, text)?;
+        let msg = MessageBuilderService::build_thread_reply(
+            conversation_id,
+            &sender_id,
+            thread_id,
+            text,
+        )?;
         self.apply_conversation_routing(conversation_id, msg).await
     }
 

@@ -25,4 +25,7 @@ pub use manager::SyncManager;
 #[allow(unused_imports)]
 pub use progress::{EventBusProgressReporter, SyncProgress, SyncProgressReporter};
 pub use response_handler::SyncResponseHandler;
-pub use task::{SessionSyncRunner, SyncContext, SyncMode, SyncPhase, SyncTask, SyncTaskResult};
+pub use task::{
+    SessionSyncRunner, SyncContext, SyncFailurePolicy, SyncMode, SyncPhase, SyncReason,
+    SyncRunContext, SyncScope, SyncTask, SyncTaskResult, SyncTrigger, SyncVisibility,
+};

@@ -8,8 +8,8 @@ license = "MIT"
 description = "Flare IM Core SDK - SQLite 连接与运行时（pool + schema 注册"
 
 [dependencies]
-anyhow = { workspace = true }
+anyhow = "1.0"
 log = "0.4"
-once_cell = { workspace = true }
-sqlx = { workspace = true }
-tokio = { workspace = true }
+once_cell = "1.19"
+sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "sqlite", "chrono", "uuid"] }
+tokio = { version = "1", features = ["full"] }

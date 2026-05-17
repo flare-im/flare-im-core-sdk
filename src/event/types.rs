@@ -8,7 +8,7 @@ use flare_proto::common::{
     PresenceEvent, ReadReceiptEvent, SendAck, TypingEvent, UnmarkEvent, UnpinEvent,
 };
 
-use crate::core::SdkState;
+use crate::core::{SdkState, SyncRunContext};
 use crate::fsm::SyncState;
 use crate::model::IMMessage;
 
@@ -153,24 +153,44 @@ pub enum ConversationEvent {
 #[derive(Clone, Debug)]
 pub enum SyncNotify {
     StateChanged {
+        run: SyncRunContext,
         state: SyncState,
     },
-    Started,
+    Started {
+        run: SyncRunContext,
+    },
     Finished {
+        run: SyncRunContext,
         phase: SyncPhase,
     },
     Failed {
+        run: SyncRunContext,
         task: String,
         message: String,
     },
     Progress {
+        run: SyncRunContext,
         task: String,
         progress: f32,
         detail: String,
     },
     TaskCompleted {
+        run: SyncRunContext,
         task: String,
     },
+}
+
+impl SyncNotify {
+    pub fn is_user_visible(&self) -> bool {
+        match self {
+            Self::StateChanged { run, .. }
+            | Self::Started { run }
+            | Self::Finished { run, .. }
+            | Self::Failed { run, .. }
+            | Self::Progress { run, .. }
+            | Self::TaskCompleted { run, .. } => run.visibility.is_user_visible(),
+        }
+    }
 }
 
 /// 扩展域事件：业务自定义推送

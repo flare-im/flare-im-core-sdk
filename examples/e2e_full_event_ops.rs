@@ -77,8 +77,8 @@ async fn main() -> anyhow::Result<()> {
         .await
         .context("client.init")?;
 
-    let token = IMClient::generate_test_token("", "", &my_user_id, None)
-        .context("generate_test_token")?;
+    let token =
+        IMClient::generate_test_token("", "", &my_user_id, None).context("generate_test_token")?;
     client
         .login(&my_user_id, Some(&token), LoginDbKind::Sqlite, |_, _| {})
         .await
@@ -134,16 +134,13 @@ async fn main() -> anyhow::Result<()> {
             "quote-reply",
             Some(&base_msg_for_quote.sender_id),
             Some("quoted"),
-            base_msg_for_quote
-                .content
-                .as_ref()
-                .map(|elem| {
-                    flare_im_core_sdk::model::content_builder::BuiltContent::new(
-                        flare_proto::common::MessageType::try_from(base_msg_for_quote.message_type)
-                            .unwrap_or(flare_proto::common::MessageType::Unspecified),
-                        flare_im_core_sdk::model::message_elem::elem_to_message_content(elem),
-                    )
-                }),
+            base_msg_for_quote.content.as_ref().map(|elem| {
+                flare_im_core_sdk::model::content_builder::BuiltContent::new(
+                    flare_proto::common::MessageType::try_from(base_msg_for_quote.message_type)
+                        .unwrap_or(flare_proto::common::MessageType::Unspecified),
+                    flare_im_core_sdk::model::message_elem::elem_to_message_content(elem),
+                )
+            }),
         )
         .await
         .context("create_quote")?;

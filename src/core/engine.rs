@@ -5,7 +5,7 @@ use tokio::sync::RwLock;
 
 use crate::application::event_deduper::EventDeduper;
 use crate::application::message_deduper::MessageDeduper;
-use crate::core::{SessionSyncRunner, SyncManager, SyncResponseHandler};
+use crate::core::{SessionSyncRunner, SyncManager, SyncResponseHandler, SyncRunContext};
 use crate::error::FlareError;
 use crate::event::{ConnectionEvent as SdkConnectionEvent, EventBus, SdkEvent};
 use crate::fsm::{ConnectionEvent, ConnectionFsm, ConnectionState};
@@ -122,6 +122,72 @@ impl SdkEngine {
         }
     }
 
+    async fn force_disconnected_after_connect_failure(&self, user_id: &str, error: &FlareError) {
+        self.sync_manager.stop_sync();
+        if let Err(disconnect_error) = self.transport.disconnect().await {
+            tracing::warn!(
+                user_id,
+                error = %disconnect_error,
+                "transport cleanup after connection failure failed"
+            );
+        }
+        *self.current_user_id.write().await = String::new();
+        {
+            let mut guard = self.connection_state.write().await;
+            *guard = ConnectionState::Disconnected;
+        }
+        self.publish_state(ConnectionState::Disconnected);
+        tracing::warn!(
+            user_id,
+            error = %error,
+            "connection attempt failed; engine state reset to Disconnected"
+        );
+    }
+
+    async fn connect_after_state_transition(
+        &mut self,
+        user_id: &str,
+        token: &str,
+        sync_run: SyncRunContext,
+    ) -> crate::error::Result<()> {
+        let ready = Arc::new(tokio::sync::Notify::new());
+        let listener = Arc::new(SocketHandler::new(
+            Arc::new(Dispatcher::new(
+                self.bus.clone(),
+                self.reliable_queue.clone(),
+                self.sync_response_handler.clone(),
+                self.session_sync.clone(),
+                Some(self.stores.clone()),
+                self.current_user_id.clone(),
+                self.event_deduper.clone(),
+                self.message_deduper.clone(),
+            )),
+            self.codec.clone(),
+            ready.clone(),
+        ));
+        if let Err(error) = self
+            .transport
+            .connect(user_id, token, listener, ready)
+            .await
+        {
+            self.force_disconnected_after_connect_failure(user_id, &error)
+                .await;
+            return Err(error);
+        }
+        *self.current_user_id.write().await = user_id.to_string();
+        if let Some(queue) = &self.reliable_queue {
+            let _ = queue.recover_pending_for_current_user().await;
+        }
+        self.transition(ConnectionEvent::Connected).await;
+        if let Err(error) = self.bootstrap(sync_run).await {
+            self.force_disconnected_after_connect_failure(user_id, &error)
+                .await;
+            return Err(error);
+        }
+        self.transition(ConnectionEvent::BootstrapDone).await;
+        Ok(())
+    }
+
     /// 连接服务器。同一用户已就绪时幂等返回；正在连接中或已连接为其他用户时返回错误，避免重复建连导致服务端踢线。
     pub async fn connect(&mut self, user_id: &str, token: &str) -> crate::error::Result<()> {
         let (state, current_uid) = {
@@ -151,31 +217,33 @@ impl SdkEngine {
         }
 
         self.transition(ConnectionEvent::ConnectRequested).await;
-        let ready = Arc::new(tokio::sync::Notify::new());
-        let listener = Arc::new(SocketHandler::new(
-            Arc::new(Dispatcher::new(
-                self.bus.clone(),
-                self.reliable_queue.clone(),
-                self.sync_response_handler.clone(),
-                Some(self.stores.clone()),
-                self.current_user_id.clone(),
-                self.event_deduper.clone(),
-                self.message_deduper.clone(),
-            )),
-            self.codec.clone(),
-            ready.clone(),
-        ));
-        self.transport
-            .connect(user_id, token, listener, ready)
-            .await?;
-        *self.current_user_id.write().await = user_id.to_string();
-        if let Some(queue) = &self.reliable_queue {
-            let _ = queue.recover_pending_for_current_user().await;
+        self.connect_after_state_transition(user_id, token, SyncRunContext::initial_login())
+            .await
+    }
+
+    pub async fn mark_transport_disconnected(&self) {
+        self.transition(ConnectionEvent::Disconnected).await;
+    }
+
+    pub async fn reconnect(&mut self, user_id: &str, token: &str) -> crate::error::Result<()> {
+        let state = *self.connection_state.read().await;
+        match state {
+            ConnectionState::Ready => self.transition(ConnectionEvent::ReconnectRequested).await,
+            ConnectionState::Disconnected => {
+                self.transition(ConnectionEvent::ConnectRequested).await
+            }
+            ConnectionState::Reconnecting => {}
+            ConnectionState::Connecting | ConnectionState::Connected => {
+                return Err(FlareError::general_error(
+                    "connect already in progress, skip reconnect",
+                ));
+            }
         }
-        self.transition(ConnectionEvent::Connected).await; // fsm::ConnectionEvent
-        self.bootstrap().await?;
-        self.transition(ConnectionEvent::BootstrapDone).await;
-        Ok(())
+
+        self.sync_manager.stop_sync();
+        self.transport.disconnect().await?;
+        self.connect_after_state_transition(user_id, token, SyncRunContext::reconnect())
+            .await
     }
 
     pub async fn disconnect(&mut self) -> crate::error::Result<()> {
@@ -192,13 +260,17 @@ impl SdkEngine {
         Ok(())
     }
 
-    pub async fn bootstrap(&mut self) -> crate::error::Result<()> {
+    pub async fn bootstrap(&mut self, sync_run: SyncRunContext) -> crate::error::Result<()> {
         let user_id = self.current_user_id.read().await.clone();
         if user_id.is_empty() {
             return Ok(());
         }
-        self.sync_manager
-            .run_sync(&user_id, self.stores.clone(), self.bus.clone());
+        self.sync_manager.run_with_context(
+            &user_id,
+            sync_run,
+            self.stores.clone(),
+            self.bus.clone(),
+        );
         Ok(())
     }
 
@@ -208,6 +280,10 @@ impl SdkEngine {
             .try_read()
             .map(|g| (*g).into())
             .unwrap_or(SdkState::Disconnected)
+    }
+
+    pub async fn transport_connected(&self) -> bool {
+        self.transport.is_connected().await
     }
 
     pub fn bus(&self) -> &EventBus {

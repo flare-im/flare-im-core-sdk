@@ -107,11 +107,12 @@ impl UserFileDownloadStore for SqliteUserFileDownloadRepo {
     }
 
     async fn get_download_subfolder(&self) -> Result<String> {
-        let row: Option<(String,)> =
-            sqlx::query_as("SELECT download_subfolder FROM file_download_settings WHERE singleton = 1")
-                .fetch_optional(&self.pool)
-                .await
-                .map_err(|e| FlareError::localized(ErrorCode::DatabaseError, e.to_string()))?;
+        let row: Option<(String,)> = sqlx::query_as(
+            "SELECT download_subfolder FROM file_download_settings WHERE singleton = 1",
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| FlareError::localized(ErrorCode::DatabaseError, e.to_string()))?;
         Ok(row
             .map(|r| sanitize_subfolder(&r.0))
             .unwrap_or_else(|| DEFAULT_SUBFOLDER.to_string()))
@@ -123,13 +124,11 @@ impl UserFileDownloadStore for SqliteUserFileDownloadRepo {
         } else {
             sanitize_subfolder(name)
         };
-        sqlx::query(
-            "UPDATE file_download_settings SET download_subfolder = ? WHERE singleton = 1",
-        )
-        .bind(&s)
-        .execute(&self.pool)
-        .await
-        .map_err(|e| FlareError::localized(ErrorCode::DatabaseError, e.to_string()))?;
+        sqlx::query("UPDATE file_download_settings SET download_subfolder = ? WHERE singleton = 1")
+            .bind(&s)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| FlareError::localized(ErrorCode::DatabaseError, e.to_string()))?;
         Ok(())
     }
 

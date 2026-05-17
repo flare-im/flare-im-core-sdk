@@ -10,10 +10,11 @@ use flare_im_core_sdk::lifecycle::SdkConfigOverlay;
 use flare_im_core_sdk::util::generate_test_token as util_generate_test_token;
 
 use crate::abi;
-use crate::executor::{execute_async, execute_async_unit, return_error, CallbackContext};
+use crate::executor::{CallbackContext, execute_async, execute_async_unit, return_error};
 use crate::helpers::{c_str_to_string, parse_json, string_to_flare};
 use crate::registry::{
-    register_instance, release_all_instances, release_instance, require_instance, retain_instance, SdkInstance,
+    SdkInstance, register_instance, release_all_instances, release_instance, require_instance,
+    retain_instance,
 };
 use crate::types::{FlareHandle, FlareResultCallback, FlareString};
 
@@ -119,7 +120,12 @@ pub extern "C" fn flare_sdk_login(
 
         execute_async_unit(instance, ctx, async move {
             client
-                .login(&user_id, Some(token.as_str()), LoginDbKind::Sqlite, |_, _| {})
+                .login(
+                    &user_id,
+                    Some(token.as_str()),
+                    LoginDbKind::Sqlite,
+                    |_, _| {},
+                )
                 .await
         });
 
@@ -173,8 +179,7 @@ pub extern "C" fn flare_sdk_is_connected(handle: FlareHandle) -> bool {
 #[unsafe(no_mangle)]
 pub extern "C" fn flare_sdk_session_active(handle: FlareHandle) -> bool {
     abi::catch_ffi_bool(|| {
-        retain_instance(handle)
-            .is_some_and(|instance| instance.client.session_active_sync())
+        retain_instance(handle).is_some_and(|instance| instance.client.session_active_sync())
     })
 }
 

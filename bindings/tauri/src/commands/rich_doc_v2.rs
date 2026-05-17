@@ -5,7 +5,7 @@ use std::collections::HashMap;
 
 use flare_im_core_sdk::model::IMMessage;
 use flare_im_core_sdk::rich_doc_v2::{
-    normalize_from_doc_json, normalize_from_html, normalize_from_markdown, NormalizeOutput,
+    NormalizeOutput, normalize_from_doc_json, normalize_from_html, normalize_from_markdown,
 };
 use serde::Serialize;
 use serde_json::Value;

@@ -1,9 +1,9 @@
+use crate::Result;
 use crate::event::{ConversationEvent, EventBus, SdkEvent};
 use crate::model::conversation::ConversationType;
 use crate::model::message_elem::MessagePreviewElem;
 use crate::model::{Conversation, IMMessage};
 use crate::store::StoreProvider;
-use crate::Result;
 
 pub(crate) struct ConversationProjectionApplier {
     stores: StoreProvider,
@@ -65,7 +65,10 @@ impl ConversationProjectionApplier {
             let previous_unread = previous.as_ref().map(|c| c.unread_count).unwrap_or(0);
             self.ensure_conversation_shell(latest).await?;
 
-            let previous_max_seq = previous.as_ref().map(|conversation| conversation.max_seq).unwrap_or(0);
+            let previous_max_seq = previous
+                .as_ref()
+                .map(|conversation| conversation.max_seq)
+                .unwrap_or(0);
             let should_update_summary = previous.is_none() || latest.seq >= previous_max_seq;
             let conversation_max_seq = previous
                 .as_ref()
@@ -185,9 +188,7 @@ impl ConversationProjectionApplier {
             ..Default::default()
         };
         if conversation.channel_id.trim().is_empty()
-            && conversation
-                .conversation_type
-                .is_single_chat_conversation()
+            && conversation.conversation_type.is_single_chat_conversation()
         {
             conversation.channel_id = message.sender_id.clone();
         }
@@ -199,6 +200,7 @@ impl ConversationProjectionApplier {
 #[cfg(test)]
 mod tests {
     use super::ConversationProjectionApplier;
+    use crate::Result;
     use crate::domain::{
         ConversationReader, ConversationWriter, MessageReader, MessageStore, MessageWriter,
         SyncCursorReader, SyncCursorVo, SyncCursorWriter,
@@ -206,12 +208,11 @@ mod tests {
     use crate::event::{ConversationEvent, EventBus, SdkEvent};
     use crate::model::{Conversation, IMMessage};
     use crate::store::StoreProvider;
-    use crate::Result;
     use async_trait::async_trait;
     use std::collections::HashMap;
     use std::sync::Arc;
     use tokio::sync::RwLock;
-    use tokio::time::{timeout, Duration};
+    use tokio::time::{Duration, timeout};
 
     struct MemoryConversationStore {
         data: RwLock<HashMap<String, Conversation>>,
@@ -317,10 +318,14 @@ mod tests {
                     .as_deref()
                     .map(|sender| sender == current_user_id)
                     .unwrap_or(false);
-                conversation.unread_count = if is_self_message || conversation.max_seq <= conversation.last_read_seq {
+                conversation.unread_count = if is_self_message
+                    || conversation.max_seq <= conversation.last_read_seq
+                {
                     0
                 } else {
-                    (conversation.max_seq.saturating_sub(conversation.last_read_seq)) as u32
+                    (conversation
+                        .max_seq
+                        .saturating_sub(conversation.last_read_seq)) as u32
                 };
             }
             Ok(())
@@ -414,6 +419,7 @@ mod tests {
         let store_provider = StoreProvider {
             messages: Arc::new(NoopMessageStore),
             conversations: conversations.clone(),
+            conversation_participants: None,
             cursors: Arc::new(NoopSyncCursorStore),
             pending_send_reader: None,
             pending_send_writer: None,
@@ -503,10 +509,7 @@ mod tests {
         newer.sender_id = "u2".to_string();
         newer.seq = 9;
 
-        applier
-            .apply_messages(&[older, newer], "u1")
-            .await
-            .unwrap();
+        applier.apply_messages(&[older, newer], "u1").await.unwrap();
 
         let updated = conversations.get("conv-1").await.unwrap().unwrap();
         assert_eq!(updated.last_message_id.as_deref(), Some("server-new"));

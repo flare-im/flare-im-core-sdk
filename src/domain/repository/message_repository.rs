@@ -2,8 +2,8 @@ use async_trait::async_trait;
 use std::collections::HashMap;
 
 use crate::error::Result;
-use crate::model::message::ReactionEntry;
 use crate::model::IMMessage;
+use crate::model::message::ReactionEntry;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EditApplyResult {
@@ -195,4 +195,3 @@ pub trait MessageStore: MessageReader + MessageWriter {
         Ok(Vec::new())
     }
 }
-

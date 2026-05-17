@@ -105,7 +105,8 @@ impl MessageBuilderService {
                 "sdk.message.forward.single_requires_one",
             ));
         };
-        let items: Result<Vec<ForwardItem>> = sources.iter().map(forward_item_from_source).collect();
+        let items: Result<Vec<ForwardItem>> =
+            sources.iter().map(forward_item_from_source).collect();
         let items = items?;
         let title_str = title.into();
         let title_opt = if title_str.trim().is_empty() {
@@ -412,14 +413,13 @@ impl MessageBuilderService {
         search_text: Option<&str>,
         render_hints_json: Option<&str>,
     ) -> Result<IMMessage> {
-        let mut cb = ContentBuilder::try_rich_doc(doc_json, content_schema, plain_text).map_err(
-            |e| {
+        let mut cb =
+            ContentBuilder::try_rich_doc(doc_json, content_schema, plain_text).map_err(|e| {
                 FlareError::localized(
                     ErrorCode::InvalidParameter,
                     format!("sdk.message.rich_doc_v2.invalid: {e}"),
                 )
-            },
-        )?;
+            })?;
         if let Some(f) = input_format {
             cb = cb.rich_text_input_format(f);
         }
@@ -510,7 +510,8 @@ impl MessageBuilderService {
         end_time_ms: i64,
         participant_user_ids: Option<Vec<String>>,
     ) -> Result<IMMessage> {
-        let mut b = ContentBuilder::schedule(schedule_id, title).schedule_times_ms(start_time_ms, end_time_ms);
+        let mut b = ContentBuilder::schedule(schedule_id, title)
+            .schedule_times_ms(start_time_ms, end_time_ms);
         if let Some(p) = participant_user_ids.filter(|v| !v.is_empty()) {
             b = b.schedule_participant_user_ids(p);
         }

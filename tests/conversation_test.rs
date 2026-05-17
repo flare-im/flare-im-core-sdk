@@ -24,6 +24,10 @@ use flare_im_core_sdk::event::{ConnectionEvent, ExtensionEvent, SyncNotify};
 use flare_im_core_sdk::model::conversation::*;
 use flare_im_core_sdk::prelude::*;
 
+fn test_sync_run() -> SyncRunContext {
+    SyncRunContext::initial_login()
+}
+
 // =============================================================================
 // ConversationStore 内存实现 CRUD
 // =============================================================================
@@ -150,11 +154,21 @@ async fn test_conversation_api_get() {
     };
     store.save_batch(&[Conversation::from(conv)]).await.unwrap();
 
-    let result = client.conversation().unwrap().get("conv_api_001").await.unwrap();
+    let result = client
+        .conversation()
+        .unwrap()
+        .get("conv_api_001")
+        .await
+        .unwrap();
     assert!(result.is_some());
     assert_eq!(result.unwrap().unread_count(), 3);
 
-    let not_found = client.conversation().unwrap().get("non_existent").await.unwrap();
+    let not_found = client
+        .conversation()
+        .unwrap()
+        .get("non_existent")
+        .await
+        .unwrap();
     assert!(not_found.is_none());
 }
 
@@ -329,13 +343,16 @@ async fn test_event_bus_extension_event() {
 async fn test_event_bus_sync_progress() {
     let bus = EventBus::new();
     let mut rx = bus.subscribe();
+    let run = test_sync_run();
 
     bus.publish(SdkEvent::Sync(SyncNotify::Progress {
+        run: run.clone(),
         task: "conversation".into(),
         progress: 0.5,
         detail: "syncing conversations".into(),
     }));
     bus.publish(SdkEvent::Sync(SyncNotify::TaskCompleted {
+        run,
         task: "conversation".into(),
     }));
 
@@ -356,7 +373,7 @@ async fn test_event_bus_sync_progress() {
         .unwrap()
         .unwrap();
     match &e2 {
-        SdkEvent::Sync(SyncNotify::TaskCompleted { task }) => {
+        SdkEvent::Sync(SyncNotify::TaskCompleted { task, .. }) => {
             assert_eq!(task, "conversation");
         }
         _ => panic!("expected Sync TaskCompleted"),
@@ -462,7 +479,12 @@ mod server_tests {
 
         tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
         // 会话列表由同步引擎自动拉取
-        let conv = client.conversation().unwrap().get("conv_svr_002").await.unwrap();
+        let conv = client
+            .conversation()
+            .unwrap()
+            .get("conv_svr_002")
+            .await
+            .unwrap();
         // 服务端可能未自动创建会话条目，仅验证 get 流程不报错
         eprintln!(
             "[test] conversation get after send+sync: found={}",
@@ -490,7 +512,12 @@ mod server_tests {
             .mark_read("conv_svr_003", ack.seq)
             .await
             .unwrap();
-        let conv = client.conversation().unwrap().get("conv_svr_003").await.unwrap();
+        let conv = client
+            .conversation()
+            .unwrap()
+            .get("conv_svr_003")
+            .await
+            .unwrap();
         if let Some(c) = conv {
             assert_eq!(c.unread_count(), 0, "unread should be 0 after mark_read");
         }
@@ -510,8 +537,18 @@ mod server_tests {
         assert!(ack.success);
         tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
 
-        client.conversation().unwrap().delete("conv_svr_del").await.unwrap();
-        let conv = client.conversation().unwrap().get("conv_svr_del").await.unwrap();
+        client
+            .conversation()
+            .unwrap()
+            .delete("conv_svr_del")
+            .await
+            .unwrap();
+        let conv = client
+            .conversation()
+            .unwrap()
+            .get("conv_svr_del")
+            .await
+            .unwrap();
         assert!(conv.is_none(), "conversation should be gone after delete");
 
         teardown(&mut client).await;

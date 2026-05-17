@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
 use crate::model::decoder::DecodedContent;
-use crate::model::preview_storage::{decode_or_user_text, keys, PreviewStoragePayload};
+use crate::model::preview_storage::{PreviewStoragePayload, decode_or_user_text, keys};
 use crate::util::date::{ms_to_prost_timestamp, prost_timestamp_to_ms};
 use flare_proto::common::ImageFormat;
 use flare_proto::common::message_content::Content as ProtoContent;
@@ -664,9 +664,7 @@ pub fn image_info_elem_is_motion(s: &ImageInfoElem) -> bool {
 
 /// `ImageContent` 层级：源图是否为动图类
 pub fn image_elem_is_motion(i: &ImageElem) -> bool {
-    i.source
-        .as_ref()
-        .map_or(false, image_info_elem_is_motion)
+    i.source.as_ref().map_or(false, image_info_elem_is_motion)
 }
 
 /// 解码前 proto `ImageContent` 是否视为动图（与 [image_elem_is_motion] 语义一致）
@@ -866,11 +864,7 @@ fn proto_content_to_out(c: &ProtoContent) -> Option<Elem> {
                     source_sender_name: it.source_sender_name.clone(),
                     source_message_time_ms: {
                         let ms = prost_timestamp_to_ms(it.source_message_time.as_ref());
-                        if ms == 0 {
-                            None
-                        } else {
-                            Some(ms)
-                        }
+                        if ms == 0 { None } else { Some(ms) }
                     },
                     message_type: it.message_type,
                     plain_text: it.plain_text.clone(),
@@ -1121,15 +1115,10 @@ fn elem_to_proto_content(elem: &Elem) -> ProtoContent {
                     source_conversation_id: it.source_conversation_id.clone(),
                     source_sender_id: it.source_sender_id.clone(),
                     source_sender_name: it.source_sender_name.clone(),
-                    source_message_time: it
-                        .source_message_time_ms
-                        .and_then(ms_to_prost_timestamp),
+                    source_message_time: it.source_message_time_ms.and_then(ms_to_prost_timestamp),
                     message_type: it.message_type,
                     plain_text: it.plain_text.clone(),
-                    content: it
-                        .content
-                        .as_ref()
-                        .map(|e| elem_to_message_content(e)),
+                    content: it.content.as_ref().map(|e| elem_to_message_content(e)),
                 })
                 .collect(),
         }),
@@ -1142,13 +1131,15 @@ fn elem_to_proto_content(elem: &Elem) -> ProtoContent {
                 .map(|b| Box::new(elem_to_message_content(b))),
             metadata: te.metadata.clone(),
         })),
-        Elem::MiniProgram(m) => ProtoContent::MiniProgram(flare_proto::common::MiniProgramContent {
-            app_id: m.app_id.clone(),
-            title: m.title.clone(),
-            page_path: m.page_path.clone(),
-            thumbnail_url: m.thumbnail_url.clone(),
-            extra: m.extra.clone(),
-        }),
+        Elem::MiniProgram(m) => {
+            ProtoContent::MiniProgram(flare_proto::common::MiniProgramContent {
+                app_id: m.app_id.clone(),
+                title: m.title.clone(),
+                page_path: m.page_path.clone(),
+                thumbnail_url: m.thumbnail_url.clone(),
+                extra: m.extra.clone(),
+            })
+        }
         Elem::RichText(r) => ProtoContent::RichText(flare_proto::common::RichTextContent {
             doc_json: r.doc_json.clone(),
             content_schema: r.content_schema.clone(),
@@ -1185,7 +1176,7 @@ fn elem_to_proto_content(elem: &Elem) -> ProtoContent {
                 show_badge: n.show_badge,
                 play_sound: n.play_sound,
             })
-        },
+        }
         Elem::Vote(v) => ProtoContent::Vote(flare_proto::common::VoteContent {
             vote_id: v.vote_id.clone(),
             title: v.title.clone(),
@@ -1208,24 +1199,28 @@ fn elem_to_proto_content(elem: &Elem) -> ProtoContent {
             metadata: s.metadata.clone(),
             participant_user_ids: s.participant_user_ids.clone(),
         }),
-        Elem::Announcement(a) => ProtoContent::Announcement(flare_proto::common::AnnouncementContent {
-            title: a.title.clone(),
-            body: a.body.clone(),
-            pinned: a.pinned,
-            metadata: a.metadata.clone(),
-        }),
+        Elem::Announcement(a) => {
+            ProtoContent::Announcement(flare_proto::common::AnnouncementContent {
+                title: a.title.clone(),
+                body: a.body.clone(),
+                pinned: a.pinned,
+                metadata: a.metadata.clone(),
+            })
+        }
         Elem::Custom(c) => ProtoContent::Custom(flare_proto::common::CustomContent {
             r#type: c.r#type.clone(),
             payload: c.payload.clone(),
             description: c.description.clone(),
             metadata: c.metadata.clone(),
         }),
-        Elem::Placeholder(p) => ProtoContent::Placeholder(flare_proto::common::PlaceholderContent {
-            reason: p.reason.clone(),
-            payload: p.payload.clone(),
-            fallback_text: p.fallback_text.clone(),
-            metadata: p.metadata.clone(),
-        }),
+        Elem::Placeholder(p) => {
+            ProtoContent::Placeholder(flare_proto::common::PlaceholderContent {
+                reason: p.reason.clone(),
+                payload: p.payload.clone(),
+                fallback_text: p.fallback_text.clone(),
+                metadata: p.metadata.clone(),
+            })
+        }
     }
 }
 

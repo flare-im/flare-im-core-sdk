@@ -160,6 +160,33 @@ pub async fn init_schema(pool: &SqlitePool) -> Result<()> {
     .map_err(|e| FlareError::localized(ErrorCode::DatabaseError, e.to_string()))?;
 
     sqlx::query(
+        r#"CREATE TABLE IF NOT EXISTS conversation_participants (
+            conversation_id TEXT NOT NULL,
+            user_id TEXT NOT NULL,
+            roles TEXT NOT NULL DEFAULT '[]',
+            muted INTEGER NOT NULL DEFAULT 0,
+            pinned INTEGER NOT NULL DEFAULT 0,
+            attributes TEXT NOT NULL DEFAULT '{}',
+            joined_at INTEGER NOT NULL DEFAULT 0,
+            nickname TEXT NOT NULL DEFAULT '',
+            participant_version INTEGER NOT NULL DEFAULT 0,
+            updated_at INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (conversation_id, user_id)
+        )"#,
+    )
+    .execute(pool)
+    .await
+    .map_err(|e| FlareError::localized(ErrorCode::DatabaseError, e.to_string()))?;
+
+    sqlx::query(
+        r#"CREATE INDEX IF NOT EXISTS idx_conversation_participants_list
+           ON conversation_participants (conversation_id, joined_at ASC, user_id ASC)"#,
+    )
+    .execute(pool)
+    .await
+    .map_err(|e| FlareError::localized(ErrorCode::DatabaseError, e.to_string()))?;
+
+    sqlx::query(
         r#"CREATE TABLE IF NOT EXISTS pending_sends (
             client_msg_id TEXT PRIMARY KEY,
             conversation_id TEXT NOT NULL,

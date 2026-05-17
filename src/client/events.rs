@@ -4,14 +4,14 @@
 //!
 //! **注意**：若在 [`super::IMClient::login`] 的 `before_connect` 之前尚未挂上引擎，应优先在回调里用传入的 [`crate::event::EventBus`] 注册；连接后再用本文件的 `on_*` 亦可（见示例 `two_clients_chat`）。
 
-use flare_proto::common::{MessageRecallEvent, SendAck, TypingEvent};
+use flare_proto::common::{CallSignalEvent, MessageRecallEvent, SendAck, TypingEvent};
 
+use crate::Result;
 use crate::client::IMClient;
 use crate::core::SdkState;
 use crate::event::{SharedEvent, Subscription, SyncPhase};
 use crate::fsm::SyncState;
 use crate::model::IMMessage;
-use crate::Result;
 
 impl IMClient {
     // ========== 连接 / 会话状态机（[`SdkState`]）==========
@@ -162,6 +162,14 @@ impl IMClient {
         F: Fn(&str, &TypingEvent) + Send + Sync + 'static,
     {
         self.with_engine(|e| e.bus().on_typing(f))
+    }
+
+    /// **通话信令**下行（`EVENT_CALL_SIGNAL`）；与 [`Self::send_call_signal`] 对称，参数为 `(conversation_id, CallSignalEvent)`。
+    pub fn on_call_signal<F>(&self, f: F) -> Result<Subscription>
+    where
+        F: Fn(&str, &CallSignalEvent) + Send + Sync + 'static,
+    {
+        self.with_engine(|e| e.bus().on_call_signal(f))
     }
 
     // ========== 会话列表（元数据 / 未读 / 删除）==========

@@ -1,6 +1,6 @@
 //! 从 Rich Doc v2 JSON 派生 `plain_text` / `search_text` / `render_hints`（权威实现）。
 
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 use unicode_normalization::UnicodeNormalization;
 
 use super::RichDocV2Error;
@@ -26,9 +26,8 @@ pub fn derive_from_value(root: &Value) -> Result<RichDocDerived, RichDocV2Error>
 }
 
 pub fn derive_from_json_str(doc_json: &str) -> Result<RichDocDerived, RichDocV2Error> {
-    let v: Value = serde_json::from_str(doc_json).map_err(|e| {
-        RichDocV2Error::InvalidJson(e.to_string())
-    })?;
+    let v: Value =
+        serde_json::from_str(doc_json).map_err(|e| RichDocV2Error::InvalidJson(e.to_string()))?;
     derive_from_value(&v)
 }
 
@@ -57,9 +56,9 @@ fn block_children_plain(
     hints: &mut HintAcc,
 ) -> Result<String, RichDocV2Error> {
     if is_root {
-        let obj = v.as_object().ok_or_else(|| {
-            RichDocV2Error::InvalidStructure("root must be object".into())
-        })?;
+        let obj = v
+            .as_object()
+            .ok_or_else(|| RichDocV2Error::InvalidStructure("root must be object".into()))?;
         let children = obj
             .get("children")
             .and_then(Value::as_array)
@@ -82,10 +81,7 @@ fn block_plain(v: &Value, hints: &mut HintAcc) -> Result<String, RichDocV2Error>
     let obj = v
         .as_object()
         .ok_or_else(|| RichDocV2Error::InvalidStructure("block must be object".into()))?;
-    let ty = obj
-        .get("type")
-        .and_then(Value::as_str)
-        .unwrap_or("");
+    let ty = obj.get("type").and_then(Value::as_str).unwrap_or("");
     hints.block_count = hints.block_count.saturating_add(1);
     match ty {
         "paragraph" => {
@@ -212,9 +208,6 @@ mod tests {
 
     #[test]
     fn search_collapses_space() {
-        assert_eq!(
-            normalize_for_search("  Hello   World\n\t"),
-            "hello world"
-        );
+        assert_eq!(normalize_for_search("  Hello   World\n\t"), "hello world");
     }
 }

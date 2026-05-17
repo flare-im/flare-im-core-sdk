@@ -2,11 +2,11 @@
 
 use serde_json::Value;
 
-use super::extract::{derive_from_value, RichDocDerived};
+use super::RichDocV2Error;
+use super::extract::{RichDocDerived, derive_from_value};
 use super::from_html::html_fragment_to_doc_value;
 use super::from_markdown::markdown_to_doc_value;
 use super::validate::validate_doc_json;
-use super::RichDocV2Error;
 
 pub const CONTENT_SCHEMA_RICH_DOC: &str = "rich_doc";
 pub const INPUT_FORMAT_MARKDOWN: &str = "markdown";
@@ -27,9 +27,8 @@ pub fn normalize_from_html(html: &str) -> Result<NormalizeOutput, RichDocV2Error
 /// 客户端已持有权威 doc JSON（例如自研编辑器直出）时：仅校验 + 派生。
 pub fn normalize_from_doc_json(doc_json: &str) -> Result<NormalizeOutput, RichDocV2Error> {
     validate_doc_json(doc_json)?;
-    let v: Value = serde_json::from_str(doc_json).map_err(|e| {
-        RichDocV2Error::InvalidJson(e.to_string())
-    })?;
+    let v: Value =
+        serde_json::from_str(doc_json).map_err(|e| RichDocV2Error::InvalidJson(e.to_string()))?;
     let derived = derive_from_value(&v)?;
     Ok(NormalizeOutput::from_parts(
         doc_json.to_string(),
@@ -44,9 +43,8 @@ fn finalize_doc_value(
     input_format: Option<&str>,
     source_snapshot: &str,
 ) -> Result<NormalizeOutput, RichDocV2Error> {
-    let doc_json = serde_json::to_string(&doc).map_err(|e| {
-        RichDocV2Error::InvalidStructure(format!("serialize doc: {e}"))
-    })?;
+    let doc_json = serde_json::to_string(&doc)
+        .map_err(|e| RichDocV2Error::InvalidStructure(format!("serialize doc: {e}")))?;
     validate_doc_json(&doc_json)?;
     let derived = derive_from_value(&doc)?;
     let snap_key = input_format.unwrap_or("raw");

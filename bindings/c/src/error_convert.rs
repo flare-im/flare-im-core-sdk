@@ -2,8 +2,8 @@
 //!
 //! 所有错误转换为 FlareError 结构
 
-use flare_im_core_sdk::error::{ErrorCode, FlareError as SdkError};
 use crate::types::{FlareError, FlareString};
+use flare_im_core_sdk::error::{ErrorCode, FlareError as SdkError};
 
 /// 错误码定义
 #[allow(dead_code)]
@@ -41,7 +41,10 @@ pub fn error_code_to_c(code: ErrorCode) -> i32 {
 pub fn make_error(err: &SdkError) -> FlareError {
     use std::fmt::Write;
 
-    let code = err.code().map(error_code_to_c).unwrap_or(FLARE_ERR_INTERNAL);
+    let code = err
+        .code()
+        .map(error_code_to_c)
+        .unwrap_or(FLARE_ERR_INTERNAL);
 
     let mut message = String::new();
     let _ = write!(&mut message, "{}", err);

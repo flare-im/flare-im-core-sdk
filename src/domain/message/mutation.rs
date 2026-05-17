@@ -9,8 +9,13 @@ const DELETE_SCOPE_CONVERSATION_GLOBAL: i32 = 2;
 #[derive(Debug, Clone)]
 pub enum MessageLocalUpdate {
     None,
-    UpdateContent { message_id: String, new_content: Vec<u8> },
-    Delete { message_id: String },
+    UpdateContent {
+        message_id: String,
+        new_content: Vec<u8>,
+    },
+    Delete {
+        message_id: String,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -184,11 +189,7 @@ impl MessageMutationService {
         }
     }
 
-    pub fn plan_unpin(
-        &self,
-        conversation_id: &str,
-        server_msg_id: &str,
-    ) -> MessageMutationPlan {
+    pub fn plan_unpin(&self, conversation_id: &str, server_msg_id: &str) -> MessageMutationPlan {
         MessageMutationPlan {
             transport_action: MessageTransportAction::Unpin {
                 conversation_id: conversation_id.to_string(),
@@ -267,8 +268,11 @@ mod tests {
         message.server_id = "s1".to_string();
         message.sender_id = "u1".to_string();
 
-        let plan =
-            service.plan_delete_for_self(&actor, &ResolvedMessage::new(message), Some("r".to_string()));
+        let plan = service.plan_delete_for_self(
+            &actor,
+            &ResolvedMessage::new(message),
+            Some("r".to_string()),
+        );
 
         match plan.transport_action {
             MessageTransportAction::Delete {

@@ -66,7 +66,11 @@ impl MessageReader for MemoryMessageStore {
         limit: u32,
     ) -> Result<Vec<IMMessage>> {
         let data = self.data.read().await;
-        let bound = if before_seq == 0 { u64::MAX } else { before_seq };
+        let bound = if before_seq == 0 {
+            u64::MAX
+        } else {
+            before_seq
+        };
         let is_latest = before_seq == 0 || before_seq >= i64::MAX as u64;
         let mut msgs: Vec<_> = if is_latest {
             data.values()
@@ -75,9 +79,7 @@ impl MessageReader for MemoryMessageStore {
                 .collect()
         } else {
             data.values()
-                .filter(|m| {
-                    m.conversation_id == conversation_id && m.seq > 0 && m.seq < bound
-                })
+                .filter(|m| m.conversation_id == conversation_id && m.seq > 0 && m.seq < bound)
                 .cloned()
                 .collect()
         };
@@ -424,6 +426,7 @@ fn make_stores() -> StoreProvider {
     StoreProvider {
         messages: Arc::new(MemoryMessageStore::new()),
         conversations: Arc::new(MemoryConversationStore::new()),
+        conversation_participants: None,
         cursors: Arc::new(MemoryCursorStore::new()),
         pending_send_reader: None,
         pending_send_writer: None,
@@ -532,7 +535,7 @@ pub fn build_single_text(
 /// 生成测试 JWT token（使用 SDK 内置的 generate_test_token）
 ///
 /// 与 flare-im-core/examples/chatroom_client.rs 保持一致：
-/// secret = "insecure-secret"，issuer = "flare-im-core"，tenant_id = "default"
+/// secret = "insecure-secret"，issuer = "flare-im-core"，tenant_id = "0"
 fn generate_test_token(user_id: &str) -> String {
     flare_im_core_sdk::util::generate_test_token(
         "insecure-secret",
@@ -540,7 +543,7 @@ fn generate_test_token(user_id: &str) -> String {
         user_id,
         3600,
         None,
-        Some("default"),
+        Some("0"),
     )
     .expect("generate_test_token should not fail")
 }

@@ -4,13 +4,13 @@
 
 use std::sync::Arc;
 
+use super::media::UploadProgressCallback;
 use crate::application::usecases::{
     MessageMutationUseCase, MessageSendUseCase, MessageViewAssembler,
 };
 use crate::error::{ErrorCode, FlareError, Result};
 use crate::model::content_builder::{BuiltContent, ContentBuilder};
 use crate::model::message::{IMMessage, MarkType, SendAck};
-use super::media::UploadProgressCallback;
 
 /// 消息命令与查询入口（直接委托 application usecases）。
 #[derive(Clone)]
@@ -48,7 +48,9 @@ impl MessageApi {
         message: IMMessage,
         on_progress: Option<UploadProgressCallback>,
     ) -> Result<SendAck> {
-        self.send_use_case.send_with_media(message, on_progress).await
+        self.send_use_case
+            .send_with_media(message, on_progress)
+            .await
     }
 
     /// 原样发送：不做 OSS 上传预处理。
@@ -87,7 +89,10 @@ impl MessageApi {
 
     /// 按 message_id（client_msg_id）编辑为纯文本。
     pub async fn edit_text_by_message_id(&self, message_id: &str, text: &str) -> Result<()> {
-        let (conversation_id, _) = self.mutation_use_case.resolve_message_id(message_id).await?;
+        let (conversation_id, _) = self
+            .mutation_use_case
+            .resolve_message_id(message_id)
+            .await?;
         self.edit_content(
             &conversation_id,
             message_id,
@@ -110,15 +115,17 @@ impl MessageApi {
         search_text: Option<&str>,
         render_hints_json: Option<&str>,
     ) -> Result<()> {
-        let (conversation_id, _) = self.mutation_use_case.resolve_message_id(message_id).await?;
-        let mut cb = ContentBuilder::try_rich_doc(doc_json, content_schema, plain_text).map_err(
-            |e| {
+        let (conversation_id, _) = self
+            .mutation_use_case
+            .resolve_message_id(message_id)
+            .await?;
+        let mut cb =
+            ContentBuilder::try_rich_doc(doc_json, content_schema, plain_text).map_err(|e| {
                 FlareError::localized(
                     ErrorCode::InvalidParameter,
                     format!("sdk.message.rich_doc_v2.invalid: {e}"),
                 )
-            },
-        )?;
+            })?;
         if let Some(f) = input_format {
             cb = cb.rich_text_input_format(f);
         }
@@ -139,12 +146,16 @@ impl MessageApi {
 
     /// 删除消息。message_id 为 client_msg_id。
     pub async fn delete(&self, message_id: &str) -> Result<()> {
-        self.mutation_use_case.delete_for_self(message_id, None).await
+        self.mutation_use_case
+            .delete_for_self(message_id, None)
+            .await
     }
 
     /// 仅删除自己可见（多端同步）。
     pub async fn delete_for_self(&self, message_id: &str, reason: Option<String>) -> Result<()> {
-        self.mutation_use_case.delete_for_self(message_id, reason).await
+        self.mutation_use_case
+            .delete_for_self(message_id, reason)
+            .await
     }
 
     /// 删除所有人可见（仅发送者）。
@@ -186,28 +197,40 @@ impl MessageApi {
 
     /// 按 message_id（client_msg_id）移除反应。
     pub async fn remove_reaction(&self, message_id: &str, emoji: &str) -> Result<()> {
-        self.mutation_use_case.remove_reaction(message_id, emoji).await
+        self.mutation_use_case
+            .remove_reaction(message_id, emoji)
+            .await
     }
 
     /// 置顶消息。message_id 为 client_msg_id。
     pub async fn pin(&self, conversation_id: &str, message_id: &str) -> Result<()> {
-        self.mutation_use_case.pin(conversation_id, message_id).await
+        self.mutation_use_case
+            .pin(conversation_id, message_id)
+            .await
     }
 
     /// 取消置顶。message_id 为 client_msg_id。
     pub async fn unpin(&self, conversation_id: &str, message_id: &str) -> Result<()> {
-        self.mutation_use_case.unpin(conversation_id, message_id).await
+        self.mutation_use_case
+            .unpin(conversation_id, message_id)
+            .await
     }
 
     /// 按 message_id（client_msg_id）置顶。
     pub async fn pin_by_message_id(&self, message_id: &str) -> Result<()> {
-        let (conversation_id, _) = self.mutation_use_case.resolve_message_id(message_id).await?;
+        let (conversation_id, _) = self
+            .mutation_use_case
+            .resolve_message_id(message_id)
+            .await?;
         self.pin(&conversation_id, message_id).await
     }
 
     /// 按 message_id（client_msg_id）取消置顶。
     pub async fn unpin_by_message_id(&self, message_id: &str) -> Result<()> {
-        let (conversation_id, _) = self.mutation_use_case.resolve_message_id(message_id).await?;
+        let (conversation_id, _) = self
+            .mutation_use_case
+            .resolve_message_id(message_id)
+            .await?;
         self.unpin(&conversation_id, message_id).await
     }
 
@@ -255,7 +278,10 @@ impl MessageApi {
         mark_type: MarkType,
         color: &str,
     ) -> Result<()> {
-        let (conversation_id, _) = self.mutation_use_case.resolve_message_id(message_id).await?;
+        let (conversation_id, _) = self
+            .mutation_use_case
+            .resolve_message_id(message_id)
+            .await?;
         self.mutation_use_case
             .mark(&conversation_id, message_id, mark_type, color)
             .await
@@ -263,7 +289,10 @@ impl MessageApi {
 
     /// 按 message_id（client_msg_id）取消标记。
     pub async fn unmark_by_message_id(&self, message_id: &str, mark_type: MarkType) -> Result<()> {
-        let (conversation_id, _) = self.mutation_use_case.resolve_message_id(message_id).await?;
+        let (conversation_id, _) = self
+            .mutation_use_case
+            .resolve_message_id(message_id)
+            .await?;
         self.mutation_use_case
             .unmark(&conversation_id, message_id, mark_type)
             .await
@@ -286,7 +315,9 @@ impl MessageApi {
         before_seq: u64,
         limit: u32,
     ) -> Result<Vec<IMMessage>> {
-        self.view_assembler.list(conversation_id, before_seq, limit).await
+        self.view_assembler
+            .list(conversation_id, before_seq, limit)
+            .await
     }
 
     pub async fn search(&self, keyword: &str, limit: u32) -> Result<Vec<IMMessage>> {

@@ -67,9 +67,12 @@ impl SyncCursorWriter for SqliteSyncCursorRepo {
 
     async fn save_conversation_cursor(&self, cursor: &SyncCursorVo) -> Result<()> {
         sqlx::query(
-            r#"INSERT OR REPLACE INTO sync_conversation_cursors
+            r#"INSERT INTO sync_conversation_cursors
                (user_id, conversation_id, last_seq, synced_at)
-               VALUES (?, ?, ?, ?)"#,
+               VALUES (?, ?, ?, ?)
+               ON CONFLICT(user_id, conversation_id) DO UPDATE SET
+                   last_seq = MAX(sync_conversation_cursors.last_seq, excluded.last_seq),
+                   synced_at = MAX(sync_conversation_cursors.synced_at, excluded.synced_at)"#,
         )
         .bind(&cursor.user_id)
         .bind(&cursor.conversation_id)

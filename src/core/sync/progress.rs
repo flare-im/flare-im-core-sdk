@@ -7,6 +7,8 @@ use std::sync::{Arc, Mutex};
 
 use crate::event::{EventBus, SdkEvent, SyncNotify};
 
+use super::task::SyncRunContext;
+
 /// 同步进度快照（供 UI 展示）
 ///
 /// 使用权重聚合多任务进度：每个任务有 weight，完成时 completed_weight 累加，
@@ -55,13 +57,15 @@ pub trait SyncProgressReporter: Send + Sync {
 /// 持有 total_weight 与当前 completed_weight/current_task，每次 report 时发布 SyncProgress 事件。
 pub struct EventBusProgressReporter {
     bus: EventBus,
+    run: SyncRunContext,
     progress: Arc<Mutex<SyncProgress>>,
 }
 
 impl EventBusProgressReporter {
-    pub fn new(bus: EventBus, total_weight: u32) -> Self {
+    pub fn new(bus: EventBus, run: SyncRunContext, total_weight: u32) -> Self {
         Self {
             bus,
+            run,
             progress: Arc::new(Mutex::new(SyncProgress::new(total_weight))),
         }
     }
@@ -73,6 +77,7 @@ impl EventBusProgressReporter {
 
     fn publish(&self, progress: &SyncProgress) {
         self.bus.publish(SdkEvent::Sync(SyncNotify::Progress {
+            run: self.run.clone(),
             task: progress.current_task.clone(),
             progress: progress.ratio(),
             detail: format!("{} / {}", progress.completed_weight, progress.total_weight),
@@ -93,6 +98,7 @@ impl SyncProgressReporter for EventBusProgressReporter {
             g.completed_weight = g.completed_weight.saturating_add(weight);
             g.current_task = task_id.to_string();
             self.bus.publish(SdkEvent::Sync(SyncNotify::Progress {
+                run: self.run.clone(),
                 task: g.current_task.clone(),
                 progress: g.ratio(),
                 detail,

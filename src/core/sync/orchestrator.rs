@@ -6,11 +6,11 @@ use std::time::Instant;
 use crate::event::{EventBus, SdkEvent, SyncNotify, SyncPhase};
 use crate::store::StoreProvider;
 use tokio::task::{JoinHandle, JoinSet};
-use tracing::{debug, info, warn};
+use tracing::{debug, warn};
 
 use super::checkpoint::CheckpointStore;
 use super::progress::{EventBusProgressReporter, SyncProgressReporter};
-use super::task::{SyncContext, SyncMode, SyncTask};
+use super::task::{SyncContext, SyncFailurePolicy, SyncMode, SyncRunContext, SyncTask};
 
 pub struct Orchestrator {
     store: StoreProvider,
@@ -28,14 +28,23 @@ impl Orchestrator {
         }
     }
 
-    /// 执行全部任务：Init 并行 → SyncFinished(Init) → Background 并行 → SyncFinished(Background)。
-    pub fn run(&self, user_id: &str, tasks: Vec<Arc<dyn SyncTask>>) -> JoinHandle<()> {
+    /// 执行全部任务：Init 并行 → SyncFinished(Init) → Background 静默并行 → SyncFinished(Background)。
+    pub fn run(
+        &self,
+        user_id: &str,
+        run: SyncRunContext,
+        tasks: Vec<Arc<dyn SyncTask>>,
+    ) -> JoinHandle<()> {
         let (init_tasks, bg_tasks): (Vec<_>, Vec<_>) =
             tasks.into_iter().partition(|t| t.mode() == SyncMode::Init);
-        let total_weight: u32 = init_tasks.iter().map(|t| t.weight()).sum::<u32>()
-            + bg_tasks.iter().map(|t| t.weight()).sum::<u32>();
-        let progress_reporter: Arc<dyn SyncProgressReporter> = Arc::new(
-            EventBusProgressReporter::new(self.bus.clone(), total_weight),
+        let init_weight: u32 = init_tasks.iter().map(|t| t.weight()).sum();
+        let bg_weight: u32 = bg_tasks.iter().map(|t| t.weight()).sum();
+        let init_progress_reporter: Arc<dyn SyncProgressReporter> = Arc::new(
+            EventBusProgressReporter::new(self.bus.clone(), run.clone(), init_weight),
+        );
+        let bg_run = run.for_background_phase();
+        let bg_progress_reporter: Arc<dyn SyncProgressReporter> = Arc::new(
+            EventBusProgressReporter::new(self.bus.clone(), bg_run.clone(), bg_weight),
         );
 
         let bus = self.bus.clone();
@@ -44,33 +53,49 @@ impl Orchestrator {
         let user_id = user_id.to_string();
 
         tokio::spawn(async move {
-            bus.publish(SdkEvent::Sync(SyncNotify::Started));
+            bus.publish(SdkEvent::Sync(SyncNotify::Started { run: run.clone() }));
 
-            run_phase(
+            let init_outcome = run_phase(
                 &bus,
                 &user_id,
+                run.clone(),
                 &store,
                 &checkpoint_store,
-                progress_reporter.clone(),
+                init_progress_reporter,
                 init_tasks,
             )
             .await;
 
+            if init_outcome.failed_required {
+                warn!(
+                    run_id = %run.run_id,
+                    failed_tasks = ?init_outcome.failed_tasks,
+                    "required init sync failed; skip Init finished and background phase"
+                );
+                return;
+            }
+
             bus.publish(SdkEvent::Sync(SyncNotify::Finished {
+                run: run.clone(),
                 phase: SyncPhase::Init,
             }));
 
-            run_phase(
+            bus.publish(SdkEvent::Sync(SyncNotify::Started {
+                run: bg_run.clone(),
+            }));
+            let _bg_outcome = run_phase(
                 &bus,
                 &user_id,
+                bg_run.clone(),
                 &store,
                 &checkpoint_store,
-                progress_reporter,
+                bg_progress_reporter,
                 bg_tasks,
             )
             .await;
 
             bus.publish(SdkEvent::Sync(SyncNotify::Finished {
+                run: bg_run,
                 phase: SyncPhase::Background,
             }));
         })
@@ -80,63 +105,99 @@ impl Orchestrator {
 async fn run_phase(
     bus: &EventBus,
     user_id: &str,
+    run: SyncRunContext,
     store: &StoreProvider,
     checkpoint_store: &Arc<CheckpointStore>,
     progress_reporter: Arc<dyn SyncProgressReporter>,
     tasks: Vec<Arc<dyn SyncTask>>,
-) {
+) -> PhaseOutcome {
     let mut join_set = JoinSet::new();
     for task in tasks {
-            let task_id = task.id().to_string();
-            let weight = task.weight();
-            let mode = task.mode();
-            let progress = progress_reporter.clone();
-            progress.report_current(task_id.clone());
-            let ctx = SyncContext {
-                user_id: user_id.to_string(),
-                task_id: task_id.clone(),
-                store: store.clone(),
-                progress: Some(progress.clone()),
-                checkpoint_store: Some(checkpoint_store.clone()),
-            };
-            let bus = bus.clone();
-            join_set.spawn(async move {
-                let started = Instant::now();
-                info!(task = %task_id, mode = ?mode, weight = weight, "sync task started");
-                match task.execute(ctx.clone()).await {
-                    Ok(res) => {
-                        if let Some(cursor) = res.cursor {
-                            let _ = ctx.save_checkpoint(Some(cursor)).await;
-                        }
-                        progress.report_weight_completed(&task_id, weight, "done".into());
-                        info!(
-                            task = %task_id,
-                            mode = ?mode,
-                            elapsed_ms = started.elapsed().as_millis(),
-                            "sync task completed"
-                        );
-                        bus.publish(SdkEvent::Sync(SyncNotify::TaskCompleted { task: task_id }));
+        let task_id = task.id().to_string();
+        let weight = task.weight();
+        let mode = task.mode();
+        let failure_policy = task.failure_policy();
+        let progress = progress_reporter.clone();
+        progress.report_current(task_id.clone());
+        let ctx = SyncContext {
+            user_id: user_id.to_string(),
+            task_id: task_id.clone(),
+            run: run.clone(),
+            store: store.clone(),
+            progress: Some(progress.clone()),
+            checkpoint_store: Some(checkpoint_store.clone()),
+        };
+        let bus = bus.clone();
+        let run = run.clone();
+        join_set.spawn(async move {
+            let started = Instant::now();
+            debug!(task = %task_id, mode = ?mode, weight = weight, "sync task started");
+            match task.execute(ctx.clone()).await {
+                Ok(res) => {
+                    if let Some(cursor) = res.cursor {
+                        let _ = ctx.save_checkpoint(Some(cursor)).await;
                     }
-                    Err(e) => {
-                        warn!(
-                            task = %task_id,
-                            mode = ?mode,
-                            elapsed_ms = started.elapsed().as_millis(),
-                            error = %e,
-                            "sync task failed"
-                        );
-                        bus.publish(SdkEvent::Sync(SyncNotify::Failed {
-                            task: task_id,
-                            message: format!("{}", e),
-                        }));
+                    progress.report_weight_completed(&task_id, weight, "done".into());
+                    debug!(
+                        task = %task_id,
+                        mode = ?mode,
+                        elapsed_ms = started.elapsed().as_millis(),
+                        "sync task completed"
+                    );
+                    bus.publish(SdkEvent::Sync(SyncNotify::TaskCompleted {
+                        run,
+                        task: task_id,
+                    }));
+                }
+                Err(e) => {
+                    warn!(
+                        task = %task_id,
+                        mode = ?mode,
+                        elapsed_ms = started.elapsed().as_millis(),
+                        error = %e,
+                        "sync task failed"
+                    );
+                    bus.publish(SdkEvent::Sync(SyncNotify::Failed {
+                        run,
+                        task: task_id.clone(),
+                        message: format!("{}", e),
+                    }));
+                    if failure_policy == SyncFailurePolicy::FailRun {
+                        return Some(task_id);
                     }
                 }
-            });
+            }
+            None
+        });
     }
-    debug!(task_count = join_set.len(), "sync phase waiting for all tasks");
+    debug!(
+        task_count = join_set.len(),
+        "sync phase waiting for all tasks"
+    );
+    let mut failed_required = false;
+    let mut failed_tasks = Vec::new();
     while let Some(res) = join_set.join_next().await {
-        if let Err(e) = res {
-            warn!(error = %e, "sync task join error");
+        match res {
+            Ok(Some(task_id)) => {
+                failed_required = true;
+                failed_tasks.push(task_id);
+            }
+            Ok(None) => {}
+            Err(e) => {
+                failed_required = true;
+                failed_tasks.push("join_error".to_string());
+                warn!(error = %e, "sync task join error");
+            }
         }
     }
+    PhaseOutcome {
+        failed_required,
+        failed_tasks,
+    }
+}
+
+#[derive(Debug, Default)]
+struct PhaseOutcome {
+    failed_required: bool,
+    failed_tasks: Vec<String>,
 }

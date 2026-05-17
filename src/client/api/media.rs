@@ -5,16 +5,18 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 
 use crate::application::MediaService;
-use crate::domain::{
-    MediaCacheAdmin, MediaCacheStatsVo, MediaCacheStore, UploadManifestStore, UserFileDownloadStore,
-};
-use crate::error::Result;
-use crate::model::{MediaAccessUrl, MediaCacheEntryVo, MediaResolvedAccess, UploadOptions, UploadedMedia};
-use crate::transport::HttpClient;
 pub use crate::application::{
     FileDownloadProgress, FileDownloadProgressCallback, UploadPhase, UploadProgress,
     UploadProgressCallback,
 };
+use crate::domain::{
+    MediaCacheAdmin, MediaCacheStatsVo, MediaCacheStore, UploadManifestStore, UserFileDownloadStore,
+};
+use crate::error::Result;
+use crate::model::{
+    MediaAccessUrl, MediaCacheEntryVo, MediaResolvedAccess, UploadOptions, UploadedMedia,
+};
+use crate::transport::HttpClient;
 
 #[derive(Clone)]
 pub struct MediaApi {
@@ -110,7 +112,9 @@ impl MediaApi {
     /// SQLite 中已记录的本地绝对路径（文件是否仍存在需上层校验）。
     #[cfg(not(target_arch = "wasm32"))]
     pub async fn user_download_get_saved_path(&self, download_key: &str) -> Result<Option<String>> {
-        self.handler.user_download_get_saved_path(download_key).await
+        self.handler
+            .user_download_get_saved_path(download_key)
+            .await
     }
 
     #[cfg(not(target_arch = "wasm32"))]

@@ -3,10 +3,10 @@
 use std::pin::Pin;
 use std::sync::Arc;
 
-use tracing::info;
+use tracing::debug;
 
 use super::super::SyncProtocolAdapter;
-use crate::core::{SyncContext, SyncMode, SyncResult, SyncTask, SyncTaskResult};
+use crate::core::{SyncContext, SyncFailurePolicy, SyncMode, SyncResult, SyncTask, SyncTaskResult};
 
 pub struct KeyEventsSyncTask(pub(crate) Arc<SyncProtocolAdapter>);
 
@@ -31,16 +31,20 @@ impl SyncTask for KeyEventsSyncTask {
         15
     }
 
+    fn failure_policy(&self) -> SyncFailurePolicy {
+        SyncFailurePolicy::Continue
+    }
+
     fn execute(
         &self,
         ctx: SyncContext,
     ) -> Pin<Box<dyn std::future::Future<Output = SyncResult<SyncTaskResult>> + Send>> {
         let handler = self.0.clone();
         Box::pin(async move {
-            info!(task = "key_events", "sync phase: key events start");
+            debug!(task = "key_events", "sync phase: key events start");
             ctx.report_progress("syncing critical events");
             handler.sync_critical_events().await?;
-            info!(task = "key_events", "sync phase: key events done");
+            debug!(task = "key_events", "sync phase: key events done");
             Ok(SyncTaskResult::ok())
         })
     }

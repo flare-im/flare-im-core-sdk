@@ -44,6 +44,15 @@ impl EventDeduper {
         }
         true
     }
+
+    pub(crate) async fn forget(&self, event: &flare_proto::common::Event) {
+        let Some(key) = dedupe_key_for_event(event) else {
+            return;
+        };
+        let mut state = self.state.lock().await;
+        state.seen.remove(&key);
+        state.order.retain(|stored| stored != &key);
+    }
 }
 
 fn dedupe_key_for_event(event: &flare_proto::common::Event) -> Option<String> {

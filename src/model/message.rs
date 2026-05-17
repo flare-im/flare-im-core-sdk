@@ -19,21 +19,17 @@ use flare_proto::common::{Message as ProtoMessage, OfflinePushInfo};
 use serde::{Deserialize, Serialize};
 
 use crate::model::decoder::decode_content_bytes;
-use crate::model::preview_storage::is_redundant_content_text_extra;
 use crate::model::message_elem::{
     Elem, decoded_content_to_elem, elem_plain_summary, elem_preview_storage_payload,
     elem_to_message_content,
 };
+use crate::model::preview_storage::is_redundant_content_text_extra;
 use crate::util::date::{ms_to_prost_timestamp, prost_timestamp_to_ms};
 use prost::Message as ProstMessage;
 
 /// 从下行 `Message.extra` 推断是否已编辑（与 storage writer 写入的 `messageFsmState`、`currentEditVersion` 对齐）。
 fn is_edited_from_extra(extra: &HashMap<String, String>) -> bool {
-    if extra
-        .get("messageFsmState")
-        .map(|s| s.as_str())
-        == Some("EDITED")
-    {
+    if extra.get("messageFsmState").map(|s| s.as_str()) == Some("EDITED") {
         return true;
     }
     if let Some(v) = extra.get("currentEditVersion") {
@@ -55,9 +51,7 @@ pub struct ReactionEntry {
     pub count: u32,
 }
 
-pub(crate) fn parse_reactions_from_extra(
-    extra: &HashMap<String, String>,
-) -> Vec<ReactionEntry> {
+pub(crate) fn parse_reactions_from_extra(extra: &HashMap<String, String>) -> Vec<ReactionEntry> {
     let raw = match extra.get(REACTIONS_JSON_KEY) {
         Some(v) if !v.trim().is_empty() => v,
         _ => return Vec::new(),
@@ -76,6 +70,7 @@ pub(crate) fn parse_reactions_from_extra(
     }
 }
 
+#[cfg(feature = "storage-sqlite")]
 pub(crate) fn has_reaction_snapshot_in_extra(extra: &HashMap<String, String>) -> bool {
     extra.contains_key(REACTIONS_JSON_KEY)
 }
@@ -245,8 +240,7 @@ impl IMMessage {
         }
         let is_edited = is_edited_from_extra(&extra);
         let reactions = parse_reactions_from_extra(&extra);
-        let is_recalled =
-            message.status == flare_proto::common::MessageStatus::Recalled as i32;
+        let is_recalled = message.status == flare_proto::common::MessageStatus::Recalled as i32;
         let timestamp = prost_timestamp_to_ms(message.timestamp.as_ref());
         let mut reply_to: Option<String> = None;
         let mut quote_preview: Option<String> = None;

@@ -99,10 +99,11 @@ impl SqliteMediaCacheRepo {
         }
         let max_i64 = i64::try_from(max).unwrap_or(i64::MAX);
         loop {
-            let sum: i64 = sqlx::query_scalar("SELECT COALESCE(SUM(size_bytes), 0) FROM media_local_cache")
-                .fetch_one(&self.pool)
-                .await
-                .map_err(|e| FlareError::localized(ErrorCode::DatabaseError, e.to_string()))?;
+            let sum: i64 =
+                sqlx::query_scalar("SELECT COALESCE(SUM(size_bytes), 0) FROM media_local_cache")
+                    .fetch_one(&self.pool)
+                    .await
+                    .map_err(|e| FlareError::localized(ErrorCode::DatabaseError, e.to_string()))?;
             if sum <= max_i64 {
                 break;
             }
@@ -114,10 +115,11 @@ impl SqliteMediaCacheRepo {
     }
 
     async fn remove_oldest_entry(&self) -> Result<bool> {
-        let row = sqlx::query("SELECT file_id FROM media_local_cache ORDER BY updated_at_ms ASC LIMIT 1")
-            .fetch_optional(&self.pool)
-            .await
-            .map_err(|e| FlareError::localized(ErrorCode::DatabaseError, e.to_string()))?;
+        let row =
+            sqlx::query("SELECT file_id FROM media_local_cache ORDER BY updated_at_ms ASC LIMIT 1")
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(|e| FlareError::localized(ErrorCode::DatabaseError, e.to_string()))?;
         let Some(row) = row else {
             return Ok(false);
         };
@@ -318,9 +320,9 @@ impl MediaCacheAdmin for SqliteMediaCacheRepo {
                         "media cache root must be an absolute path",
                     ));
                 }
-                let _ = tokio::fs::create_dir_all(&pb).await.map_err(|e| {
-                    FlareError::system(format!("media cache root not usable: {e}"))
-                })?;
+                let _ = tokio::fs::create_dir_all(&pb)
+                    .await
+                    .map_err(|e| FlareError::system(format!("media cache root not usable: {e}")))?;
                 p.to_string()
             }
         };

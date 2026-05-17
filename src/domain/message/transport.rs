@@ -66,16 +66,36 @@ pub enum MessageTransportAction {
 impl MessageTransportAction {
     pub fn conversation_id(&self) -> &str {
         match self {
-            Self::Recall { conversation_id, .. }
-            | Self::Edit { conversation_id, .. }
-            | Self::Delete { conversation_id, .. }
-            | Self::ReadReceipt { conversation_id, .. }
-            | Self::Typing { conversation_id, .. }
-            | Self::Reaction { conversation_id, .. }
-            | Self::Pin { conversation_id, .. }
-            | Self::Unpin { conversation_id, .. }
-            | Self::Mark { conversation_id, .. }
-            | Self::Unmark { conversation_id, .. } => conversation_id,
+            Self::Recall {
+                conversation_id, ..
+            }
+            | Self::Edit {
+                conversation_id, ..
+            }
+            | Self::Delete {
+                conversation_id, ..
+            }
+            | Self::ReadReceipt {
+                conversation_id, ..
+            }
+            | Self::Typing {
+                conversation_id, ..
+            }
+            | Self::Reaction {
+                conversation_id, ..
+            }
+            | Self::Pin {
+                conversation_id, ..
+            }
+            | Self::Unpin {
+                conversation_id, ..
+            }
+            | Self::Mark {
+                conversation_id, ..
+            }
+            | Self::Unmark {
+                conversation_id, ..
+            } => conversation_id,
         }
     }
 

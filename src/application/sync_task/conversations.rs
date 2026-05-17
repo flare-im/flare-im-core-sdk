@@ -4,7 +4,7 @@
 use std::pin::Pin;
 use std::sync::Arc;
 
-use tracing::info;
+use tracing::debug;
 
 use super::super::SyncProtocolAdapter;
 use crate::core::{SyncContext, SyncMode, SyncResult, SyncTask, SyncTaskResult};
@@ -34,10 +34,12 @@ impl SyncTask for ConversationsSyncTask {
         let handler = self.0.clone();
         let user_id = ctx.user_id.clone();
         Box::pin(async move {
-            info!(task = "conversations", "sync phase: conversations start");
+            debug!(task = "conversations", "sync phase: conversations start");
             ctx.report_progress("syncing conversations");
-            handler.sync_conversations_impl(&user_id).await?;
-            info!(task = "conversations", "sync phase: conversations done");
+            handler
+                .sync_conversations_with_context(&user_id, ctx.run.clone())
+                .await?;
+            debug!(task = "conversations", "sync phase: conversations done");
             Ok(SyncTaskResult::ok())
         })
     }

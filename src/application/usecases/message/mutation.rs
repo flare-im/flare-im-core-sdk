@@ -4,8 +4,8 @@ use std::time::Duration;
 use super::transport_mapper::event_from_transport_action;
 use crate::core::CurrentUserIdStore;
 use crate::domain::{
-    MessageActor, MessageLocalUpdate, MessageLocatorService, MessageMutationService,
-    MessageStore, MessageTransportAction, ResolvedMessage,
+    MessageActor, MessageLocalUpdate, MessageLocatorService, MessageMutationService, MessageStore,
+    MessageTransportAction, ResolvedMessage,
 };
 use crate::error::{ErrorCode, FlareError, Result};
 use crate::event::{EventBus, MessageEvent, SdkEvent};
@@ -103,7 +103,8 @@ impl MessageMutationUseCase {
     pub async fn recall(&self, message_id: &str) -> Result<()> {
         let resolved = self.resolve_message(message_id).await?;
         let plan = self.mutation_service.plan_recall(&resolved);
-        self.dispatch_transport_action(&plan.transport_action).await?;
+        self.dispatch_transport_action(&plan.transport_action)
+            .await?;
         self.store
             .update_status(
                 resolved.server_id(),
@@ -123,7 +124,8 @@ impl MessageMutationUseCase {
         let plan = self
             .mutation_service
             .plan_edit(conversation_id, &resolved, new_content.clone());
-        self.dispatch_transport_action(&plan.transport_action).await?;
+        self.dispatch_transport_action(&plan.transport_action)
+            .await?;
         self.apply_local_update(plan.local_update).await?;
         if let Some(bus) = &self.bus {
             bus.publish(SdkEvent::Message(MessageEvent::Edited {
@@ -141,7 +143,8 @@ impl MessageMutationUseCase {
         let plan = self
             .mutation_service
             .plan_delete_for_self(&actor, &resolved, reason);
-        self.dispatch_transport_action(&plan.transport_action).await?;
+        self.dispatch_transport_action(&plan.transport_action)
+            .await?;
         self.apply_local_update(plan.local_update).await
     }
 
@@ -155,7 +158,8 @@ impl MessageMutationUseCase {
         let plan = self
             .mutation_service
             .plan_delete_for_everyone(&actor, &resolved, reason)?;
-        self.dispatch_transport_action(&plan.transport_action).await?;
+        self.dispatch_transport_action(&plan.transport_action)
+            .await?;
         self.apply_local_update(plan.local_update).await
     }
 
@@ -166,9 +170,9 @@ impl MessageMutationUseCase {
         read_seq: u64,
     ) -> Result<()> {
         let actor = self.actor().await?;
-        let plan = self
-            .mutation_service
-            .plan_read_receipt(&actor, conversation_id, message_ids, read_seq);
+        let plan =
+            self.mutation_service
+                .plan_read_receipt(&actor, conversation_id, message_ids, read_seq);
         self.dispatch_transport_action(&plan.transport_action).await
     }
 
@@ -198,7 +202,8 @@ impl MessageMutationUseCase {
             emoji,
             action,
         );
-        self.dispatch_transport_action(&plan.transport_action).await?;
+        self.dispatch_transport_action(&plan.transport_action)
+            .await?;
         self.store
             .apply_reaction(
                 resolved.conversation_id(),

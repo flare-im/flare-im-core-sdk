@@ -9,19 +9,19 @@ pub mod events;
 pub mod im_client;
 pub mod lifecycle;
 
-pub use api::{
-    ConversationApi, FileDownloadProgress, FileDownloadProgressCallback, MediaApi, MessageApi,
-    MessageBuildApi, UploadPhase, UploadProgress, UploadProgressCallback,
-};
-pub use builder::IMClientBuilder;
-pub use config::{SdkConfig, SdkConfigBuilder};
-pub use im_client::IMClient;
 pub use crate::model::{
     MediaAccessUrl, MediaCacheEntryVo, MediaCacheStatsVo, MediaResolvedAccess, UploadOptions,
     UploadedMedia,
 };
+pub use api::{
+    CapabilityApi, CapabilityDescriptorDto, CapabilityDispatchResult, ConversationApi,
+    FileDownloadProgress, FileDownloadProgressCallback, MediaApi, MessageApi, MessageBuildApi,
+    UploadPhase, UploadProgress, UploadProgressCallback, UserCapabilityGrantDto,
+};
+pub use builder::IMClientBuilder;
+pub use config::{SdkConfig, SdkConfigBuilder};
+pub use im_client::IMClient;
 pub use lifecycle::{
-    default_ws_url, dev_data_dir_relative_to_cwd, merge_sdk_config, parse_data_url_to_path,
-    resolve_connect_token, resolve_user_db_path, sanitize_user_id_for_dir, LoginDbKind,
-    SdkConfigOverlay,
+    LoginDbKind, SdkConfigOverlay, default_ws_url, dev_data_dir_relative_to_cwd, merge_sdk_config,
+    parse_data_url_to_path, resolve_connect_token, resolve_user_db_path, sanitize_user_id_for_dir,
 };

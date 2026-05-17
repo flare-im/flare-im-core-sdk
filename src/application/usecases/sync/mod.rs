@@ -6,7 +6,7 @@ use crate::application::conversation_projection_applier::ConversationProjectionA
 use crate::application::event_deduper::EventDeduper;
 use crate::application::incoming_message_converger::IncomingMessageConverger;
 use crate::application::message_deduper::MessageDeduper;
-use decoding::{decode_single_conversation_items, patches_to_summaries};
+use decoding::decode_single_conversation_items;
 use event_applier::SyncEventApplier;
 use models::{AppliedConversationIncremental, AppliedSingleConversationPage, ReplayMode};
 
@@ -14,7 +14,7 @@ use crate::domain::SyncCursorVo;
 use crate::error::Result;
 use crate::event::{ConversationEvent, EventBus, MessageEvent, SdkEvent};
 use crate::store::StoreProvider;
-use flare_proto::common::{ConversationsIncrementalSyncRes, SingleConversationSyncRes};
+use flare_proto::common::{ConversationsSyncRes, SingleConversationSyncRes};
 
 pub struct SyncApplyUseCase {
     stores: StoreProvider,
@@ -57,26 +57,22 @@ impl SyncApplyUseCase {
 
     pub async fn apply_single_conversation_page(
         &self,
-        _conversation_id: &str,
+        conversation_id: &str,
         user_id: &str,
         known_seq: u64,
         response: &SingleConversationSyncRes,
     ) -> Result<AppliedSingleConversationPage> {
         let decoded = decode_single_conversation_items(response, known_seq);
+        let applied_item_seqs = decoded.applied_item_seqs.clone();
 
-        self.event_applier
+        let _ = self
+            .event_applier
             .apply_events(user_id, &decoded.events, ReplayMode::SingleConversation)
             .await;
 
-        let mut deduped_messages = Vec::with_capacity(decoded.messages.len());
-        for message in decoded.messages {
-            if self.message_deduper.record_if_new(&message).await {
-                deduped_messages.push(message);
-            }
-        }
         let fresh_messages = self
             .incoming_message_converger
-            .converge_messages(user_id, deduped_messages)
+            .converge_messages(user_id, decoded.messages)
             .await?;
 
         if !fresh_messages.is_empty() {
@@ -85,17 +81,34 @@ impl SyncApplyUseCase {
                 .apply_messages(&fresh_messages, user_id)
                 .await?;
             for message in &fresh_messages {
-                self.bus.publish(SdkEvent::Message(MessageEvent::Received {
-                    message: message.clone(),
-                }));
+                if self.message_deduper.record_if_new(message).await {
+                    self.bus.publish(SdkEvent::Message(MessageEvent::Received {
+                        message: message.clone(),
+                    }));
+                }
             }
+        }
+
+        let safe_max_seq = max_contiguous_seq(known_seq, &applied_item_seqs);
+        let has_seq_gap = response.max_seq > safe_max_seq;
+        if has_seq_gap {
+            tracing::warn!(
+                conversation_id = %conversation_id,
+                known_seq,
+                safe_max_seq,
+                remote_max_seq = response.max_seq,
+                item_count = response.items.len(),
+                "消息同步响应存在非连续 seq，游标只推进到已落库连续位点"
+            );
         }
 
         Ok(AppliedSingleConversationPage {
             has_decoded_items: decoded.has_decoded_items,
-            max_seq: response.max_seq,
-            has_more: response.has_more,
+            max_seq: safe_max_seq,
+            remote_max_seq: response.max_seq,
+            has_more: response.has_more || has_seq_gap,
             next_cursor: response.next_cursor.clone(),
+            has_seq_gap,
         })
     }
 
@@ -103,27 +116,45 @@ impl SyncApplyUseCase {
         &self,
         user_id: &str,
         events: &[flare_proto::common::Event],
-    ) {
+    ) -> Vec<u64> {
         self.event_applier
             .apply_events(user_id, events, ReplayMode::CriticalEvents)
-            .await;
+            .await
     }
 
-    pub async fn apply_conversation_incremental(
+    pub async fn apply_conversations(
         &self,
         user_id: &str,
-        response: &ConversationsIncrementalSyncRes,
+        response: &ConversationsSyncRes,
     ) -> Result<AppliedConversationIncremental> {
         let conversation_ids: Vec<String> = response
-            .patches
+            .conversations
             .iter()
-            .map(|patch| patch.conversation_id.clone())
+            .map(|summary| summary.conversation_id.clone())
             .collect();
-        let summaries = patches_to_summaries(&response.patches);
+        let summaries = response.conversations.clone();
+        let mut message_sync_conversation_ids = Vec::new();
 
         if !summaries.is_empty() {
-            let conversations: Vec<crate::model::Conversation> =
-                summaries.into_iter().map(crate::model::Conversation::from).collect();
+            let conversations: Vec<crate::model::Conversation> = summaries
+                .into_iter()
+                .map(crate::model::Conversation::from)
+                .collect();
+            for conversation in &conversations {
+                if conversation.conversation_id.trim().is_empty() || conversation.max_seq == 0 {
+                    continue;
+                }
+                let local_message_seq = self
+                    .stores
+                    .cursors
+                    .get_conversation_cursor(user_id, &conversation.conversation_id)
+                    .await?
+                    .map(|cursor| cursor.last_seq)
+                    .unwrap_or_default();
+                if conversation.max_seq > local_message_seq {
+                    message_sync_conversation_ids.push(conversation.conversation_id.clone());
+                }
+            }
             if let Err(error) = self.stores.conversations.save_batch(&conversations).await {
                 tracing::error!(%error, count = conversations.len(), "保存会话失败");
             } else {
@@ -155,18 +186,26 @@ impl SyncApplyUseCase {
                 }
             }
         } else {
-            tracing::warn!("响应中没有会话数据");
+            tracing::debug!(
+                has_more = response.has_more,
+                server_cursor_ms = crate::util::date::prost_timestamp_to_ms(
+                    response.server_conversation_cursor.as_ref()
+                ),
+                "会话增量同步无变更"
+            );
         }
 
-        self.bus.publish(SdkEvent::Conversation(ConversationEvent::Synced {
-            conversation_ids,
-        }));
+        self.bus
+            .publish(SdkEvent::Conversation(ConversationEvent::Synced {
+                conversation_ids,
+            }));
 
         Ok(AppliedConversationIncremental {
             has_more: response.has_more,
             server_cursor_ms: crate::util::date::prost_timestamp_to_ms(
                 response.server_conversation_cursor.as_ref(),
             ),
+            message_sync_conversation_ids,
         })
     }
 
@@ -190,12 +229,8 @@ impl SyncApplyUseCase {
                 synced_at: now_ms(),
             })
             .await?;
-        if let Err(error) = update_remote(
-            user_id.to_string(),
-            conversation_id.to_string(),
-            last_seq,
-        )
-        .await
+        if let Err(error) =
+            update_remote(user_id.to_string(), conversation_id.to_string(), last_seq).await
         {
             tracing::warn!(
                 user_id = %user_id,
@@ -206,6 +241,26 @@ impl SyncApplyUseCase {
         }
         Ok(())
     }
+}
+
+fn max_contiguous_seq(known_seq: u64, seqs: &[u64]) -> u64 {
+    let mut sorted = seqs
+        .iter()
+        .copied()
+        .filter(|seq| *seq > known_seq)
+        .collect::<Vec<_>>();
+    sorted.sort_unstable();
+    sorted.dedup();
+
+    let mut cursor = known_seq;
+    for seq in sorted {
+        if seq == cursor + 1 {
+            cursor = seq;
+        } else if seq > cursor + 1 {
+            break;
+        }
+    }
+    cursor
 }
 
 fn now_ms() -> u64 {

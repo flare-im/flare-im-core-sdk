@@ -47,6 +47,19 @@ impl ConversationApi {
         Ok(self.view_assembler.hydrate_conversation(conversation).await)
     }
 
+    /// 通过用户 ID 列表获取或创建群聊。本机会话会保存成员 ID，发送群消息时用于服务端补齐参与者。
+    pub async fn get_group_by_user_ids(
+        &self,
+        user_ids: &[String],
+        display_name: Option<&str>,
+    ) -> Result<Conversation> {
+        let conversation = self
+            .command_use_case
+            .get_group_by_user_ids(user_ids, display_name)
+            .await?;
+        Ok(self.view_assembler.hydrate_conversation(conversation).await)
+    }
+
     pub async fn list(&self) -> Result<Vec<Conversation>> {
         self.view_assembler.list().await
     }
@@ -74,7 +87,10 @@ impl ConversationApi {
     }
 
     pub async fn mark_read(&self, conversation_id: &str, read_seq: u64) -> Result<()> {
-        let unread_count = self.command_use_case.mark_read(conversation_id, read_seq).await?;
+        let unread_count = self
+            .command_use_case
+            .mark_read(conversation_id, read_seq)
+            .await?;
         self.bus.publish(SdkEvent::Conversation(
             ConversationEvent::UnreadCountChanged {
                 conversation_id: conversation_id.to_string(),
@@ -98,11 +114,15 @@ impl ConversationApi {
     }
 
     pub async fn set_pinned(&self, conversation_id: &str, pinned: bool) -> Result<()> {
-        self.command_use_case.set_pinned(conversation_id, pinned).await
+        self.command_use_case
+            .set_pinned(conversation_id, pinned)
+            .await
     }
 
     /// 设置会话草稿（本地）
     pub async fn update_draft(&self, conversation_id: &str, draft: Option<&str>) -> Result<()> {
-        self.command_use_case.update_draft(conversation_id, draft).await
+        self.command_use_case
+            .update_draft(conversation_id, draft)
+            .await
     }
 }

@@ -96,10 +96,9 @@ async fn wait_messages_acked(
                 all_acked = false;
                 continue;
             };
-            let acked =
-                msg.status >= flare_proto::common::MessageStatus::Sent as i32
-                    && !msg.server_id.trim().is_empty()
-                    && msg.server_id != msg.client_msg_id;
+            let acked = msg.status >= flare_proto::common::MessageStatus::Sent as i32
+                && !msg.server_id.trim().is_empty()
+                && msg.server_id != msg.client_msg_id;
             if !acked {
                 all_acked = false;
             }
@@ -115,7 +114,10 @@ async fn wait_messages_acked(
     )
 }
 
-fn find_conversation<'a>(list: &'a [Conversation], conversation_id: &str) -> anyhow::Result<&'a Conversation> {
+fn find_conversation<'a>(
+    list: &'a [Conversation],
+    conversation_id: &str,
+) -> anyhow::Result<&'a Conversation> {
     list.iter()
         .find(|c| c.conversation_id() == conversation_id)
         .ok_or_else(|| anyhow::anyhow!("conversation not found: {}", conversation_id))
@@ -131,7 +133,10 @@ async fn main() -> anyhow::Result<()> {
         .map_err(|e| anyhow::Error::msg(e.to_string()))?;
 
     let ws_url = std::env::var("SERVER_URL").unwrap_or_else(|_| "ws://localhost:60051".to_string());
-    let n_msgs: usize = std::env::var("N_MSGS").ok().and_then(|s| s.parse().ok()).unwrap_or(6);
+    let n_msgs: usize = std::env::var("N_MSGS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(6);
     let n_msgs_zero: usize = std::env::var("N_MSGS_ZERO")
         .ok()
         .and_then(|s| s.parse().ok())
@@ -179,7 +184,10 @@ async fn main() -> anyhow::Result<()> {
         .map(|c| c.unread_count() as usize)
         .unwrap_or(0);
     info!("receiver baseline unread: {}", baseline_unread);
-    receiver_client.logout().await.context("receiver first logout")?;
+    receiver_client
+        .logout()
+        .await
+        .context("receiver first logout")?;
 
     // Step 3: sender sends N messages while receiver is offline.
     let mut sent_client_ids = Vec::with_capacity(n_msgs);
@@ -242,7 +250,10 @@ async fn main() -> anyhow::Result<()> {
         .mark_session_read(&conversation_id, read_seq)
         .await
         .context("mark_session_read")?;
-    receiver_client.logout().await.context("receiver second logout")?;
+    receiver_client
+        .logout()
+        .await
+        .context("receiver second logout")?;
 
     tokio::time::sleep(Duration::from_millis(800)).await;
 

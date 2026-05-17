@@ -7,7 +7,8 @@ pub struct MessageContentPolicy;
 
 impl MessageContentPolicy {
     pub fn validate_outbound_message(&self, message: &IMMessage) -> Result<()> {
-        let is_quote_message = message.message_type == flare_proto::common::MessageType::Quote as i32;
+        let is_quote_message =
+            message.message_type == flare_proto::common::MessageType::Quote as i32;
         if let Some(Elem::Quote(quote)) = message.content.as_ref() {
             if quote.quoted_message_id.trim().is_empty() {
                 return Err(FlareError::localized(
@@ -52,8 +53,9 @@ impl MessageContentPolicy {
                 "sdk.message.invalid_content_encoding",
             )
         })?;
-        if let DecodedContent::Content(flare_proto::common::message_content::Content::Quote(quote)) =
-            decoded
+        if let DecodedContent::Content(flare_proto::common::message_content::Content::Quote(
+            quote,
+        )) = decoded
         {
             if quote.quoted_message_id.trim().is_empty() {
                 return Err(FlareError::localized(
@@ -72,7 +74,10 @@ impl MessageContentPolicy {
                     "sdk.message.quote.missing_quoted_content",
                 ));
             }
-            let current_content = quote.current_content.as_ref().and_then(|content| content.content.as_ref());
+            let current_content = quote
+                .current_content
+                .as_ref()
+                .and_then(|content| content.content.as_ref());
             if current_content.is_none() {
                 return Err(FlareError::localized(
                     ErrorCode::InvalidParameter,

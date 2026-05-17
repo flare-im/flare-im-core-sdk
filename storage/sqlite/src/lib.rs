@@ -13,11 +13,9 @@ mod schema_registry;
 
 use anyhow::Result as AnyhowResult;
 use log::LevelFilter;
-use sqlx::sqlite::{
-    SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous,
-};
 use sqlx::ConnectOptions;
 use sqlx::SqlitePool;
+use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
 use std::path::Path;
 use std::str::FromStr;
 use std::time::Duration;
@@ -27,20 +25,18 @@ pub use schema_registry::{SchemaInitializer, register_schema_init, register_sche
 
 /// 统一连接选项：WAL + 较长 busy_timeout + 页缓存，减轻多连接争用写锁时的阻塞与 sqlx 慢查询告警。
 pub(crate) fn connect_options(database_url: &str) -> AnyhowResult<SqliteConnectOptions> {
-    Ok(
-        SqliteConnectOptions::from_str(database_url)
-            .map_err(|e| anyhow::anyhow!("invalid sqlite url: {e}"))?
-            .journal_mode(SqliteJournalMode::Wal)
-            .synchronous(SqliteSynchronous::Normal)
-            // 写锁排队：过短会导致语句失败或总耗时仍被记为 slow；15s 与池 acquire 超时配合
-            .busy_timeout(Duration::from_secs(15))
-            // 负值表示 KB，约 64MiB page cache，降低大库随机读延迟
-            .pragma("cache_size", "-65536")
-            // 适度 mmap，减少读系统调用（移动端/桌面均可接受）
-            .pragma("mmap_size", "67108864")
-            // 仅当单语句（含等锁）≥ 5s 再打 WARN，避免正常锁等待刷屏
-            .log_slow_statements(LevelFilter::Warn, Duration::from_secs(5)),
-    )
+    Ok(SqliteConnectOptions::from_str(database_url)
+        .map_err(|e| anyhow::anyhow!("invalid sqlite url: {e}"))?
+        .journal_mode(SqliteJournalMode::Wal)
+        .synchronous(SqliteSynchronous::Normal)
+        // 写锁排队：过短会导致语句失败或总耗时仍被记为 slow；15s 与池 acquire 超时配合
+        .busy_timeout(Duration::from_secs(15))
+        // 负值表示 KB，约 64MiB page cache，降低大库随机读延迟
+        .pragma("cache_size", "-65536")
+        // 适度 mmap，减少读系统调用（移动端/桌面均可接受）
+        .pragma("mmap_size", "67108864")
+        // 仅当单语句（含等锁）≥ 5s 再打 WARN，避免正常锁等待刷屏
+        .log_slow_statements(LevelFilter::Warn, Duration::from_secs(5)))
 }
 
 /// 创建 SQLite 连接池（不建表）

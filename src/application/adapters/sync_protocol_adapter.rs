@@ -5,30 +5,27 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 
 use flare_proto::common::{
-    Ack, AckType, ConversationAck, GetSyncCursorSync, MultiDeviceCursor, QueryEventsSync,
-    SyncKind, SyncRes, UpdateSyncCursorSync, ack::Payload as AckPayload,
-    sync_res::Payload as SyncResPayload,
+    Ack, AckType, ConversationAck, ConversationParticipantsSync, GetSyncCursorSync,
+    MultiDeviceCursor, QueryEventsSync, SyncKind, SyncRes, UpdateSyncCursorSync,
+    ack::Payload as AckPayload, sync_res::Payload as SyncResPayload,
 };
 use tokio::sync::Mutex as AsyncMutex;
 
 use crate::application::event_deduper::EventDeduper;
 use crate::application::message_deduper::MessageDeduper;
-use crate::application::usecases::sync_request::SyncRequestUseCase;
 use crate::application::usecases::SyncApplyUseCase;
-use crate::core::{SessionSyncRunner, SyncResponseHandler};
+use crate::application::usecases::sync_request::SyncRequestUseCase;
+use crate::core::{SessionSyncRunner, SyncResponseHandler, SyncRunContext};
 use crate::domain::{
-    CONVERSATION_CURSOR_KEY, CRITICAL_EVENT_CURSOR_KEY, DEFAULT_SYNC_LIMIT,
-    SyncPolicy,
+    CONVERSATION_CURSOR_KEY, CRITICAL_EVENT_CURSOR_KEY, DEFAULT_SYNC_LIMIT, SyncPolicy,
 };
-use crate::error::Result;
+use crate::error::{FlareError, Result};
 use crate::event::SyncNotify;
 use crate::event::{EventBus, SdkEvent};
 use crate::fsm::{SyncFsm, SyncState, SyncTransition};
 use crate::protocol::PacketSender;
 use crate::store::StoreProvider;
-use crate::util::date::{
-    ms_to_prost_timestamp, system_time_to_prost_timestamp,
-};
+use crate::util::date::{ms_to_prost_timestamp, system_time_to_prost_timestamp};
 
 #[derive(Debug, Clone, Default)]
 struct QueryEventsReqV1 {
@@ -151,7 +148,7 @@ impl SyncProtocolAdapter {
             .await
     }
 
-    fn transition_sync(&self, event: SyncTransition) {
+    fn transition_sync(&self, run: &SyncRunContext, event: SyncTransition) {
         let mut guard = match self.sync_state.lock() {
             Ok(guard) => guard,
             Err(poisoned) => {
@@ -162,8 +159,10 @@ impl SyncProtocolAdapter {
         if let Ok(next) = SyncFsm::transition(*guard, &event) {
             *guard = next;
             drop(guard);
-            self.bus
-                .publish(SdkEvent::Sync(SyncNotify::StateChanged { state: next }));
+            self.bus.publish(SdkEvent::Sync(SyncNotify::StateChanged {
+                run: run.clone(),
+                state: next,
+            }));
         } else {
             tracing::debug!("sync transition ignored: invalid state transition");
         }
@@ -192,14 +191,16 @@ impl SyncProtocolAdapter {
     /// 将 SyncRes.payload.single_conversation 转为事件列表并落库、发布、更新游标
     async fn apply_sync_res_single(
         &self,
+        run: &SyncRunContext,
         conversation_id: &str,
         resp: &SyncRes,
+        requested_after_seq: u64,
     ) -> Result<(u64, bool, String)> {
         let sc = match &resp.payload {
             Some(SyncResPayload::SingleConversation(s)) => s,
             _ => {
                 tracing::warn!(conversation_id = %conversation_id, "同步响应payload为空或类型不匹配");
-                self.transition_sync(SyncTransition::SyncDone);
+                self.transition_sync(run, SyncTransition::SyncDone);
                 return Ok((0, false, String::new()));
             }
         };
@@ -213,7 +214,7 @@ impl SyncProtocolAdapter {
         );
 
         let user_id = self.current_user_id().await;
-        let known_seq = if user_id.is_empty() {
+        let cursor_seq = if user_id.is_empty() {
             0
         } else {
             self.stores
@@ -223,36 +224,51 @@ impl SyncProtocolAdapter {
                 .map(|c| c.last_seq)
                 .unwrap_or(0)
         };
+        let decode_after_seq = cursor_seq.min(requested_after_seq);
 
         tracing::debug!(
             conversation_id = %conversation_id,
-            known_seq = known_seq,
+            cursor_seq = cursor_seq,
+            requested_after_seq = requested_after_seq,
+            decode_after_seq = decode_after_seq,
             "本地已知消息seq"
         );
 
         let applied = self
             .sync_apply_use_case
-            .apply_single_conversation_page(conversation_id, &user_id, known_seq, sc)
+            .apply_single_conversation_page(conversation_id, &user_id, decode_after_seq, sc)
             .await?;
         if applied.has_decoded_items {
-            self.transition_sync(SyncTransition::DataReceived);
+            self.transition_sync(run, SyncTransition::DataReceived);
         }
-        if sc.max_seq > 0 {
+        if applied.has_seq_gap {
+            tracing::warn!(
+                conversation_id = %conversation_id,
+                cursor_seq,
+                requested_after_seq,
+                decode_after_seq,
+                safe_max_seq = applied.max_seq,
+                remote_max_seq = applied.remote_max_seq,
+                "消息同步未到达远端水位，保留 cursor 在连续位点并等待后续补偿"
+            );
+        }
+        if applied.max_seq > cursor_seq {
             if !user_id.is_empty() {
-                self.save_cursor_with_remote(&user_id, conversation_id, sc.max_seq)
+                self.save_cursor_with_remote(&user_id, conversation_id, applied.max_seq)
                     .await?;
             }
         }
-        if sc.has_more {
-            self.transition_sync(SyncTransition::BatchDone);
+        if applied.has_more {
+            self.transition_sync(run, SyncTransition::BatchDone);
         } else {
-            self.transition_sync(SyncTransition::SyncDone);
+            self.transition_sync(run, SyncTransition::SyncDone);
         }
         Ok((applied.max_seq, applied.has_more, applied.next_cursor))
     }
 
     async fn request_single_page(
         &self,
+        run: &SyncRunContext,
         conversation_id: &str,
         last_seq: u64,
         limit: i32,
@@ -272,7 +288,11 @@ impl SyncProtocolAdapter {
                 .request_single_page(conversation_id, last_seq, limit, cursor.clone())
                 .await
             {
-                Ok(resp) => return self.apply_sync_res_single(conversation_id, &resp).await,
+                Ok(resp) => {
+                    return self
+                        .apply_sync_res_single(run, conversation_id, &resp, last_seq)
+                        .await;
+                }
                 Err(_) => {
                     retries += 1;
                     tracing::warn!(
@@ -285,8 +305,10 @@ impl SyncProtocolAdapter {
                             conversation_id = %conversation_id,
                             "消息同步请求重试次数超过上限(3次)"
                         );
-                        self.transition_sync(SyncTransition::SyncFailed);
-                        return Ok((last_seq, false, String::new()));
+                        self.transition_sync(run, SyncTransition::SyncFailed);
+                        return Err(FlareError::general_error(format!(
+                            "sdk.sync.single_conversation.timeout_or_failed conversation_id={conversation_id}"
+                        )));
                     }
                 }
             }
@@ -302,80 +324,104 @@ impl SyncProtocolAdapter {
         if user_id.is_empty() {
             return Ok(());
         }
-        let local_after_seq = self
-            .stores
-            .cursors
-            .get_conversation_cursor(&user_id, CRITICAL_EVENT_CURSOR_KEY)
-            .await?
-            .map(|c| c.last_seq as i64)
-            .unwrap_or(0);
-        let remote_after_seq = match self
-            .get_remote_cursor_seq(&user_id, CRITICAL_EVENT_CURSOR_KEY)
-            .await
-        {
-            Ok(seq) => seq.unwrap_or(0) as i64,
-            Err(e) => {
-                tracing::warn!(
-                    error = %e,
-                    "关键事件回放：读取远端游标失败，降级使用本地游标"
-                );
-                0
-            }
-        };
-        let mut after_seq = local_after_seq.max(remote_after_seq);
+        let conversations = self.stores.conversations.list().await?;
+        if conversations.is_empty() {
+            return Ok(());
+        }
 
-        loop {
-            let req = QueryEventsReqV1 {
-                conversation_id: String::new(),
-                after_seq,
-                before_seq: 0,
-                limit: 200,
-                event_types: SyncPolicy::critical_event_query_plan().event_types,
-                include_deleted: true,
-            };
-            let resp = match self
-                .request_query_events(QueryEventsSync {
-                    conversation_id: req.conversation_id,
-                    after_seq: req.after_seq,
-                    before_seq: req.before_seq,
-                    limit: req.limit,
-                    event_types: req.event_types,
-                    include_deleted: req.include_deleted,
-                    replay_preset: 0,
-                    client_last_applied_event_seq: 0,
-                })
-                .await
-            {
-                Ok(resp) => resp,
-                Err(e) => {
-                    tracing::warn!(error = %e, after_seq, "关键事件回放请求失败，跳过本轮后台补偿");
+        for conversation in conversations {
+            let conversation_id = conversation.conversation_id;
+            if conversation_id.trim().is_empty() {
+                continue;
+            }
+            let cursor_key = critical_event_cursor_key(&conversation_id);
+            let mut after_seq = self
+                .stores
+                .cursors
+                .get_conversation_cursor(&user_id, &cursor_key)
+                .await?
+                .map(|c| c.last_seq as i64)
+                .unwrap_or(0);
+
+            loop {
+                let req = QueryEventsReqV1 {
+                    conversation_id: conversation_id.clone(),
+                    after_seq,
+                    before_seq: 0,
+                    limit: 200,
+                    event_types: SyncPolicy::critical_event_query_plan().event_types,
+                    include_deleted: true,
+                };
+                let resp = match self
+                    .request_query_events(QueryEventsSync {
+                        conversation_id: req.conversation_id,
+                        after_seq: req.after_seq,
+                        before_seq: req.before_seq,
+                        limit: req.limit,
+                        event_types: req.event_types,
+                        include_deleted: req.include_deleted,
+                        replay_preset: 0,
+                        client_last_applied_event_seq: 0,
+                    })
+                    .await
+                {
+                    Ok(resp) => resp,
+                    Err(e) => {
+                        tracing::warn!(
+                            conversation_id = %conversation_id,
+                            error = %e,
+                            after_seq,
+                            "关键事件回放请求失败，跳过该会话本轮后台补偿"
+                        );
+                        break;
+                    }
+                };
+                let Some(SyncResPayload::QueryEvents(query_res)) = resp.payload else {
+                    break;
+                };
+                let envelope = query_res.envelope.unwrap_or_default();
+                let applied_event_seqs = self
+                    .sync_apply_use_case
+                    .apply_critical_events(&user_id, &envelope.events)
+                    .await;
+                let safe_event_seq =
+                    max_contiguous_seq(after_seq.max(0) as u64, &applied_event_seqs);
+                if safe_event_seq > after_seq.max(0) as u64 {
+                    after_seq = safe_event_seq as i64;
+                    if let Err(e) = self
+                        .sync_apply_use_case
+                        .save_cursor_with_remote(
+                            &user_id,
+                            &cursor_key,
+                            safe_event_seq,
+                            |_, _, _| async { Ok(()) },
+                        )
+                        .await
+                    {
+                        tracing::warn!(
+                            conversation_id = %conversation_id,
+                            error = %e,
+                            "关键事件回放：保存本地游标失败，继续本轮同步"
+                        );
+                    }
+                }
+                if envelope.max_seq > safe_event_seq {
+                    tracing::warn!(
+                        conversation_id = %conversation_id,
+                        after_seq,
+                        safe_event_seq,
+                        remote_max_seq = envelope.max_seq,
+                        "关键事件回放未连续完成，保留 cursor 等待后续重放"
+                    );
                     break;
                 }
-            };
-            let Some(SyncResPayload::QueryEvents(query_res)) = resp.payload else {
-                break;
-            };
-            let envelope = query_res.envelope.unwrap_or_default();
-            self.sync_apply_use_case
-                .apply_critical_events(&user_id, &envelope.events)
-                .await;
-            after_seq = envelope.max_seq as i64;
-            if let Err(e) = self
-                .save_cursor_with_remote(&user_id, CRITICAL_EVENT_CURSOR_KEY, envelope.max_seq)
-                .await
-            {
-                tracing::warn!(
-                    error = %e,
-                    "关键事件回放：保存游标失败，继续本轮同步"
-                );
-            }
-            if !envelope.has_more || envelope.max_seq == 0 {
-                break;
+                if !envelope.has_more || envelope.max_seq == 0 {
+                    break;
+                }
             }
         }
         Ok(())
     }
-
 }
 
 impl SessionSyncRunner for SyncProtocolAdapter {
@@ -405,6 +451,21 @@ impl SessionSyncRunner for SyncProtocolAdapter {
         let id = conversation_id.to_string();
         Box::pin(async move { self.send_read_ack_impl(&id, read_seq).await })
     }
+
+    fn request_participants_sync(
+        &self,
+        conversation_id: &str,
+        limit: i32,
+    ) -> Pin<
+        Box<
+            dyn std::future::Future<Output = Result<Vec<crate::model::ConversationParticipant>>>
+                + Send
+                + '_,
+        >,
+    > {
+        let id = conversation_id.to_string();
+        Box::pin(async move { self.sync_conversation_participants(&id, limit).await })
+    }
 }
 
 impl SyncResponseHandler for SyncProtocolAdapter {
@@ -413,7 +474,11 @@ impl SyncResponseHandler for SyncProtocolAdapter {
         resp: SyncRes,
     ) -> Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>> {
         Box::pin(async move {
-            if self.sync_request_use_case.handle_response(resp.clone()).await {
+            if self
+                .sync_request_use_case
+                .handle_response(resp.clone())
+                .await
+            {
                 return;
             }
             if resp.payload.is_none() {
@@ -423,32 +488,63 @@ impl SyncResponseHandler for SyncProtocolAdapter {
     }
 }
 
+fn critical_event_cursor_key(conversation_id: &str) -> String {
+    format!("{CRITICAL_EVENT_CURSOR_KEY}:{conversation_id}")
+}
+
+fn max_contiguous_seq(known_seq: u64, seqs: &[u64]) -> u64 {
+    let mut sorted = seqs
+        .iter()
+        .copied()
+        .filter(|seq| *seq > known_seq)
+        .collect::<Vec<_>>();
+    sorted.sort_unstable();
+    sorted.dedup();
+
+    let mut cursor = known_seq;
+    for seq in sorted {
+        if seq == cursor + 1 {
+            cursor = seq;
+        } else if seq > cursor + 1 {
+            break;
+        }
+    }
+    cursor
+}
+
 impl SyncProtocolAdapter {
     /// 拉取会话列表（conversation.proto SyncConversationsRequest，经 DATA 发送）
     pub async fn sync_conversations_impl(&self, user_id: &str) -> Result<()> {
-        tracing::info!(user_id = %user_id, "开始同步会话列表");
+        self.sync_conversations_with_context(user_id, SyncRunContext::initial_login())
+            .await
+    }
+
+    pub async fn sync_conversations_with_context(
+        &self,
+        user_id: &str,
+        run: SyncRunContext,
+    ) -> Result<()> {
+        tracing::debug!(user_id = %user_id, "开始同步会话列表");
 
         {
             let mut user = self.active_user_id.lock().await;
             *user = user_id.to_string();
         }
-        self.transition_sync(SyncTransition::SyncRequested);
+        self.transition_sync(&run, SyncTransition::SyncRequested);
         let prior_cursor = self
             .stores
             .cursors
             .get_conversation_cursor(user_id, CONVERSATION_CURSOR_KEY)
             .await?;
-        let local_cursor_ms = prior_cursor
-            .as_ref()
-            .and_then(|cursor| {
-                if cursor.last_seq > 0 {
-                    Some(cursor.last_seq)
-                } else if cursor.synced_at > 0 {
-                    Some(cursor.synced_at)
-                } else {
-                    None
-                }
-            });
+        let local_cursor_ms = prior_cursor.as_ref().and_then(|cursor| {
+            if cursor.last_seq > 0 {
+                Some(cursor.last_seq)
+            } else if cursor.synced_at > 0 {
+                Some(cursor.synced_at)
+            } else {
+                None
+            }
+        });
         let remote_cursor_ms = self
             .get_remote_cursor_seq(user_id, CONVERSATION_CURSOR_KEY)
             .await?;
@@ -460,13 +556,15 @@ impl SyncProtocolAdapter {
             local_conv_count,
         );
         if cursor_selection.drop_local_incremental_cursor {
-            tracing::info!(
+            tracing::debug!(
                 "服务端未返回 __conversations__ 游标（常见于同步编排实例冷启动/缓存未命中）；放弃本地时间游标，全量拉会话列表"
             );
         }
-        let mut cursor_ts = cursor_selection.selected_cursor_ms.and_then(ms_to_prost_timestamp);
+        let mut cursor_ts = cursor_selection
+            .selected_cursor_ms
+            .and_then(ms_to_prost_timestamp);
 
-        tracing::info!(
+        tracing::debug!(
             local_cursor = ?local_cursor_ms,
             remote_cursor = ?remote_cursor_ms,
             using_cursor = ?cursor_ts,
@@ -476,41 +574,56 @@ impl SyncProtocolAdapter {
 
         let mut total_synced = 0usize;
         loop {
-            tracing::info!(
+            tracing::debug!(
                 cursor = ?cursor_ts,
-                sync_kind = SyncKind::ConversationsIncremental as i32,
+                sync_kind = SyncKind::Conversations as i32,
                 "发送会话同步请求"
             );
             let resp = match self
                 .sync_request_use_case
-                .request_conversations_incremental(cursor_ts.clone(), 100)
+                .request_conversations(cursor_ts.clone(), 100)
                 .await
             {
                 Ok(response) => response,
                 Err(error) => {
                     tracing::error!(error = %error, "会话同步响应接收失败");
-                    self.transition_sync(SyncTransition::SyncFailed);
-                    break;
+                    self.transition_sync(&run, SyncTransition::SyncFailed);
+                    return Err(error);
                 }
             };
 
-            tracing::info!(
-                patches_count = resp.patches.len(),
+            tracing::debug!(
+                conversations_count = resp.conversations.len(),
                 has_more = resp.has_more,
                 "收到会话同步响应"
             );
 
             let applied = self
                 .sync_apply_use_case
-                .apply_conversation_incremental(user_id, &resp)
+                .apply_conversations(user_id, &resp)
                 .await?;
-            total_synced += resp.patches.len();
+            total_synced += resp.conversations.len();
             let server_cursor_ms = applied.server_cursor_ms;
             self.save_cursor_with_remote(user_id, CONVERSATION_CURSOR_KEY, server_cursor_ms)
                 .await?;
+            for conversation_id in &applied.message_sync_conversation_ids {
+                if let Err(error) = self
+                    .sync_conversation_with_context(conversation_id, run.clone())
+                    .await
+                {
+                    tracing::warn!(
+                        conversation_id = %conversation_id,
+                        error = %error,
+                        "会话摘要已更新，但补拉会话消息失败"
+                    );
+                    if run.visibility.is_user_visible() {
+                        return Err(error);
+                    }
+                }
+            }
             if !applied.has_more {
-                self.transition_sync(SyncTransition::SyncDone);
-                tracing::info!(total_synced, "会话列表同步完成");
+                self.transition_sync(&run, SyncTransition::SyncDone);
+                tracing::debug!(total_synced, "会话列表同步完成");
                 break;
             }
             cursor_ts = resp.server_conversation_cursor.clone();
@@ -520,9 +633,21 @@ impl SyncProtocolAdapter {
 
     /// 单会话消息同步（sync.proto Sync.single_conversation，经 DATA 发送）
     pub async fn sync_conversation(&self, conversation_id: &str) -> Result<()> {
-        tracing::info!(conversation_id = %conversation_id, "开始同步会话消息");
+        self.sync_conversation_with_context(
+            conversation_id,
+            SyncRunContext::manual_single_conversation(),
+        )
+        .await
+    }
 
-        self.transition_sync(SyncTransition::SyncRequested);
+    pub async fn sync_conversation_with_context(
+        &self,
+        conversation_id: &str,
+        run: SyncRunContext,
+    ) -> Result<()> {
+        tracing::debug!(conversation_id = %conversation_id, "开始同步会话消息");
+
+        self.transition_sync(&run, SyncTransition::SyncRequested);
         let user_id = self.current_user_id().await;
         let last_seq = self
             .stores
@@ -532,7 +657,7 @@ impl SyncProtocolAdapter {
             .map(|c| c.last_seq)
             .unwrap_or(0);
 
-        tracing::info!(
+        tracing::debug!(
             conversation_id = %conversation_id,
             user_id = %user_id,
             last_seq = last_seq,
@@ -540,9 +665,9 @@ impl SyncProtocolAdapter {
         );
 
         let (page_count, total_messages) = self
-            .sync_conversation_loop(conversation_id, last_seq, DEFAULT_SYNC_LIMIT)
+            .sync_conversation_loop(&run, conversation_id, last_seq, DEFAULT_SYNC_LIMIT)
             .await?;
-        tracing::info!(
+        tracing::debug!(
             conversation_id = %conversation_id,
             total_pages = page_count,
             total_messages = total_messages,
@@ -553,6 +678,61 @@ impl SyncProtocolAdapter {
         Ok(())
     }
 
+    /// 按需同步非单聊会话成员。会话列表只负责摘要；成员在打开会话、发起群通话或空闲任务中调用。
+    pub async fn sync_conversation_participants(
+        &self,
+        conversation_id: &str,
+        page_limit: i32,
+    ) -> Result<Vec<crate::model::ConversationParticipant>> {
+        let Some(store) = &self.stores.conversation_participants else {
+            return Ok(Vec::new());
+        };
+        let known_version = store.version(conversation_id).await?;
+        let mut cursor = String::new();
+        let mut all = Vec::new();
+        let mut first_page = true;
+        loop {
+            let resp = self
+                .sync_request_use_case
+                .request_conversation_participants(ConversationParticipantsSync {
+                    conversation_id: conversation_id.to_string(),
+                    known_participant_version: known_version,
+                    cursor: cursor.clone(),
+                    limit: page_limit.max(1),
+                    include_removed: false,
+                    ..Default::default()
+                })
+                .await?;
+            let Some(SyncResPayload::ConversationParticipants(page)) = resp.payload else {
+                return Err(FlareError::general_error(
+                    "unexpected conversation participants response".to_string(),
+                ));
+            };
+            let participants = page
+                .participants
+                .into_iter()
+                .map(crate::model::ConversationParticipant::from)
+                .collect::<Vec<_>>();
+            if !participants.is_empty() || first_page {
+                store
+                    .save_page(
+                        conversation_id,
+                        &participants,
+                        page.participant_version,
+                        first_page && cursor.is_empty(),
+                    )
+                    .await?;
+            }
+            all.extend(participants);
+            if !page.has_more {
+                break;
+            }
+            cursor = page.next_cursor;
+            first_page = false;
+        }
+        Ok(all)
+    }
+
     /// 单会话消息同步（显式指定 last_seq 与 limit，供业务层对接 storage sync 契约）
     pub async fn sync_conversation_from_seq(
         &self,
@@ -560,16 +740,33 @@ impl SyncProtocolAdapter {
         last_seq: u64,
         limit: i32,
     ) -> Result<()> {
-        self.transition_sync(SyncTransition::SyncRequested);
+        self.sync_conversation_from_seq_with_context(
+            conversation_id,
+            last_seq,
+            limit,
+            SyncRunContext::silent_gap_repair(),
+        )
+        .await
+    }
+
+    pub async fn sync_conversation_from_seq_with_context(
+        &self,
+        conversation_id: &str,
+        last_seq: u64,
+        limit: i32,
+        run: SyncRunContext,
+    ) -> Result<()> {
+        self.transition_sync(&run, SyncTransition::SyncRequested);
         let page_limit = if limit > 0 { limit } else { DEFAULT_SYNC_LIMIT };
         let _ = self
-            .sync_conversation_loop(conversation_id, last_seq, page_limit)
+            .sync_conversation_loop(&run, conversation_id, last_seq, page_limit)
             .await?;
         Ok(())
     }
 
     async fn sync_conversation_loop(
         &self,
+        run: &SyncRunContext,
         conversation_id: &str,
         start_seq: u64,
         page_limit: i32,
@@ -582,7 +779,7 @@ impl SyncProtocolAdapter {
         loop {
             page_count += 1;
             let (next_seq, has_more, next_cursor) = self
-                .request_single_page(conversation_id, from_seq, page_limit, cursor)
+                .request_single_page(run, conversation_id, from_seq, page_limit, cursor)
                 .await?;
 
             let messages_in_page = if next_seq > from_seq {
@@ -603,7 +800,19 @@ impl SyncProtocolAdapter {
                 "消息同步页面完成"
             );
 
-            if !has_more || next_seq <= from_seq {
+            if next_seq <= from_seq {
+                if has_more {
+                    tracing::warn!(
+                        conversation_id = %conversation_id,
+                        from_seq,
+                        next_seq,
+                        "消息同步页面未推进但仍存在远端水位，停止本轮同步并等待后续补偿"
+                    );
+                    self.transition_sync(run, SyncTransition::SyncFailed);
+                }
+                break;
+            }
+            if !has_more {
                 break;
             }
             from_seq = next_seq;

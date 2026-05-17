@@ -67,6 +67,12 @@ void flare_error_free(FlareError e);
 cargo build -p flare-im-core-sdk-ffi --release
 ```
 
+### Flutter 示例（`examples/flare-core-flutter`）一键同步产物
+
+在 `bindings/c` 目录执行 `make flutter-sync`，会把 C ABI 产物同步到 Flutter 示例工程对应目录。
+
+完整打包说明见 [`docs/flutter-packaging.md`](docs/flutter-packaging.md)。
+
 ## 线程安全
 
 - callback 可能来自任意线程
@@ -77,7 +83,7 @@ cargo build -p flare-im-core-sdk-ffi --release
 
 - iOS (Swift/Objective-C)
 - Android (Kotlin/Java)
-- Flutter (Dart)：完整示例在 monorepo **`examples/flare-core-flutter/`**（从 `bindings/c/` 起为 `../../../examples/flare-core-flutter`）；构建 FFI 后按该工程内 `macOS`/`iOS` 脚本链入产物
+- Flutter (Dart)：完整示例在 monorepo **`examples/flare-core-flutter/`**；在 **`bindings/c`** 执行 **`make flutter-sync`** 将 dylib / `.a` / `.so` 拷入该工程对应目录（见上节）
 - 鸿蒙 (ArkTS/C++)
 - C/C++
 - Node.js (N-API)

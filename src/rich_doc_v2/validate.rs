@@ -30,16 +30,15 @@ const MARK: &[&str] = &["bold", "italic", "underline", "strike", "spoiler"];
 
 /// 校验整棵 Rich Doc JSON（根须为 `doc` + `version == 2`）。
 pub fn validate_doc_json(doc_json: &str) -> Result<(), RichDocV2Error> {
-    let v: Value = serde_json::from_str(doc_json).map_err(|e| {
-        RichDocV2Error::InvalidJson(e.to_string())
-    })?;
+    let v: Value =
+        serde_json::from_str(doc_json).map_err(|e| RichDocV2Error::InvalidJson(e.to_string()))?;
     validate_value_as_doc(&v)
 }
 
 fn validate_value_as_doc(v: &Value) -> Result<(), RichDocV2Error> {
-    let obj = v.as_object().ok_or_else(|| {
-        RichDocV2Error::InvalidStructure("root must be object".into())
-    })?;
+    let obj = v
+        .as_object()
+        .ok_or_else(|| RichDocV2Error::InvalidStructure("root must be object".into()))?;
     if obj.get("type").and_then(Value::as_str) != Some("doc") {
         return Err(RichDocV2Error::InvalidStructure(
             "root.type must be \"doc\"".into(),
@@ -143,9 +142,7 @@ fn children_array<'a>(
 ) -> Result<&'a Vec<Value>, RichDocV2Error> {
     obj.get("children")
         .and_then(Value::as_array)
-        .ok_or_else(|| {
-            RichDocV2Error::InvalidStructure(format!("{ctx}.children must be array"))
-        })
+        .ok_or_else(|| RichDocV2Error::InvalidStructure(format!("{ctx}.children must be array")))
 }
 
 fn validate_inline(v: &Value) -> Result<(), RichDocV2Error> {
@@ -198,8 +195,16 @@ fn validate_inline(v: &Value) -> Result<(), RichDocV2Error> {
             }
         }
         "mention" => {
-            if obj.get("user_id").and_then(Value::as_str).map(str::is_empty).unwrap_or(true)
-                && obj.get("text").and_then(Value::as_str).map(str::is_empty).unwrap_or(true)
+            if obj
+                .get("user_id")
+                .and_then(Value::as_str)
+                .map(str::is_empty)
+                .unwrap_or(true)
+                && obj
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .map(str::is_empty)
+                    .unwrap_or(true)
             {
                 return Err(RichDocV2Error::InvalidStructure(
                     "mention needs non-empty user_id or text".into(),
@@ -207,8 +212,16 @@ fn validate_inline(v: &Value) -> Result<(), RichDocV2Error> {
             }
         }
         "emoji" => {
-            if obj.get("key").and_then(Value::as_str).map(str::is_empty).unwrap_or(true)
-                && obj.get("text").and_then(Value::as_str).map(str::is_empty).unwrap_or(true)
+            if obj
+                .get("key")
+                .and_then(Value::as_str)
+                .map(str::is_empty)
+                .unwrap_or(true)
+                && obj
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .map(str::is_empty)
+                    .unwrap_or(true)
             {
                 return Err(RichDocV2Error::InvalidStructure(
                     "emoji needs non-empty key or text".into(),

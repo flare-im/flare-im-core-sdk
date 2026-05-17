@@ -28,10 +28,10 @@ use flare_im_core_sdk::model::IMMessage;
 use flare_im_core_sdk::model::message::*;
 use flare_im_core_sdk::model::preview_storage::{self, PreviewStoragePayload};
 use flare_im_core_sdk::prelude::*;
-use serde_json::json;
-use flare_proto::common::TypingEvent;
 use flare_proto::common::ImageFormat;
+use flare_proto::common::TypingEvent;
 use flare_proto::common::message_content::Content as ProtoContent;
+use serde_json::json;
 
 // =============================================================================
 // ContentBuilder: 26 种消息类型构建测试
@@ -204,8 +204,8 @@ async fn test_content_builder_forward() {
             )),
         }),
     };
-    let built = ContentBuilder::forward(ForwardMode::Merged, Some("聊天记录".into()), vec![item])
-        .build();
+    let built =
+        ContentBuilder::forward(ForwardMode::Merged, Some("聊天记录".into()), vec![item]).build();
     assert_eq!(built.message_type, MessageType::MergeForward);
 }
 
@@ -568,7 +568,10 @@ async fn test_content_text_previews() {
             json!({ "label": "北京" }),
         ),
         (
-            ContentBuilder::card("u").card_type("user").title("Alice").build(),
+            ContentBuilder::card("u")
+                .card_type("user")
+                .title("Alice")
+                .build(),
             preview_storage::keys::CARD,
             json!({ "label": "Alice" }),
         ),
@@ -592,8 +595,8 @@ async fn test_content_text_previews() {
             .build()
             .unwrap();
         let decoded = decode_content(&msg).unwrap();
-        let p: PreviewStoragePayload =
-            serde_json::from_str(&decoded.text_preview()).unwrap_or_else(|e| {
+        let p: PreviewStoragePayload = serde_json::from_str(&decoded.text_preview())
+            .unwrap_or_else(|e| {
                 panic!(
                     "preview JSON parse failed: {e}; raw={}",
                     decoded.text_preview()
@@ -602,7 +605,8 @@ async fn test_content_text_previews() {
         assert_eq!(p.k, expected_k, "raw={}", decoded.text_preview());
         let a_obj = serde_json::Value::Object(p.a.clone());
         assert_eq!(
-            a_obj, expected_a,
+            a_obj,
+            expected_a,
             "key={expected_k} raw={}",
             decoded.text_preview()
         );

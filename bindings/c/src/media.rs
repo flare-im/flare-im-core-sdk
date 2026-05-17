@@ -3,7 +3,7 @@
 use std::ffi::{c_char, c_void};
 
 use crate::abi;
-use crate::executor::{execute_async, execute_async_unit, return_error, CallbackContext};
+use crate::executor::{CallbackContext, execute_async, execute_async_unit, return_error};
 use crate::helpers::{c_str_to_string, to_json_string};
 use crate::registry::require_instance;
 use crate::types::{FlareHandle, FlareResultCallback};

@@ -1,12 +1,10 @@
 use std::sync::{Arc, RwLock};
 
-use crate::domain::{
-    IncomingMessageConvergenceDecision, MessageDeliveryService, MessageStore,
-};
+use crate::Result;
+use crate::domain::{IncomingMessageConvergenceDecision, MessageDeliveryService, MessageStore};
 use crate::event::{EventBus, MessageEvent, SdkEvent};
 use crate::model::IMMessage;
 use crate::reliable_queue::ReliableSendQueue;
-use crate::Result;
 
 #[derive(Clone)]
 pub(crate) struct IncomingMessageConverger {
@@ -64,12 +62,15 @@ impl IncomingMessageConverger {
                     if let Some(queue) = reliable_queue {
                         queue.on_ack(ack).await?;
                     } else {
-                        let merged =
-                            MessageDeliveryService::merge_incoming_as_sent(local_by_client.as_ref(), &message);
+                        let merged = MessageDeliveryService::merge_incoming_as_sent(
+                            local_by_client.as_ref(),
+                            &message,
+                        );
                         self.message_store
                             .update_after_ack(&message.client_msg_id, &merged)
                             .await?;
-                        self.bus.publish(SdkEvent::Message(MessageEvent::SendAck { ack }));
+                        self.bus
+                            .publish(SdkEvent::Message(MessageEvent::SendAck { ack }));
                     }
                 }
             }

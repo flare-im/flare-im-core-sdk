@@ -3,8 +3,8 @@
 use tauri::State;
 
 use crate::state::SdkState;
-use flare_im_core_sdk::model::Conversation;
 use flare_im_core_sdk::model::conversation::ConversationType;
+use flare_im_core_sdk::model::{Conversation, ConversationParticipant};
 
 #[tauri::command]
 pub async fn sdk_conversation_list(
@@ -42,6 +42,50 @@ pub async fn sdk_conversation_get_one(
     c.conversation()
         .map_err(|e| e.to_string())?
         .get_one(&source_id, &ct)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn sdk_conversation_get_group_by_user_ids(
+    state: State<'_, SdkState>,
+    user_ids: Vec<String>,
+    display_name: Option<String>,
+) -> std::result::Result<Conversation, String> {
+    let c = state.client();
+    c.conversation()
+        .map_err(|e| e.to_string())?
+        .get_group_by_user_ids(&user_ids, display_name.as_deref())
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn sdk_conversation_sync_participants(
+    state: State<'_, SdkState>,
+    conversation_id: String,
+    limit: Option<i32>,
+) -> std::result::Result<Vec<ConversationParticipant>, String> {
+    let c = state.client();
+    c.sync_conversation_participants(&conversation_id, limit.unwrap_or(200))
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn sdk_conversation_list_participants(
+    state: State<'_, SdkState>,
+    conversation_id: String,
+    offset: Option<u32>,
+    limit: Option<u32>,
+) -> std::result::Result<Vec<ConversationParticipant>, String> {
+    let c = state.client();
+    let stores = c.stores().map_err(|e| e.to_string())?;
+    let Some(store) = stores.conversation_participants else {
+        return Ok(Vec::new());
+    };
+    store
+        .list(&conversation_id, offset.unwrap_or(0), limit.unwrap_or(200))
         .await
         .map_err(|e| e.to_string())
 }

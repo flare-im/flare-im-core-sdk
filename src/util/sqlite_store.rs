@@ -5,18 +5,20 @@
 
 use std::sync::{Arc, OnceLock};
 
-use flare_im_core_sdk_storage_sqlite::{database_url_from_path, open_pool, register_schema_init_with};
+use flare_im_core_sdk_storage_sqlite::{
+    database_url_from_path, open_pool, register_schema_init_with,
+};
 
+use crate::FlareError;
+use crate::Result;
 use crate::domain::{MediaCacheAdmin, MediaCacheStore, UserFileDownloadStore};
 use crate::error::ErrorCode;
 use crate::store::{
-    sqlite_init_schema, SqliteConversationRepo, SqliteMediaCacheRepo, SqliteMessageRepo,
-    SqlitePendingSendRepo, SqliteSyncCursorRepo, SqliteUploadManifestRepo,
-    SqliteUserFileDownloadRepo, SqliteUserProfileRepo, StoreProvider,
+    SqliteConversationParticipantRepo, SqliteConversationRepo, SqliteMediaCacheRepo,
+    SqliteMessageRepo, SqlitePendingSendRepo, SqliteSyncCursorRepo, SqliteUploadManifestRepo,
+    SqliteUserFileDownloadRepo, SqliteUserProfileRepo, StoreProvider, sqlite_init_schema,
 };
 use crate::util::paths::{resolve_media_cache_dir_next_to_db, resolve_user_db_path};
-use crate::FlareError;
-use crate::Result;
 
 static CORE_SCHEMA: OnceLock<()> = OnceLock::new();
 
@@ -59,9 +61,7 @@ pub async fn open_sqlite_store_provider(
     let user_download_repo = Arc::new(SqliteUserFileDownloadRepo::new(pool.clone()));
     let user_repo = Arc::new(SqliteUserProfileRepo::new(pool.clone()));
     let (media_cache_store, media_cache_admin) = if let Some(root) = media_cache_dir {
-        let repo = Arc::new(
-            SqliteMediaCacheRepo::create(pool.clone(), root.to_path_buf()).await?,
-        );
+        let repo = Arc::new(SqliteMediaCacheRepo::create(pool.clone(), root.to_path_buf()).await?);
         (
             Some(repo.clone() as Arc<dyn MediaCacheStore>),
             Some(repo as Arc<dyn MediaCacheAdmin>),
@@ -72,6 +72,9 @@ pub async fn open_sqlite_store_provider(
     Ok(StoreProvider {
         messages: Arc::new(SqliteMessageRepo::new(pool.clone())),
         conversations: Arc::new(SqliteConversationRepo::new(pool.clone())),
+        conversation_participants: Some(Arc::new(SqliteConversationParticipantRepo::new(
+            pool.clone(),
+        ))),
         cursors: Arc::new(SqliteSyncCursorRepo::new(pool.clone())),
         pending_send_reader: Some(pending_repo.clone()),
         pending_send_writer: Some(pending_repo),

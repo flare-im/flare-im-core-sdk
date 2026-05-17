@@ -12,6 +12,10 @@ mod common;
 use flare_im_core_sdk::event::{SdkEvent, SyncNotify, SyncPhase};
 use flare_im_core_sdk::prelude::*;
 
+fn test_sync_run() -> SyncRunContext {
+    SyncRunContext::initial_login()
+}
+
 // =============================================================================
 // 单元测试：Listener 方式订阅同步事件并打日志
 // =============================================================================
@@ -44,27 +48,35 @@ async fn test_sync_logging() {
             tracing::info!(task = %task, "[sync] SyncTaskCompleted");
         });
 
-        bus.publish(SdkEvent::Sync(SyncNotify::Started));
+        let run = test_sync_run();
+
+        bus.publish(SdkEvent::Sync(SyncNotify::Started { run: run.clone() }));
         bus.publish(SdkEvent::Sync(SyncNotify::Progress {
+            run: run.clone(),
             task: "conversations".into(),
             progress: 0.1,
             detail: "0 / 35".into(),
         }));
         bus.publish(SdkEvent::Sync(SyncNotify::TaskCompleted {
+            run: run.clone(),
             task: "conversations".into(),
         }));
         bus.publish(SdkEvent::Sync(SyncNotify::Finished {
+            run: run.clone(),
             phase: SyncPhase::Init,
         }));
         bus.publish(SdkEvent::Sync(SyncNotify::Progress {
+            run: run.clone(),
             task: "read_states".into(),
             progress: 1.0,
             detail: "35 / 35".into(),
         }));
         bus.publish(SdkEvent::Sync(SyncNotify::TaskCompleted {
+            run: run.clone(),
             task: "read_states".into(),
         }));
         bus.publish(SdkEvent::Sync(SyncNotify::Finished {
+            run,
             phase: SyncPhase::Background,
         }));
 
@@ -78,15 +90,19 @@ async fn test_sync_logging() {
 async fn test_sync_order() {
     let bus = EventBus::new();
     let mut rx = bus.subscribe();
+    let run = test_sync_run();
 
-    bus.publish(SdkEvent::Sync(SyncNotify::Started));
+    bus.publish(SdkEvent::Sync(SyncNotify::Started { run: run.clone() }));
     bus.publish(SdkEvent::Sync(SyncNotify::TaskCompleted {
+        run: run.clone(),
         task: "conversations".into(),
     }));
     bus.publish(SdkEvent::Sync(SyncNotify::Finished {
+        run: run.clone(),
         phase: SyncPhase::Init,
     }));
     bus.publish(SdkEvent::Sync(SyncNotify::Finished {
+        run,
         phase: SyncPhase::Background,
     }));
 
@@ -94,7 +110,7 @@ async fn test_sync_order() {
         .await
         .unwrap()
         .unwrap();
-    assert!(matches!(e1, SdkEvent::Sync(SyncNotify::Started)));
+    assert!(matches!(e1, SdkEvent::Sync(SyncNotify::Started { .. })));
 
     let e2 = tokio::time::timeout(tokio::time::Duration::from_millis(200), rx.recv())
         .await
@@ -112,7 +128,8 @@ async fn test_sync_order() {
     assert!(matches!(
         e3,
         SdkEvent::Sync(SyncNotify::Finished {
-            phase: SyncPhase::Init
+            phase: SyncPhase::Init,
+            ..
         })
     ));
 
@@ -123,7 +140,8 @@ async fn test_sync_order() {
     assert!(matches!(
         e4,
         SdkEvent::Sync(SyncNotify::Finished {
-            phase: SyncPhase::Background
+            phase: SyncPhase::Background,
+            ..
         })
     ));
 }

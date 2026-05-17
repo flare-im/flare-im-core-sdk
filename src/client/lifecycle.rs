@@ -8,8 +8,8 @@ pub use crate::util::paths::{
     sanitize_user_id_for_dir,
 };
 
-use crate::client::SdkConfig;
 use crate::Result;
+use crate::client::SdkConfig;
 
 /// 上层可选覆盖项（JSON 字段 snake_case，与 Rust 字段一致）。
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
@@ -18,6 +18,9 @@ pub struct SdkConfigOverlay {
     pub ws_url: Option<String>,
     pub quic_url: Option<String>,
     pub http_url: Option<String>,
+    pub capability_url: Option<String>,
+    pub online_url: Option<String>,
+    pub tenant_id: Option<String>,
     pub connect_timeout_secs: Option<u64>,
     pub reconnect_interval_secs: Option<u64>,
     pub max_reconnect_attempts: Option<u32>,
@@ -55,6 +58,15 @@ pub fn merge_sdk_config(ws_url: &str, overlay: Option<&SdkConfigOverlay>) -> Sdk
         }
         if o.http_url.is_some() {
             config.http_url = o.http_url.clone();
+        }
+        if o.capability_url.is_some() {
+            config.capability_url = o.capability_url.clone();
+        }
+        if o.online_url.is_some() {
+            config.online_url = o.online_url.clone();
+        }
+        if o.tenant_id.is_some() {
+            config.tenant_id = o.tenant_id.clone();
         }
         if o.connect_timeout_secs.is_some() {
             config.connect_timeout_secs = o.connect_timeout_secs;
@@ -107,7 +119,14 @@ pub fn resolve_connect_token(user_id: &str, explicit_token: Option<&str>) -> Res
             return Ok(t.to_string());
         }
     }
-    crate::util::generate_test_token("insecure-secret", "flare-im-core", user_id, 3600, None, None)
+    crate::util::generate_test_token(
+        "insecure-secret",
+        "flare-im-core",
+        user_id,
+        3600,
+        None,
+        None,
+    )
 }
 
 /// 登录时存储选型，配合 [`super::IMClient::login`]。
