@@ -3,6 +3,8 @@
 //! 流程：内部发布 SdkEvent → broadcast 通道 → 异步分发任务 → 按事件类型调用已注册的回调。
 //! 不暴露大 trait，仅暴露 `on_*` 类型化注册，便于跨语言绑定（Swift / Kotlin / TypeScript）。
 
+use std::future::Future;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 
 use flare_proto::common::{CallSignalEvent, MessageRecallEvent, SendAck, TypingEvent};
@@ -20,6 +22,42 @@ use crate::fsm::SyncState;
 
 /// 事件通道容量。过小在同步/推送高峰时会导致 Lagged，分发循环会跳过部分事件并继续；适当增大可减少 Lagged。
 const BUS_CAPACITY: usize = 256;
+const REPLAY_DELAY_MS: u64 = 10;
+
+/// 启动 EventBus 分发循环：在已有 Tokio runtime 内 `spawn`；否则在独立线程上创建 runtime（Tauri/FFI 同步初始化）。
+fn spawn_event_dispatch_loop(fut: impl Future<Output = ()> + Send + 'static) {
+    if tokio::runtime::Handle::try_current().is_ok() {
+        tokio::spawn(fut);
+        return;
+    }
+    std::thread::Builder::new()
+        .name("flare-sdk-event-bus".into())
+        .spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("flare-sdk EventBus runtime");
+            rt.block_on(fut);
+        })
+        .expect("spawn flare-sdk-event-bus thread");
+}
+
+fn spawn_callback(f: impl FnOnce() + Send + 'static) {
+    if tokio::runtime::Handle::try_current().is_ok() {
+        tokio::task::spawn_blocking(f);
+        return;
+    }
+    let _ = std::thread::Builder::new()
+        .name("flare-sdk-event-callback".into())
+        .spawn(f);
+}
+
+fn replay_after_dispatch_window(f: impl FnOnce() + Send + 'static) {
+    spawn_callback(move || {
+        std::thread::sleep(std::time::Duration::from_millis(REPLAY_DELAY_MS));
+        f();
+    });
+}
 
 // 回调存储：Arc 便于 clone 后传入 spawn_blocking，不阻塞分发循环
 type FnConnected = Arc<dyn Fn() + Send + Sync>;
@@ -46,6 +84,9 @@ type FnAny = Arc<dyn Fn(Arc<SdkEvent>) + Send + Sync>;
 #[derive(Clone)]
 pub struct EventBus {
     tx: broadcast::Sender<SdkEvent>,
+    last_connection_state: Arc<RwLock<Option<SdkState>>>,
+    last_sync_state: Arc<RwLock<Option<SyncState>>>,
+    last_sync_finished: Arc<RwLock<Option<SyncPhase>>>,
     // Connection（std::sync::RwLock 支持同步注册，分发时在 spawn_blocking 内读）
     on_connected: Arc<RwLock<Vec<FnConnected>>>,
     on_disconnected: Arc<RwLock<Vec<FnDisconnected>>>,
@@ -83,6 +124,9 @@ pub struct EventBus {
 impl EventBus {
     pub fn new() -> Self {
         let (tx, mut rx) = broadcast::channel(BUS_CAPACITY);
+        let last_connection_state = Arc::new(RwLock::new(None));
+        let last_sync_state = Arc::new(RwLock::new(None));
+        let last_sync_finished = Arc::new(RwLock::new(None));
 
         let on_connected = Arc::new(RwLock::new(Vec::<FnConnected>::new()));
         let on_disconnected = Arc::new(RwLock::new(Vec::new()));
@@ -113,6 +157,9 @@ impl EventBus {
 
         let bus = Self {
             tx: tx.clone(),
+            last_connection_state: last_connection_state.clone(),
+            last_sync_state: last_sync_state.clone(),
+            last_sync_finished: last_sync_finished.clone(),
             on_connected: on_connected.clone(),
             on_disconnected: on_disconnected.clone(),
             on_state_changed: on_state_changed.clone(),
@@ -143,7 +190,7 @@ impl EventBus {
 
         // 异步分发任务：非阻塞接收，每类回调在 spawn_blocking 中执行，避免阻塞事件循环。
         // 必须处理 Lagged：若只写 while let Ok(ev)，当通道积压导致 Lagged 时循环会退出，后续推送等事件将永远不再被分发。
-        tokio::spawn(async move {
+        spawn_event_dispatch_loop(async move {
             loop {
                 let ev = match rx.recv().await {
                     Ok(ev) => ev,
@@ -494,6 +541,27 @@ impl EventBus {
         if matches!(&event, SdkEvent::Sync(sync) if !sync.is_user_visible()) {
             return;
         }
+        match &event {
+            SdkEvent::Connection(ConnectionEvent::StateChanged { state }) => {
+                *self.last_connection_state.write().unwrap() = Some(state.clone());
+            }
+            SdkEvent::Connection(ConnectionEvent::Connected) => {
+                *self.last_connection_state.write().unwrap() = Some(SdkState::Connected);
+            }
+            SdkEvent::Connection(ConnectionEvent::Disconnected { .. }) => {
+                *self.last_connection_state.write().unwrap() = Some(SdkState::Disconnected);
+            }
+            SdkEvent::Sync(SyncNotify::StateChanged { state, .. }) => {
+                *self.last_sync_state.write().unwrap() = Some(*state);
+            }
+            SdkEvent::Sync(SyncNotify::Finished { phase, .. }) => {
+                *self.last_sync_finished.write().unwrap() = Some(phase.clone());
+            }
+            SdkEvent::Sync(SyncNotify::Started { .. }) => {
+                *self.last_sync_finished.write().unwrap() = None;
+            }
+            _ => {}
+        }
         let _ = self.tx.send(event);
     }
 
@@ -513,7 +581,28 @@ impl EventBus {
     where
         F: Fn() + Send + Sync + 'static,
     {
-        self.on_connected.write().unwrap().push(Arc::new(f));
+        let f = Arc::new(f) as FnConnected;
+        let invoked = Arc::new(AtomicBool::new(false));
+        let callback = {
+            let f = f.clone();
+            let invoked = invoked.clone();
+            Arc::new(move || {
+                invoked.store(true, Ordering::Release);
+                f();
+            }) as FnConnected
+        };
+        let already_connected = matches!(
+            *self.last_connection_state.read().unwrap(),
+            Some(SdkState::Connected | SdkState::Ready)
+        );
+        self.on_connected.write().unwrap().push(callback);
+        if already_connected {
+            replay_after_dispatch_window(move || {
+                if !invoked.load(Ordering::Acquire) {
+                    f();
+                }
+            });
+        }
         self.subscription()
     }
 
@@ -532,7 +621,25 @@ impl EventBus {
     where
         F: Fn(SdkState) + Send + Sync + 'static,
     {
-        self.on_state_changed.write().unwrap().push(Arc::new(f));
+        let f = Arc::new(f) as FnStateChanged;
+        let invoked = Arc::new(AtomicBool::new(false));
+        let callback = {
+            let f = f.clone();
+            let invoked = invoked.clone();
+            Arc::new(move |state| {
+                invoked.store(true, Ordering::Release);
+                f(state);
+            }) as FnStateChanged
+        };
+        let last = self.last_connection_state.read().unwrap().clone();
+        self.on_state_changed.write().unwrap().push(callback);
+        if let Some(state) = last {
+            replay_after_dispatch_window(move || {
+                if !invoked.load(Ordering::Acquire) {
+                    f(state);
+                }
+            });
+        }
         self.subscription()
     }
 
@@ -541,10 +648,25 @@ impl EventBus {
     where
         F: Fn(SyncState) + Send + Sync + 'static,
     {
-        self.on_sync_state_changed
-            .write()
-            .unwrap()
-            .push(Arc::new(f));
+        let f = Arc::new(f) as FnSyncStateChanged;
+        let invoked = Arc::new(AtomicBool::new(false));
+        let callback = {
+            let f = f.clone();
+            let invoked = invoked.clone();
+            Arc::new(move |state| {
+                invoked.store(true, Ordering::Release);
+                f(state);
+            }) as FnSyncStateChanged
+        };
+        let last = *self.last_sync_state.read().unwrap();
+        self.on_sync_state_changed.write().unwrap().push(callback);
+        if let Some(state) = last {
+            replay_after_dispatch_window(move || {
+                if !invoked.load(Ordering::Acquire) {
+                    f(state);
+                }
+            });
+        }
         self.subscription()
     }
 
@@ -729,7 +851,25 @@ impl EventBus {
     where
         F: Fn(SyncPhase) + Send + Sync + 'static,
     {
-        self.on_sync_finished.write().unwrap().push(Arc::new(f));
+        let f = Arc::new(f) as FnSyncPhase;
+        let invoked = Arc::new(AtomicBool::new(false));
+        let callback = {
+            let f = f.clone();
+            let invoked = invoked.clone();
+            Arc::new(move |phase| {
+                invoked.store(true, Ordering::Release);
+                f(phase);
+            }) as FnSyncPhase
+        };
+        let last = self.last_sync_finished.read().unwrap().clone();
+        self.on_sync_finished.write().unwrap().push(callback);
+        if let Some(phase) = last {
+            replay_after_dispatch_window(move || {
+                if !invoked.load(Ordering::Acquire) {
+                    f(phase);
+                }
+            });
+        }
         self.subscription()
     }
 

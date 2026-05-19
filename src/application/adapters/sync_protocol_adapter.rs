@@ -15,7 +15,7 @@ use crate::application::event_deduper::EventDeduper;
 use crate::application::message_deduper::MessageDeduper;
 use crate::application::usecases::SyncApplyUseCase;
 use crate::application::usecases::sync_request::SyncRequestUseCase;
-use crate::core::{SessionSyncRunner, SyncResponseHandler, SyncRunContext};
+use crate::core::{SessionSyncRunner, SyncResponseHandler, SyncRunContext, SyncTrigger};
 use crate::domain::{
     CONVERSATION_CURSOR_KEY, CRITICAL_EVENT_CURSOR_KEY, DEFAULT_SYNC_LIMIT, SyncPolicy,
 };
@@ -293,12 +293,13 @@ impl SyncProtocolAdapter {
                         .apply_sync_res_single(run, conversation_id, &resp, last_seq)
                         .await;
                 }
-                Err(_) => {
+                Err(e) => {
                     retries += 1;
                     tracing::warn!(
                         conversation_id = %conversation_id,
                         retry = retries,
-                        "消息同步请求超时或失败，准备重试"
+                        error = %e,
+                        "消息同步请求失败，准备重试"
                     );
                     if retries >= 3 {
                         tracing::error!(
@@ -607,6 +608,14 @@ impl SyncProtocolAdapter {
             self.save_cursor_with_remote(user_id, CONVERSATION_CURSOR_KEY, server_cursor_ms)
                 .await?;
             for conversation_id in &applied.message_sync_conversation_ids {
+                // 登录/重连 Init 阶段只拉会话摘要；消息由 Background `MessagesSyncTask` 并行补齐，
+                // 避免阻塞 `SyncFinished(Init)` 导致客户端登录页长时间 loading。
+                if matches!(
+                    run.trigger,
+                    SyncTrigger::InitialLogin | SyncTrigger::Reconnect
+                ) {
+                    continue;
+                }
                 if let Err(error) = self
                     .sync_conversation_with_context(conversation_id, run.clone())
                     .await

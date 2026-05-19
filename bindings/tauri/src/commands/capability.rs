@@ -13,8 +13,8 @@ pub async fn sdk_rtc_start_audio(
     tenant_id: Option<String>,
 ) -> std::result::Result<CapabilityDispatchResult, String> {
     state
-        .client()
-        .capability()
+        .capability_api()
+        .await
         .map_err(super::map_sdk_err)?
         .rtc_start_audio(&conversation_id, codec.as_deref(), tenant_id.as_deref())
         .await
@@ -29,8 +29,8 @@ pub async fn sdk_rtc_start_video(
     tenant_id: Option<String>,
 ) -> std::result::Result<CapabilityDispatchResult, String> {
     state
-        .client()
-        .capability()
+        .capability_api()
+        .await
         .map_err(super::map_sdk_err)?
         .rtc_start_video(&conversation_id, codec.as_deref(), tenant_id.as_deref())
         .await
@@ -45,8 +45,8 @@ pub async fn sdk_rtc_accept_call(
     tenant_id: Option<String>,
 ) -> std::result::Result<CapabilityDispatchResult, String> {
     state
-        .client()
-        .capability()
+        .capability_api()
+        .await
         .map_err(super::map_sdk_err)?
         .rtc_accept(&conversation_id, &call_id, tenant_id.as_deref())
         .await
@@ -61,8 +61,8 @@ pub async fn sdk_rtc_end_call(
     tenant_id: Option<String>,
 ) -> std::result::Result<CapabilityDispatchResult, String> {
     state
-        .client()
-        .capability()
+        .capability_api()
+        .await
         .map_err(super::map_sdk_err)?
         .rtc_end(&conversation_id, &call_id, tenant_id.as_deref())
         .await
@@ -77,8 +77,8 @@ pub async fn sdk_rtc_reject_call(
     tenant_id: Option<String>,
 ) -> std::result::Result<CapabilityDispatchResult, String> {
     state
-        .client()
-        .capability()
+        .capability_api()
+        .await
         .map_err(super::map_sdk_err)?
         .rtc_reject(&conversation_id, &call_id, tenant_id.as_deref())
         .await
@@ -95,8 +95,8 @@ pub async fn sdk_rtc_sfu_join_room(
     tenant_id: Option<String>,
 ) -> std::result::Result<CapabilityDispatchResult, String> {
     state
-        .client()
-        .capability()
+        .capability_api()
+        .await
         .map_err(super::map_sdk_err)?
         .rtc_sfu_join_room(
             &conversation_id,
@@ -119,8 +119,8 @@ pub async fn sdk_rtc_sfu_leave_room(
     tenant_id: Option<String>,
 ) -> std::result::Result<CapabilityDispatchResult, String> {
     state
-        .client()
-        .capability()
+        .capability_api()
+        .await
         .map_err(super::map_sdk_err)?
         .rtc_sfu_leave_room(
             &conversation_id,
@@ -143,8 +143,8 @@ pub async fn sdk_rtc_sfu_handle_sdp_offer(
     tenant_id: Option<String>,
 ) -> std::result::Result<CapabilityDispatchResult, String> {
     state
-        .client()
-        .capability()
+        .capability_api()
+        .await
         .map_err(super::map_sdk_err)?
         .rtc_sfu_handle_sdp_offer(
             &conversation_id,
@@ -167,8 +167,8 @@ pub async fn sdk_rtc_sfu_add_ice_candidate(
     tenant_id: Option<String>,
 ) -> std::result::Result<CapabilityDispatchResult, String> {
     state
-        .client()
-        .capability()
+        .capability_api()
+        .await
         .map_err(super::map_sdk_err)?
         .rtc_sfu_add_ice_candidate(
             &conversation_id,
@@ -189,8 +189,8 @@ pub async fn sdk_rtc_sfu_get_room_state(
     tenant_id: Option<String>,
 ) -> std::result::Result<CapabilityDispatchResult, String> {
     state
-        .client()
-        .capability()
+        .capability_api()
+        .await
         .map_err(super::map_sdk_err)?
         .rtc_sfu_get_room_state(&conversation_id, &room_id, tenant_id.as_deref())
         .await
@@ -211,8 +211,8 @@ pub async fn sdk_rtc_sfu_set_subscription(
     tenant_id: Option<String>,
 ) -> std::result::Result<CapabilityDispatchResult, String> {
     state
-        .client()
-        .capability()
+        .capability_api()
+        .await
         .map_err(super::map_sdk_err)?
         .rtc_sfu_set_subscription(
             &conversation_id,

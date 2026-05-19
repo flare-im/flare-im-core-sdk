@@ -13,7 +13,9 @@ pub async fn sdk_get_user_presence(
     user_id: String,
 ) -> std::result::Result<UserPresenceDto, String> {
     state
-        .client()
+        .presence_api()
+        .await
+        .map_err(super::map_sdk_err)?
         .get_user_presence(&user_id)
         .await
         .map_err(super::map_sdk_err)
@@ -25,7 +27,9 @@ pub async fn sdk_batch_get_user_presence(
     user_ids: Vec<String>,
 ) -> std::result::Result<HashMap<String, UserPresenceDto>, String> {
     state
-        .client()
+        .presence_api()
+        .await
+        .map_err(super::map_sdk_err)?
         .batch_get_user_presence(&user_ids)
         .await
         .map_err(super::map_sdk_err)
@@ -38,7 +42,9 @@ pub async fn sdk_subscribe_user_presence(
     user_ids: Vec<String>,
 ) -> std::result::Result<(), String> {
     state
-        .client()
+        .presence_api()
+        .await
+        .map_err(super::map_sdk_err)?
         .subscribe_user_presence(user_ids)
         .await
         .map_err(super::map_sdk_err)

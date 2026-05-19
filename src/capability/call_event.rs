@@ -10,6 +10,7 @@ pub use flare_sdk_plugin_call::call_signal::{
     call_renegotiate_p2p_sdp, call_signal_shell, inferred_call_media_session_kind,
     normalize_call_invite_user_ids,
 };
+#[cfg(feature = "plugin-call")]
 pub use flare_sdk_plugin_call::errors::CallInviteBuildError;
 
 /// 构造并返回待发送的 `Event`（`seq` 一般由服务端分配，上行常用 `0`）。

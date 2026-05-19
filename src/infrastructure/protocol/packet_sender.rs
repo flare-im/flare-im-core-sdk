@@ -23,11 +23,16 @@ use crate::util::system_time_to_prost_timestamp;
 /// 上行包发送器 — Message / Event / Ack / DataPacket（同步与用户扩展）
 pub struct PacketSender {
     client: Arc<Mutex<Option<FlareClient>>>,
+    /// 串行化 `send_frame_and_wait`：`HybridClient` 按 message_id 匹配响应，不宜并发等待。
+    rpc_wait: Arc<Mutex<()>>,
 }
 
 impl PacketSender {
     pub fn new(client: Arc<Mutex<Option<FlareClient>>>, _codec: Arc<dyn Codec>) -> Self {
-        Self { client }
+        Self {
+            client,
+            rpc_wait: Arc::new(Mutex::new(())),
+        }
     }
 
     /// 发送领域事件（event.proto Event）。PayloadCommand.type=Event，网关回 EventAck。
@@ -156,16 +161,19 @@ impl PacketSender {
             payload: Some(DataPacketPayload::SyncRequest(sync.clone())),
         };
         let payload = packet.encode_to_vec();
+        let cmd = builder::data_message(builder::generate_message_id(), payload, None, None);
+        let frame = builder::frame_with_payload_command(cmd, Reliability::AtLeastOnce);
+        // 多会话同步会并发调用本方法；用 rpc_wait 排队，禁止 take 走 client（否则并行方得到「未连接」）。
+        let _rpc = self.rpc_wait.lock().await;
         let mut guard = self.client.lock().await;
         let client = guard.as_mut().ok_or_else(|| {
             FlareError::localized(flare_core::common::ErrorCode::NotConnected, "未连接")
         })?;
-        let cmd = builder::data_message(builder::generate_message_id(), payload, None, None);
-        let frame = builder::frame_with_payload_command(cmd, Reliability::AtLeastOnce);
         let response = client
             .send_frame_and_wait(&frame, timeout)
             .await
             .map_err(|e| FlareError::general_error(e.to_string()))?;
+        drop(guard);
         decode_sync_response_frame(&response)
     }
 

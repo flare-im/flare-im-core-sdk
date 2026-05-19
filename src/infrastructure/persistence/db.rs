@@ -38,6 +38,12 @@ impl StoreProvider {
             Arc::new(crate::infrastructure::persistence::MemoryUserProfileStore::new())
         })
     }
+
+    pub fn user_profiles_writer_or_memory(&self) -> Arc<dyn UserWriter> {
+        self.user_profiles_writer.clone().unwrap_or_else(|| {
+            Arc::new(crate::infrastructure::persistence::MemoryUserProfileStore::new())
+        })
+    }
 }
 
 impl Clone for StoreProvider {

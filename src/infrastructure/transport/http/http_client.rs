@@ -2,12 +2,17 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
+use super::http_error_from_response_status;
 use crate::error::{FlareError, Result};
 use tokio::sync::RwLock;
+use uuid::Uuid;
 
 #[derive(Default)]
 pub struct HttpRequestContext {
     auth_token: RwLock<String>,
+    tenant_id: RwLock<String>,
+    user_id: RwLock<String>,
+    trace_id: RwLock<String>,
     language: RwLock<String>,
 }
 
@@ -23,8 +28,39 @@ impl HttpRequestContext {
         }
     }
 
+    /// Gateway / BFF 会话：Bearer + `x-tenant-id` / `x-user-id` / `x-trace-id`
+    pub async fn set_gateway_context(
+        &self,
+        token: String,
+        tenant_id: String,
+        user_id: String,
+        language: Option<String>,
+    ) {
+        *self.auth_token.write().await = token;
+        *self.tenant_id.write().await = tenant_id;
+        *self.user_id.write().await = user_id;
+        if self.trace_id.read().await.is_empty() {
+            *self.trace_id.write().await = Uuid::new_v4().to_string();
+        }
+        if let Some(language) = language {
+            *self.language.write().await = language;
+        }
+    }
+
+    pub async fn clear_gateway_context(&self) {
+        *self.auth_token.write().await = String::new();
+        *self.user_id.write().await = String::new();
+    }
+
+    pub async fn set_trace_id(&self, trace_id: String) {
+        *self.trace_id.write().await = trace_id;
+    }
+
     pub async fn build_headers(&self) -> HashMap<String, String> {
         let token = self.auth_token.read().await.clone();
+        let tenant_id = self.tenant_id.read().await.clone();
+        let user_id = self.user_id.read().await.clone();
+        let trace_id = self.trace_id.read().await.clone();
         let language = self.language.read().await.clone();
         let mut headers = HashMap::new();
         if !token.trim().is_empty() {
@@ -33,6 +69,18 @@ impl HttpRequestContext {
                 format!("Bearer {}", token.trim()),
             );
         }
+        if !tenant_id.is_empty() {
+            headers.insert("x-tenant-id".to_string(), tenant_id);
+        }
+        if !user_id.is_empty() {
+            headers.insert("x-user-id".to_string(), user_id);
+        }
+        if trace_id.is_empty() {
+            headers.insert("x-trace-id".to_string(), Uuid::new_v4().to_string());
+        } else {
+            headers.insert("x-trace-id".to_string(), trace_id);
+        }
+        headers.insert("x-request-id".to_string(), Uuid::new_v4().to_string());
         if !language.trim().is_empty() {
             headers.insert("Accept-Language".to_string(), language);
         }
@@ -54,6 +102,7 @@ impl HttpClient {
         const HTTP_CONNECT_TIMEOUT_SECS: u64 = 5;
         const HTTP_REQUEST_TIMEOUT_SECS: u64 = 30;
         match reqwest::Client::builder()
+            .no_proxy()
             .connect_timeout(Duration::from_secs(HTTP_CONNECT_TIMEOUT_SECS))
             .timeout(Duration::from_secs(HTTP_REQUEST_TIMEOUT_SECS))
             .build()
@@ -408,9 +457,8 @@ impl HttpClient {
             .map_err(|e| FlareError::system(format!("http request failed: {e}")))?;
         let status = resp.status();
         if !status.is_success() {
-            return Err(FlareError::general_error(format!(
-                "http status not success: {status}"
-            )));
+            let body = resp.text().await.unwrap_or_default();
+            return Err(http_error_from_response_status(status.as_u16(), &body));
         }
         resp.json()
             .await
@@ -451,9 +499,8 @@ impl HttpClient {
             .map_err(|e| FlareError::system(format!("http request failed: {e}")))?;
         let status = resp.status();
         if !status.is_success() {
-            return Err(FlareError::general_error(format!(
-                "http status not success: {status}"
-            )));
+            let body = resp.text().await.unwrap_or_default();
+            return Err(http_error_from_response_status(status.as_u16(), &body));
         }
         resp.json()
             .await

@@ -1,6 +1,6 @@
 //! Tauri 命令模块。
 //!
-//! 性能约定：先 [`crate::SdkState::client`] 再调 SDK Facade；错误统一 [`map_sdk_err`]。
+//! 性能约定：已登录热路径用 [`crate::SdkState::message_api`] 等会话快照；生命周期/信令仍用 [`crate::SdkState::client`]；错误统一 [`map_sdk_err`]。
 
 pub mod call_signal;
 pub mod capability;

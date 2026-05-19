@@ -115,6 +115,12 @@ impl SdkEngine {
                 *guard = next;
                 drop(guard);
                 self.publish_state(next);
+                // FSM `Connected` 与 EventBus `ConnectionEvent::Connected` 不同名域；
+                // Tauri `im://connected` 依赖后者，仅发 StateChanged 会导致前端一直停在「连接中」。
+                if next == ConnectionState::Connected {
+                    self.bus
+                        .publish(SdkEvent::Connection(SdkConnectionEvent::Connected));
+                }
             }
             Err(e) => {
                 tracing::warn!(%e, "connection FSM transition rejected");

@@ -96,7 +96,7 @@ fn derive_online_url(config: &SdkConfig) -> String {
 /// IMClient 构建器
 ///
 /// 核心只构建消息和会话能力，其他功能通过扩展注入：
-/// - `add_sync_task`: 注册自定义同步任务（联系人、群列表等）
+/// - `add_sync_task`: 注册自定义同步任务（业务 SDK 扩展，如社交好友/群同步）
 /// - `add_message_interceptor`: 消息拦截（端到端加密、内容过滤等）
 /// - `add_event_interceptor`: 事件拦截（日志、审计等）
 ///
@@ -104,13 +104,14 @@ fn derive_online_url(config: &SdkConfig) -> String {
 /// let client = IMClient::builder()
 ///     .config(SdkConfig::new("wss://im.example.com"))
 ///     .stores(stores)
-///     .add_sync_task(ContactSync::new())       // 扩展：联系人同步
+///     .add_sync_task(MyBusinessSync::new())    // 扩展：业务同步任务
 ///     .add_message_interceptor(E2EEncryption::new()) // 扩展：端到端加密
 ///     .build();
 /// ```
 pub struct IMClientBuilder {
     config: SdkConfig,
     stores: Option<StoreProvider>,
+    http_request_context: Option<Arc<HttpRequestContext>>,
     codec: Option<Arc<dyn Codec>>,
     sync_tasks: Vec<Arc<dyn SyncTask>>,
     message_interceptors: Vec<Arc<dyn MessageInterceptor>>,
@@ -125,6 +126,7 @@ impl IMClientBuilder {
         Self {
             config: SdkConfig::default(),
             stores: None,
+            http_request_context: None,
             codec: None,
             sync_tasks: Vec::new(),
             message_interceptors: Vec::new(),
@@ -145,6 +147,12 @@ impl IMClientBuilder {
     /// 未设置时 [`Self::build`] 会 panic。
     pub fn stores(mut self, stores: StoreProvider) -> Self {
         self.stores = Some(stores);
+        self
+    }
+
+    /// 注入共享 HTTP 鉴权上下文（与 Social Gateway / 媒体 HTTP 共用 Bearer 与链路头）。
+    pub fn http_request_context(mut self, context: Arc<HttpRequestContext>) -> Self {
+        self.http_request_context = Some(context);
         self
     }
 
@@ -292,7 +300,9 @@ impl IMClientBuilder {
             .clone()
             .or_else(|| std::env::var("FLARE_IM_TENANT_ID").ok())
             .unwrap_or_else(|| "0".to_string());
-        let http_request_context = Arc::new(HttpRequestContext::new());
+        let http_request_context = self
+            .http_request_context
+            .unwrap_or_else(|| Arc::new(HttpRequestContext::new()));
         let media_service = Arc::new(MediaService::new(
             HttpClient::with_context(media_base_url, http_request_context.clone()),
             current_user_id.clone(),

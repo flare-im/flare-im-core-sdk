@@ -7,7 +7,7 @@ use std::sync::Arc;
 use tracing::debug;
 
 use super::super::SyncProtocolAdapter;
-use crate::core::{SyncContext, SyncMode, SyncResult, SyncTask, SyncTaskResult};
+use crate::core::{SyncContext, SyncFailurePolicy, SyncMode, SyncResult, SyncTask, SyncTaskResult};
 
 pub struct ConversationsSyncTask(pub(crate) Arc<SyncProtocolAdapter>);
 
@@ -26,6 +26,11 @@ impl SyncTask for ConversationsSyncTask {
     }
     fn weight(&self) -> u32 {
         10
+    }
+    fn failure_policy(&self) -> SyncFailurePolicy {
+        // 会话同步失败必须上报给 UI，但不应该让登录首屏永久停留在 loading。
+        // 连接已 Ready 时优先展示本地缓存/空态，后续重连或手动刷新继续补偿。
+        SyncFailurePolicy::Continue
     }
     fn execute(
         &self,

@@ -8,7 +8,9 @@
 
 pub mod db;
 
+pub mod empty_stores;
 pub mod memory;
+pub mod minimal_provider;
 
 /// 待发送队列：内存 + 后端分层（推荐与 sqlite 组合使用）
 pub mod layered;
@@ -20,9 +22,11 @@ pub mod indexeddb_adapter;
 pub mod sqlite;
 
 pub use db::StoreProvider;
+pub use empty_stores::MemorySyncCursorStore;
 pub use indexeddb_adapter::{MessageBackendAdapter, MessageStorageBackend};
 pub use layered::LayeredPendingSendStore;
 pub use memory::{MemoryPendingSendStore, MemoryUserProfileStore};
+pub use minimal_provider::{in_memory_empty_im_provider, in_memory_minimal_provider};
 
 #[cfg(feature = "storage-sqlite")]
 pub use sqlite::{

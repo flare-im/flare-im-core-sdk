@@ -19,14 +19,14 @@ pub async fn sdk_send_with_media_progress(
     app: tauri::AppHandle,
     message: IMMessage,
 ) -> std::result::Result<SendAckPayload, String> {
-    let c = state.client();
     let app_emit = app.clone();
     let progress_cb: UploadProgressCallback = Arc::new(move |progress| {
         let payload: UploadProgressPayload = progress.into();
         let _ = app_emit.emit("im://upload_progress", payload);
     });
-    let ack = c
-        .message()
+    let ack = state
+        .message_api()
+        .await
         .map_err(|e| e.to_string())?
         .send_with_media_progress(message, Some(progress_cb))
         .await
@@ -40,9 +40,7 @@ pub async fn sdk_get_file_url(
     file_id: String,
     expires_in: Option<i32>,
 ) -> std::result::Result<MediaAccessUrl, String> {
-    let c = state.client();
-    c.media()
-        .map_err(|e| e.to_string())?
+    state.media_api().await.map_err(|e| e.to_string())?
         .get_file_url(&file_id, expires_in.unwrap_or(3600))
         .await
         .map_err(|e| e.to_string())
@@ -55,9 +53,7 @@ pub async fn sdk_media_temp_download_url(
     file_id: String,
     expires_in: Option<i32>,
 ) -> std::result::Result<MediaAccessUrl, String> {
-    let c = state.client();
-    c.media()
-        .map_err(|e| e.to_string())?
+    state.media_api().await.map_err(|e| e.to_string())?
         .get_temp_url_for_file_download(&file_id, expires_in.unwrap_or(3600))
         .await
         .map_err(|e| e.to_string())
@@ -68,9 +64,7 @@ pub async fn sdk_user_file_download_get_saved_path(
     state: State<'_, SdkState>,
     download_key: String,
 ) -> std::result::Result<Option<String>, String> {
-    let c = state.client();
-    c.media()
-        .map_err(|e| e.to_string())?
+    state.media_api().await.map_err(|e| e.to_string())?
         .user_download_get_saved_path(&download_key)
         .await
         .map_err(|e| e.to_string())
@@ -81,9 +75,7 @@ pub async fn sdk_user_file_download_delete_record(
     state: State<'_, SdkState>,
     download_key: String,
 ) -> std::result::Result<(), String> {
-    let c = state.client();
-    c.media()
-        .map_err(|e| e.to_string())?
+    state.media_api().await.map_err(|e| e.to_string())?
         .user_download_delete_record(&download_key)
         .await
         .map_err(|e| e.to_string())
@@ -94,9 +86,7 @@ pub async fn sdk_set_file_download_subfolder(
     state: State<'_, SdkState>,
     name: String,
 ) -> std::result::Result<(), String> {
-    let c = state.client();
-    c.media()
-        .map_err(|e| e.to_string())?
+    state.media_api().await.map_err(|e| e.to_string())?
         .user_download_set_subfolder(&name)
         .await
         .map_err(|e| e.to_string())
@@ -106,21 +96,20 @@ pub async fn sdk_set_file_download_subfolder(
 pub async fn sdk_get_file_download_subfolder(
     state: State<'_, SdkState>,
 ) -> std::result::Result<String, String> {
-    let c = state.client();
-    c.media()
-        .map_err(|e| e.to_string())?
+    state.media_api().await.map_err(|e| e.to_string())?
         .user_download_get_subfolder()
         .await
         .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-pub fn sdk_cancel_user_file_download(
+pub async fn sdk_cancel_user_file_download(
     state: State<'_, SdkState>,
     download_key: String,
 ) -> std::result::Result<bool, String> {
-    let c = state.client();
-    Ok(c.media()
+    Ok(state
+        .media_api()
+        .await
         .map_err(|e| e.to_string())?
         .cancel_user_file_download(&download_key))
 }
@@ -136,8 +125,7 @@ pub async fn sdk_download_file_to_downloads(
     expires_in: Option<i32>,
     channel: tauri::ipc::Channel<FileDownloadProgress>,
 ) -> std::result::Result<String, String> {
-    let c = state.client();
-    let api = c.media().map_err(|e| e.to_string())?;
+    let api = state.media_api().await.map_err(|e| e.to_string())?;
     let channel = Mutex::new(channel);
     let cb: FileDownloadProgressCallback = Arc::new(move |p: FileDownloadProgress| {
         if let Ok(g) = channel.lock() {
@@ -169,9 +157,7 @@ pub async fn sdk_resolve_media_access(
     file_id: String,
     expires_in: Option<i32>,
 ) -> std::result::Result<MediaResolvedAccess, String> {
-    let c = state.client();
-    c.media()
-        .map_err(|e| e.to_string())?
+    state.media_api().await.map_err(|e| e.to_string())?
         .resolve_media_access(&file_id, expires_in.unwrap_or(3600))
         .await
         .map_err(|e| e.to_string())
@@ -183,9 +169,7 @@ pub async fn sdk_cache_remote_media(
     file_id: String,
     expires_in: Option<i32>,
 ) -> std::result::Result<MediaCacheEntryVo, String> {
-    let c = state.client();
-    c.media()
-        .map_err(|e| e.to_string())?
+    state.media_api().await.map_err(|e| e.to_string())?
         .cache_remote_media(&file_id, expires_in.unwrap_or(3600))
         .await
         .map_err(|e| e.to_string())
@@ -195,9 +179,7 @@ pub async fn sdk_cache_remote_media(
 pub async fn sdk_media_cache_stats(
     state: State<'_, SdkState>,
 ) -> std::result::Result<MediaCacheStatsVo, String> {
-    let c = state.client();
-    c.media()
-        .map_err(|e| e.to_string())?
+    state.media_api().await.map_err(|e| e.to_string())?
         .media_cache_stats()
         .await
         .map_err(|e| e.to_string())
@@ -208,9 +190,7 @@ pub async fn sdk_set_media_cache_max_bytes(
     state: State<'_, SdkState>,
     max_bytes: u64,
 ) -> std::result::Result<(), String> {
-    let c = state.client();
-    c.media()
-        .map_err(|e| e.to_string())?
+    state.media_api().await.map_err(|e| e.to_string())?
         .set_media_cache_max_bytes(max_bytes)
         .await
         .map_err(|e| e.to_string())
@@ -221,9 +201,7 @@ pub async fn sdk_set_media_cache_root(
     state: State<'_, SdkState>,
     absolute_path: Option<String>,
 ) -> std::result::Result<(), String> {
-    let c = state.client();
-    c.media()
-        .map_err(|e| e.to_string())?
+    state.media_api().await.map_err(|e| e.to_string())?
         .set_media_cache_root(absolute_path.as_deref())
         .await
         .map_err(|e| e.to_string())
@@ -231,9 +209,7 @@ pub async fn sdk_set_media_cache_root(
 
 #[tauri::command]
 pub async fn sdk_clear_media_cache(state: State<'_, SdkState>) -> std::result::Result<(), String> {
-    let c = state.client();
-    c.media()
-        .map_err(|e| e.to_string())?
+    state.media_api().await.map_err(|e| e.to_string())?
         .clear_media_cache()
         .await
         .map_err(|e| e.to_string())

@@ -85,8 +85,9 @@ pub async fn sdk_rich_doc_v2_create_message(
     search_text: Option<String>,
     render_hints_json: Option<String>,
 ) -> std::result::Result<IMMessage, String> {
-    let c = state.client();
-    c.message_build()
+    state
+        .message_build_api()
+        .await
         .map_err(|e| e.to_string())?
         .create_rich_doc(
             &conversation_id,
@@ -118,8 +119,9 @@ pub async fn sdk_rich_doc_v2_edit_message(
     search_text: Option<String>,
     render_hints_json: Option<String>,
 ) -> std::result::Result<(), String> {
-    let c = state.client();
-    c.message()
+    state
+        .message_api()
+        .await
         .map_err(|e| e.to_string())?
         .edit_rich_doc_by_message_id(
             &message_id,

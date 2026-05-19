@@ -9,6 +9,9 @@
 
 mod common;
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
+
 use flare_im_core_sdk::event::{SdkEvent, SyncNotify, SyncPhase};
 use flare_im_core_sdk::prelude::*;
 
@@ -144,6 +147,31 @@ async fn test_sync_order() {
             ..
         })
     ));
+}
+
+#[tokio::test]
+async fn test_sync_finished_replays_init_to_late_listener() {
+    let bus = EventBus::new();
+    let run = test_sync_run();
+    bus.publish(SdkEvent::Sync(SyncNotify::Finished {
+        run,
+        phase: SyncPhase::Init,
+    }));
+
+    let count = Arc::new(AtomicU32::new(0));
+    let c = count.clone();
+    let _sub = bus.on_sync_finished(move |phase| {
+        if matches!(phase, SyncPhase::Init) {
+            c.fetch_add(1, Ordering::Relaxed);
+        }
+    });
+
+    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+    assert_eq!(
+        count.load(Ordering::Relaxed),
+        1,
+        "late listener should receive latest Init finish"
+    );
 }
 
 // =============================================================================

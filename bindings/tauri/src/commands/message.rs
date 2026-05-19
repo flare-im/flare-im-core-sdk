@@ -28,9 +28,7 @@ pub async fn sdk_create_text(
     conversation_id: String,
     text: String,
 ) -> std::result::Result<IMMessage, String> {
-    let c = state.client();
-    c.message_build()
-        .map_err(|e| e.to_string())?
+    state.message_build_api().await.map_err(|e| e.to_string())?
         .create_text(&conversation_id, &text)
         .await
         .map_err(|e| e.to_string())
@@ -50,9 +48,7 @@ pub async fn sdk_create_quote(
         .map(|m| m.sender_id.as_str())
         .filter(|s| !s.trim().is_empty());
     let quoted_content = quoted_message.as_ref().and_then(build_content_from_message);
-    let c = state.client();
-    c.message_build()
-        .map_err(|e| e.to_string())?
+    state.message_build_api().await.map_err(|e| e.to_string())?
         .create_quote(
             &conversation_id,
             &quoted_message_id,
@@ -72,9 +68,7 @@ pub async fn sdk_create_thread_reply(
     thread_id: String,
     text: String,
 ) -> std::result::Result<IMMessage, String> {
-    let c = state.client();
-    c.message_build()
-        .map_err(|e| e.to_string())?
+    state.message_build_api().await.map_err(|e| e.to_string())?
         .create_thread_reply(&conversation_id, &thread_id, &text)
         .await
         .map_err(|e| e.to_string())
@@ -88,9 +82,7 @@ pub async fn sdk_create_forward(
     forward_title: String,
     source_messages: Vec<IMMessage>,
 ) -> std::result::Result<IMMessage, String> {
-    let c = state.client();
-    c.message_build()
-        .map_err(|e| e.to_string())?
+    state.message_build_api().await.map_err(|e| e.to_string())?
         .create_forward(&conversation_id, merge, &forward_title, source_messages)
         .await
         .map_err(|e| e.to_string())
@@ -102,9 +94,7 @@ pub async fn sdk_create_image(
     conversation_id: String,
     image_id: String,
 ) -> std::result::Result<IMMessage, String> {
-    let c = state.client();
-    c.message_build()
-        .map_err(|e| e.to_string())?
+    state.message_build_api().await.map_err(|e| e.to_string())?
         .create_image(&conversation_id, &image_id)
         .await
         .map_err(|e| e.to_string())
@@ -117,9 +107,7 @@ pub async fn sdk_create_image_with_thumbnail(
     source_image_id: String,
     thumbnail_image_id: String,
 ) -> std::result::Result<IMMessage, String> {
-    let c = state.client();
-    c.message_build()
-        .map_err(|e| e.to_string())?
+    state.message_build_api().await.map_err(|e| e.to_string())?
         .create_image_with_thumbnail(&conversation_id, &source_image_id, &thumbnail_image_id)
         .await
         .map_err(|e| e.to_string())
@@ -180,9 +168,7 @@ pub async fn sdk_create_image_group(
         .collect();
     let description = description.unwrap_or_default();
     let metadata = metadata.unwrap_or_default();
-    let c = state.client();
-    c.message_build()
-        .map_err(|e| e.to_string())?
+    state.message_build_api().await.map_err(|e| e.to_string())?
         .create_image_group(&conversation_id, images, description, metadata)
         .await
         .map_err(|e| e.to_string())
@@ -194,9 +180,7 @@ pub async fn sdk_create_video(
     conversation_id: String,
     video_id: String,
 ) -> std::result::Result<IMMessage, String> {
-    let c = state.client();
-    c.message_build()
-        .map_err(|e| e.to_string())?
+    state.message_build_api().await.map_err(|e| e.to_string())?
         .create_video(&conversation_id, &video_id)
         .await
         .map_err(|e| e.to_string())
@@ -208,9 +192,7 @@ pub async fn sdk_create_audio(
     conversation_id: String,
     audio_id: String,
 ) -> std::result::Result<IMMessage, String> {
-    let c = state.client();
-    c.message_build()
-        .map_err(|e| e.to_string())?
+    state.message_build_api().await.map_err(|e| e.to_string())?
         .create_audio(&conversation_id, &audio_id)
         .await
         .map_err(|e| e.to_string())
@@ -222,9 +204,7 @@ pub async fn sdk_create_file(
     conversation_id: String,
     file_id: String,
 ) -> std::result::Result<IMMessage, String> {
-    let c = state.client();
-    c.message_build()
-        .map_err(|e| e.to_string())?
+    state.message_build_api().await.map_err(|e| e.to_string())?
         .create_file(&conversation_id, &file_id)
         .await
         .map_err(|e| e.to_string())
@@ -242,9 +222,7 @@ pub async fn sdk_create_location(
     snapshot_url: Option<String>,
     snapshot_local_path: Option<String>,
 ) -> std::result::Result<IMMessage, String> {
-    let c = state.client();
-    c.message_build()
-        .map_err(|e| e.to_string())?
+    state.message_build_api().await.map_err(|e| e.to_string())?
         .create_location(
             &conversation_id,
             longitude,
@@ -269,9 +247,7 @@ pub async fn sdk_create_card(
     subtitle: Option<String>,
     avatar: Option<String>,
 ) -> std::result::Result<IMMessage, String> {
-    let c = state.client();
-    c.message_build()
-        .map_err(|e| e.to_string())?
+    state.message_build_api().await.map_err(|e| e.to_string())?
         .create_card(
             &conversation_id,
             &id,
@@ -295,9 +271,7 @@ pub async fn sdk_create_sticker(
     height: Option<i32>,
     sticker_format: Option<String>,
 ) -> std::result::Result<IMMessage, String> {
-    let c = state.client();
-    c.message_build()
-        .map_err(|e| e.to_string())?
+    state.message_build_api().await.map_err(|e| e.to_string())?
         .create_sticker(
             &conversation_id,
             &sticker_id,
@@ -317,9 +291,7 @@ pub async fn sdk_create_emoji(
     conversation_id: String,
     emoji: String,
 ) -> std::result::Result<IMMessage, String> {
-    let c = state.client();
-    c.message_build()
-        .map_err(|e| e.to_string())?
+    state.message_build_api().await.map_err(|e| e.to_string())?
         .create_emoji(&conversation_id, &emoji)
         .await
         .map_err(|e| e.to_string())
@@ -335,9 +307,7 @@ pub async fn sdk_create_link_card(
     thumbnail_url: Option<String>,
     site_name: Option<String>,
 ) -> std::result::Result<IMMessage, String> {
-    let c = state.client();
-    c.message_build()
-        .map_err(|e| e.to_string())?
+    state.message_build_api().await.map_err(|e| e.to_string())?
         .create_link_card(
             &conversation_id,
             &url,
@@ -360,9 +330,7 @@ pub async fn sdk_create_mini_program(
     thumbnail_url: Option<String>,
     extra: Option<std::collections::HashMap<String, String>>,
 ) -> std::result::Result<IMMessage, String> {
-    let c = state.client();
-    c.message_build()
-        .map_err(|e| e.to_string())?
+    state.message_build_api().await.map_err(|e| e.to_string())?
         .create_mini_program(
             &conversation_id,
             &app_id,
@@ -382,9 +350,7 @@ pub async fn sdk_create_system(
     event_kind: String,
     body: String,
 ) -> std::result::Result<IMMessage, String> {
-    let c = state.client();
-    c.message_build()
-        .map_err(|e| e.to_string())?
+    state.message_build_api().await.map_err(|e| e.to_string())?
         .create_system(&conversation_id, &event_kind, &body)
         .await
         .map_err(|e| e.to_string())
@@ -397,9 +363,7 @@ pub async fn sdk_create_notification(
     title: String,
     body: String,
 ) -> std::result::Result<IMMessage, String> {
-    let c = state.client();
-    c.message_build()
-        .map_err(|e| e.to_string())?
+    state.message_build_api().await.map_err(|e| e.to_string())?
         .create_notification(&conversation_id, &title, &body)
         .await
         .map_err(|e| e.to_string())
@@ -414,9 +378,7 @@ pub async fn sdk_create_vote(
     options: Vec<String>,
     participant_user_ids: Option<Vec<String>>,
 ) -> std::result::Result<IMMessage, String> {
-    let c = state.client();
-    c.message_build()
-        .map_err(|e| e.to_string())?
+    state.message_build_api().await.map_err(|e| e.to_string())?
         .create_vote(
             &conversation_id,
             &vote_id,
@@ -437,9 +399,7 @@ pub async fn sdk_create_task(
     status: Option<String>,
     participant_user_ids: Option<Vec<String>>,
 ) -> std::result::Result<IMMessage, String> {
-    let c = state.client();
-    c.message_build()
-        .map_err(|e| e.to_string())?
+    state.message_build_api().await.map_err(|e| e.to_string())?
         .create_task(
             &conversation_id,
             &task_id,
@@ -461,9 +421,7 @@ pub async fn sdk_create_schedule(
     end_time_ms: i64,
     participant_user_ids: Option<Vec<String>>,
 ) -> std::result::Result<IMMessage, String> {
-    let c = state.client();
-    c.message_build()
-        .map_err(|e| e.to_string())?
+    state.message_build_api().await.map_err(|e| e.to_string())?
         .create_schedule(
             &conversation_id,
             &schedule_id,
@@ -483,9 +441,7 @@ pub async fn sdk_create_announcement(
     title: String,
     body: String,
 ) -> std::result::Result<IMMessage, String> {
-    let c = state.client();
-    c.message_build()
-        .map_err(|e| e.to_string())?
+    state.message_build_api().await.map_err(|e| e.to_string())?
         .create_announcement(&conversation_id, &title, &body)
         .await
         .map_err(|e| e.to_string())
@@ -497,9 +453,7 @@ pub async fn sdk_create_custom(
     conversation_id: String,
     r#type: String,
 ) -> std::result::Result<IMMessage, String> {
-    let c = state.client();
-    c.message_build()
-        .map_err(|e| e.to_string())?
+    state.message_build_api().await.map_err(|e| e.to_string())?
         .create_custom(&conversation_id, &r#type)
         .await
         .map_err(|e| e.to_string())
@@ -511,9 +465,7 @@ pub async fn sdk_create_placeholder(
     conversation_id: String,
     reason: String,
 ) -> std::result::Result<IMMessage, String> {
-    let c = state.client();
-    c.message_build()
-        .map_err(|e| e.to_string())?
+    state.message_build_api().await.map_err(|e| e.to_string())?
         .create_placeholder(&conversation_id, &reason)
         .await
         .map_err(|e| e.to_string())
@@ -526,13 +478,8 @@ pub async fn sdk_send(
     state: State<'_, SdkState>,
     message: IMMessage,
 ) -> std::result::Result<SendAckPayload, String> {
-    let c = state.client();
-    let ack = c
-        .message()
-        .map_err(|e| e.to_string())?
-        .send(message)
-        .await
-        .map_err(|e| e.to_string())?;
+    let api = state.message_api().await.map_err(|e| e.to_string())?;
+    let ack = api.send(message).await.map_err(|e| e.to_string())?;
     Ok(ack.into())
 }
 
@@ -541,9 +488,7 @@ pub async fn sdk_recall(
     state: State<'_, SdkState>,
     message_id: String,
 ) -> std::result::Result<(), String> {
-    let c = state.client();
-    c.message()
-        .map_err(|e| e.to_string())?
+    state.message_api().await.map_err(|e| e.to_string())?
         .recall(&message_id)
         .await
         .map_err(|e| e.to_string())
@@ -556,9 +501,7 @@ pub async fn sdk_edit(
     message_id: String,
     new_content: Vec<u8>,
 ) -> std::result::Result<(), String> {
-    let c = state.client();
-    c.message()
-        .map_err(|e| e.to_string())?
+    state.message_api().await.map_err(|e| e.to_string())?
         .edit(&conversation_id, &message_id, new_content)
         .await
         .map_err(|e| e.to_string())
@@ -570,9 +513,7 @@ pub async fn sdk_edit_text_by_message_id(
     message_id: String,
     text: String,
 ) -> std::result::Result<(), String> {
-    let c = state.client();
-    c.message()
-        .map_err(|e| e.to_string())?
+    state.message_api().await.map_err(|e| e.to_string())?
         .edit_text_by_message_id(&message_id, &text)
         .await
         .map_err(|e| e.to_string())
@@ -585,8 +526,7 @@ pub async fn sdk_delete_message(
     delete_scope: Option<i32>,
     reason: Option<String>,
 ) -> std::result::Result<(), String> {
-    let c = state.client();
-    let api = c.message().map_err(|e| e.to_string())?;
+    let api = state.message_api().await.map_err(|e| e.to_string())?;
     let scope = delete_scope.unwrap_or(1);
     let res = match scope {
         2 => api.delete_for_everyone(&message_id, reason).await,
@@ -601,9 +541,7 @@ pub async fn sdk_mark_read(
     conversation_id: String,
     read_seq: u64,
 ) -> std::result::Result<(), String> {
-    let c = state.client();
-    c.message()
-        .map_err(|e| e.to_string())?
+    state.message_api().await.map_err(|e| e.to_string())?
         .mark_read(&conversation_id, read_seq)
         .await
         .map_err(|e| e.to_string())
@@ -616,9 +554,7 @@ pub async fn sdk_mark_read_with_ids(
     message_ids: Vec<String>,
     read_seq: u64,
 ) -> std::result::Result<(), String> {
-    let c = state.client();
-    c.message()
-        .map_err(|e| e.to_string())?
+    state.message_api().await.map_err(|e| e.to_string())?
         .mark_read_with_ids(&conversation_id, message_ids, read_seq)
         .await
         .map_err(|e| e.to_string())
@@ -630,9 +566,7 @@ pub async fn sdk_typing(
     conversation_id: String,
     typing: bool,
 ) -> std::result::Result<(), String> {
-    let c = state.client();
-    c.message()
-        .map_err(|e| e.to_string())?
+    state.message_api().await.map_err(|e| e.to_string())?
         .typing(&conversation_id, typing)
         .await
         .map_err(|e| e.to_string())
@@ -644,9 +578,7 @@ pub async fn sdk_add_reaction(
     message_id: String,
     emoji: String,
 ) -> std::result::Result<(), String> {
-    let c = state.client();
-    c.message()
-        .map_err(|e| e.to_string())?
+    state.message_api().await.map_err(|e| e.to_string())?
         .add_reaction(&message_id, &emoji)
         .await
         .map_err(|e| e.to_string())
@@ -658,9 +590,7 @@ pub async fn sdk_remove_reaction(
     message_id: String,
     emoji: String,
 ) -> std::result::Result<(), String> {
-    let c = state.client();
-    c.message()
-        .map_err(|e| e.to_string())?
+    state.message_api().await.map_err(|e| e.to_string())?
         .remove_reaction(&message_id, &emoji)
         .await
         .map_err(|e| e.to_string())
@@ -672,9 +602,7 @@ pub async fn sdk_pin(
     conversation_id: String,
     message_id: String,
 ) -> std::result::Result<(), String> {
-    let c = state.client();
-    c.message()
-        .map_err(|e| e.to_string())?
+    state.message_api().await.map_err(|e| e.to_string())?
         .pin(&conversation_id, &message_id)
         .await
         .map_err(|e| e.to_string())
@@ -686,9 +614,7 @@ pub async fn sdk_unpin(
     conversation_id: String,
     message_id: String,
 ) -> std::result::Result<(), String> {
-    let c = state.client();
-    c.message()
-        .map_err(|e| e.to_string())?
+    state.message_api().await.map_err(|e| e.to_string())?
         .unpin(&conversation_id, &message_id)
         .await
         .map_err(|e| e.to_string())
@@ -699,9 +625,7 @@ pub async fn sdk_pin_by_message_id(
     state: State<'_, SdkState>,
     message_id: String,
 ) -> std::result::Result<(), String> {
-    let c = state.client();
-    c.message()
-        .map_err(|e| e.to_string())?
+    state.message_api().await.map_err(|e| e.to_string())?
         .pin_by_message_id(&message_id)
         .await
         .map_err(|e| e.to_string())
@@ -712,9 +636,7 @@ pub async fn sdk_unpin_by_message_id(
     state: State<'_, SdkState>,
     message_id: String,
 ) -> std::result::Result<(), String> {
-    let c = state.client();
-    c.message()
-        .map_err(|e| e.to_string())?
+    state.message_api().await.map_err(|e| e.to_string())?
         .unpin_by_message_id(&message_id)
         .await
         .map_err(|e| e.to_string())
@@ -737,9 +659,7 @@ pub async fn sdk_mark(
     mark_type: i32,
 ) -> std::result::Result<(), String> {
     let mt = parse_mark_type(mark_type);
-    let c = state.client();
-    c.message()
-        .map_err(|e| e.to_string())?
+    state.message_api().await.map_err(|e| e.to_string())?
         .mark(&conversation_id, &message_id, mt)
         .await
         .map_err(|e| e.to_string())
@@ -754,9 +674,7 @@ pub async fn sdk_mark_with_color(
     color: String,
 ) -> std::result::Result<(), String> {
     let mt = parse_mark_type(mark_type);
-    let c = state.client();
-    c.message()
-        .map_err(|e| e.to_string())?
+    state.message_api().await.map_err(|e| e.to_string())?
         .mark_with_color(&conversation_id, &message_id, mt, &color)
         .await
         .map_err(|e| e.to_string())
@@ -770,9 +688,7 @@ pub async fn sdk_unmark(
     mark_type: i32,
 ) -> std::result::Result<(), String> {
     let mt = parse_mark_type(mark_type);
-    let c = state.client();
-    c.message()
-        .map_err(|e| e.to_string())?
+    state.message_api().await.map_err(|e| e.to_string())?
         .unmark(&conversation_id, &message_id, mt)
         .await
         .map_err(|e| e.to_string())
@@ -786,9 +702,7 @@ pub async fn sdk_mark_by_message_id(
     color: String,
 ) -> std::result::Result<(), String> {
     let mt = parse_mark_type(mark_type);
-    let c = state.client();
-    c.message()
-        .map_err(|e| e.to_string())?
+    state.message_api().await.map_err(|e| e.to_string())?
         .mark_by_message_id(&message_id, mt, &color)
         .await
         .map_err(|e| e.to_string())
@@ -801,9 +715,7 @@ pub async fn sdk_unmark_by_message_id(
     mark_type: i32,
 ) -> std::result::Result<(), String> {
     let mt = parse_mark_type(mark_type);
-    let c = state.client();
-    c.message()
-        .map_err(|e| e.to_string())?
+    state.message_api().await.map_err(|e| e.to_string())?
         .unmark_by_message_id(&message_id, mt)
         .await
         .map_err(|e| e.to_string())
@@ -814,9 +726,7 @@ pub async fn sdk_get_message(
     state: State<'_, SdkState>,
     message_id: String,
 ) -> std::result::Result<Option<IMMessage>, String> {
-    let c = state.client();
-    c.message()
-        .map_err(|e| e.to_string())?
+    state.message_api().await.map_err(|e| e.to_string())?
         .get(&message_id)
         .await
         .map_err(|e| e.to_string())
@@ -827,9 +737,7 @@ pub async fn sdk_get_message_raw(
     state: State<'_, SdkState>,
     message_id: String,
 ) -> std::result::Result<Option<IMMessage>, String> {
-    let c = state.client();
-    c.message()
-        .map_err(|e| e.to_string())?
+    state.message_api().await.map_err(|e| e.to_string())?
         .get_raw(&message_id)
         .await
         .map_err(|e| e.to_string())
@@ -842,9 +750,7 @@ pub async fn sdk_list_messages(
     before_seq: u64,
     limit: u32,
 ) -> std::result::Result<Vec<IMMessage>, String> {
-    let c = state.client();
-    c.message()
-        .map_err(|e| e.to_string())?
+    state.message_api().await.map_err(|e| e.to_string())?
         .list(&conversation_id, before_seq, limit)
         .await
         .map_err(|e| e.to_string())
@@ -856,9 +762,7 @@ pub async fn sdk_search_messages(
     keyword: String,
     limit: u32,
 ) -> std::result::Result<Vec<IMMessage>, String> {
-    let c = state.client();
-    c.message()
-        .map_err(|e| e.to_string())?
+    state.message_api().await.map_err(|e| e.to_string())?
         .search(&keyword, limit)
         .await
         .map_err(|e| e.to_string())

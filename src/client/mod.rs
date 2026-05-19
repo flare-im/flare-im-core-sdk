@@ -5,6 +5,7 @@
 pub mod api;
 pub mod builder;
 pub mod config;
+pub mod connected_apis;
 pub mod events;
 pub mod im_client;
 pub mod lifecycle;
@@ -20,6 +21,7 @@ pub use api::{
 };
 pub use builder::IMClientBuilder;
 pub use config::{SdkConfig, SdkConfigBuilder};
+pub use connected_apis::ConnectedApis;
 pub use im_client::IMClient;
 pub use lifecycle::{
     LoginDbKind, SdkConfigOverlay, default_ws_url, dev_data_dir_relative_to_cwd, merge_sdk_config,

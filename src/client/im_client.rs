@@ -15,6 +15,7 @@ use crate::client::api::{
     MessageBuildApi, PresenceApi, UserCapabilityGrantDto, UserPresenceDto,
 };
 use crate::client::builder::IMClientBuilder;
+use crate::client::connected_apis::ConnectedApis;
 use crate::client::lifecycle::{
     LoginDbKind, SdkConfigOverlay, default_ws_url, merge_sdk_config, parse_data_url_to_path,
     resolve_connect_token,
@@ -99,10 +100,53 @@ impl IMClient {
         self.inner.try_read().map_err(|_| Self::lock_busy())
     }
 
+    /// 异步读锁：IPC 热路径应优先使用，避免 `try_read` 在写锁排队时返回 lock busy。
+    pub(crate) async fn read_inner_async(
+        &self,
+    ) -> Result<tokio::sync::RwLockReadGuard<'_, IMClientInner>> {
+        Ok(self.inner.read().await)
+    }
+
     pub(crate) fn with_engine<R>(&self, f: impl FnOnce(&SdkEngine) -> R) -> Result<R> {
         let g = self.read_inner()?;
         let e = g.engine.as_ref().ok_or_else(Self::not_connected)?;
         Ok(f(e))
+    }
+
+    pub(crate) async fn with_engine_async<R>(
+        &self,
+        f: impl FnOnce(&SdkEngine) -> R,
+    ) -> Result<R> {
+        let g = self.read_inner_async().await?;
+        let e = g.engine.as_ref().ok_or_else(Self::not_connected)?;
+        Ok(f(e))
+    }
+
+    /// 登录成功后导出 Facade 快照，供 Tauri `SdkState` 缓存（避免每条 IPC 抢 `IMClient` 锁）。
+    pub async fn connected_apis(&self) -> Result<ConnectedApis> {
+        let g = self.read_inner_async().await?;
+        Ok(ConnectedApis {
+            message_api: g
+                .message_api
+                .clone()
+                .ok_or_else(Self::not_connected)?,
+            conversation_api: g
+                .conversation_api
+                .as_ref()
+                .map(|a| a.as_ref().clone())
+                .ok_or_else(Self::not_connected)?,
+            media_api: g.media_api.clone().ok_or_else(Self::not_connected)?,
+            capability_api: g.capability_api.clone().ok_or_else(Self::not_connected)?,
+            presence_api: g.presence_api.clone().ok_or_else(Self::not_connected)?,
+            message_build_api: g
+                .message_build_api
+                .clone()
+                .ok_or_else(Self::not_connected)?,
+            capability_registry: g
+                .capability_registry
+                .clone()
+                .ok_or_else(Self::not_connected)?,
+        })
     }
 
     /// 初始化运行环境与 SDK 配置快照。
@@ -249,6 +293,56 @@ impl IMClient {
         Ok(())
     }
 
+    /// 登录前清理旧会话：presence / disconnect 带短超时，避免 Consul 或 gRPC 阻塞 `sdk_login`。
+    async fn logout_for_login(&self) -> Result<()> {
+        const PRESENCE_LOGOUT_TIMEOUT: Duration = Duration::from_secs(2);
+        const DISCONNECT_TIMEOUT: Duration = Duration::from_secs(3);
+
+        let (engine, presence_api, http_request_context) = {
+            let mut g = self.inner.write().await;
+            let presence_api = g.presence_api.clone();
+            g.session_generation = g.session_generation.wrapping_add(1);
+            g.current_user_id = None;
+            g.connect_token = None;
+            g.message_api = None;
+            g.media_api = None;
+            g.capability_api = None;
+            g.presence_api = None;
+            g.capability_registry = None;
+            g.message_build_api = None;
+            g.conversation_api = None;
+            let engine = g.engine.take();
+            let http_request_context = g.http_request_context.clone();
+            (engine, presence_api, http_request_context)
+        };
+
+        if let Some(api) = presence_api.as_ref() {
+            match tokio::time::timeout(
+                PRESENCE_LOGOUT_TIMEOUT,
+                api.logout_current_device_presence(),
+            )
+            .await
+            {
+                Ok(Ok(())) => {}
+                Ok(Err(err)) => {
+                    tracing::warn!(%err, "presence logout before login failed");
+                }
+                Err(_) => tracing::warn!("presence logout before login timed out"),
+            }
+        }
+        if let Some(context) = http_request_context.as_ref() {
+            context.set_auth_context(String::new(), None).await;
+        }
+        if let Some(mut e) = engine {
+            match tokio::time::timeout(DISCONNECT_TIMEOUT, e.disconnect()).await {
+                Ok(Ok(())) => {}
+                Ok(Err(err)) => tracing::warn!(%err, "disconnect before login failed"),
+                Err(_) => tracing::warn!("disconnect before login timed out"),
+            }
+        }
+        Ok(())
+    }
+
     /// 登录入口：按用户初始化存储、建立连接并切换为新会话。
     ///
     /// - 会先执行一次 [`Self::logout`]，确保会话隔离；
@@ -264,7 +358,7 @@ impl IMClient {
     where
         F: FnOnce(crate::event::EventBus, Arc<dyn crate::domain::MessageStore>) + Send + 'static,
     {
-        self.logout().await?;
+        self.logout_for_login().await?;
         let snap = {
             let g = self.inner.read().await;
             (
@@ -289,18 +383,9 @@ impl IMClient {
         let ws_url = default_ws_url(snap.1.as_ref());
         let config = merge_sdk_config(&ws_url, snap.1.as_ref());
         let child = IMClientBuilder::new().config(config).stores(stores).build();
-        let bus = child.bus()?.clone();
-        let msg_store = child.stores()?.messages.clone();
-        before_connect(bus, msg_store);
-        child
-            .connect_internal(user_id, explicit_token, false)
-            .await?;
-        child.reset_pending_queue_on_login().await?;
+        // 先合并 engine 到父 client，再 connect；避免「子 client 上跑同步 + 末尾 into_inner」导致
+        // sdk_login 长期阻塞（UI 已显示同步 100% 但 invoke 不返回）。
         let mut inner = child.into_inner();
-        let next_generation = {
-            let g = self.inner.read().await;
-            g.session_generation.wrapping_add(1)
-        };
         inner.environment = snap.0;
         inner.sdk_config = snap.1;
         inner.data_root = snap.2;
@@ -310,13 +395,17 @@ impl IMClient {
             .filter(|s| !s.is_empty())
             .map(ToOwned::to_owned)
             .or_else(|| resolve_connect_token(user_id, None).ok());
-        inner.session_generation = next_generation;
-        let login_bus = inner.engine.as_ref().map(|e| e.bus().clone());
         *self.inner.write().await = inner;
-        if let Some(bus) = login_bus {
-            self.spawn_terminal_session_watcher(next_generation, bus.clone());
-            self.spawn_reconnect_session_watcher(next_generation, bus);
-        }
+
+        let bus = self.bus().await?.clone();
+        let msg_store = self.stores_async().await?.messages.clone();
+        before_connect(bus.clone(), msg_store);
+        tokio::task::yield_now().await;
+        self.reset_pending_queue_on_login().await?;
+        self.connect_internal(user_id, explicit_token, false).await?;
+        let session_generation = self.inner.read().await.session_generation;
+        self.spawn_terminal_session_watcher(session_generation, bus.clone());
+        self.spawn_reconnect_session_watcher(session_generation, bus);
         Ok(())
     }
 
@@ -355,9 +444,20 @@ impl IMClient {
         g.connect_token = Some(token.clone());
         g.session_generation = g.session_generation.wrapping_add(1);
         let current_generation = g.session_generation;
+        let tenant_id = self
+            .inner
+            .read()
+            .await
+            .sdk_config
+            .as_ref()
+            .and_then(|c| c.tenant_id.clone())
+            .filter(|t| !t.is_empty())
+            .unwrap_or_else(|| "default".to_string());
         drop(g);
         if let Some(context) = http_request_context.as_ref() {
-            context.set_auth_context(token.clone(), None).await;
+            context
+                .set_gateway_context(token.clone(), tenant_id, user_id.to_string(), None)
+                .await;
         }
         if install_watcher {
             self.spawn_terminal_session_watcher(current_generation, bus.clone());
@@ -405,6 +505,73 @@ impl IMClient {
                 .unwrap_or(SdkState::Disconnected),
             Err(_) => SdkState::Disconnected,
         }
+    }
+
+    /// 共享 HTTP 鉴权上下文（媒体 / 能力 / Social Gateway 可共用）。
+    pub fn http_request_context(&self) -> Option<Arc<HttpRequestContext>> {
+        self.inner
+            .try_read()
+            .ok()
+            .and_then(|g| g.http_request_context.clone())
+    }
+
+    /// 当前 IM 连接使用的 access token（与 WebSocket 鉴权一致）。
+    pub async fn access_token(&self) -> Option<String> {
+        let g = self.inner.read().await;
+        g.connect_token.clone().filter(|t| !t.trim().is_empty())
+    }
+
+    /// 将 IM 会话 token 写入共享 HTTP 上下文（Social Gateway / 媒体 / 能力 API 的 Bearer）。
+    pub async fn sync_gateway_http_context(&self, tenant_id: Option<&str>) -> Result<()> {
+        let g = self.inner.read().await;
+        let user_id = g
+            .current_user_id
+            .clone()
+            .filter(|u| !u.is_empty())
+            .ok_or_else(Self::not_connected)?;
+        let token = g
+            .connect_token
+            .clone()
+            .filter(|t| !t.trim().is_empty())
+            .ok_or_else(Self::not_connected)?;
+        let tenant = tenant_id
+            .map(str::to_string)
+            .or_else(|| {
+                g.sdk_config
+                    .as_ref()
+                    .and_then(|c| c.tenant_id.clone())
+                    .filter(|t| !t.is_empty())
+            })
+            .unwrap_or_else(|| "default".to_string());
+        let http = g.http_request_context.clone().ok_or_else(|| {
+            FlareError::localized(
+                ErrorCode::InvalidParameter,
+                "http_request_context not configured",
+            )
+        })?;
+        drop(g);
+        http.set_gateway_context(token, tenant, user_id, None).await;
+        Ok(())
+    }
+
+    /// 更新 access token 并同步到共享 HTTP 上下文（token 刷新后调用）。
+    pub async fn update_access_token(
+        &self,
+        access_token: impl Into<String>,
+        tenant_id: Option<&str>,
+    ) -> Result<()> {
+        let token = access_token.into();
+        if token.trim().is_empty() {
+            return Err(FlareError::localized(
+                ErrorCode::InvalidParameter,
+                "access_token must not be empty",
+            ));
+        }
+        {
+            let mut g = self.inner.write().await;
+            g.connect_token = Some(token.clone());
+        }
+        self.sync_gateway_http_context(tenant_id).await
     }
 
     /// 获取消息 API 门面；未连接时返回 `NotConnected`。
@@ -497,12 +664,17 @@ impl IMClient {
     ) -> Result<()> {
         let wire =
             crate::capability::call_event::event_call_signal_uplink(conversation_id, 0, call);
-        let sender = self.with_engine(|e| e.sender().clone())?;
+        let sender = self.with_engine_async(|e| e.sender().clone()).await?;
         sender.send_event(&wire, Duration::from_secs(30)).await
     }
 
     /// 获取 SDK 事件总线（用于原始事件订阅或桥接到宿主事件系统）。
-    pub fn bus(&self) -> Result<EventBus> {
+    pub async fn bus(&self) -> Result<EventBus> {
+        self.with_engine_async(|e| e.bus().clone()).await
+    }
+
+    /// 同步获取事件总线：仅用于非 async 上下文；热路径请用 [`Self::bus`].
+    pub fn bus_sync(&self) -> Result<EventBus> {
         self.with_engine(|e| e.bus().clone())
     }
     /// 中断连接会话监听器
@@ -745,7 +917,8 @@ impl IMClient {
     /// - 重连路径不触发该逻辑，仍保留同账号历史待发消息继续发送。
     async fn reset_pending_queue_on_login(&self) -> Result<()> {
         let mut should_publish_failed = true;
-        let dropped_client_ids = if let Some(queue) = self.with_engine(|e| e.reliable_queue())? {
+        let dropped_client_ids = if let Some(queue) = self.with_engine_async(|e| e.reliable_queue()).await?
+        {
             // 由队列 actor 原子处理 in_flight + pending，避免与后台 tick 竞态。
             should_publish_failed = false;
             queue.reset_pending_on_login().await?
@@ -755,7 +928,7 @@ impl IMClient {
             if current_user_id.trim().is_empty() {
                 return Ok(());
             }
-            let stores = self.stores()?;
+            let stores = self.stores_async().await?;
             let Some((pending_reader, pending_writer)) = stores.pending_sends() else {
                 return Ok(());
             };
@@ -794,7 +967,7 @@ impl IMClient {
             return Ok(());
         }
 
-        let bus = self.bus()?;
+        let bus = self.bus().await?;
         for client_msg_id in dropped_client_ids {
             bus.publish(SdkEvent::Message(MessageEvent::SendFailed {
                 client_msg_id,
@@ -811,10 +984,15 @@ impl IMClient {
         self.with_engine(|e| e.stores().clone())
     }
 
+    pub async fn stores_async(&self) -> Result<StoreProvider> {
+        self.with_engine_async(|e| e.stores().clone()).await
+    }
+
     /// 触发指定会话的增量消息同步（从服务端拉取该会话最新数据）。
     pub async fn sync_conversation(&self, conversation_id: &str) -> Result<()> {
         let runner = self
-            .with_engine(|e| e.session_sync_runner())?
+            .with_engine_async(|e| e.session_sync_runner())
+            .await?
             .ok_or_else(|| FlareError::localized(ErrorCode::NotConnected, "未配置同步"))?;
         runner.request_message_sync(conversation_id).await
     }
@@ -825,7 +1003,8 @@ impl IMClient {
         limit: i32,
     ) -> Result<Vec<crate::model::ConversationParticipant>> {
         let runner = self
-            .with_engine(|e| e.session_sync_runner())?
+            .with_engine_async(|e| e.session_sync_runner())
+            .await?
             .ok_or_else(|| FlareError::localized(ErrorCode::NotConnected, "未配置同步"))?;
         runner
             .request_participants_sync(conversation_id, limit)
@@ -842,7 +1021,8 @@ impl IMClient {
         limit: i32,
     ) -> Result<()> {
         let runner = self
-            .with_engine(|e| e.session_sync_runner())?
+            .with_engine_async(|e| e.session_sync_runner())
+            .await?
             .ok_or_else(|| FlareError::localized(ErrorCode::NotConnected, "未配置同步"))?;
         runner
             .request_message_sync_from_seq(conversation_id, last_seq, limit)
@@ -853,9 +1033,11 @@ impl IMClient {
     ///
     /// 内部会同时更新 `message` 与 `conversation` 读态，并发送读回执。
     pub async fn mark_session_read(&self, conversation_id: &str, read_seq: u64) -> Result<()> {
-        let c = self.conversation()?;
-        c.mark_read(conversation_id, read_seq).await?;
-        let effective_read_seq = c
+        let conversation = self.conversation_async().await?;
+        conversation
+            .mark_read(conversation_id, read_seq)
+            .await?;
+        let effective_read_seq = conversation
             .get(conversation_id)
             .await?
             .map(|conv| conv.last_read_seq)
@@ -866,9 +1048,14 @@ impl IMClient {
             effective_read_seq = effective_read_seq,
             "mark_session_read resolved effective seq"
         );
-        let m = self.message()?;
-        m.mark_read(conversation_id, effective_read_seq).await?;
-        if let Some(runner) = self.with_engine(|e| e.session_sync_runner())? {
+        let message = self.message_async().await?;
+        message
+            .mark_read(conversation_id, effective_read_seq)
+            .await?;
+        if let Some(runner) = self
+            .with_engine_async(|e| e.session_sync_runner())
+            .await?
+        {
             // 上报“真实已读位点”到服务端。
             // 历史上 read_seq=0 会直接上报 0，但后端并未统一按“全部已读”解释 0，
             // 会导致重登后 last_read_seq 未推进、已读双勾丢失。
@@ -891,22 +1078,44 @@ impl IMClient {
         conversation_id: &str,
         is_typing: bool,
     ) -> Result<()> {
-        self.message()?.typing(conversation_id, is_typing).await
+        self.message_async()
+            .await?
+            .typing(conversation_id, is_typing)
+            .await
+    }
+
+    pub async fn message_async(&self) -> Result<MessageApi> {
+        let g = self.read_inner_async().await?;
+        g.message_api.clone().ok_or_else(Self::not_connected)
+    }
+
+    pub async fn conversation_async(&self) -> Result<ConversationApi> {
+        let g = self.read_inner_async().await?;
+        g.conversation_api
+            .as_ref()
+            .map(|a| a.as_ref().clone())
+            .ok_or_else(Self::not_connected)
     }
 
     pub async fn get_user_presence(&self, user_id: &str) -> Result<UserPresenceDto> {
-        self.presence()?.get_user_presence(user_id).await
+        let g = self.read_inner_async().await?;
+        let api = g.presence_api.as_ref().ok_or_else(Self::not_connected)?;
+        api.get_user_presence(user_id).await
     }
 
     pub async fn batch_get_user_presence(
         &self,
         user_ids: &[String],
     ) -> Result<std::collections::HashMap<String, UserPresenceDto>> {
-        self.presence()?.batch_get_user_presence(user_ids).await
+        let g = self.read_inner_async().await?;
+        let api = g.presence_api.as_ref().ok_or_else(Self::not_connected)?;
+        api.batch_get_user_presence(user_ids).await
     }
 
     pub async fn subscribe_user_presence(&self, user_ids: Vec<String>) -> Result<()> {
-        self.presence()?.subscribe_user_presence(user_ids).await
+        let g = self.read_inner_async().await?;
+        let api = g.presence_api.as_ref().ok_or_else(Self::not_connected)?;
+        api.subscribe_user_presence(user_ids).await
     }
 }
 

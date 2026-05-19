@@ -3,12 +3,11 @@
 #[cfg(feature = "plugin-call")]
 pub use flare_sdk_plugin_call::rtc::{
     CALL_ACCEPT, CALL_AUDIO, CALL_END, CALL_JOIN_TOKEN, CALL_REJECT, CALL_VIDEO,
-    SFU_ADD_ICE_CANDIDATE, SFU_HANDLE_SDP_ANSWER, SFU_HANDLE_SDP_OFFER, SFU_JOIN_ROOM,
-    SFU_GET_ROOM_STATE, SFU_LEAVE_ROOM, SFU_SET_SUBSCRIPTION, payload_call_end_with_room_policy,
+    SFU_ADD_ICE_CANDIDATE, SFU_GET_ROOM_STATE, SFU_HANDLE_SDP_ANSWER, SFU_HANDLE_SDP_OFFER,
+    SFU_JOIN_ROOM, SFU_LEAVE_ROOM, SFU_SET_SUBSCRIPTION, payload_call_end_with_room_policy,
     payload_call_id, payload_sfu_add_ice_candidate, payload_sfu_get_room_state,
     payload_sfu_handle_sdp_answer, payload_sfu_handle_sdp_offer, payload_sfu_join_room,
-    payload_sfu_leave_room, payload_sfu_set_subscription,
-    payload_start_audio, payload_start_video,
+    payload_sfu_leave_room, payload_sfu_set_subscription, payload_start_audio, payload_start_video,
 };
 
 #[cfg(not(feature = "plugin-call"))]

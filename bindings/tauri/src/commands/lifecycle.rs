@@ -155,6 +155,12 @@ pub async fn sdk_login(
         .await
         .map_err(super::map_sdk_err)?;
 
+    let apis = client
+        .connected_apis()
+        .await
+        .map_err(super::map_sdk_err)?;
+    state.install_session(apis).await;
+
     info!(user_id = %user_id, "sdk_login ok");
     Ok(())
 }

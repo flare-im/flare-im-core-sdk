@@ -311,6 +311,29 @@ async fn test_event_bus_state_changed() {
 }
 
 #[tokio::test]
+async fn test_event_bus_replays_latest_state_to_late_listener() {
+    let bus = EventBus::new();
+    bus.publish(SdkEvent::Connection(ConnectionEvent::StateChanged {
+        state: SdkState::Ready,
+    }));
+
+    let count = Arc::new(AtomicU32::new(0));
+    let c = count.clone();
+    let _sub = bus.on_state_changed(move |state| {
+        if state == SdkState::Ready {
+            c.fetch_add(1, Ordering::Relaxed);
+        }
+    });
+
+    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+    assert_eq!(
+        count.load(Ordering::Relaxed),
+        1,
+        "late listener should receive latest Ready state"
+    );
+}
+
+#[tokio::test]
 async fn test_event_bus_extension_event() {
     let bus = EventBus::new();
     let mut rx = bus.subscribe();

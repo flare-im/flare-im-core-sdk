@@ -22,7 +22,8 @@ use crate::util::paths::{resolve_media_cache_dir_next_to_db, resolve_user_db_pat
 
 static CORE_SCHEMA: OnceLock<()> = OnceLock::new();
 
-fn ensure_core_schema_registered() {
+/// 注册 IM 核心 SQLite 表结构（与社交 schema 一并注册后，共享同一 `open_pool` 连接）。
+pub fn ensure_core_sqlite_schema_registered() {
     CORE_SCHEMA.get_or_init(|| {
         register_schema_init_with("flare_im_core_schema", |pool| {
             let pool = pool.clone();
@@ -48,7 +49,7 @@ pub async fn open_sqlite_store_provider(
     database_url: &str,
     media_cache_dir: Option<&std::path::Path>,
 ) -> Result<StoreProvider> {
-    ensure_core_schema_registered();
+    ensure_core_sqlite_schema_registered();
     let pool = open_pool(database_url).await.map_err(|e| {
         FlareError::localized(
             ErrorCode::ConfigurationError,

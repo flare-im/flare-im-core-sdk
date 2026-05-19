@@ -14,7 +14,7 @@ exclude = [
 edition = "2024"
 rust-version = "1.94.0"
 authors = ["Flare Team"]
-license = "MIT"
+license = "Apache-2.0"
 
 [workspace.dependencies]
 flare-proto = { path = "../flare-proto" }
@@ -44,7 +44,7 @@ version = "0.2.0"
 edition = "2024"
 rust-version = "1.94.0"
 authors = ["Flare Team"]
-license = "MIT"
+license = "Apache-2.0"
 description = "Flare IM Client SDK - Event-stream driven cross-platform IM client library"
 
 [lib]

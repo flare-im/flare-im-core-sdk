@@ -72,6 +72,14 @@ impl Orchestrator {
                     failed_tasks = ?init_outcome.failed_tasks,
                     "required init sync failed; skip Init finished and background phase"
                 );
+                bus.publish(SdkEvent::Sync(SyncNotify::Failed {
+                    run: run.clone(),
+                    task: "init_phase".to_string(),
+                    message: format!(
+                        "required init sync failed: {}",
+                        init_outcome.failed_tasks.join(", ")
+                    ),
+                }));
                 return;
             }
 
