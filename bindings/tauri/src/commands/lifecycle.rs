@@ -139,7 +139,7 @@ pub async fn sdk_login(
     token: String,
 ) -> std::result::Result<(), String> {
     let client = state.client();
-    client
+    let apis = client
         .login(
             &user_id,
             Some(&token),
@@ -152,11 +152,6 @@ pub async fn sdk_login(
                 });
             },
         )
-        .await
-        .map_err(super::map_sdk_err)?;
-
-    let apis = client
-        .connected_apis()
         .await
         .map_err(super::map_sdk_err)?;
     state.install_session(apis).await;

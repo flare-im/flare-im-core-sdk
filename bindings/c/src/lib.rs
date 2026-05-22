@@ -23,6 +23,7 @@ mod executor;
 mod ffi_runtime;
 mod helpers;
 mod registry;
+mod session;
 mod types;
 
 // API 模块

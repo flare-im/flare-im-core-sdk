@@ -129,7 +129,7 @@ pub extern "C" fn flare_message_dispatch_json(
         };
 
         let ctx = CallbackContext::new(context, callback);
-        let client = instance.client.clone();
+        let inst = instance.clone();
 
         macro_rules! bad_param {
             () => {{
@@ -152,7 +152,7 @@ pub extern "C" fn flare_message_dispatch_json(
                     instance,
                     ctx,
                     async move {
-                        let api = client.message()?;
+                        let api = inst.message_api().await?;
                         api.get(&id).await
                     },
                     |opt| match opt {
@@ -170,7 +170,7 @@ pub extern "C" fn flare_message_dispatch_json(
                     instance,
                     ctx,
                     async move {
-                        let api = client.message()?;
+                        let api = inst.message_api().await?;
                         api.get_raw(&id).await
                     },
                     |opt| match opt {
@@ -189,7 +189,7 @@ pub extern "C" fn flare_message_dispatch_json(
                     instance,
                     ctx,
                     async move {
-                        let api = client.message()?;
+                        let api = inst.message_api().await?;
                         api.search(&kw, limit).await
                     },
                     |list| to_json_string(&list),
@@ -210,7 +210,7 @@ pub extern "C" fn flare_message_dispatch_json(
                     instance,
                     ctx,
                     async move {
-                        let api = client.message()?;
+                        let api = inst.message_api().await?;
                         api.send(msg).await
                     },
                     |ack| send_ack_to_json(&ack),
@@ -231,7 +231,7 @@ pub extern "C" fn flare_message_dispatch_json(
                     instance,
                     ctx,
                     async move {
-                        let api = client.message()?;
+                        let api = inst.message_api().await?;
                         api.send_no_oss(msg).await
                     },
                     |ack| send_ack_to_json(&ack),
@@ -243,7 +243,7 @@ pub extern "C" fn flare_message_dispatch_json(
                     Err(()) => bad_param!(),
                 };
                 execute_async_unit(instance, ctx, async move {
-                    let api = client.message()?;
+                    let api = inst.message_api().await?;
                     api.recall(&id).await
                 });
             }
@@ -253,7 +253,7 @@ pub extern "C" fn flare_message_dispatch_json(
                     Err(()) => bad_param!(),
                 };
                 execute_async_unit(instance, ctx, async move {
-                    let api = client.message()?;
+                    let api = inst.message_api().await?;
                     api.delete(&id).await
                 });
             }
@@ -267,7 +267,7 @@ pub extern "C" fn flare_message_dispatch_json(
                     .and_then(|x| x.as_str())
                     .map(|s| s.to_string());
                 execute_async_unit(instance, ctx, async move {
-                    let api = client.message()?;
+                    let api = inst.message_api().await?;
                     api.delete_for_self(&id, reason).await
                 });
             }
@@ -281,7 +281,7 @@ pub extern "C" fn flare_message_dispatch_json(
                     .and_then(|x| x.as_str())
                     .map(|s| s.to_string());
                 execute_async_unit(instance, ctx, async move {
-                    let api = client.message()?;
+                    let api = inst.message_api().await?;
                     api.delete_for_everyone(&id, reason).await
                 });
             }
@@ -295,7 +295,7 @@ pub extern "C" fn flare_message_dispatch_json(
                     Err(()) => bad_param!(),
                 };
                 execute_async_unit(instance, ctx, async move {
-                    let api = client.message()?;
+                    let api = inst.message_api().await?;
                     api.edit_text_by_message_id(&id, &text).await
                 });
             }
@@ -309,7 +309,7 @@ pub extern "C" fn flare_message_dispatch_json(
                     Err(()) => bad_param!(),
                 };
                 execute_async_unit(instance, ctx, async move {
-                    let api = client.message()?;
+                    let api = inst.message_api().await?;
                     api.mark_read(&cid, seq).await
                 });
             }
@@ -327,7 +327,7 @@ pub extern "C" fn flare_message_dispatch_json(
                     Err(()) => bad_param!(),
                 };
                 execute_async_unit(instance, ctx, async move {
-                    let api = client.message()?;
+                    let api = inst.message_api().await?;
                     api.mark_read_with_ids(&cid, ids, seq).await
                 });
             }
@@ -341,7 +341,7 @@ pub extern "C" fn flare_message_dispatch_json(
                     Err(()) => bad_param!(),
                 };
                 execute_async_unit(instance, ctx, async move {
-                    let api = client.message()?;
+                    let api = inst.message_api().await?;
                     api.typing(&cid, typing).await
                 });
             }
@@ -355,7 +355,7 @@ pub extern "C" fn flare_message_dispatch_json(
                     Err(()) => bad_param!(),
                 };
                 execute_async_unit(instance, ctx, async move {
-                    let api = client.message()?;
+                    let api = inst.message_api().await?;
                     api.add_reaction(&id, &emoji).await
                 });
             }
@@ -369,7 +369,7 @@ pub extern "C" fn flare_message_dispatch_json(
                     Err(()) => bad_param!(),
                 };
                 execute_async_unit(instance, ctx, async move {
-                    let api = client.message()?;
+                    let api = inst.message_api().await?;
                     api.remove_reaction(&id, &emoji).await
                 });
             }
@@ -379,7 +379,7 @@ pub extern "C" fn flare_message_dispatch_json(
                     Err(()) => bad_param!(),
                 };
                 execute_async_unit(instance, ctx, async move {
-                    let api = client.message()?;
+                    let api = inst.message_api().await?;
                     api.pin_by_message_id(&id).await
                 });
             }
@@ -389,7 +389,7 @@ pub extern "C" fn flare_message_dispatch_json(
                     Err(()) => bad_param!(),
                 };
                 execute_async_unit(instance, ctx, async move {
-                    let api = client.message()?;
+                    let api = inst.message_api().await?;
                     api.unpin_by_message_id(&id).await
                 });
             }
@@ -407,7 +407,7 @@ pub extern "C" fn flare_message_dispatch_json(
                     Err(()) => bad_param!(),
                 };
                 execute_async_unit(instance, ctx, async move {
-                    let api = client.message()?;
+                    let api = inst.message_api().await?;
                     api.mark_by_message_id(&id, mt, &color).await
                 });
             }
@@ -421,7 +421,7 @@ pub extern "C" fn flare_message_dispatch_json(
                     Err(()) => bad_param!(),
                 };
                 execute_async_unit(instance, ctx, async move {
-                    let api = client.message()?;
+                    let api = inst.message_api().await?;
                     api.unmark_by_message_id(&id, mt).await
                 });
             }
@@ -430,7 +430,7 @@ pub extern "C" fn flare_message_dispatch_json(
                     instance,
                     ctx,
                     async move {
-                        let api = client.capability()?;
+                        let api = inst.capability_api().await?;
                         api.list_capabilities().await
                     },
                     |list| to_json_string(&list),
@@ -449,7 +449,7 @@ pub extern "C" fn flare_message_dispatch_json(
                     instance,
                     ctx,
                     async move {
-                        let api = client.capability()?;
+                        let api = inst.capability_api().await?;
                         api.list_user_capabilities(tenant_id.as_deref(), user_id.as_deref())
                             .await
                     },
@@ -481,7 +481,7 @@ pub extern "C" fn flare_message_dispatch_json(
                     instance,
                     ctx,
                     async move {
-                        let api = client.capability()?;
+                        let api = inst.capability_api().await?;
                         api.dispatch(
                             &capability_id,
                             payload,
@@ -539,7 +539,8 @@ pub extern "C" fn flare_message_dispatch_json(
                     })
                     .unwrap_or_default();
                 execute_async_unit(instance, ctx, async move {
-                    let from = client
+                    let from = inst
+                        .client
                         .current_user_id()
                         .await
                         .unwrap_or_default()
@@ -605,7 +606,7 @@ pub extern "C" fn flare_message_dispatch_json(
                             to_user_id.as_deref(),
                         );
                     }
-                    client.send_call_signal(&conversation_id, ev).await
+                    inst.client.send_call_signal(&conversation_id, ev).await
                 });
             }
             "capability_grant" => {
@@ -634,7 +635,7 @@ pub extern "C" fn flare_message_dispatch_json(
                     .and_then(|x| x.as_str())
                     .map(|s| s.to_string());
                 execute_async_unit(instance, ctx, async move {
-                    let api = client.capability()?;
+                    let api = inst.capability_api().await?;
                     api.grant_user_capability(
                         &tenant_id,
                         &user_id,
@@ -660,7 +661,7 @@ pub extern "C" fn flare_message_dispatch_json(
                     Err(()) => bad_param!(),
                 };
                 execute_async_unit(instance, ctx, async move {
-                    let api = client.capability()?;
+                    let api = inst.capability_api().await?;
                     api.revoke_user_capability(&tenant_id, &user_id, &capability_id)
                         .await
                 });
@@ -705,7 +706,7 @@ pub extern "C" fn flare_message_build_json(
         };
 
         let ctx = CallbackContext::new(context, callback);
-        let client = instance.client.clone();
+        let inst = instance.clone();
 
         macro_rules! bad_param {
             () => {{
@@ -738,7 +739,7 @@ pub extern "C" fn flare_message_build_json(
                     instance,
                     ctx,
                     async move {
-                        let b = client.message_build()?;
+                        let b = inst.message_build_api().await?;
                         b.create_text(&conversation_id, &text).await
                     },
                     |m| to_json_string(&m),
@@ -776,7 +777,7 @@ pub extern "C" fn flare_message_build_json(
                     instance,
                     ctx,
                     async move {
-                        let b = client.message_build()?;
+                        let b = inst.message_build_api().await?;
                         b.create_quote(
                             &conversation_id,
                             &quoted_message_id,
@@ -804,7 +805,7 @@ pub extern "C" fn flare_message_build_json(
                     instance,
                     ctx,
                     async move {
-                        let b = client.message_build()?;
+                        let b = inst.message_build_api().await?;
                         b.create_thread_reply(&conversation_id, &thread_id, &text)
                             .await
                     },
@@ -830,7 +831,7 @@ pub extern "C" fn flare_message_build_json(
                     instance,
                     ctx,
                     async move {
-                        let b = client.message_build()?;
+                        let b = inst.message_build_api().await?;
                         b.create_forward(&conversation_id, merge, &title, sources)
                             .await
                     },
@@ -847,7 +848,7 @@ pub extern "C" fn flare_message_build_json(
                     instance,
                     ctx,
                     async move {
-                        let b = client.message_build()?;
+                        let b = inst.message_build_api().await?;
                         b.create_image(&conversation_id, &image_id).await
                     },
                     |m| to_json_string(&m),
@@ -863,7 +864,7 @@ pub extern "C" fn flare_message_build_json(
                     instance,
                     ctx,
                     async move {
-                        let b = client.message_build()?;
+                        let b = inst.message_build_api().await?;
                         b.create_video(&conversation_id, &video_id).await
                     },
                     |m| to_json_string(&m),
@@ -879,7 +880,7 @@ pub extern "C" fn flare_message_build_json(
                     instance,
                     ctx,
                     async move {
-                        let b = client.message_build()?;
+                        let b = inst.message_build_api().await?;
                         b.create_audio(&conversation_id, &audio_id).await
                     },
                     |m| to_json_string(&m),
@@ -895,7 +896,7 @@ pub extern "C" fn flare_message_build_json(
                     instance,
                     ctx,
                     async move {
-                        let b = client.message_build()?;
+                        let b = inst.message_build_api().await?;
                         b.create_file(&conversation_id, &file_id).await
                     },
                     |m| to_json_string(&m),
@@ -911,7 +912,7 @@ pub extern "C" fn flare_message_build_json(
                     instance,
                     ctx,
                     async move {
-                        let b = client.message_build()?;
+                        let b = inst.message_build_api().await?;
                         b.create_emoji(&conversation_id, &emoji).await
                     },
                     |m| to_json_string(&m),
@@ -951,7 +952,7 @@ pub extern "C" fn flare_message_build_json(
                     instance,
                     ctx,
                     async move {
-                        let b = client.message_build()?;
+                        let b = inst.message_build_api().await?;
                         b.create_location(
                             &conversation_id,
                             lon,
@@ -991,7 +992,7 @@ pub extern "C" fn flare_message_build_json(
                     instance,
                     ctx,
                     async move {
-                        let b = client.message_build()?;
+                        let b = inst.message_build_api().await?;
                         b.create_sticker(
                             &conversation_id,
                             &sticker_id,
@@ -1032,7 +1033,7 @@ pub extern "C" fn flare_message_build_json(
                     instance,
                     ctx,
                     async move {
-                        let b = client.message_build()?;
+                        let b = inst.message_build_api().await?;
                         b.create_link_card(
                             &conversation_id,
                             &url,
@@ -1072,7 +1073,7 @@ pub extern "C" fn flare_message_build_json(
                     instance,
                     ctx,
                     async move {
-                        let b = client.message_build()?;
+                        let b = inst.message_build_api().await?;
                         b.create_card(
                             &conversation_id,
                             &id,
@@ -1111,7 +1112,7 @@ pub extern "C" fn flare_message_build_json(
                     instance,
                     ctx,
                     async move {
-                        let b = client.message_build()?;
+                        let b = inst.message_build_api().await?;
                         b.create_mini_program(
                             &conversation_id,
                             &app_id,
@@ -1166,7 +1167,7 @@ pub extern "C" fn flare_message_build_json(
                     instance,
                     ctx,
                     async move {
-                        let b = client.message_build()?;
+                        let b = inst.message_build_api().await?;
                         b.create_rich_doc(
                             &conversation_id,
                             &doc_json,
@@ -1198,7 +1199,7 @@ pub extern "C" fn flare_message_build_json(
                     instance,
                     ctx,
                     async move {
-                        let b = client.message_build()?;
+                        let b = inst.message_build_api().await?;
                         b.create_system(&conversation_id, &event_kind, &body).await
                     },
                     |m| to_json_string(&m),
@@ -1218,7 +1219,7 @@ pub extern "C" fn flare_message_build_json(
                     instance,
                     ctx,
                     async move {
-                        let b = client.message_build()?;
+                        let b = inst.message_build_api().await?;
                         b.create_notification(&conversation_id, &title, &body).await
                     },
                     |m| to_json_string(&m),
@@ -1245,7 +1246,7 @@ pub extern "C" fn flare_message_build_json(
                     instance,
                     ctx,
                     async move {
-                        let b = client.message_build()?;
+                        let b = inst.message_build_api().await?;
                         b.create_vote(
                             &conversation_id,
                             &vote_id,
@@ -1279,7 +1280,7 @@ pub extern "C" fn flare_message_build_json(
                     instance,
                     ctx,
                     async move {
-                        let b = client.message_build()?;
+                        let b = inst.message_build_api().await?;
                         b.create_task(
                             &conversation_id,
                             &task_id,
@@ -1317,7 +1318,7 @@ pub extern "C" fn flare_message_build_json(
                     instance,
                     ctx,
                     async move {
-                        let b = client.message_build()?;
+                        let b = inst.message_build_api().await?;
                         b.create_schedule(
                             &conversation_id,
                             &schedule_id,
@@ -1345,7 +1346,7 @@ pub extern "C" fn flare_message_build_json(
                     instance,
                     ctx,
                     async move {
-                        let b = client.message_build()?;
+                        let b = inst.message_build_api().await?;
                         b.create_announcement(&conversation_id, &title, &body).await
                     },
                     |m| to_json_string(&m),
@@ -1361,7 +1362,7 @@ pub extern "C" fn flare_message_build_json(
                     instance,
                     ctx,
                     async move {
-                        let b = client.message_build()?;
+                        let b = inst.message_build_api().await?;
                         b.create_custom(&conversation_id, &t).await
                     },
                     |m| to_json_string(&m),
@@ -1377,7 +1378,7 @@ pub extern "C" fn flare_message_build_json(
                     instance,
                     ctx,
                     async move {
-                        let b = client.message_build()?;
+                        let b = inst.message_build_api().await?;
                         b.create_placeholder(&conversation_id, &reason).await
                     },
                     |m| to_json_string(&m),
@@ -1402,7 +1403,7 @@ pub extern "C" fn flare_message_build_json(
                     instance,
                     ctx,
                     async move {
-                        let b = client.message_build()?;
+                        let b = inst.message_build_api().await?;
                         b.create_with_content(&conversation_id, content).await
                     },
                     |m| to_json_string(&m),

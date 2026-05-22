@@ -32,6 +32,17 @@ impl SyncManager {
         }
     }
 
+    /// 导出已注册任务（供 `IMClient::login` 合并子 engine 时保留社交 Background 任务）。
+    pub fn registered_tasks(&self) -> Vec<Arc<dyn SyncTask>> {
+        match self.tasks.lock() {
+            Ok(guard) => guard.clone(),
+            Err(poisoned) => {
+                tracing::warn!("sync manager task lock poisoned during export, recovering");
+                poisoned.into_inner().clone()
+            }
+        }
+    }
+
     pub fn run_sync(&self, user_id: &str, store: StoreProvider, bus: EventBus) {
         self.run_with_context(user_id, SyncRunContext::initial_login(), store, bus);
     }

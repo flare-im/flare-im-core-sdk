@@ -20,6 +20,7 @@ pub struct SdkConfig {
     pub reconnect_interval_secs: Option<u64>,
     pub max_reconnect_attempts: Option<u32>,
     pub sync_batch_size: Option<u32>,
+    pub init_message_sync_concurrency: Option<u32>,
     pub ack_timeout_secs: Option<u64>,
     pub ack_max_retries: Option<u32>,
     pub enable_metrics: bool,
@@ -47,6 +48,11 @@ impl SdkConfig {
     pub fn sync_batch_size(&self) -> u32 {
         self.sync_batch_size.unwrap_or(200)
     }
+
+    /// Init/重连阶段按会话补拉消息的并发上限（默认 4，最小 1）。
+    pub fn init_message_sync_concurrency(&self) -> u32 {
+        self.init_message_sync_concurrency.unwrap_or(4).max(1)
+    }
 }
 
 impl Default for SdkConfig {
@@ -62,6 +68,7 @@ impl Default for SdkConfig {
             reconnect_interval_secs: Some(5),
             max_reconnect_attempts: None,
             sync_batch_size: Some(200),
+            init_message_sync_concurrency: None,
             ack_timeout_secs: Some(10),
             ack_max_retries: Some(3),
             enable_metrics: false,

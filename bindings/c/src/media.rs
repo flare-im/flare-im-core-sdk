@@ -32,13 +32,13 @@ pub extern "C" fn flare_media_get_url(
         };
 
         let ctx = CallbackContext::new(context, callback);
-        let client = instance.client.clone();
+        let inst = instance.clone();
 
         execute_async(
             instance,
             ctx,
             async move {
-                let api = client.media()?;
+                let api = inst.media_api().await?;
                 api.get_file_url(&media_id, expires_in).await
             },
             |url| to_json_string(&url),
@@ -62,10 +62,10 @@ pub extern "C" fn flare_media_set_cache_max_bytes(
         };
 
         let ctx = CallbackContext::new(context, callback);
-        let client = instance.client.clone();
+        let inst = instance.clone();
 
         execute_async_unit(instance, ctx, async move {
-            let api = client.media()?;
+            let api = inst.media_api().await?;
             api.set_media_cache_max_bytes(max_bytes).await
         });
 
@@ -86,10 +86,10 @@ pub extern "C" fn flare_media_clear_cache(
         };
 
         let ctx = CallbackContext::new(context, callback);
-        let client = instance.client.clone();
+        let inst = instance.clone();
 
         execute_async_unit(instance, ctx, async move {
-            let api = client.media()?;
+            let api = inst.media_api().await?;
             api.clear_media_cache().await
         });
 
@@ -119,12 +119,12 @@ pub extern "C" fn flare_media_resolve_access(
             }
         };
         let ctx = CallbackContext::new(context, callback);
-        let client = instance.client.clone();
+        let inst = instance.clone();
         execute_async(
             instance,
             ctx,
             async move {
-                let api = client.media()?;
+                let api = inst.media_api().await?;
                 api.resolve_media_access(&file_id, expires_in).await
             },
             |v| to_json_string(&v),
@@ -155,12 +155,12 @@ pub extern "C" fn flare_media_cache_remote(
             }
         };
         let ctx = CallbackContext::new(context, callback);
-        let client = instance.client.clone();
+        let inst = instance.clone();
         execute_async(
             instance,
             ctx,
             async move {
-                let api = client.media()?;
+                let api = inst.media_api().await?;
                 api.cache_remote_media(&file_id, expires_in).await
             },
             |v| to_json_string(&v),
@@ -181,12 +181,12 @@ pub extern "C" fn flare_media_cache_stats(
             Err(e) => return e,
         };
         let ctx = CallbackContext::new(context, callback);
-        let client = instance.client.clone();
+        let inst = instance.clone();
         execute_async(
             instance,
             ctx,
             async move {
-                let api = client.media()?;
+                let api = inst.media_api().await?;
                 api.media_cache_stats().await
             },
             |v| to_json_string(&v),
@@ -216,9 +216,9 @@ pub extern "C" fn flare_media_set_cache_root(
             }
         };
         let ctx = CallbackContext::new(context, callback);
-        let client = instance.client.clone();
+        let inst = instance.clone();
         execute_async_unit(instance, ctx, async move {
-            let api = client.media()?;
+            let api = inst.media_api().await?;
             api.set_media_cache_root(path.as_deref()).await
         });
         0

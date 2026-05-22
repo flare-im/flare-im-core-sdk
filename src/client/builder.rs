@@ -228,12 +228,14 @@ impl IMClientBuilder {
         let bus = EventBus::new();
         let event_deduper = EventDeduper::new(None);
         let message_deduper = MessageDeduper::new(None);
+        let init_msg_concurrency = self.config.init_message_sync_concurrency() as usize;
         let sync_handler: Arc<SyncProtocolAdapter> = Arc::new(SyncProtocolAdapter::new(
             sender.clone(),
             stores.clone(),
             bus.clone(),
             event_deduper.clone(),
             message_deduper.clone(),
+            init_msg_concurrency,
         ));
 
         let mut chain = MiddlewareChain::new();

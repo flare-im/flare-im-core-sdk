@@ -25,6 +25,9 @@ pub struct SdkConfigOverlay {
     pub reconnect_interval_secs: Option<u64>,
     pub max_reconnect_attempts: Option<u32>,
     pub sync_batch_size: Option<u32>,
+    /// Init/重连后会话消息补拉并发数（默认 4）。
+    #[serde(alias = "initMessageSyncConcurrency")]
+    pub init_message_sync_concurrency: Option<u32>,
     pub ack_timeout_secs: Option<u64>,
     pub ack_max_retries: Option<u32>,
     pub enable_metrics: Option<bool>,
@@ -79,6 +82,9 @@ pub fn merge_sdk_config(ws_url: &str, overlay: Option<&SdkConfigOverlay>) -> Sdk
         }
         if o.sync_batch_size.is_some() {
             config.sync_batch_size = o.sync_batch_size;
+        }
+        if o.init_message_sync_concurrency.is_some() {
+            config.init_message_sync_concurrency = o.init_message_sync_concurrency;
         }
         if o.ack_timeout_secs.is_some() {
             config.ack_timeout_secs = o.ack_timeout_secs;

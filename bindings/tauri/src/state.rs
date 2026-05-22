@@ -1,6 +1,7 @@
 //! Tauri `State`：持有唯一 [`IMClient`] 与登录后的 [`ConnectedApis`] 快照。
 //!
-//! 热路径命令读取 `session`（`tokio::sync::RwLock` 读锁），避免与登录/同步争抢 `IMClient` 内部写锁。
+//! 热路径优先读 `session` 缓存；未安装或代际变化时回退 `IMClient::connected_apis()` 并自动刷新，
+//! 避免 `sdk_login` 返回前同步事件触发 IPC 时报「未登录或会话未就绪」。
 
 use std::sync::Arc;
 
@@ -9,13 +10,19 @@ use flare_im_core_sdk::client::api::{
 };
 use flare_im_core_sdk::client::{ConnectedApis, IMClient, SdkConfigOverlay};
 use flare_im_core_sdk::store::StoreProvider;
-use flare_im_core_sdk::{ErrorCode, FlareError, Result};
+use flare_im_core_sdk::Result;
 use tokio::sync::RwLock;
+
+#[derive(Clone)]
+struct SessionCache {
+    generation: u64,
+    apis: ConnectedApis,
+}
 
 /// 由 `tauri::Builder::manage(SdkState::new())` 注入。
 pub struct SdkState {
     client: IMClient,
-    session: RwLock<Option<ConnectedApis>>,
+    session: RwLock<Option<SessionCache>>,
 }
 
 impl SdkState {
@@ -45,7 +52,11 @@ impl SdkState {
     }
 
     pub async fn install_session(&self, apis: ConnectedApis) {
-        *self.session.write().await = Some(apis);
+        let generation = self.client.session_generation().await;
+        *self.session.write().await = Some(SessionCache {
+            generation,
+            apis,
+        });
     }
 
     pub async fn clear_session(&self) {
@@ -57,36 +68,44 @@ impl SdkState {
         self.client.logout().await
     }
 
-    async fn require_session(&self) -> Result<ConnectedApis> {
-        self.session
-            .read()
-            .await
-            .clone()
-            .ok_or_else(|| FlareError::localized(ErrorCode::NotConnected, "未登录或会话未就绪"))
+    /// 已缓存且代际一致则直接返回；否则从 `IMClient` 拉取并写回缓存。
+    async fn session_or_live(&self) -> Result<ConnectedApis> {
+        let generation = self.client.session_generation().await;
+        if let Some(cache) = self.session.read().await.as_ref() {
+            if cache.generation == generation {
+                return Ok(cache.apis.clone());
+            }
+        }
+        let apis = self.client.connected_apis().await?;
+        *self.session.write().await = Some(SessionCache {
+            generation,
+            apis: apis.clone(),
+        });
+        Ok(apis)
     }
 
     pub async fn message_api(&self) -> Result<MessageApi> {
-        Ok(self.require_session().await?.message_api)
+        Ok(self.session_or_live().await?.message_api)
     }
 
     pub async fn conversation_api(&self) -> Result<ConversationApi> {
-        Ok(self.require_session().await?.conversation_api)
+        Ok(self.session_or_live().await?.conversation_api)
     }
 
     pub async fn media_api(&self) -> Result<Arc<MediaApi>> {
-        Ok(self.require_session().await?.media_api)
+        Ok(self.session_or_live().await?.media_api)
     }
 
     pub async fn capability_api(&self) -> Result<Arc<CapabilityApi>> {
-        Ok(self.require_session().await?.capability_api)
+        Ok(self.session_or_live().await?.capability_api)
     }
 
     pub async fn presence_api(&self) -> Result<Arc<PresenceApi>> {
-        Ok(self.require_session().await?.presence_api)
+        Ok(self.session_or_live().await?.presence_api)
     }
 
     pub async fn message_build_api(&self) -> Result<Arc<MessageBuildApi>> {
-        Ok(self.require_session().await?.message_build_api)
+        Ok(self.session_or_live().await?.message_build_api)
     }
 
     pub async fn stores(&self) -> Result<StoreProvider> {

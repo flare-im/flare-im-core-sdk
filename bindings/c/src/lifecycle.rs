@@ -25,7 +25,11 @@ pub extern "C" fn flare_sdk_create() -> FlareHandle {
     abi::catch_ffi_handle(|| {
         let client = IMClient::new();
         let runtime = crate::ffi_runtime::sdk_runtime_handle();
-        let instance = Arc::new(SdkInstance { client, runtime });
+        let instance = Arc::new(SdkInstance {
+            client,
+            runtime,
+            im_session: crate::session::ImSessionSlot::default(),
+        });
         register_instance(instance)
     })
 }
@@ -116,17 +120,20 @@ pub extern "C" fn flare_sdk_login(
         let _ = store_config_json;
 
         let ctx = CallbackContext::new(context, callback);
-        let client = instance.client.clone();
+        let inst = instance.clone();
 
         execute_async_unit(instance, ctx, async move {
-            client
+            let apis = inst
+                .client
                 .login(
                     &user_id,
                     Some(token.as_str()),
                     LoginDbKind::Sqlite,
                     |_, _| {},
                 )
-                .await
+                .await?;
+            inst.im_session.install(&inst.client, apis).await;
+            Ok(())
         });
 
         0
@@ -146,9 +153,12 @@ pub extern "C" fn flare_sdk_logout(
         };
 
         let ctx = CallbackContext::new(context, callback);
-        let client = instance.client.clone();
+        let inst = instance.clone();
 
-        execute_async_unit(instance, ctx, async move { client.logout().await });
+        execute_async_unit(instance, ctx, async move {
+            inst.im_session.clear().await;
+            inst.client.logout().await
+        });
 
         0
     })

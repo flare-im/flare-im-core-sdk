@@ -25,13 +25,13 @@ pub extern "C" fn flare_conversation_list(
         };
 
         let ctx = CallbackContext::new(context, callback);
-        let client = instance.client.clone();
+        let inst = instance.clone();
 
         execute_async(
             instance,
             ctx,
             async move {
-                let api = client.conversation()?;
+                let api = inst.conversation_api().await?;
                 api.list().await
             },
             |conversations| to_json_string(&conversations),
@@ -64,13 +64,13 @@ pub extern "C" fn flare_conversation_get(
         };
 
         let ctx = CallbackContext::new(context, callback);
-        let client = instance.client.clone();
+        let inst = instance.clone();
 
         execute_async(
             instance,
             ctx,
             async move {
-                let api = client.conversation()?;
+                let api = inst.conversation_api().await?;
                 api.get(&conversation_id).await
             },
             |conversation| match conversation {
@@ -107,10 +107,10 @@ pub extern "C" fn flare_conversation_mark_read(
         };
 
         let ctx = CallbackContext::new(context, callback);
-        let client = instance.client.clone();
+        let inst = instance.clone();
 
         execute_async_unit(instance, ctx, async move {
-            let api = client.conversation()?;
+            let api = inst.conversation_api().await?;
             api.mark_read(&conversation_id, read_seq).await
         });
 
@@ -142,10 +142,10 @@ pub extern "C" fn flare_conversation_set_pinned(
         };
 
         let ctx = CallbackContext::new(context, callback);
-        let client = instance.client.clone();
+        let inst = instance.clone();
 
         execute_async_unit(instance, ctx, async move {
-            let api = client.conversation()?;
+            let api = inst.conversation_api().await?;
             api.set_pinned(&conversation_id, pinned).await
         });
 
@@ -176,10 +176,10 @@ pub extern "C" fn flare_conversation_delete(
         };
 
         let ctx = CallbackContext::new(context, callback);
-        let client = instance.client.clone();
+        let inst = instance.clone();
 
         execute_async_unit(instance, ctx, async move {
-            let api = client.conversation()?;
+            let api = inst.conversation_api().await?;
             api.delete(&conversation_id).await
         });
 
@@ -220,10 +220,10 @@ pub extern "C" fn flare_conversation_update_draft(
         };
 
         let ctx = CallbackContext::new(context, callback);
-        let client = instance.client.clone();
+        let inst = instance.clone();
 
         execute_async_unit(instance, ctx, async move {
-            let api = client.conversation()?;
+            let api = inst.conversation_api().await?;
             api.update_draft(&conversation_id, draft.as_deref()).await
         });
 
@@ -261,12 +261,12 @@ pub extern "C" fn flare_conversation_get_one(
             }
         };
         let ctx = CallbackContext::new(context, callback);
-        let client = instance.client.clone();
+        let inst = instance.clone();
         execute_async(
             instance,
             ctx,
             async move {
-                let api = client.conversation()?;
+                let api = inst.conversation_api().await?;
                 api.get_one(&source_id, &conv_type).await
             },
             |c| to_json_string(&c),
@@ -287,9 +287,9 @@ pub extern "C" fn flare_conversation_mark_all_read(
             Err(e) => return e,
         };
         let ctx = CallbackContext::new(context, callback);
-        let client = instance.client.clone();
+        let inst = instance.clone();
         execute_async_unit(instance, ctx, async move {
-            let api = client.conversation()?;
+            let api = inst.conversation_api().await?;
             api.mark_all_read().await
         });
         0

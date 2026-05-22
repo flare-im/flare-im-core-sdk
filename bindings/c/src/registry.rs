@@ -8,12 +8,48 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::error_convert::FLARE_ERR_INVALID_HANDLE;
+use crate::session::ImSessionSlot;
 use crate::types::FlareHandle;
 
 /// SDK 实例包装
 pub struct SdkInstance {
     pub client: IMClient,
     pub runtime: tokio::runtime::Handle,
+    pub im_session: ImSessionSlot,
+}
+
+impl SdkInstance {
+    pub async fn message_api(
+        &self,
+    ) -> flare_im_core_sdk::Result<flare_im_core_sdk::client::api::MessageApi> {
+        self.im_session.message_api(&self.client).await
+    }
+
+    pub async fn message_build_api(
+        &self,
+    ) -> flare_im_core_sdk::Result<std::sync::Arc<flare_im_core_sdk::client::api::MessageBuildApi>>
+    {
+        self.im_session.message_build_api(&self.client).await
+    }
+
+    pub async fn conversation_api(
+        &self,
+    ) -> flare_im_core_sdk::Result<flare_im_core_sdk::client::api::ConversationApi> {
+        self.im_session.conversation_api(&self.client).await
+    }
+
+    pub async fn media_api(
+        &self,
+    ) -> flare_im_core_sdk::Result<std::sync::Arc<flare_im_core_sdk::client::api::MediaApi>> {
+        self.im_session.media_api(&self.client).await
+    }
+
+    pub async fn capability_api(
+        &self,
+    ) -> flare_im_core_sdk::Result<std::sync::Arc<flare_im_core_sdk::client::api::CapabilityApi>>
+    {
+        self.im_session.capability_api(&self.client).await
+    }
 }
 
 /// 全局句柄 ID 生成器

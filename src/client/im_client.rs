@@ -95,6 +95,15 @@ impl IMClient {
         FlareError::localized(ErrorCode::InternalError, "IMClient lock busy")
     }
 
+    fn resolve_tenant_id(g: &IMClientInner) -> String {
+        g.sdk_config
+            .as_ref()
+            .and_then(|c| c.tenant_id.clone())
+            .filter(|t| !t.is_empty())
+            .or_else(|| std::env::var("FLARE_IM_TENANT_ID").ok())
+            .unwrap_or_else(|| "0".to_string())
+    }
+
     /// 同步 API 使用的读锁：在 Tokio worker 上 **禁止** `blocking_read`，必须用 `try_read`。
     pub(crate) fn read_inner(&self) -> Result<tokio::sync::RwLockReadGuard<'_, IMClientInner>> {
         self.inner.try_read().map_err(|_| Self::lock_busy())
@@ -235,6 +244,11 @@ impl IMClient {
         self.inner.read().await.current_user_id.clone()
     }
 
+    /// 会话代际：登录/重连/登出时递增，供 Tauri `SdkState` 判断 API 快照是否过期。
+    pub async fn session_generation(&self) -> u64 {
+        self.inner.read().await.session_generation
+    }
+
     /// 生成开发/测试用 JWT token。
     ///
     /// 当 `secret`/`issuer` 为空时会使用内置默认值，仅适用于开发环境。
@@ -354,17 +368,24 @@ impl IMClient {
         explicit_token: Option<&str>,
         db: LoginDbKind,
         before_connect: F,
-    ) -> Result<()>
+    ) -> Result<ConnectedApis>
     where
         F: FnOnce(crate::event::EventBus, Arc<dyn crate::domain::MessageStore>) + Send + 'static,
     {
         self.logout_for_login().await?;
         let snap = {
             let g = self.inner.read().await;
+            let extra_sync_tasks = g
+                .engine
+                .as_ref()
+                .map(|e| e.sync_manager().registered_tasks())
+                .unwrap_or_default();
             (
                 g.environment.clone(),
                 g.sdk_config.clone(),
                 g.data_root.clone(),
+                g.http_request_context.clone(),
+                extra_sync_tasks,
             )
         };
         let stores = match db {
@@ -382,13 +403,26 @@ impl IMClient {
         };
         let ws_url = default_ws_url(snap.1.as_ref());
         let config = merge_sdk_config(&ws_url, snap.1.as_ref());
-        let child = IMClientBuilder::new().config(config).stores(stores).build();
-        // 先合并 engine 到父 client，再 connect；避免「子 client 上跑同步 + 末尾 into_inner」导致
-        // sdk_login 长期阻塞（UI 已显示同步 100% 但 invoke 不返回）。
+        let mut child_builder = IMClientBuilder::new().config(config).stores(stores);
+        if let Some(ctx) = snap.3.clone() {
+            child_builder = child_builder.http_request_context(ctx);
+        }
+        for task in snap.4 {
+            child_builder = child_builder.add_sync_task_arc(task);
+        }
+        let child = child_builder.build();
+        // 对齐 old-dev：在子 client 上、connect 前注册事件订阅（早于 merge / 同步）。
+        let bus = child.bus().await?.clone();
+        let msg_store = child.stores_async().await?.messages.clone();
+        before_connect(bus.clone(), msg_store);
+        // 再合并到父 client 后 connect，避免子 client 上跑同步导致 sdk_login 长期不返回。
         let mut inner = child.into_inner();
         inner.environment = snap.0;
         inner.sdk_config = snap.1;
         inner.data_root = snap.2;
+        if inner.http_request_context.is_none() {
+            inner.http_request_context = snap.3;
+        }
         inner.current_user_id = Some(user_id.to_string());
         inner.connect_token = explicit_token
             .map(str::trim)
@@ -396,17 +430,13 @@ impl IMClient {
             .map(ToOwned::to_owned)
             .or_else(|| resolve_connect_token(user_id, None).ok());
         *self.inner.write().await = inner;
-
-        let bus = self.bus().await?.clone();
-        let msg_store = self.stores_async().await?.messages.clone();
-        before_connect(bus.clone(), msg_store);
         tokio::task::yield_now().await;
         self.reset_pending_queue_on_login().await?;
         self.connect_internal(user_id, explicit_token, false).await?;
         let session_generation = self.inner.read().await.session_generation;
         self.spawn_terminal_session_watcher(session_generation, bus.clone());
         self.spawn_reconnect_session_watcher(session_generation, bus);
-        Ok(())
+        self.connected_apis().await
     }
 
     /// 使用当前客户端已装配引擎执行连接。
@@ -444,20 +474,13 @@ impl IMClient {
         g.connect_token = Some(token.clone());
         g.session_generation = g.session_generation.wrapping_add(1);
         let current_generation = g.session_generation;
-        let tenant_id = self
-            .inner
-            .read()
-            .await
-            .sdk_config
-            .as_ref()
-            .and_then(|c| c.tenant_id.clone())
-            .filter(|t| !t.is_empty())
-            .unwrap_or_else(|| "default".to_string());
+        let tenant_id = Self::resolve_tenant_id(&g);
         drop(g);
+        // 仅写入 IM token；Social Gateway Bearer 由 apply_gateway_session / ensure_gateway_auth 维护。
         if let Some(context) = http_request_context.as_ref() {
-            context
-                .set_gateway_context(token.clone(), tenant_id, user_id.to_string(), None)
-                .await;
+            context.set_auth_context(token.clone(), None).await;
+            // IM login 期间 Background 社交同步仍走共享 HTTP，须保留 user/tenant。
+            context.ensure_identity(user_id, &tenant_id).await;
         }
         if install_watcher {
             self.spawn_terminal_session_watcher(current_generation, bus.clone());
@@ -536,13 +559,7 @@ impl IMClient {
             .ok_or_else(Self::not_connected)?;
         let tenant = tenant_id
             .map(str::to_string)
-            .or_else(|| {
-                g.sdk_config
-                    .as_ref()
-                    .and_then(|c| c.tenant_id.clone())
-                    .filter(|t| !t.is_empty())
-            })
-            .unwrap_or_else(|| "default".to_string());
+            .unwrap_or_else(|| Self::resolve_tenant_id(&g));
         let http = g.http_request_context.clone().ok_or_else(|| {
             FlareError::localized(
                 ErrorCode::InvalidParameter,
@@ -550,7 +567,11 @@ impl IMClient {
             )
         })?;
         drop(g);
-        http.set_gateway_context(token, tenant, user_id, None).await;
+        if http.gateway_token_is_empty().await {
+            http.set_gateway_context(token, tenant, user_id, None).await;
+        } else {
+            http.ensure_identity(&user_id, &tenant).await;
+        }
         Ok(())
     }
 

@@ -4,6 +4,8 @@
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 
+use futures::stream::{self, StreamExt};
+
 use flare_proto::common::{
     Ack, AckType, ConversationAck, ConversationParticipantsSync, GetSyncCursorSync,
     MultiDeviceCursor, QueryEventsSync, SyncKind, SyncRes, UpdateSyncCursorSync,
@@ -45,6 +47,8 @@ pub struct SyncProtocolAdapter {
     active_user_id: AsyncMutex<String>,
     sync_apply_use_case: SyncApplyUseCase,
     sync_request_use_case: SyncRequestUseCase,
+    /// Init/重连：会话列表同步后按会话补拉消息的并发上限。
+    init_message_sync_concurrency: usize,
 }
 
 impl SyncProtocolAdapter {
@@ -103,6 +107,7 @@ impl SyncProtocolAdapter {
         bus: EventBus,
         event_deduper: EventDeduper,
         message_deduper: MessageDeduper,
+        init_message_sync_concurrency: usize,
     ) -> Self {
         let sync_apply_use_case =
             SyncApplyUseCase::new(stores.clone(), bus.clone(), event_deduper, message_deduper);
@@ -115,6 +120,7 @@ impl SyncProtocolAdapter {
             active_user_id: AsyncMutex::new(String::new()),
             sync_apply_use_case,
             sync_request_use_case,
+            init_message_sync_concurrency: init_message_sync_concurrency.max(1),
         }
     }
 
@@ -607,26 +613,30 @@ impl SyncProtocolAdapter {
             let server_cursor_ms = applied.server_cursor_ms;
             self.save_cursor_with_remote(user_id, CONVERSATION_CURSOR_KEY, server_cursor_ms)
                 .await?;
-            for conversation_id in &applied.message_sync_conversation_ids {
-                // 登录/重连 Init 阶段只拉会话摘要；消息由 Background `MessagesSyncTask` 并行补齐，
-                // 避免阻塞 `SyncFinished(Init)` 导致客户端登录页长时间 loading。
-                if matches!(
-                    run.trigger,
-                    SyncTrigger::InitialLogin | SyncTrigger::Reconnect
-                ) {
-                    continue;
-                }
-                if let Err(error) = self
-                    .sync_conversation_with_context(conversation_id, run.clone())
-                    .await
-                {
-                    tracing::warn!(
-                        conversation_id = %conversation_id,
-                        error = %error,
-                        "会话摘要已更新，但补拉会话消息失败"
-                    );
-                    if run.visibility.is_user_visible() {
-                        return Err(error);
+            if matches!(
+                run.trigger,
+                SyncTrigger::InitialLogin | SyncTrigger::Reconnect
+            ) {
+                self.sync_conversation_messages_bounded(
+                    &applied.message_sync_conversation_ids,
+                    run.clone(),
+                    self.init_message_sync_concurrency,
+                )
+                .await?;
+            } else {
+                for conversation_id in &applied.message_sync_conversation_ids {
+                    if let Err(error) = self
+                        .sync_conversation_with_context(conversation_id, run.clone())
+                        .await
+                    {
+                        tracing::warn!(
+                            conversation_id = %conversation_id,
+                            error = %error,
+                            "会话摘要已更新，但补拉会话消息失败"
+                        );
+                        if run.visibility.is_user_visible() {
+                            return Err(error);
+                        }
                     }
                 }
             }
@@ -636,6 +646,44 @@ impl SyncProtocolAdapter {
                 break;
             }
             cursor_ts = resp.server_conversation_cursor.clone();
+        }
+        Ok(())
+    }
+
+    async fn sync_conversation_messages_bounded(
+        &self,
+        conversation_ids: &[String],
+        run: SyncRunContext,
+        concurrency: usize,
+    ) -> Result<()> {
+        if conversation_ids.is_empty() {
+            return Ok(());
+        }
+        let limit = concurrency.max(1);
+        let results: Vec<(String, Result<()>)> = stream::iter(conversation_ids.iter().cloned())
+            .map(|conversation_id| {
+                let run = run.clone();
+                async move {
+                    let result = self
+                        .sync_conversation_with_context(&conversation_id, run)
+                        .await;
+                    (conversation_id, result)
+                }
+            })
+            .buffer_unordered(limit)
+            .collect()
+            .await;
+        for (conversation_id, result) in results {
+            if let Err(error) = result {
+                tracing::warn!(
+                    conversation_id = %conversation_id,
+                    error = %error,
+                    "会话摘要已更新，但补拉会话消息失败"
+                );
+                if run.visibility.is_user_visible() {
+                    return Err(error);
+                }
+            }
         }
         Ok(())
     }

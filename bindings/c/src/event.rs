@@ -359,6 +359,26 @@ fn offered_media_json(m: Option<&flare_proto::common::CallOfferedMedia>) -> serd
     })
 }
 
+fn call_end_reason_code_label(raw: Option<i32>) -> Option<&'static str> {
+    match raw? {
+        1 => Some("user_hangup"),
+        2 => Some("rejected"),
+        3 => Some("cancelled"),
+        4 => Some("no_answer_timeout"),
+        5 => Some("busy"),
+        6 => Some("failed"),
+        _ => None,
+    }
+}
+
+fn call_visibility_scope_label(raw: Option<i32>) -> Option<&'static str> {
+    match raw? {
+        1 => Some("all_participants"),
+        2 => Some("self_only"),
+        _ => None,
+    }
+}
+
 fn call_signal_body_json(
     signal: &Option<flare_proto::common::call_signal_event::Signal>,
 ) -> serde_json::Value {
@@ -379,8 +399,8 @@ fn call_signal_body_json(
                 "reason": h.reason,
                 "durationSeconds": h.duration_seconds,
                 "closeRoomIfVacant": h.close_room_if_vacant,
-                "reasonCode": h.reason_code,
-                "visibilityScope": h.visibility_scope,
+                "reasonCode": call_end_reason_code_label(h.reason_code),
+                "visibilityScope": call_visibility_scope_label(h.visibility_scope),
                 "timeoutSeconds": h.timeout_seconds,
             }
         }),
@@ -467,7 +487,7 @@ fn spawn_event_forwarder(
     instance.runtime.spawn(async move {
         // 等待事件总线可用，避免登录后瞬时竞态导致“订阅假成功、事件全丢”。
         let mut rx = loop {
-            match client.bus() {
+            match client.bus().await {
                 Ok(bus) => break bus.subscribe(),
                 Err(e) => {
                     tracing::warn!(error = %e, "event bus not ready yet, retrying");

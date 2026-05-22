@@ -2,14 +2,36 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
+use base64::Engine as _;
 use super::http_error_from_response_status;
 use crate::error::{FlareError, Result};
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
+/// 从 Bearer JWT payload 提取 `sub`（不校验签名，仅用于补齐 `x-user-id` header）。
+fn jwt_sub_unverified(token: &str) -> Option<String> {
+    let payload = token.split('.').nth(1)?.trim();
+    if payload.is_empty() {
+        return None;
+    }
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(payload)
+        .or_else(|_| base64::engine::general_purpose::STANDARD.decode(payload))
+        .ok()?;
+    let v: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+    v.get("sub")
+        .and_then(|s| s.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+}
+
 #[derive(Default)]
 pub struct HttpRequestContext {
+    /// IM 长连接 / 媒体等 core HTTP 使用的 Bearer
     auth_token: RwLock<String>,
+    /// Social Gateway 等业务 BFF 使用的 Bearer（与 IM token 分离，避免建连时互相覆盖）
+    gateway_token: RwLock<String>,
     tenant_id: RwLock<String>,
     user_id: RwLock<String>,
     trace_id: RwLock<String>,
@@ -36,7 +58,7 @@ impl HttpRequestContext {
         user_id: String,
         language: Option<String>,
     ) {
-        *self.auth_token.write().await = token;
+        *self.gateway_token.write().await = token;
         *self.tenant_id.write().await = tenant_id;
         *self.user_id.write().await = user_id;
         if self.trace_id.read().await.is_empty() {
@@ -48,8 +70,38 @@ impl HttpRequestContext {
     }
 
     pub async fn clear_gateway_context(&self) {
-        *self.auth_token.write().await = String::new();
+        *self.gateway_token.write().await = String::new();
         *self.user_id.write().await = String::new();
+    }
+
+    pub async fn gateway_token_is_empty(&self) -> bool {
+        self.gateway_token.read().await.trim().is_empty()
+    }
+
+    /// 补齐或刷新 `x-user-id` / `x-tenant-id`（IM `login` 后 Background 社交同步依赖此字段）。
+    pub async fn ensure_identity(&self, user_id: &str, tenant_id: &str) {
+        let uid = user_id.trim();
+        if !uid.is_empty() {
+            *self.user_id.write().await = uid.to_string();
+        }
+        let tid = tenant_id.trim();
+        if !tid.is_empty() {
+            *self.tenant_id.write().await = tid.to_string();
+        }
+    }
+
+    /// 从当前 Gateway/IM Bearer 解析 `sub` 并写回 `user_id`（JWT 形态：`a.b.c`）。
+    pub async fn sync_user_id_from_token(&self) {
+        let gateway_token = self.gateway_token.read().await.clone();
+        let im_token = self.auth_token.read().await.clone();
+        let token = if !gateway_token.trim().is_empty() {
+            gateway_token
+        } else {
+            im_token
+        };
+        if let Some(sub) = jwt_sub_unverified(token.trim()) {
+            *self.user_id.write().await = sub;
+        }
     }
 
     pub async fn set_trace_id(&self, trace_id: String) {
@@ -57,9 +109,25 @@ impl HttpRequestContext {
     }
 
     pub async fn build_headers(&self) -> HashMap<String, String> {
-        let token = self.auth_token.read().await.clone();
-        let tenant_id = self.tenant_id.read().await.clone();
-        let user_id = self.user_id.read().await.clone();
+        let gateway_token = self.gateway_token.read().await.clone();
+        let im_token = self.auth_token.read().await.clone();
+        let token = if !gateway_token.trim().is_empty() {
+            gateway_token
+        } else {
+            im_token
+        };
+        let mut tenant_id = self.tenant_id.read().await.trim().to_string();
+        let mut user_id = self.user_id.read().await.trim().to_string();
+        if user_id.is_empty() && !token.trim().is_empty() {
+            if let Some(sub) = jwt_sub_unverified(token.trim()) {
+                user_id = sub.clone();
+                *self.user_id.write().await = sub;
+            }
+        }
+        if tenant_id.is_empty() {
+            tenant_id = "0".to_string();
+            *self.tenant_id.write().await = tenant_id.clone();
+        }
         let trace_id = self.trace_id.read().await.clone();
         let language = self.language.read().await.clone();
         let mut headers = HashMap::new();
@@ -135,6 +203,14 @@ impl HttpClient {
 
     pub fn base_url(&self) -> &str {
         &self.base_url
+    }
+
+    /// 发 Social Gateway 请求前补齐身份（先写显式 user/tenant，再从 JWT 回填）。
+    pub async fn ensure_request_identity(&self, user_id: &str, tenant_id: &str) {
+        if let Some(ctx) = &self.context {
+            ctx.ensure_identity(user_id, tenant_id).await;
+            ctx.sync_user_id_from_token().await;
+        }
     }
 
     #[cfg(not(target_arch = "wasm32"))]

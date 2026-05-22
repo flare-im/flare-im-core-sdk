@@ -44,13 +44,13 @@ pub extern "C" fn flare_message_create_text(
         };
 
         let ctx = CallbackContext::new(context, callback);
-        let client = instance.client.clone();
+        let inst = instance.clone();
 
         execute_async(
             instance,
             ctx,
             async move {
-                let build_api = client.message_build()?;
+                let build_api = inst.message_build_api().await?;
                 build_api.create_text(&conversation_id, &text).await
             },
             |msg| to_json_string(&msg),
@@ -83,13 +83,13 @@ pub extern "C" fn flare_message_send(
         };
 
         let ctx = CallbackContext::new(context, callback);
-        let client = instance.client.clone();
+        let inst = instance.clone();
 
         execute_async(
             instance,
             ctx,
             async move {
-                let api = client.message()?;
+                let api = inst.message_api().await?;
                 api.send(message).await
             },
             |send_ack| send_ack_to_json(&send_ack),
@@ -125,13 +125,13 @@ pub extern "C" fn flare_message_list(
         };
 
         let ctx = CallbackContext::new(context, callback);
-        let client = instance.client.clone();
+        let inst = instance.clone();
 
         execute_async(
             instance,
             ctx,
             async move {
-                let api = client.message()?;
+                let api = inst.message_api().await?;
                 api.list(&conversation_id, before_seq, limit as u32).await
             },
             |messages| to_json_string(&messages),
@@ -174,10 +174,10 @@ pub extern "C" fn flare_message_recall(
         };
 
         let ctx = CallbackContext::new(context, callback);
-        let client = instance.client.clone();
+        let inst = instance.clone();
 
         execute_async_unit(instance, ctx, async move {
-            let api = client.message()?;
+            let api = inst.message_api().await?;
             api.recall(&message_id).await
         });
 
@@ -218,10 +218,10 @@ pub extern "C" fn flare_message_delete(
         };
 
         let ctx = CallbackContext::new(context, callback);
-        let client = instance.client.clone();
+        let inst = instance.clone();
 
         execute_async_unit(instance, ctx, async move {
-            let api = client.message()?;
+            let api = inst.message_api().await?;
             api.delete(&message_id).await
         });
 
