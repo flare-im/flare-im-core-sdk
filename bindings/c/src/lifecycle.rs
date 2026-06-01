@@ -215,7 +215,7 @@ pub extern "C" fn flare_sdk_current_user_id(
                 let user_id = client.current_user_id().await;
                 Ok(user_id.unwrap_or_default())
             },
-            |user_id| Ok(user_id),
+            Ok,
         );
 
         0

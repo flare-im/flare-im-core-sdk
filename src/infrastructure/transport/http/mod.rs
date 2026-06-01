@@ -66,3 +66,22 @@ pub fn unwrap_api_response<T>(body: HttpApiResponse<T>, action: &str) -> Result<
     body.data
         .ok_or_else(|| FlareError::general_error(format!("{action} response missing data")))
 }
+
+/// 解析无业务 body 的成功响应（DELETE / logout 等）。
+///
+/// Gateway 对 `()` 成功响应通常序列化为 `"data": null`，不能走 [`unwrap_api_response`]。
+pub fn unwrap_void_api_response(body: HttpApiResponse<()>, action: &str) -> Result<()> {
+    if !body.is_success() {
+        return Err(FlareError::localized(
+            ErrorCode::GeneralError,
+            format!(
+                "{action} failed: {} {}",
+                body.reason.unwrap_or_default(),
+                body.message.unwrap_or_default()
+            )
+            .trim()
+            .to_string(),
+        ));
+    }
+    Ok(())
+}

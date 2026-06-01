@@ -59,13 +59,13 @@ fn dedupe_key_for_event(event: &flare_proto::common::Event) -> Option<String> {
     if !event.event_id.trim().is_empty() {
         return Some(format!("event_id:{}", event.event_id));
     }
-    if let Some(event_seq) = event.event_seq {
-        if event_seq > 0 {
-            return Some(format!(
-                "event_seq:{}:{}:{}",
-                event.conversation_id, event.r#type, event_seq
-            ));
-        }
+    if let Some(event_seq) = event.event_seq
+        && event_seq > 0
+    {
+        return Some(format!(
+            "event_seq:{}:{}:{}",
+            event.conversation_id, event.r#type, event_seq
+        ));
     }
     if event.seq > 0 {
         return Some(format!(
@@ -73,13 +73,13 @@ fn dedupe_key_for_event(event: &flare_proto::common::Event) -> Option<String> {
             event.conversation_id, event.r#type, event.seq
         ));
     }
-    if let Some(request_id) = &event.request_id {
-        if !request_id.trim().is_empty() {
-            return Some(format!(
-                "request_id:{}:{}:{}",
-                event.conversation_id, event.r#type, request_id
-            ));
-        }
+    if let Some(request_id) = &event.request_id
+        && !request_id.trim().is_empty()
+    {
+        return Some(format!(
+            "request_id:{}:{}:{}",
+            event.conversation_id, event.r#type, request_id
+        ));
     }
     None
 }
@@ -91,8 +91,10 @@ mod tests {
     #[tokio::test]
     async fn duplicate_event_id_is_deduped() {
         let deduper = EventDeduper::new(Some(16));
-        let mut event = flare_proto::common::Event::default();
-        event.event_id = "evt-1".to_string();
+        let event = flare_proto::common::Event {
+            event_id: "evt-1".to_string(),
+            ..Default::default()
+        };
 
         assert!(deduper.record_if_new(&event).await);
         assert!(!deduper.record_if_new(&event).await);

@@ -15,7 +15,8 @@ use tokio::sync::broadcast;
 use tracing::warn;
 
 use super::types::{
-    ConnectionEvent, ConversationEvent, MessageEvent, SdkEvent, SyncNotify, SyncPhase,
+    ConnectionEvent, ConversationEvent, MessageEvent, NotificationEvent, SdkEvent, SyncNotify,
+    SyncPhase,
 };
 use crate::core::SdkState;
 use crate::fsm::SyncState;
@@ -76,7 +77,9 @@ type FnTyping = Arc<dyn Fn(String, TypingEvent) + Send + Sync>;
 type FnCallSignal = Arc<dyn Fn(String, CallSignalEvent) + Send + Sync>;
 type FnConversationIds = Arc<dyn Fn(Vec<String>) + Send + Sync>;
 type FnConversationId = Arc<dyn Fn(String) + Send + Sync>;
+type FnConversationUnreadCountChanged = Arc<dyn Fn(String, u32) + Send + Sync>;
 type FnExtension = Arc<dyn Fn(String, String, Vec<u8>) + Send + Sync>;
+type FnNotification = Arc<dyn Fn(IMMessage) + Send + Sync>;
 type FnSyncPhase = Arc<dyn Fn(SyncPhase) + Send + Sync>;
 type FnSyncProgress = Arc<dyn Fn(String, f32, String) + Send + Sync>;
 type FnAny = Arc<dyn Fn(Arc<SdkEvent>) + Send + Sync>;
@@ -107,10 +110,11 @@ pub struct EventBus {
     on_conversation_synced: Arc<RwLock<Vec<FnConversationIds>>>,
     on_conversation_created: Arc<RwLock<Vec<FnConversationId>>>,
     on_conversation_updated: Arc<RwLock<Vec<FnConversationId>>>,
-    on_conversation_unread_count_changed: Arc<RwLock<Vec<Arc<dyn Fn(String, u32) + Send + Sync>>>>,
+    on_conversation_unread_count_changed: Arc<RwLock<Vec<FnConversationUnreadCountChanged>>>,
     on_conversation_deleted: Arc<RwLock<Vec<FnConversationId>>>,
     // Extension
     on_extension: Arc<RwLock<Vec<FnExtension>>>,
+    on_notification: Arc<RwLock<Vec<FnNotification>>>,
     // Sync
     on_sync_started: Arc<RwLock<Vec<FnConnected>>>,
     on_sync_finished: Arc<RwLock<Vec<FnSyncPhase>>>,
@@ -148,6 +152,7 @@ impl EventBus {
         let on_conversation_unread_count_changed = Arc::new(RwLock::new(Vec::new()));
         let on_conversation_deleted = Arc::new(RwLock::new(Vec::new()));
         let on_extension = Arc::new(RwLock::new(Vec::new()));
+        let on_notification = Arc::new(RwLock::new(Vec::new()));
         let on_sync_started = Arc::new(RwLock::new(Vec::new()));
         let on_sync_finished = Arc::new(RwLock::new(Vec::new()));
         let on_sync_failed = Arc::new(RwLock::new(Vec::new()));
@@ -180,6 +185,7 @@ impl EventBus {
             on_conversation_unread_count_changed: on_conversation_unread_count_changed.clone(),
             on_conversation_deleted: on_conversation_deleted.clone(),
             on_extension: on_extension.clone(),
+            on_notification: on_notification.clone(),
             on_sync_started: on_sync_started.clone(),
             on_sync_finished: on_sync_finished.clone(),
             on_sync_failed: on_sync_failed.clone(),
@@ -279,7 +285,7 @@ impl EventBus {
                     },
                     SdkEvent::Message(me) => match me {
                         MessageEvent::Received { message } => {
-                            let msg = message.clone();
+                            let msg = message.as_ref().clone();
                             let list = on_message.clone();
                             tokio::task::spawn_blocking(move || {
                                 let list = list.read().unwrap();
@@ -307,7 +313,7 @@ impl EventBus {
                             });
                         }
                         MessageEvent::SendAck { ack } => {
-                            let a = ack.clone();
+                            let a = ack.as_ref().clone();
                             let list = on_send_ack.clone();
                             tokio::task::spawn_blocking(move || {
                                 let list = list.read().unwrap();
@@ -359,7 +365,7 @@ impl EventBus {
                             conversation_id,
                             event,
                         } => {
-                            let (cid, e) = (conversation_id.clone(), event.clone());
+                            let (cid, e) = (conversation_id.clone(), event.as_ref().clone());
                             let list = call_signal_listeners.clone();
                             tokio::task::spawn_blocking(move || {
                                 let list = list.read().unwrap();
@@ -372,6 +378,9 @@ impl EventBus {
                         | MessageEvent::ReactionChanged { .. }
                         | MessageEvent::Deleted { .. }
                         | MessageEvent::ReadReceipt { .. }
+                        | MessageEvent::BurnScheduled { .. }
+                        | MessageEvent::Burned { .. }
+                        | MessageEvent::HardDeleted { .. }
                         | MessageEvent::Pinned { .. }
                         | MessageEvent::Unpinned { .. }
                         | MessageEvent::Marked { .. }
@@ -379,6 +388,16 @@ impl EventBus {
                         | MessageEvent::PresenceChanged { .. }
                         | MessageEvent::Custom { .. } => {}
                     },
+                    SdkEvent::Notification(NotificationEvent::Received { message }) => {
+                        let msg = message.as_ref().clone();
+                        let list = on_notification.clone();
+                        tokio::task::spawn_blocking(move || {
+                            let list = list.read().unwrap();
+                            for f in list.iter() {
+                                f(msg.clone());
+                            }
+                        });
+                    }
                     SdkEvent::Conversation(ce) => match ce {
                         ConversationEvent::Synced { conversation_ids } => {
                             let ids = conversation_ids.clone();
@@ -836,6 +855,16 @@ impl EventBus {
         self.subscription()
     }
 
+    /// 注册 IM 下行 Notification 回调（与聊天 `on_message` 分离）。
+    pub fn on_notification<F>(&self, f: F) -> Subscription
+    where
+        F: Fn(&IMMessage) + Send + Sync + 'static,
+    {
+        let f: FnNotification = Arc::new(move |m| f(&m));
+        self.on_notification.write().unwrap().push(f);
+        self.subscription()
+    }
+
     // ---------- Sync ----------
     /// 注册「同步开始」回调
     pub fn on_sync_started<F>(&self, f: F) -> Subscription
@@ -896,7 +925,7 @@ impl EventBus {
     where
         F: Fn(String) + Send + Sync + 'static,
     {
-        let f: FnConversationId = Arc::new(move |t| f(t));
+        let f: FnConversationId = Arc::new(f);
         self.on_sync_task_completed.write().unwrap().push(f);
         self.subscription()
     }

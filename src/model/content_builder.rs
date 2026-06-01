@@ -63,35 +63,33 @@ impl ContentBuilder {
     }
 
     pub fn mention_all(mut self, start: i32, length: i32) -> Self {
-        if let Some(ref mut c) = self.content {
-            if let Some(flare_proto::common::message_content::Content::Text(ref mut t)) = c.content
-            {
-                t.mentions.push(Mention {
-                    r#type: MentionType::All as i32,
-                    user_id: String::new(),
-                    user_ids: vec![],
-                    role_id: String::new(),
-                    start,
-                    length,
-                });
-            }
+        if let Some(ref mut c) = self.content
+            && let Some(flare_proto::common::message_content::Content::Text(ref mut t)) = c.content
+        {
+            t.mentions.push(Mention {
+                r#type: MentionType::All as i32,
+                user_id: String::new(),
+                user_ids: vec![],
+                role_id: String::new(),
+                start,
+                length,
+            });
         }
         self
     }
 
     pub fn mention_user(mut self, user_id: impl Into<String>, start: i32, length: i32) -> Self {
-        if let Some(ref mut c) = self.content {
-            if let Some(flare_proto::common::message_content::Content::Text(ref mut t)) = c.content
-            {
-                t.mentions.push(Mention {
-                    r#type: MentionType::User as i32,
-                    user_id: user_id.into(),
-                    user_ids: vec![],
-                    role_id: String::new(),
-                    start,
-                    length,
-                });
-            }
+        if let Some(ref mut c) = self.content
+            && let Some(flare_proto::common::message_content::Content::Text(ref mut t)) = c.content
+        {
+            t.mentions.push(Mention {
+                r#type: MentionType::User as i32,
+                user_id: user_id.into(),
+                user_ids: vec![],
+                role_id: String::new(),
+                start,
+                length,
+            });
         }
         self
     }
@@ -172,41 +170,37 @@ impl ContentBuilder {
     }
 
     pub fn source(mut self, info: ImageInfo) -> Self {
-        if let Some(ref mut c) = self.content {
-            if let Some(flare_proto::common::message_content::Content::Image(ref mut i)) = c.content
-            {
-                i.source = Some(info);
-            }
+        if let Some(ref mut c) = self.content
+            && let Some(flare_proto::common::message_content::Content::Image(ref mut i)) = c.content
+        {
+            i.source = Some(info);
         }
         self
     }
 
     pub fn image_thumbnail(mut self, info: ImageInfo) -> Self {
-        if let Some(ref mut c) = self.content {
-            if let Some(flare_proto::common::message_content::Content::Image(ref mut i)) = c.content
-            {
-                i.thumbnail = Some(info);
-            }
+        if let Some(ref mut c) = self.content
+            && let Some(flare_proto::common::message_content::Content::Image(ref mut i)) = c.content
+        {
+            i.thumbnail = Some(info);
         }
         self
     }
 
     pub fn video_source(mut self, info: VideoInfo) -> Self {
-        if let Some(ref mut c) = self.content {
-            if let Some(flare_proto::common::message_content::Content::Video(ref mut v)) = c.content
-            {
-                v.source = Some(info);
-            }
+        if let Some(ref mut c) = self.content
+            && let Some(flare_proto::common::message_content::Content::Video(ref mut v)) = c.content
+        {
+            v.source = Some(info);
         }
         self
     }
 
     pub fn audio_source(mut self, info: AudioInfo) -> Self {
-        if let Some(ref mut c) = self.content {
-            if let Some(flare_proto::common::message_content::Content::Audio(ref mut a)) = c.content
-            {
-                a.source = Some(info);
-            }
+        if let Some(ref mut c) = self.content
+            && let Some(flare_proto::common::message_content::Content::Audio(ref mut a)) = c.content
+        {
+            a.source = Some(info);
         }
         self
     }
@@ -288,31 +282,28 @@ impl ContentBuilder {
     }
 
     pub fn file_name(mut self, n: impl Into<String>) -> Self {
-        if let Some(ref mut c) = self.content {
-            if let Some(flare_proto::common::message_content::Content::File(ref mut f)) = c.content
-            {
-                f.file_name = n.into();
-            }
+        if let Some(ref mut c) = self.content
+            && let Some(flare_proto::common::message_content::Content::File(ref mut f)) = c.content
+        {
+            f.file_name = n.into();
         }
         self
     }
 
     pub fn mime_type(mut self, m: impl Into<String>) -> Self {
-        if let Some(ref mut c) = self.content {
-            if let Some(flare_proto::common::message_content::Content::File(ref mut f)) = c.content
-            {
-                f.mime_type = m.into();
-            }
+        if let Some(ref mut c) = self.content
+            && let Some(flare_proto::common::message_content::Content::File(ref mut f)) = c.content
+        {
+            f.mime_type = m.into();
         }
         self
     }
 
     pub fn file_size(mut self, s: i64) -> Self {
-        if let Some(ref mut c) = self.content {
-            if let Some(flare_proto::common::message_content::Content::File(ref mut f)) = c.content
-            {
-                f.file_size = s;
-            }
+        if let Some(ref mut c) = self.content
+            && let Some(flare_proto::common::message_content::Content::File(ref mut f)) = c.content
+        {
+            f.file_size = s;
         }
         self
     }
@@ -358,45 +349,41 @@ impl ContentBuilder {
     }
 
     pub fn address(mut self, a: impl Into<String>) -> Self {
-        if let Some(ref mut c) = self.content {
-            if let Some(flare_proto::common::message_content::Content::Location(ref mut l)) =
+        if let Some(ref mut c) = self.content
+            && let Some(flare_proto::common::message_content::Content::Location(ref mut l)) =
                 c.content
-            {
-                l.address = a.into();
-            }
+        {
+            l.address = a.into();
         }
         self
     }
 
     pub fn location_zoom(mut self, zoom: Option<u8>) -> Self {
-        if let Some(ref mut c) = self.content {
-            if let Some(flare_proto::common::message_content::Content::Location(ref mut l)) =
+        if let Some(ref mut c) = self.content
+            && let Some(flare_proto::common::message_content::Content::Location(ref mut l)) =
                 c.content
-            {
-                l.zoom = zoom.map(|z| i32::from(z));
-            }
+        {
+            l.zoom = zoom.map(i32::from);
         }
         self
     }
 
     pub fn location_snapshot_url(mut self, url: Option<String>) -> Self {
-        if let Some(ref mut c) = self.content {
-            if let Some(flare_proto::common::message_content::Content::Location(ref mut l)) =
+        if let Some(ref mut c) = self.content
+            && let Some(flare_proto::common::message_content::Content::Location(ref mut l)) =
                 c.content
-            {
-                l.snapshot_url = url;
-            }
+        {
+            l.snapshot_url = url;
         }
         self
     }
 
     pub fn location_snapshot_local_path(mut self, path: Option<String>) -> Self {
-        if let Some(ref mut c) = self.content {
-            if let Some(flare_proto::common::message_content::Content::Location(ref mut l)) =
+        if let Some(ref mut c) = self.content
+            && let Some(flare_proto::common::message_content::Content::Location(ref mut l)) =
                 c.content
-            {
-                l.snapshot_local_path = path;
-            }
+        {
+            l.snapshot_local_path = path;
         }
         self
     }
@@ -421,34 +408,31 @@ impl ContentBuilder {
     }
 
     pub fn card_type(mut self, t: impl Into<String>) -> Self {
-        if let Some(ref mut c) = self.content {
-            if let Some(flare_proto::common::message_content::Content::Card(ref mut card)) =
+        if let Some(ref mut c) = self.content
+            && let Some(flare_proto::common::message_content::Content::Card(ref mut card)) =
                 c.content
-            {
-                card.card_type = t.into();
-            }
+        {
+            card.card_type = t.into();
         }
         self
     }
 
     pub fn subtitle(mut self, s: impl Into<String>) -> Self {
-        if let Some(ref mut c) = self.content {
-            if let Some(flare_proto::common::message_content::Content::Card(ref mut card)) =
+        if let Some(ref mut c) = self.content
+            && let Some(flare_proto::common::message_content::Content::Card(ref mut card)) =
                 c.content
-            {
-                card.subtitle = s.into();
-            }
+        {
+            card.subtitle = s.into();
         }
         self
     }
 
     pub fn avatar(mut self, u: impl Into<String>) -> Self {
-        if let Some(ref mut c) = self.content {
-            if let Some(flare_proto::common::message_content::Content::Card(ref mut card)) =
+        if let Some(ref mut c) = self.content
+            && let Some(flare_proto::common::message_content::Content::Card(ref mut card)) =
                 c.content
-            {
-                card.avatar = u.into();
-            }
+        {
+            card.avatar = u.into();
         }
         self
     }
@@ -493,24 +477,22 @@ impl ContentBuilder {
     }
 
     pub fn package_id(mut self, p: impl Into<String>) -> Self {
-        if let Some(ref mut c) = self.content {
-            if let Some(flare_proto::common::message_content::Content::Sticker(ref mut s)) =
+        if let Some(ref mut c) = self.content
+            && let Some(flare_proto::common::message_content::Content::Sticker(ref mut s)) =
                 c.content
-            {
-                s.package_id = p.into();
-            }
+        {
+            s.package_id = p.into();
         }
         self
     }
 
     /// 贴纸资源格式（如 `webp`、`png`），写入 proto `format`
     pub fn sticker_format(mut self, f: impl Into<String>) -> Self {
-        if let Some(ref mut c) = self.content {
-            if let Some(flare_proto::common::message_content::Content::Sticker(ref mut s)) =
+        if let Some(ref mut c) = self.content
+            && let Some(flare_proto::common::message_content::Content::Sticker(ref mut s)) =
                 c.content
-            {
-                s.format = f.into();
-            }
+        {
+            s.format = f.into();
         }
         self
     }
@@ -563,11 +545,10 @@ impl ContentBuilder {
 
     /// 动图时长（毫秒），写入 `ImageContent.duration_ms`
     pub fn image_duration_ms(mut self, ms: i64) -> Self {
-        if let Some(ref mut c) = self.content {
-            if let Some(flare_proto::common::message_content::Content::Image(ref mut i)) = c.content
-            {
-                i.duration_ms = Some(ms);
-            }
+        if let Some(ref mut c) = self.content
+            && let Some(flare_proto::common::message_content::Content::Image(ref mut i)) = c.content
+        {
+            i.duration_ms = Some(ms);
         }
         self
     }
@@ -591,31 +572,28 @@ impl ContentBuilder {
     }
 
     pub fn quoted_sender_id(mut self, s: impl Into<String>) -> Self {
-        if let Some(ref mut c) = self.content {
-            if let Some(flare_proto::common::message_content::Content::Quote(ref mut q)) = c.content
-            {
-                q.quoted_sender_id = s.into();
-            }
+        if let Some(ref mut c) = self.content
+            && let Some(flare_proto::common::message_content::Content::Quote(ref mut q)) = c.content
+        {
+            q.quoted_sender_id = s.into();
         }
         self
     }
 
     pub fn quoted_text_preview(mut self, s: impl Into<String>) -> Self {
-        if let Some(ref mut c) = self.content {
-            if let Some(flare_proto::common::message_content::Content::Quote(ref mut q)) = c.content
-            {
-                q.quoted_text_preview = s.into();
-            }
+        if let Some(ref mut c) = self.content
+            && let Some(flare_proto::common::message_content::Content::Quote(ref mut q)) = c.content
+        {
+            q.quoted_text_preview = s.into();
         }
         self
     }
 
     pub fn quoted_content(mut self, content: MessageContent) -> Self {
-        if let Some(ref mut c) = self.content {
-            if let Some(flare_proto::common::message_content::Content::Quote(ref mut q)) = c.content
-            {
-                q.quoted_content = Some(Box::new(content));
-            }
+        if let Some(ref mut c) = self.content
+            && let Some(flare_proto::common::message_content::Content::Quote(ref mut q)) = c.content
+        {
+            q.quoted_content = Some(Box::new(content));
         }
         self
     }
@@ -626,37 +604,35 @@ impl ContentBuilder {
     }
 
     pub fn current_text(mut self, s: impl Into<String>) -> Self {
-        if let Some(ref mut c) = self.content {
-            if let Some(flare_proto::common::message_content::Content::Quote(ref mut q)) = c.content
-            {
-                q.current_content = Some(Box::new(MessageContent {
-                    content: Some(flare_proto::common::message_content::Content::Text(
-                        flare_proto::common::TextContent {
-                            text: s.into(),
-                            mentions: Vec::new(),
-                        },
-                    )),
-                }));
-            }
+        if let Some(ref mut c) = self.content
+            && let Some(flare_proto::common::message_content::Content::Quote(ref mut q)) = c.content
+        {
+            q.current_content = Some(Box::new(MessageContent {
+                content: Some(flare_proto::common::message_content::Content::Text(
+                    flare_proto::common::TextContent {
+                        text: s.into(),
+                        mentions: Vec::new(),
+                    },
+                )),
+            }));
         }
         self
     }
 
     pub fn current_content(mut self, content: MessageContent) -> Self {
-        if let Some(ref mut c) = self.content {
-            if let Some(flare_proto::common::message_content::Content::Quote(ref mut q)) = c.content
-            {
-                // 防止出现 Quote 套 Quote，避免展示与摘要链路歧义。
-                let is_quote = matches!(
-                    content.content,
-                    Some(flare_proto::common::message_content::Content::Quote(_))
-                );
-                q.current_content = if is_quote {
-                    None
-                } else {
-                    Some(Box::new(content))
-                };
-            }
+        if let Some(ref mut c) = self.content
+            && let Some(flare_proto::common::message_content::Content::Quote(ref mut q)) = c.content
+        {
+            // 防止出现 Quote 套 Quote，避免展示与摘要链路歧义。
+            let is_quote = matches!(
+                content.content,
+                Some(flare_proto::common::message_content::Content::Quote(_))
+            );
+            q.current_content = if is_quote {
+                None
+            } else {
+                Some(Box::new(content))
+            };
         }
         self
     }
@@ -687,12 +663,11 @@ impl ContentBuilder {
     }
 
     pub fn thread_title(mut self, s: impl Into<String>) -> Self {
-        if let Some(ref mut c) = self.content {
-            if let Some(flare_proto::common::message_content::Content::Thread(ref mut t)) =
+        if let Some(ref mut c) = self.content
+            && let Some(flare_proto::common::message_content::Content::Thread(ref mut t)) =
                 c.content
-            {
-                t.thread_title = s.into();
-            }
+        {
+            t.thread_title = s.into();
         }
         self
     }
@@ -714,13 +689,12 @@ impl ContentBuilder {
     }
 
     pub fn forward_title(mut self, s: impl Into<String>) -> Self {
-        if let Some(ref mut c) = self.content {
-            if let Some(flare_proto::common::message_content::Content::Forward(ref mut f)) =
+        if let Some(ref mut c) = self.content
+            && let Some(flare_proto::common::message_content::Content::Forward(ref mut f)) =
                 c.content
-            {
-                let t = s.into();
-                f.title = if t.trim().is_empty() { None } else { Some(t) };
-            }
+        {
+            let t = s.into();
+            f.title = if t.trim().is_empty() { None } else { Some(t) };
         }
         self
     }
@@ -744,23 +718,21 @@ impl ContentBuilder {
     }
 
     pub fn link_card_thumbnail_url(mut self, u: impl Into<String>) -> Self {
-        if let Some(ref mut c) = self.content {
-            if let Some(flare_proto::common::message_content::Content::LinkCard(ref mut l)) =
+        if let Some(ref mut c) = self.content
+            && let Some(flare_proto::common::message_content::Content::LinkCard(ref mut l)) =
                 c.content
-            {
-                l.thumbnail_url = u.into();
-            }
+        {
+            l.thumbnail_url = u.into();
         }
         self
     }
 
     pub fn link_card_site_name(mut self, s: impl Into<String>) -> Self {
-        if let Some(ref mut c) = self.content {
-            if let Some(flare_proto::common::message_content::Content::LinkCard(ref mut l)) =
+        if let Some(ref mut c) = self.content
+            && let Some(flare_proto::common::message_content::Content::LinkCard(ref mut l)) =
                 c.content
-            {
-                l.site_name = s.into();
-            }
+        {
+            l.site_name = s.into();
         }
         self
     }
@@ -787,12 +759,11 @@ impl ContentBuilder {
     }
 
     pub fn page_path(mut self, p: impl Into<String>) -> Self {
-        if let Some(ref mut c) = self.content {
-            if let Some(flare_proto::common::message_content::Content::MiniProgram(ref mut m)) =
+        if let Some(ref mut c) = self.content
+            && let Some(flare_proto::common::message_content::Content::MiniProgram(ref mut m)) =
                 c.content
-            {
-                m.page_path = p.into();
-            }
+        {
+            m.page_path = p.into();
         }
         self
     }
@@ -816,12 +787,11 @@ impl ContentBuilder {
     }
 
     pub fn mini_program_thumbnail_url(mut self, u: impl Into<String>) -> Self {
-        if let Some(ref mut c) = self.content {
-            if let Some(flare_proto::common::message_content::Content::MiniProgram(ref mut m)) =
+        if let Some(ref mut c) = self.content
+            && let Some(flare_proto::common::message_content::Content::MiniProgram(ref mut m)) =
                 c.content
-            {
-                m.thumbnail_url = u.into();
-            }
+        {
+            m.thumbnail_url = u.into();
         }
         self
     }
@@ -831,15 +801,14 @@ impl ContentBuilder {
         mut self,
         entries: std::collections::HashMap<String, String>,
     ) -> Self {
-        if let Some(ref mut c) = self.content {
-            if let Some(flare_proto::common::message_content::Content::MiniProgram(ref mut m)) =
+        if let Some(ref mut c) = self.content
+            && let Some(flare_proto::common::message_content::Content::MiniProgram(ref mut m)) =
                 c.content
-            {
-                for (k, v) in entries {
-                    let k = k.trim().to_string();
-                    if !k.is_empty() {
-                        m.extra.insert(k, v);
-                    }
+        {
+            for (k, v) in entries {
+                let k = k.trim().to_string();
+                if !k.is_empty() {
+                    m.extra.insert(k, v);
                 }
             }
         }
@@ -879,23 +848,21 @@ impl ContentBuilder {
     }
 
     pub fn rich_text_input_format(mut self, v: impl Into<String>) -> Self {
-        if let Some(ref mut c) = self.content {
-            if let Some(flare_proto::common::message_content::Content::RichText(ref mut r)) =
+        if let Some(ref mut c) = self.content
+            && let Some(flare_proto::common::message_content::Content::RichText(ref mut r)) =
                 c.content
-            {
-                r.input_format = Some(v.into());
-            }
+        {
+            r.input_format = Some(v.into());
         }
         self
     }
 
     pub fn rich_text_input_format_version(mut self, v: i32) -> Self {
-        if let Some(ref mut c) = self.content {
-            if let Some(flare_proto::common::message_content::Content::RichText(ref mut r)) =
+        if let Some(ref mut c) = self.content
+            && let Some(flare_proto::common::message_content::Content::RichText(ref mut r)) =
                 c.content
-            {
-                r.input_format_version = Some(v);
-            }
+        {
+            r.input_format_version = Some(v);
         }
         self
     }
@@ -905,54 +872,50 @@ impl ContentBuilder {
         key: impl Into<String>,
         value: impl Into<String>,
     ) -> Self {
-        if let Some(ref mut c) = self.content {
-            if let Some(flare_proto::common::message_content::Content::RichText(ref mut r)) =
+        if let Some(ref mut c) = self.content
+            && let Some(flare_proto::common::message_content::Content::RichText(ref mut r)) =
                 c.content
-            {
-                r.source_payload.insert(key.into(), value.into());
-            }
+        {
+            r.source_payload.insert(key.into(), value.into());
         }
         self
     }
 
     /// 长文标题（`RichTextContent.title`）；`None` 或空串会写入 `None`。
     pub fn rich_text_title(mut self, title: Option<String>) -> Self {
-        if let Some(ref mut c) = self.content {
-            if let Some(flare_proto::common::message_content::Content::RichText(ref mut r)) =
+        if let Some(ref mut c) = self.content
+            && let Some(flare_proto::common::message_content::Content::RichText(ref mut r)) =
                 c.content
-            {
-                r.title = title
-                    .map(|s| s.trim().to_string())
-                    .filter(|s| !s.is_empty());
-            }
+        {
+            r.title = title
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty());
         }
         self
     }
 
     /// SDK 派生检索串（`RichTextContent.search_text`）。
     pub fn rich_text_search_text(mut self, search_text: Option<String>) -> Self {
-        if let Some(ref mut c) = self.content {
-            if let Some(flare_proto::common::message_content::Content::RichText(ref mut r)) =
+        if let Some(ref mut c) = self.content
+            && let Some(flare_proto::common::message_content::Content::RichText(ref mut r)) =
                 c.content
-            {
-                r.search_text = search_text
-                    .map(|s| s.trim().to_string())
-                    .filter(|s| !s.is_empty());
-            }
+        {
+            r.search_text = search_text
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty());
         }
         self
     }
 
     /// 渲染提示 JSON 字符串（`RichTextContent.render_hints_json`）。
     pub fn rich_text_render_hints_json(mut self, render_hints_json: Option<String>) -> Self {
-        if let Some(ref mut c) = self.content {
-            if let Some(flare_proto::common::message_content::Content::RichText(ref mut r)) =
+        if let Some(ref mut c) = self.content
+            && let Some(flare_proto::common::message_content::Content::RichText(ref mut r)) =
                 c.content
-            {
-                r.render_hints_json = render_hints_json
-                    .map(|s| s.trim().to_string())
-                    .filter(|s| !s.is_empty());
-            }
+        {
+            r.render_hints_json = render_hints_json
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty());
         }
         self
     }
@@ -999,12 +962,11 @@ impl ContentBuilder {
     }
 
     pub fn data(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
-        if let Some(ref mut c) = self.content {
-            if let Some(flare_proto::common::message_content::Content::System(ref mut s)) =
+        if let Some(ref mut c) = self.content
+            && let Some(flare_proto::common::message_content::Content::System(ref mut s)) =
                 c.content
-            {
-                s.data.insert(key.into(), value.into());
-            }
+        {
+            s.data.insert(key.into(), value.into());
         }
         self
     }
@@ -1034,34 +996,31 @@ impl ContentBuilder {
     }
 
     pub fn notification_type(mut self, t: impl Into<String>) -> Self {
-        if let Some(ref mut c) = self.content {
-            if let Some(flare_proto::common::message_content::Content::Notification(ref mut n)) =
+        if let Some(ref mut c) = self.content
+            && let Some(flare_proto::common::message_content::Content::Notification(ref mut n)) =
                 c.content
-            {
-                n.notification_type = t.into();
-            }
+        {
+            n.notification_type = t.into();
         }
         self
     }
 
     pub fn persistent(mut self, v: bool) -> Self {
-        if let Some(ref mut c) = self.content {
-            if let Some(flare_proto::common::message_content::Content::Notification(ref mut n)) =
+        if let Some(ref mut c) = self.content
+            && let Some(flare_proto::common::message_content::Content::Notification(ref mut n)) =
                 c.content
-            {
-                n.persistent = v;
-            }
+        {
+            n.persistent = v;
         }
         self
     }
 
     pub fn show_badge(mut self, v: bool) -> Self {
-        if let Some(ref mut c) = self.content {
-            if let Some(flare_proto::common::message_content::Content::Notification(ref mut n)) =
+        if let Some(ref mut c) = self.content
+            && let Some(flare_proto::common::message_content::Content::Notification(ref mut n)) =
                 c.content
-            {
-                n.show_badge = v;
-            }
+        {
+            n.show_badge = v;
         }
         self
     }
@@ -1089,11 +1048,10 @@ impl ContentBuilder {
     }
 
     pub fn vote_participant_user_ids(mut self, ids: Vec<String>) -> Self {
-        if let Some(ref mut c) = self.content {
-            if let Some(flare_proto::common::message_content::Content::Vote(ref mut v)) = c.content
-            {
-                v.participant_user_ids = ids;
-            }
+        if let Some(ref mut c) = self.content
+            && let Some(flare_proto::common::message_content::Content::Vote(ref mut v)) = c.content
+        {
+            v.participant_user_ids = ids;
         }
         self
     }
@@ -1117,21 +1075,19 @@ impl ContentBuilder {
     }
 
     pub fn status(mut self, s: impl Into<String>) -> Self {
-        if let Some(ref mut c) = self.content {
-            if let Some(flare_proto::common::message_content::Content::Task(ref mut t)) = c.content
-            {
-                t.status = s.into();
-            }
+        if let Some(ref mut c) = self.content
+            && let Some(flare_proto::common::message_content::Content::Task(ref mut t)) = c.content
+        {
+            t.status = s.into();
         }
         self
     }
 
     pub fn task_participant_user_ids(mut self, ids: Vec<String>) -> Self {
-        if let Some(ref mut c) = self.content {
-            if let Some(flare_proto::common::message_content::Content::Task(ref mut t)) = c.content
-            {
-                t.participant_user_ids = ids;
-            }
+        if let Some(ref mut c) = self.content
+            && let Some(flare_proto::common::message_content::Content::Task(ref mut t)) = c.content
+        {
+            t.participant_user_ids = ids;
         }
         self
     }
@@ -1156,24 +1112,22 @@ impl ContentBuilder {
     }
 
     pub fn schedule_times_ms(mut self, start_ms: i64, end_ms: i64) -> Self {
-        if let Some(ref mut c) = self.content {
-            if let Some(flare_proto::common::message_content::Content::Schedule(ref mut s)) =
+        if let Some(ref mut c) = self.content
+            && let Some(flare_proto::common::message_content::Content::Schedule(ref mut s)) =
                 c.content
-            {
-                s.start_time_ms = start_ms;
-                s.end_time_ms = end_ms;
-            }
+        {
+            s.start_time_ms = start_ms;
+            s.end_time_ms = end_ms;
         }
         self
     }
 
     pub fn schedule_participant_user_ids(mut self, ids: Vec<String>) -> Self {
-        if let Some(ref mut c) = self.content {
-            if let Some(flare_proto::common::message_content::Content::Schedule(ref mut sch)) =
+        if let Some(ref mut c) = self.content
+            && let Some(flare_proto::common::message_content::Content::Schedule(ref mut sch)) =
                 c.content
-            {
-                sch.participant_user_ids = ids;
-            }
+        {
+            sch.participant_user_ids = ids;
         }
         self
     }
@@ -1196,12 +1150,11 @@ impl ContentBuilder {
     }
 
     pub fn pinned(mut self, v: bool) -> Self {
-        if let Some(ref mut c) = self.content {
-            if let Some(flare_proto::common::message_content::Content::Announcement(ref mut a)) =
+        if let Some(ref mut c) = self.content
+            && let Some(flare_proto::common::message_content::Content::Announcement(ref mut a)) =
                 c.content
-            {
-                a.pinned = v;
-            }
+        {
+            a.pinned = v;
         }
         self
     }
@@ -1224,12 +1177,11 @@ impl ContentBuilder {
     }
 
     pub fn fallback_text(mut self, s: impl Into<String>) -> Self {
-        if let Some(ref mut c) = self.content {
-            if let Some(flare_proto::common::message_content::Content::Placeholder(ref mut p)) =
+        if let Some(ref mut c) = self.content
+            && let Some(flare_proto::common::message_content::Content::Placeholder(ref mut p)) =
                 c.content
-            {
-                p.fallback_text = s.into();
-            }
+        {
+            p.fallback_text = s.into();
         }
         self
     }
@@ -1267,21 +1219,17 @@ impl ContentBuilder {
     }
 
     pub fn metadata(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
-        if let Some(ref mut c) = self.content {
-            match c.content {
-                Some(flare_proto::common::message_content::Content::Custom(ref mut cu)) => {
-                    cu.metadata.insert(key.into(), value.into());
-                }
-                _ => {}
-            }
+        if let Some(ref mut c) = self.content
+            && let Some(flare_proto::common::message_content::Content::Custom(ref mut cu)) =
+                c.content
+        {
+            cu.metadata.insert(key.into(), value.into());
         }
         self
     }
 
     pub fn build(self) -> BuiltContent {
-        let content = self
-            .content
-            .unwrap_or_else(|| MessageContent { content: None });
+        let content = self.content.unwrap_or(MessageContent { content: None });
         BuiltContent::new(self.message_type, content)
     }
 }

@@ -134,4 +134,49 @@ impl ConversationParticipantStore for SqliteConversationParticipantRepo {
         .map_err(sqlx_err)?;
         Ok(value.unwrap_or_default().max(0) as u64)
     }
+
+    async fn patch_user_display(
+        &self,
+        user_id: &str,
+        nickname: &str,
+        avatar_url: &str,
+    ) -> Result<()> {
+        let rows = sqlx::query(
+            r#"SELECT conversation_id, attributes
+               FROM conversation_participants
+               WHERE user_id = ?"#,
+        )
+        .bind(user_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(sqlx_err)?;
+
+        let now = crate::util::id::now_millis() as i64;
+        for row in rows {
+            let conversation_id: String = row.try_get("conversation_id").map_err(sqlx_err)?;
+            let attributes_raw: String = row.try_get("attributes").map_err(sqlx_err)?;
+            let mut attributes = parse_attributes(&attributes_raw);
+            if !avatar_url.trim().is_empty() {
+                attributes.insert("avatar_url".to_string(), avatar_url.to_string());
+            }
+            attributes
+                .entry("nickname".to_string())
+                .or_insert_with(|| nickname.to_string());
+            let attributes_json = serde_json::to_string(&attributes).unwrap_or_default();
+            sqlx::query(
+                r#"UPDATE conversation_participants
+                   SET nickname = ?, attributes = ?, updated_at = ?
+                   WHERE conversation_id = ? AND user_id = ?"#,
+            )
+            .bind(nickname)
+            .bind(attributes_json)
+            .bind(now)
+            .bind(conversation_id)
+            .bind(user_id)
+            .execute(&self.pool)
+            .await
+            .map_err(sqlx_err)?;
+        }
+        Ok(())
+    }
 }

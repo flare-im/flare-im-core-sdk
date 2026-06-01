@@ -11,6 +11,6 @@ pub use http::{
     HttpApiResponse, HttpClient, HttpRequestContext, InitiateDirectUploadHttpRequest,
     InitiateDirectUploadHttpResponse, PresignDirectUploadPartsHttpRequest,
     PresignDirectUploadPartsHttpResponse, PresignedUploadPartHttp, UploadFileHttpResponse,
-    UploadFileMetadataHttp, UploadedPartInfoHttp, unwrap_api_response,
+    UploadFileMetadataHttp, UploadedPartInfoHttp, unwrap_api_response, unwrap_void_api_response,
 };
 pub use socket::{SocketHandler, SocketTransport};

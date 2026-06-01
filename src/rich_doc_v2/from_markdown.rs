@@ -79,10 +79,10 @@ where
                     "type": "code_block",
                     "children": [text_node],
                 });
-                if let Some(obj) = code.as_object_mut() {
-                    if let Some(l) = lang {
-                        obj.insert("language".into(), json!(l));
-                    }
+                if let Some(obj) = code.as_object_mut()
+                    && let Some(l) = lang
+                {
+                    obj.insert("language".into(), json!(l));
                 }
                 Ok(Some(code))
             }
@@ -274,7 +274,7 @@ where
     /// 已消费起始 `Start` 后，跳过直到与 `end` 匹配的 `End`（嵌套平衡）。
     fn skip_until_matching_end(&mut self, end: TagEnd) -> Result<(), RichDocV2Error> {
         let mut depth = 1u32;
-        while let Some(ev) = self.events.next() {
+        for ev in self.events.by_ref() {
             match ev {
                 Event::Start(_) => depth += 1,
                 Event::End(e) => {
@@ -290,7 +290,7 @@ where
     }
 
     fn skip_current_table(&mut self) -> Result<(), RichDocV2Error> {
-        while let Some(ev) = self.events.next() {
+        for ev in self.events.by_ref() {
             if matches!(ev, Event::End(TagEnd::Table)) {
                 break;
             }
@@ -300,7 +300,7 @@ where
 
     fn skip_balanced_unknown(&mut self) -> Result<(), RichDocV2Error> {
         let mut depth = 1u32;
-        while let Some(ev) = self.events.next() {
+        for ev in self.events.by_ref() {
             match ev {
                 Event::Start(_) => depth += 1,
                 Event::End(_) => {

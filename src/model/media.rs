@@ -15,7 +15,7 @@ pub struct MediaResolvedAccess {
     pub remote: Option<MediaAccessUrl>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct UploadedMedia {
     pub file_id: String,
     pub file_name: String,

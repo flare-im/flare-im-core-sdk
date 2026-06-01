@@ -51,7 +51,7 @@ pub extern "C" fn flare_message_create_text(
             ctx,
             async move {
                 let build_api = inst.message_build_api().await?;
-                build_api.create_text(&conversation_id, &text).await
+                build_api.create_text(&conversation_id, &text, false).await
             },
             |msg| to_json_string(&msg),
         );

@@ -1,26 +1,61 @@
 use std::sync::Arc;
 
+use crate::application::adapters::SyncProtocolAdapter;
+use crate::application::sync_task::ConversationUserSettingsPatch;
+use crate::application::{ConversationLocalLifecycle, LocalConversationVisibility};
 use crate::core::CurrentUserIdStore;
-use crate::domain::{ConversationIdentityService, ConversationReadService, ConversationStore};
+use crate::domain::{
+    ConversationIdentityService, ConversationReadService, ConversationStore, SyncCursorStore,
+};
 use crate::error::{ErrorCode, FlareError, Result};
 use crate::model::conversation::ConversationType;
-use crate::model::{Conversation, ConversationParticipant};
+use crate::model::{
+    Conversation, ConversationParticipant, mark_settings_dirty, user_settings_version,
+};
 
 pub struct ConversationCommandUseCase {
     store: Arc<dyn ConversationStore>,
+    cursors: Option<Arc<dyn SyncCursorStore>>,
     current_user_id: CurrentUserIdStore,
     identity_service: ConversationIdentityService,
     read_service: ConversationReadService,
+    settings_sync: Option<Arc<SyncProtocolAdapter>>,
 }
 
 impl ConversationCommandUseCase {
-    pub fn new(store: Arc<dyn ConversationStore>, current_user_id: CurrentUserIdStore) -> Self {
+    pub fn new(
+        store: Arc<dyn ConversationStore>,
+        current_user_id: CurrentUserIdStore,
+        settings_sync: Option<Arc<SyncProtocolAdapter>>,
+        cursors: Option<Arc<dyn SyncCursorStore>>,
+    ) -> Self {
         Self {
             store,
+            cursors,
             current_user_id,
             identity_service: ConversationIdentityService,
             read_service: ConversationReadService,
+            settings_sync,
         }
+    }
+
+    async fn after_user_settings_write(
+        &self,
+        conversation_id: &str,
+        patch: ConversationUserSettingsPatch,
+    ) -> Result<()> {
+        let Some(mut conversation) = self.store.get(conversation_id).await? else {
+            return Ok(());
+        };
+        mark_settings_dirty(&mut conversation);
+        self.store.save_batch(&[conversation.clone()]).await?;
+        if let Some(sync) = &self.settings_sync {
+            let base = user_settings_version(&conversation);
+            let _ = sync
+                .push_conversation_user_settings(conversation_id, base, patch)
+                .await;
+        }
+        Ok(())
     }
 
     pub async fn current_user_id(&self) -> Result<String> {
@@ -47,11 +82,14 @@ impl ConversationCommandUseCase {
         let (conversation, needs_persist) = self.identity_service.merge_or_create(
             existing,
             conversation_id,
+            &user_id,
             source_id,
             conversation_type,
         );
         if save && needs_persist {
-            self.store.save_batch(&[conversation.clone()]).await?;
+            self.store
+                .save_batch(std::slice::from_ref(&conversation))
+                .await?;
         }
         Ok(conversation)
     }
@@ -87,6 +125,7 @@ impl ConversationCommandUseCase {
         let (mut conversation, _) = self.identity_service.merge_or_create(
             existing,
             conversation_id,
+            &current_user_id,
             &group_key,
             &ConversationType::Group,
         );
@@ -171,11 +210,72 @@ impl ConversationCommandUseCase {
     }
 
     pub async fn set_pinned(&self, conversation_id: &str, pinned: bool) -> Result<()> {
-        self.store.set_pinned(conversation_id, pinned).await
+        self.store.set_pinned(conversation_id, pinned).await?;
+        self.after_user_settings_write(
+            conversation_id,
+            ConversationUserSettingsPatch {
+                is_pinned: Some(pinned),
+                ..Default::default()
+            },
+        )
+        .await
+    }
+
+    pub async fn set_muted(&self, conversation_id: &str, muted: bool) -> Result<()> {
+        self.store.set_muted(conversation_id, muted).await?;
+        self.after_user_settings_write(
+            conversation_id,
+            ConversationUserSettingsPatch {
+                is_muted: Some(muted),
+                ..Default::default()
+            },
+        )
+        .await
+    }
+
+    pub async fn set_archived(&self, conversation_id: &str, archived: bool) -> Result<()> {
+        self.store.set_archived(conversation_id, archived).await?;
+        self.after_user_settings_write(
+            conversation_id,
+            ConversationUserSettingsPatch {
+                is_archived: Some(archived),
+                ..Default::default()
+            },
+        )
+        .await
+    }
+
+    pub async fn mark_unread(&self, conversation_id: &str) -> Result<u32> {
+        self.store.mark_unread(conversation_id).await
     }
 
     pub async fn update_draft(&self, conversation_id: &str, draft: Option<&str>) -> Result<()> {
-        self.store.update_draft(conversation_id, draft).await
+        self.store.update_draft(conversation_id, draft).await?;
+        self.after_user_settings_write(
+            conversation_id,
+            ConversationUserSettingsPatch {
+                draft: Some(draft.unwrap_or("").to_string()),
+                ..Default::default()
+            },
+        )
+        .await
+    }
+
+    /// 清空本地聊天记录（保留会话；已清空 seq 及更早消息不再同步落库）。
+    pub async fn clear_local_chat_history(&self, conversation_id: &str) -> Result<()> {
+        let user_id = self.current_user_id().await?;
+        let cleared = ConversationLocalLifecycle::clear_history_boundary_with_ports(
+            self.store.as_ref(),
+            self.cursors.as_deref(),
+            &user_id,
+            conversation_id,
+            LocalConversationVisibility::Keep,
+        )
+        .await?;
+        if cleared.is_none() {
+            return Err(FlareError::general_error("conversation not found"));
+        }
+        Ok(())
     }
 
     pub async fn ensure_local_conversation(

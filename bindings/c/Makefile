@@ -7,7 +7,9 @@
 SHELL := /bin/bash
 MAKEFILE_DIR := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
 WORKSPACE_ROOT := $(abspath $(MAKEFILE_DIR)/../..)
-FLUTTER_EXAMPLE_DIR := $(abspath $(WORKSPACE_ROOT)/../examples/flare-core-flutter)
+# 可由 flare-im-core-client-sdk/tools/sync_native.sh 覆盖
+FLUTTER_EXAMPLE_DIR ?= $(abspath $(WORKSPACE_ROOT)/../examples/flare-core-flutter)
+FLUTTER_EXAMPLE_DIR := $(abspath $(FLUTTER_EXAMPLE_DIR))
 FLUTTER_IOS_FFI := $(FLUTTER_EXAMPLE_DIR)/ios/FFI/build
 FLUTTER_ANDROID_JNI := $(FLUTTER_EXAMPLE_DIR)/android/app/src/main/jniLibs/arm64-v8a
 FLUTTER_MACOS_RUNNER := $(FLUTTER_EXAMPLE_DIR)/macos/Runner
@@ -34,10 +36,15 @@ define triple_lib_so
 $(call triple_out,$(1))/lib$(LIB_NAME).so
 endef
 
+OHOS_TARGET := aarch64-unknown-linux-ohos
+# OpenHarmony SDK / NDK 根目录（含 native/llvm/bin/aarch64-unknown-linux-ohos-clang）
+OHOS_NDK_HOME ?=
+HARMONY_LIBS_DIR ?= $(abspath $(WORKSPACE_ROOT)/../flare-im-core-client-sdk/packages/harmony/arkts/flare-im-harmony-arkts/libs/arm64-v8a)
+
 .PHONY: all help help-flutter host host-flutter flutter-sync flutter-sync-ios \
 	flutter-sync-ios-universal flutter-sync-ios-device flutter-sync-android \
-	setup-targets ios-device ios-sim ios-sim-x86 ios-all android all-mobile \
-	dist dist-ios dist-android clean check
+	flutter-sync-harmony setup-targets ios-device ios-sim ios-sim-x86 ios-all android ohos \
+	all-mobile dist dist-ios dist-android clean check
 
 all: host
 
@@ -47,7 +54,8 @@ help:
 	@echo "  make flutter-sync           host-flutter +（macOS）iOS 模拟器 .a +（可选）Android .so"
 	@echo "  make flutter-sync-ios-device  真机 .a → Flutter ios/FFI/build/"
 	@echo "  make flutter-sync-ios-universal  lipo 双模拟器 .a"
-	@echo "  make ios-all | make android | make dist-ios"
+	@echo "  make ios-all | make android | make ohos | make dist-ios"
+	@echo "  make flutter-sync-harmony  需 OHOS_NDK_HOME，拷贝 .so 至 client-sdk 鸿蒙 libs"
 	@echo "  make help-flutter           打印 Flutter 路径"
 	@echo "  target dir: $(CARGO_TARGET_DIR)"
 
@@ -107,7 +115,7 @@ flutter-sync: host-flutter
 	@echo "[flutter-sync] 完成。真机: make flutter-sync-ios-device"
 
 setup-targets:
-	rustup target add aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios aarch64-linux-android 2>/dev/null || true
+	rustup target add aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios aarch64-linux-android aarch64-unknown-linux-ohos 2>/dev/null || true
 
 ios-device: setup-targets
 	@echo "[FFI] aarch64-apple-ios"
@@ -135,6 +143,25 @@ android: setup-targets
 	CARGO_TARGET_DIR="$(CARGO_TARGET_DIR)" $(CARGO) build --$(PROFILE) \
 		--manifest-path "$(MANIFEST)" --target aarch64-linux-android -p $(PACKAGE)
 	@echo "-> $(call triple_lib_a,aarch64-linux-android) + .so"
+
+ohos: setup-targets
+	@if [ -z "$$OHOS_NDK_HOME" ]; then \
+		echo "[ERROR] 请 export OHOS_NDK_HOME（OpenHarmony native SDK）"; exit 2; fi
+	@OHOS_HOME="$$OHOS_NDK_HOME"; \
+	OHOS_CLANG="$$OHOS_HOME/native/llvm/bin/aarch64-unknown-linux-ohos-clang"; \
+	test -x "$$OHOS_CLANG" || (echo "[ERROR] 无 $$OHOS_CLANG"; exit 2); \
+	echo "[FFI] $(OHOS_TARGET)"; \
+	CARGO_TARGET_AARCH64_UNKNOWN_LINUX_OHOS_LINKER="$$OHOS_CLANG" \
+	CARGO_TARGET_AARCH64_UNKNOWN_LINUX_OHOS_AR="$$OHOS_HOME/native/llvm/bin/llvm-ar" \
+	CARGO_TARGET_DIR="$(CARGO_TARGET_DIR)" $(CARGO) build --$(PROFILE) \
+		--manifest-path "$(MANIFEST)" --target $(OHOS_TARGET) -p $(PACKAGE); \
+	echo "-> $(call triple_lib_so,$(OHOS_TARGET))"
+
+flutter-sync-harmony: ohos
+	@mkdir -p "$(HARMONY_LIBS_DIR)"
+	@SO="$(call triple_lib_so,$(OHOS_TARGET))"; test -f "$$SO" || (echo "[ERROR] 无 $$SO"; exit 1)
+	@cp -f "$(call triple_lib_so,$(OHOS_TARGET))" "$(HARMONY_LIBS_DIR)/"
+	@echo "[harmony] .so -> $(HARMONY_LIBS_DIR)/"
 
 all-mobile: ios-all android
 

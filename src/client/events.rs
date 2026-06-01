@@ -124,6 +124,14 @@ impl IMClient {
         self.with_engine(|e| e.bus().on_message(f))
     }
 
+    /// 收到 **IM 下行 Notification**（含 `persistent=false` 的 BusinessEphemeral）；与聊天 `on_message` 分离。
+    pub fn on_notification<F>(&self, f: F) -> Result<Subscription>
+    where
+        F: Fn(&IMMessage) + Send + Sync + 'static,
+    {
+        self.with_engine(|e| e.bus().on_notification(f))
+    }
+
     /// 批量新消息（如同步一批历史）；比逐条 `on_message` 更高效，适合列表差量刷新。
     pub fn on_message_batch<F>(&self, f: F) -> Result<Subscription>
     where

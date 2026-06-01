@@ -12,6 +12,9 @@ impl SyncPolicy {
                 EventType::EventMessageRecall as i32,
                 EventType::EventMessageEdit as i32,
                 EventType::EventMessageDelete as i32,
+                EventType::EventMessageBurnScheduled as i32,
+                EventType::EventMessageBurned as i32,
+                EventType::EventMessageHardDeleted as i32,
                 EventType::EventReaction as i32,
                 EventType::EventPin as i32,
                 EventType::EventUnpin as i32,
@@ -83,6 +86,15 @@ impl SyncPolicy {
 #[cfg(test)]
 mod tests {
     use super::SyncPolicy;
+    use crate::model::event::EventType;
+
+    #[test]
+    fn critical_event_query_plan_includes_burn_lifecycle_events() {
+        let event_types = SyncPolicy::critical_event_query_plan().event_types;
+        assert!(event_types.contains(&(EventType::EventMessageBurnScheduled as i32)));
+        assert!(event_types.contains(&(EventType::EventMessageBurned as i32)));
+        assert!(event_types.contains(&(EventType::EventMessageHardDeleted as i32)));
+    }
 
     #[test]
     fn delete_visibility_respects_private_target_user() {

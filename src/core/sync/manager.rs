@@ -7,7 +7,7 @@ use crate::event::EventBus;
 use crate::store::StoreProvider;
 
 use super::orchestrator::Orchestrator;
-use super::{SyncRunContext, SyncTask};
+use super::{SyncMode, SyncRunContext, SyncTask};
 
 pub struct SyncManager {
     tasks: Mutex<Vec<Arc<dyn SyncTask>>>,
@@ -85,6 +85,28 @@ impl SyncManager {
         if let Some(handle) = handle {
             handle.abort();
         }
+    }
+
+    /// 按 task id 静默触发 Background 同步（多端私有数据补偿等）。
+    pub fn spawn_background_tasks_by_ids(
+        &self,
+        user_id: &str,
+        task_ids: &[&str],
+        store: StoreProvider,
+        bus: EventBus,
+    ) {
+        let selected: Vec<Arc<dyn SyncTask>> = self
+            .registered_tasks()
+            .into_iter()
+            .filter(|task| {
+                task.mode() == SyncMode::Background && task_ids.iter().any(|id| *id == task.id())
+            })
+            .collect();
+        if selected.is_empty() {
+            return;
+        }
+        let run = SyncRunContext::silent_multidevice_private_data();
+        Orchestrator::new(store, bus).spawn_background_tasks(user_id.to_string(), run, selected);
     }
 }
 

@@ -5,13 +5,16 @@ use tokio::sync::RwLock;
 
 use crate::application::event_deduper::EventDeduper;
 use crate::application::message_deduper::MessageDeduper;
-use crate::core::{SessionSyncRunner, SyncManager, SyncResponseHandler, SyncRunContext};
+use crate::core::{
+    ConversationSummarySync, SessionSyncRunner, SyncManager, SyncResponseHandler, SyncRunContext,
+};
 use crate::error::FlareError;
 use crate::event::{ConnectionEvent as SdkConnectionEvent, EventBus, SdkEvent};
 use crate::fsm::{ConnectionEvent, ConnectionFsm, ConnectionState};
 use crate::middleware::MiddlewareChain;
+use crate::notification::NotificationInboundPipeline;
 use crate::protocol::{Codec, PacketSender};
-use crate::reliable_queue::ReliableSendQueue;
+use crate::reliable_queue::{ReliableSendQueue, ReliableSendQueueConfig};
 use crate::store::StoreProvider;
 use crate::transport::{SocketHandler, SocketTransport};
 
@@ -47,41 +50,62 @@ pub struct SdkEngine {
     sync_manager: Arc<SyncManager>,
     sync_response_handler: Option<Arc<dyn SyncResponseHandler>>,
     session_sync: Option<Arc<dyn SessionSyncRunner>>,
+    conversation_summary_sync: Option<Arc<dyn ConversationSummarySync>>,
     codec: Arc<dyn Codec>,
     _chain: Arc<MiddlewareChain>,
     reliable_queue: Option<Arc<ReliableSendQueue>>,
     connection_state: StdArc<RwLock<ConnectionState>>,
     event_deduper: EventDeduper,
     message_deduper: MessageDeduper,
+    notification_pipeline: NotificationInboundPipeline,
+}
+
+pub(crate) struct SdkEngineConfig {
+    pub stores: StoreProvider,
+    pub chain: MiddlewareChain,
+    pub transport: SocketTransport,
+    pub current_user_id: crate::core::CurrentUserIdStore,
+    pub codec: Arc<dyn Codec>,
+    pub bus: EventBus,
+    pub sync_response_handler: Option<Arc<dyn SyncResponseHandler>>,
+    pub session_sync: Option<Arc<dyn SessionSyncRunner>>,
+    pub conversation_summary_sync: Option<Arc<dyn ConversationSummarySync>>,
+    pub event_deduper: EventDeduper,
+    pub message_deduper: MessageDeduper,
+    pub notification_pipeline: NotificationInboundPipeline,
 }
 
 impl SdkEngine {
     /// 创建引擎。连接就绪后由 [connect] 内 [bootstrap] 激活同步；同步状态仅通过 [EventBus] 的同步回调获取。
     /// `sync_response_handler` / `session_sync` 通常为同一 application SyncProtocolAdapter 的 Arc。
-    pub(crate) fn new(
-        stores: StoreProvider,
-        _chain: MiddlewareChain,
-        transport: SocketTransport,
-        current_user_id: crate::core::CurrentUserIdStore,
-        codec: Arc<dyn Codec>,
-        bus: EventBus,
-        sync_response_handler: Option<Arc<dyn SyncResponseHandler>>,
-        session_sync: Option<Arc<dyn SessionSyncRunner>>,
-        event_deduper: EventDeduper,
-        message_deduper: MessageDeduper,
-    ) -> Self {
+    pub(crate) fn new(config: SdkEngineConfig) -> Self {
+        let SdkEngineConfig {
+            stores,
+            chain,
+            transport,
+            current_user_id,
+            codec,
+            bus,
+            sync_response_handler,
+            session_sync,
+            conversation_summary_sync,
+            event_deduper,
+            message_deduper,
+            notification_pipeline,
+        } = config;
         let sender = transport.sender().clone();
         let reliable_queue = stores.pending_sends().map(|(reader, writer)| {
-            Arc::new(ReliableSendQueue::new(
-                reader,
-                writer,
-                sender.clone(),
-                stores.messages.clone(),
-                current_user_id.clone(),
-                bus.clone(),
-                None,
-                None,
-            ))
+            Arc::new(ReliableSendQueue::new(ReliableSendQueueConfig {
+                pending_reader: reader,
+                pending_writer: writer,
+                sender: sender.clone(),
+                message_store: stores.messages.clone(),
+                conversation_store: stores.conversations.clone(),
+                current_user_id: current_user_id.clone(),
+                bus: bus.clone(),
+                timeout_secs: None,
+                max_retries: None,
+            }))
         });
         Self {
             stores,
@@ -92,12 +116,14 @@ impl SdkEngine {
             sync_manager: Arc::new(SyncManager::new()),
             sync_response_handler,
             session_sync,
+            conversation_summary_sync,
             codec,
-            _chain: Arc::new(_chain),
+            _chain: Arc::new(chain),
             reliable_queue,
             connection_state: StdArc::new(RwLock::new(ConnectionState::Disconnected)),
             event_deduper,
             message_deduper,
+            notification_pipeline,
         }
     }
 
@@ -167,6 +193,7 @@ impl SdkEngine {
                 self.current_user_id.clone(),
                 self.event_deduper.clone(),
                 self.message_deduper.clone(),
+                self.notification_pipeline.clone(),
             )),
             self.codec.clone(),
             ready.clone(),
@@ -311,6 +338,10 @@ impl SdkEngine {
     /// 单会话消息同步与已读上报（会话列表同步由同步引擎内部执行，不暴露）
     pub fn session_sync_runner(&self) -> Option<Arc<dyn SessionSyncRunner>> {
         self.session_sync.clone()
+    }
+
+    pub fn conversation_summary_sync(&self) -> Option<Arc<dyn ConversationSummarySync>> {
+        self.conversation_summary_sync.clone()
     }
 
     pub fn reliable_queue(&self) -> Option<Arc<ReliableSendQueue>> {

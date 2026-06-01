@@ -21,4 +21,15 @@ pub trait ConversationParticipantStore: Send + Sync {
     ) -> Result<Vec<ConversationParticipant>>;
 
     async fn version(&self, conversation_id: &str) -> Result<u64>;
+
+    /// 用户资料变更后，批量刷新本地参与者快照中的昵称/头像。
+    async fn patch_user_display(
+        &self,
+        user_id: &str,
+        nickname: &str,
+        avatar_url: &str,
+    ) -> Result<()> {
+        let _ = (user_id, nickname, avatar_url);
+        Ok(())
+    }
 }

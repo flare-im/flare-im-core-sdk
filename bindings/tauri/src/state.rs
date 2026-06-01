@@ -5,12 +5,12 @@
 
 use std::sync::Arc;
 
+use flare_im_core_sdk::Result;
 use flare_im_core_sdk::client::api::{
     CapabilityApi, ConversationApi, MediaApi, MessageApi, MessageBuildApi, PresenceApi,
 };
 use flare_im_core_sdk::client::{ConnectedApis, IMClient, SdkConfigOverlay};
 use flare_im_core_sdk::store::StoreProvider;
-use flare_im_core_sdk::Result;
 use tokio::sync::RwLock;
 
 #[derive(Clone)]
@@ -53,10 +53,7 @@ impl SdkState {
 
     pub async fn install_session(&self, apis: ConnectedApis) {
         let generation = self.client.session_generation().await;
-        *self.session.write().await = Some(SessionCache {
-            generation,
-            apis,
-        });
+        *self.session.write().await = Some(SessionCache { generation, apis });
     }
 
     pub async fn clear_session(&self) {
@@ -71,10 +68,10 @@ impl SdkState {
     /// 已缓存且代际一致则直接返回；否则从 `IMClient` 拉取并写回缓存。
     async fn session_or_live(&self) -> Result<ConnectedApis> {
         let generation = self.client.session_generation().await;
-        if let Some(cache) = self.session.read().await.as_ref() {
-            if cache.generation == generation {
-                return Ok(cache.apis.clone());
-            }
+        if let Some(cache) = self.session.read().await.as_ref()
+            && cache.generation == generation
+        {
+            return Ok(cache.apis.clone());
         }
         let apis = self.client.connected_apis().await?;
         *self.session.write().await = Some(SessionCache {

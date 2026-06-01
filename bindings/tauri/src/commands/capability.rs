@@ -3,7 +3,21 @@
 use tauri::State;
 
 use crate::state::SdkState;
-use flare_im_core_sdk::client::CapabilityDispatchResult;
+use flare_im_core_sdk::client::{CapabilityDispatchResult, RtcSfuSubscriptionRequest};
+use serde::Deserialize;
+
+#[derive(Debug, Deserialize)]
+pub struct RtcSfuSetSubscriptionPayload {
+    pub conversation_id: String,
+    pub room_id: String,
+    pub subscriber_peer_id: String,
+    pub track_id: String,
+    pub enable: bool,
+    pub media: Option<String>,
+    pub preferred_layer: Option<String>,
+    pub priority: Option<u32>,
+    pub tenant_id: Option<String>,
+}
 
 #[tauri::command]
 pub async fn sdk_rtc_start_audio(
@@ -200,31 +214,23 @@ pub async fn sdk_rtc_sfu_get_room_state(
 #[tauri::command]
 pub async fn sdk_rtc_sfu_set_subscription(
     state: State<'_, SdkState>,
-    conversation_id: String,
-    room_id: String,
-    subscriber_peer_id: String,
-    track_id: String,
-    enable: bool,
-    media: Option<String>,
-    preferred_layer: Option<String>,
-    priority: Option<u32>,
-    tenant_id: Option<String>,
+    payload: RtcSfuSetSubscriptionPayload,
 ) -> std::result::Result<CapabilityDispatchResult, String> {
     state
         .capability_api()
         .await
         .map_err(super::map_sdk_err)?
-        .rtc_sfu_set_subscription(
-            &conversation_id,
-            &room_id,
-            &subscriber_peer_id,
-            &track_id,
-            enable,
-            media.as_deref(),
-            preferred_layer.as_deref(),
-            priority.unwrap_or(0),
-            tenant_id.as_deref(),
-        )
+        .rtc_sfu_set_subscription(RtcSfuSubscriptionRequest {
+            conversation_id: payload.conversation_id,
+            room_id: payload.room_id,
+            subscriber_peer_id: payload.subscriber_peer_id,
+            track_id: payload.track_id,
+            enable: payload.enable,
+            media: payload.media,
+            preferred_layer: payload.preferred_layer,
+            priority: payload.priority.unwrap_or(0),
+            tenant_id: payload.tenant_id,
+        })
         .await
         .map_err(super::map_sdk_err)
 }

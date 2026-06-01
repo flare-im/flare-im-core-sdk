@@ -236,6 +236,11 @@ impl SyncRunContext {
             reason: SyncReason::BackgroundCatchUp,
         }
     }
+
+    /// 多端私有数据补偿（如通讯录备注）：静默、不阻塞 UI。
+    pub fn silent_multidevice_private_data() -> Self {
+        Self::silent_background(SyncScope::Global, SyncReason::CriticalEventCompensation)
+    }
 }
 
 #[derive(Clone, Debug)]

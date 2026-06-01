@@ -220,6 +220,8 @@ pub struct Conversation {
     /// 由服务端同步摘要 `ext.peer_read_seq` 下发并持久化。
     pub peer_read_seq: u64,
     pub max_seq: u64,
+    /// 当前用户的历史可见边界；seq <= visible_after_seq 的消息不可见，不参与冷启动回灌。
+    pub visible_after_seq: u64,
 
     // ===============================
     // User Settings
@@ -288,6 +290,7 @@ impl Default for Conversation {
             last_read_seq: 0,
             peer_read_seq: 0,
             max_seq: 0,
+            visible_after_seq: 0,
             is_pinned: false,
             is_muted: false,
             is_archived: false,
@@ -341,6 +344,7 @@ impl Conversation {
             avatar_url: self.avatar_url.clone(),
             unread_count: self.unread_count,
             max_seq: self.max_seq,
+            visible_after_seq: self.visible_after_seq,
             last_read_seq: self.last_read_seq,
             is_muted: self.is_muted,
             is_pinned: self.is_pinned,
@@ -441,11 +445,22 @@ impl From<flare_proto::common::ConversationSummary> for Conversation {
             .get("peer_read_seq")
             .and_then(|v| v.parse::<u64>().ok())
             .unwrap_or_default();
+        let peer_read_seq = if peer_read_seq <= s.max_seq {
+            peer_read_seq
+        } else {
+            0
+        };
         let member_preview: Vec<ConversationParticipant> =
             s.member_preview.into_iter().map(Into::into).collect();
-        // 以服务端聚合后的 unread_count 为准：
-        // 该值已按消息可见性/消息状态（删除、撤回等）处理，能正确覆盖历史未读统计。
-        let unread_count = s.unread_count;
+        let visible_after_seq = s.visible_after_seq;
+        // 以服务端聚合后的 unread_count 为准；若服务端下发了用户历史可见边界，
+        // SDK 仍在模型入口做一次硬约束，避免旧摘要/旧消息回灌成本地未读。
+        let unread_count = if visible_after_seq > 0 && s.max_seq <= visible_after_seq {
+            0
+        } else {
+            s.unread_count
+        };
+        let last_read_seq = s.last_read_seq.max(visible_after_seq);
         Self {
             conversation_id: s.conversation_id,
             conversation_type: ConversationType::from(s.conversation_type.as_str()),
@@ -455,7 +470,8 @@ impl From<flare_proto::common::ConversationSummary> for Conversation {
             avatar_url: s.avatar_url,
             unread_count,
             max_seq: s.max_seq,
-            last_read_seq: s.last_read_seq,
+            visible_after_seq,
+            last_read_seq,
             peer_read_seq,
             last_message_id: last_message.as_ref().and_then(|m| {
                 if m.message_id.trim().is_empty() {
@@ -486,18 +502,37 @@ impl From<flare_proto::common::ConversationSummary> for Conversation {
             created_at,
             last_sender_nickname: String::new(),
             last_sender_avatar_url: String::new(),
-            ext: s.ext.clone(),
             is_pinned: s.is_pinned,
             is_muted: s.is_muted,
+            is_archived: s.is_archived,
             members_count: (s.member_count.max(0) as u32).max(member_preview.len() as u32),
             participant_version: s.participant_version,
             member_preview,
             participants: Vec::new(),
-            draft: None,
+            draft: if s.draft.trim().is_empty() {
+                None
+            } else {
+                Some(s.draft.clone())
+            },
             mention_count: 0,
             mention_me: false,
             badge: None,
             role: None,
+            ext: {
+                let mut ext = s.ext.clone();
+                ext.insert("peer_read_seq".to_string(), peer_read_seq.to_string());
+                if s.user_settings_version > 0 {
+                    ext.insert(
+                        crate::model::EXT_USER_SETTINGS_VERSION.to_string(),
+                        s.user_settings_version.to_string(),
+                    );
+                }
+                ext.insert(
+                    crate::model::EXT_SETTINGS_DIRTY.to_string(),
+                    "0".to_string(),
+                );
+                ext
+            },
             ..Default::default()
         }
     }
@@ -534,5 +569,26 @@ mod tests {
         assert_eq!(conversation.last_sender_id.as_deref(), Some("u2"));
         assert_eq!(conversation.last_message_preview.as_deref(), Some("latest"));
         assert_eq!(conversation.last_message_at, Some(12_345));
+    }
+
+    #[test]
+    fn summary_conversion_drops_impossible_peer_read_seq() {
+        let mut summary = ConversationSummary {
+            conversation_id: "conv-1".to_string(),
+            conversation_type: "single".to_string(),
+            max_seq: 7,
+            ..Default::default()
+        };
+        summary
+            .ext
+            .insert("peer_read_seq".to_string(), "999999".to_string());
+
+        let conversation = Conversation::from(summary);
+
+        assert_eq!(conversation.peer_read_seq, 0);
+        assert_eq!(
+            conversation.ext.get("peer_read_seq").map(String::as_str),
+            Some("0")
+        );
     }
 }

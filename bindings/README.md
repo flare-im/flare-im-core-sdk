@@ -17,17 +17,9 @@ bindings/
 │       ├── types.rs
 │       └── error.rs
 │
-├── uniffi/         # UniFFI 绑定（计划中）
-│   └── im.udl
+├── uniffi/         # 已废弃（见 uniffi/README.md）；客户端统一走 bindings/c
 │
-├── android/        # Android 绑定（计划中）
-│   └── README.md
-│
-├── ios/            # iOS 绑定（计划中）
-│   └── README.md
-│
-└── tauri/          # Tauri 绑定（计划中）
-    └── README.md
+└── tauri/          # Tauri 桌面壳（内部工具）
 ```
 
 ## C ABI 绑定 (`bindings/c`)
@@ -68,9 +60,11 @@ C ABI 绑定提供了以下主要函数：
   - Callback 管理
   - 生命周期管理
 
+## 客户端 SDK
+
+多端 L2/L3 封装见 monorepo 根目录 [`flare-im-core-client-sdk`](../../flare-im-core-client-sdk)。
+
 ## 未来计划
 
-- [ ] UniFFI 绑定（自动生成 Kotlin/Swift）
-- [ ] Android JNI 绑定
-- [ ] iOS XCFramework
-- [ ] Tauri invoke 包装
+- [ ] Android / iOS / 鸿蒙 L3 包（均桥接本目录 C ABI）
+- [x] Flutter Dart 包（`flare-im-core-client-sdk/packages/dart/flare_im_sdk`）

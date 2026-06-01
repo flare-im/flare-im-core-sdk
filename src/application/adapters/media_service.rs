@@ -18,7 +18,7 @@ use tokio::sync::RwLock;
 
 use crate::application::sdk_callbacks::{
     FileDownloadProgress, FileDownloadProgressCallback, UploadPhase, UploadProgress,
-    UploadProgressCallback,
+    UploadProgressCallback, UserFileDownloadRequest,
 };
 use crate::domain::{
     DirectUploadTransportKindVo, MediaCacheAdmin, MediaCacheEntryVo, MediaCacheStore,
@@ -47,6 +47,17 @@ pub struct MediaService {
     user_file_download_store: Option<Arc<dyn UserFileDownloadStore>>,
     /// 与 `download_key` 对应；`false` 表示取消下载。
     download_cancel_flags: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
+}
+
+struct NewUploadManifest<'a> {
+    user_id: &'a str,
+    source_locator: &'a str,
+    file_name: &'a str,
+    mime_type: &'a str,
+    file_size: u64,
+    file_fingerprint: &'a str,
+    head_tail_sha256: &'a str,
+    full_sha256: Option<String>,
 }
 
 impl MediaService {
@@ -94,6 +105,32 @@ impl MediaService {
         let options = options.unwrap_or_default();
         self.upload_via_direct_session(path, file_name, mime, size, options, on_progress.as_ref())
             .await
+    }
+
+    pub async fn upload_image_from_path_with_progress(
+        &self,
+        path: impl AsRef<Path>,
+        options: Option<UploadOptions>,
+        on_progress: Option<UploadProgressCallback>,
+    ) -> Result<UploadedMedia> {
+        validate_path_mime_prefix(path.as_ref(), "image/")?;
+        let media = self
+            .upload_file_from_path_with_progress(path, options, on_progress)
+            .await?;
+        Ok(media)
+    }
+
+    pub async fn upload_video_from_path_with_progress(
+        &self,
+        path: impl AsRef<Path>,
+        options: Option<UploadOptions>,
+        on_progress: Option<UploadProgressCallback>,
+    ) -> Result<UploadedMedia> {
+        validate_path_mime_prefix(path.as_ref(), "video/")?;
+        let media = self
+            .upload_file_from_path_with_progress(path, options, on_progress)
+            .await?;
+        Ok(media)
     }
 
     pub async fn delete_file(&self, file_id: &str, hard_delete: bool) -> Result<bool> {
@@ -167,14 +204,14 @@ impl MediaService {
             ));
         }
 
-        if let Some(cache) = &self.media_cache_store {
-            if let Some(entry) = cache.get_cached(fid).await? {
-                return Ok(MediaResolvedAccess {
-                    source: "local".to_string(),
-                    local_path: Some(entry.local_path),
-                    remote: None,
-                });
-            }
+        if let Some(cache) = &self.media_cache_store
+            && let Some(entry) = cache.get_cached(fid).await?
+        {
+            return Ok(MediaResolvedAccess {
+                source: "local".to_string(),
+                local_path: Some(entry.local_path),
+                remote: None,
+            });
         }
 
         let remote = self.get_file_url(fid, expires_in).await?;
@@ -298,28 +335,28 @@ impl MediaService {
             {
                 existing
             } else {
-                self.new_manifest(
-                    &user_id,
-                    &source_locator,
-                    &file_name,
-                    &mime_type,
-                    size as u64,
-                    &file_fingerprint,
-                    &head_tail_sha256,
-                    full_sha256.clone(),
-                )
+                self.new_manifest(NewUploadManifest {
+                    user_id: &user_id,
+                    source_locator: &source_locator,
+                    file_name: &file_name,
+                    mime_type: &mime_type,
+                    file_size: size as u64,
+                    file_fingerprint: &file_fingerprint,
+                    head_tail_sha256: &head_tail_sha256,
+                    full_sha256: full_sha256.clone(),
+                })
             }
         } else {
-            self.new_manifest(
-                &user_id,
-                &source_locator,
-                &file_name,
-                &mime_type,
-                size as u64,
-                &file_fingerprint,
-                &head_tail_sha256,
-                full_sha256.clone(),
-            )
+            self.new_manifest(NewUploadManifest {
+                user_id: &user_id,
+                source_locator: &source_locator,
+                file_name: &file_name,
+                mime_type: &mime_type,
+                file_size: size as u64,
+                file_fingerprint: &file_fingerprint,
+                head_tail_sha256: &head_tail_sha256,
+                full_sha256: full_sha256.clone(),
+            })
         };
 
         if manifest.remote_upload_id.is_none() {
@@ -634,17 +671,7 @@ impl MediaService {
         )])
     }
 
-    fn new_manifest(
-        &self,
-        user_id: &str,
-        source_locator: &str,
-        file_name: &str,
-        mime_type: &str,
-        file_size: u64,
-        file_fingerprint: &str,
-        head_tail_sha256: &str,
-        full_sha256: Option<String>,
-    ) -> MediaUploadManifestVo {
+    fn new_manifest(&self, input: NewUploadManifest<'_>) -> MediaUploadManifestVo {
         let now = now_ms();
         MediaUploadManifestVo {
             local_upload_id: random_upload_id("direct"),
@@ -652,21 +679,21 @@ impl MediaService {
             file_id: None,
             storage_upload_id: None,
             tenant_id: String::new(),
-            user_id: user_id.to_string(),
+            user_id: input.user_id.to_string(),
             source_kind: UploadSourceKind::StableFile,
-            source_locator: source_locator.to_string(),
-            file_name: file_name.to_string(),
-            mime_type: mime_type.to_string(),
-            file_size,
+            source_locator: input.source_locator.to_string(),
+            file_name: input.file_name.to_string(),
+            mime_type: input.mime_type.to_string(),
+            file_size: input.file_size,
             part_size: 0,
             total_parts: 0,
             transport_kind: None,
             bucket: None,
             object_key: None,
             upload_url: None,
-            file_fingerprint: file_fingerprint.to_string(),
-            head_tail_sha256: head_tail_sha256.to_string(),
-            full_sha256,
+            file_fingerprint: input.file_fingerprint.to_string(),
+            head_tail_sha256: input.head_tail_sha256.to_string(),
+            full_sha256: input.full_sha256,
             state: UploadManifestState::Initiating,
             last_error_code: None,
             last_error_message: None,
@@ -894,15 +921,18 @@ impl MediaService {
     /// 来源优先级：`source_path` → `source_http_url` → `remote_file_id`（经网关取临时直链）。
     pub async fn download_file_to_user_downloads_folder(
         &self,
-        download_key: impl AsRef<str>,
-        display_file_name: impl AsRef<str>,
-        source_path: Option<&str>,
-        source_http_url: Option<&str>,
-        remote_file_id: Option<&str>,
-        expires_in: i32,
-        on_progress: Option<FileDownloadProgressCallback>,
+        request: UserFileDownloadRequest,
     ) -> Result<String> {
-        let key = download_key.as_ref().trim().to_string();
+        let UserFileDownloadRequest {
+            download_key,
+            display_file_name,
+            source_path,
+            source_http_url,
+            remote_file_id,
+            expires_in,
+            on_progress,
+        } = request;
+        let key = download_key.trim().to_string();
         if key.is_empty() {
             return Err(FlareError::localized(
                 ErrorCode::InvalidParameter,
@@ -938,12 +968,21 @@ impl MediaService {
                 )
             })?;
 
-            let safe_name = sanitize_user_download_file_name(display_file_name.as_ref());
+            let safe_name = sanitize_user_download_file_name(&display_file_name);
             let dest_path = unique_user_download_destination(&dir, &safe_name);
 
-            let sp = source_path.map(str::trim).filter(|s| !s.is_empty());
-            let su = source_http_url.map(str::trim).filter(|s| !s.is_empty());
-            let rf = remote_file_id.map(str::trim).filter(|s| !s.is_empty());
+            let sp = source_path
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty());
+            let su = source_http_url
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty());
+            let rf = remote_file_id
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty());
 
             let out_path = if let Some(p) = sp {
                 Self::user_download_copy_from_path(p, &dest_path, &run_flag, on_progress.as_ref())
@@ -989,7 +1028,7 @@ impl MediaService {
 
             let path_str = out_path.to_string_lossy().into_owned();
             store
-                .save_download_record(&key, &path_str, display_file_name.as_ref())
+                .save_download_record(&key, &path_str, &display_file_name)
                 .await?;
             Ok(path_str)
         }
@@ -1114,12 +1153,11 @@ fn sanitize_user_download_file_name(name: &str) -> String {
 #[cfg(not(target_arch = "wasm32"))]
 fn resolve_user_download_source_path(raw: &str) -> std::path::PathBuf {
     let t = raw.trim();
-    if t.to_lowercase().starts_with("file:") {
-        if let Ok(u) = url::Url::parse(t) {
-            if let Ok(pb) = u.to_file_path() {
-                return pb;
-            }
-        }
+    if t.to_lowercase().starts_with("file:")
+        && let Ok(u) = url::Url::parse(t)
+        && let Ok(pb) = u.to_file_path()
+    {
+        return pb;
     }
     PathBuf::from(t)
 }
@@ -1193,6 +1231,21 @@ fn infer_mime_from_url_or_octet_stream(url: &str, bytes: &[u8]) -> String {
         return "image/webp".to_string();
     }
     "application/octet-stream".to_string()
+}
+
+fn validate_path_mime_prefix(path: &Path, expected_prefix: &str) -> Result<()> {
+    let file_name = path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .ok_or_else(|| FlareError::localized(ErrorCode::InvalidParameter, "invalid file name"))?;
+    let mime = infer_mime_type(file_name);
+    if !mime.starts_with(expected_prefix) {
+        return Err(FlareError::localized(
+            ErrorCode::InvalidParameter,
+            format!("expected {expected_prefix} mime type, got {mime}"),
+        ));
+    }
+    Ok(())
 }
 
 fn infer_mime_type(file_name: &str) -> String {

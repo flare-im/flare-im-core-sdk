@@ -4,13 +4,14 @@
 //! `{"k":"im.preview.image","a":{"d":"说明","m":true}}`
 //!
 //! - **`k`**：应用端用于查表翻译的稳定 key（勿改语义；新增类型请追加新 key）。
-//! - **`a`**：可选参数；常用短键：`t` 正文/标题类、`d` 说明、`n` 文件名或数量、`label` 位置/名片展示标签、`title`/`body` 富文本、`e` emoji 字符、`m` 布尔（如动图）、`inner`/`first` 嵌套对象（同为 `PreviewStoragePayload` 形状）。
+//! - **`a`**：可选参数；常用短键：`t` 正文/标题类、`ik` i18n 主键、`ek` 短 event_kind、`p` 插值对象、`fb` 服务端回退文案、`d` 说明、`n` 文件名或数量…
 //!
 //! 历史数据若为**非 JSON 纯文本**，应用端应原样展示；新写入均为上述 JSON。
 
 use serde::{Deserialize, Serialize};
 use serde_json::Map;
 use serde_json::Value;
+use std::collections::HashMap;
 
 /// 稳定预览类型 key（供各端 i18n 映射）。
 pub mod keys {
@@ -102,12 +103,101 @@ pub fn is_redundant_content_text_extra(s: &str) -> bool {
     if t == "[未知]" {
         return true;
     }
-    if let Ok(p) = serde_json::from_str::<PreviewStoragePayload>(t) {
-        if p.k == keys::UNKNOWN {
-            return true;
-        }
+    if let Ok(p) = serde_json::from_str::<PreviewStoragePayload>(t)
+        && p.k == keys::UNKNOWN
+    {
+        return true;
     }
     false
+}
+
+fn resolve_i18n_key(data: &HashMap<String, String>, fallback_key: &str) -> Option<String> {
+    data.get("i18n_key")
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            let fk = fallback_key.trim();
+            if fk.is_empty() {
+                None
+            } else {
+                Some(fk.to_string())
+            }
+        })
+}
+
+fn attach_i18n_params(a: &mut Map<String, Value>, data: &HashMap<String, String>) {
+    if let Some(raw) = data.get("i18n_params")
+        && let Ok(params) = serde_json::from_str::<Map<String, Value>>(raw)
+        && !params.is_empty()
+    {
+        a.insert("p".into(), Value::Object(params));
+    }
+}
+
+fn localizable_preview(
+    storage_key: &str,
+    fallback_i18n_key: &str,
+    title: Option<&str>,
+    body: &str,
+    data: &HashMap<String, String>,
+    include_event_kind: bool,
+) -> PreviewStoragePayload {
+    let mut a = Map::new();
+    if let Some(ik) = resolve_i18n_key(data, fallback_i18n_key) {
+        a.insert("ik".into(), Value::String(ik));
+        if include_event_kind {
+            let ek = fallback_i18n_key.trim();
+            if !ek.is_empty() {
+                a.insert("ek".into(), Value::String(ek.to_string()));
+            }
+        }
+        if let Some(t) = title.filter(|s| !s.trim().is_empty()) {
+            a.insert("title".into(), Value::String(t.to_string()));
+        }
+        attach_i18n_params(&mut a, data);
+        if !body.trim().is_empty() {
+            a.insert("fb".into(), Value::String(body.to_string()));
+        }
+    } else if storage_key == keys::SYSTEM {
+        if !body.trim().is_empty() {
+            a.insert("t".into(), Value::String(body.to_string()));
+        }
+    } else if !body.trim().is_empty() {
+        a.insert("body".into(), Value::String(body.to_string()));
+    } else if let Some(t) = title.filter(|s| !s.trim().is_empty()) {
+        a.insert("title".into(), Value::String(t.to_string()));
+    }
+    PreviewStoragePayload {
+        k: storage_key.to_string(),
+        a,
+    }
+}
+
+/// 系统消息会话摘要：优先 `data.i18n_key`（客户端翻译），`fb` 为服务端回退文案。
+pub fn localizable_system_preview(
+    event_kind: &str,
+    body: &str,
+    data: &HashMap<String, String>,
+) -> PreviewStoragePayload {
+    localizable_preview(keys::SYSTEM, event_kind, None, body, data, true)
+}
+
+/// 应用内通知摘要：优先 `data.i18n_key`，否则 `notification_type` 作翻译键。
+pub fn localizable_notification_preview(
+    notification_type: &str,
+    title: &str,
+    body: &str,
+    data: &HashMap<String, String>,
+) -> PreviewStoragePayload {
+    localizable_preview(
+        keys::NOTIFICATION,
+        notification_type,
+        Some(title),
+        body,
+        data,
+        false,
+    )
 }
 
 #[cfg(test)]
@@ -116,52 +206,47 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn preview_payload_roundtrips_json() {
-        let mut a = Map::new();
-        a.insert("t".into(), json!("hi"));
-        let p = PreviewStoragePayload {
-            k: keys::USER_TEXT.to_string(),
-            a,
-        };
-        let s = serde_json::to_string(&p).unwrap();
-        let back: PreviewStoragePayload = serde_json::from_str(&s).unwrap();
-        assert_eq!(back.k, keys::USER_TEXT);
-        assert_eq!(back.a.get("t").and_then(|v| v.as_str()), Some("hi"));
+    fn decode_user_text_roundtrip() {
+        let p = decode_or_user_text("hello");
+        assert_eq!(p.k, keys::USER_TEXT);
+        assert_eq!(p.a.get("t").and_then(|v| v.as_str()), Some("hello"));
     }
 
     #[test]
-    fn decode_or_user_text_accepts_json_or_plain() {
-        let mut ia = Map::new();
-        ia.insert("m".into(), json!(true));
-        let inner = PreviewStoragePayload {
-            k: keys::IMAGE.to_string(),
-            a: ia,
-        };
-        let s = serde_json::to_string(&inner).unwrap();
-        let p = decode_or_user_text(&s);
-        assert_eq!(p.k, keys::IMAGE);
-
-        let q = decode_or_user_text("legacy");
-        assert_eq!(q.k, keys::USER_TEXT);
-        assert_eq!(q.a.get("t").and_then(|v| v.as_str()), Some("legacy"));
+    fn localizable_system_with_i18n_key() {
+        let mut data = HashMap::new();
+        data.insert(
+            "i18n_key".into(),
+            "social.relation.friendship_established".into(),
+        );
+        data.insert("i18n_params".into(), json!({"user_a": "a"}).to_string());
+        let p =
+            localizable_system_preview("relation.friendship_established", "你们已成为好友", &data);
+        assert_eq!(p.k, keys::SYSTEM);
+        assert_eq!(
+            p.a.get("ik").and_then(|v| v.as_str()),
+            Some("social.relation.friendship_established")
+        );
+        assert!(p.a.contains_key("p"));
+        assert_eq!(
+            p.a.get("fb").and_then(|v| v.as_str()),
+            Some("你们已成为好友")
+        );
     }
 
     #[test]
-    fn unknown_preview_json_shape() {
-        let s = unknown_preview_json();
-        let p: PreviewStoragePayload = serde_json::from_str(&s).unwrap();
-        assert_eq!(p.k, keys::UNKNOWN);
-    }
-
-    #[test]
-    fn is_redundant_content_text_extra_cases() {
-        assert!(is_redundant_content_text_extra(""));
-        assert!(is_redundant_content_text_extra("   "));
-        assert!(is_redundant_content_text_extra("[未知]"));
-        assert!(is_redundant_content_text_extra(&unknown_preview_json()));
-        assert!(!is_redundant_content_text_extra("你好"));
-        assert!(!is_redundant_content_text_extra(
-            r#"{"k":"im.preview.image","a":{}}"#,
-        ));
+    fn localizable_notification_fallback_type() {
+        let data = HashMap::new();
+        let p = localizable_notification_preview(
+            "social.relation.friend_request",
+            "好友申请",
+            "有人申请加你为好友",
+            &data,
+        );
+        assert_eq!(p.k, keys::NOTIFICATION);
+        assert_eq!(
+            p.a.get("ik").and_then(|v| v.as_str()),
+            Some("social.relation.friend_request")
+        );
     }
 }

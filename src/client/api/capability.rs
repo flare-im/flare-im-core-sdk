@@ -36,6 +36,19 @@ pub struct CapabilityApi {
     http_request_context: Arc<HttpRequestContext>,
 }
 
+#[derive(Clone, Debug)]
+pub struct RtcSfuSubscriptionRequest {
+    pub conversation_id: String,
+    pub room_id: String,
+    pub subscriber_peer_id: String,
+    pub track_id: String,
+    pub enable: bool,
+    pub media: Option<String>,
+    pub preferred_layer: Option<String>,
+    pub priority: u32,
+    pub tenant_id: Option<String>,
+}
+
 impl CapabilityApi {
     pub fn new(
         grpc_endpoint: impl Into<String>,
@@ -49,7 +62,7 @@ impl CapabilityApi {
             #[cfg(not(target_arch = "wasm32"))]
             channel: Arc::new(Mutex::new(None)),
             current_user_id,
-            default_tenant_id: default_tenant_id.into(),
+            default_tenant_id: crate::util::normalize_tenant_id(default_tenant_id.into()),
             http_request_context,
         }
     }
@@ -78,9 +91,9 @@ impl CapabilityApi {
                 .map_err(|e| FlareError::system(format!("x-user-id metadata: {e}")))?;
             req.metadata_mut().insert("x-user-id", v);
         }
-        let tenant = self.default_tenant_id.trim();
+        let tenant = crate::util::normalize_tenant_id(self.default_tenant_id.trim());
         if !tenant.is_empty() {
-            let v = MetadataValue::try_from(tenant)
+            let v = MetadataValue::try_from(tenant.as_str())
                 .map_err(|e| FlareError::system(format!("x-tenant-id metadata: {e}")))?;
             req.metadata_mut().insert("x-tenant-id", v);
         }
@@ -89,10 +102,10 @@ impl CapabilityApi {
             req.metadata_mut().insert("x-trace-id", v);
         }
         for (k, v) in self.http_request_context.build_headers().await {
-            if k.eq_ignore_ascii_case("authorization") {
-                if let Ok(mv) = MetadataValue::try_from(v.as_str()) {
-                    req.metadata_mut().insert("authorization", mv);
-                }
+            if k.eq_ignore_ascii_case("authorization")
+                && let Ok(mv) = MetadataValue::try_from(v.as_str())
+            {
+                req.metadata_mut().insert("authorization", mv);
             }
         }
         Ok(())
@@ -114,8 +127,8 @@ impl CapabilityApi {
         tenant_id
             .map(str::trim)
             .filter(|s| !s.is_empty())
-            .map(ToOwned::to_owned)
-            .unwrap_or_else(|| self.default_tenant_id.clone())
+            .map(crate::util::normalize_tenant_id)
+            .unwrap_or_else(|| crate::util::normalize_tenant_id(&self.default_tenant_id))
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -488,29 +501,21 @@ impl CapabilityApi {
     #[cfg(all(not(target_arch = "wasm32"), feature = "plugin-call"))]
     pub async fn rtc_sfu_set_subscription(
         &self,
-        conversation_id: &str,
-        room_id: &str,
-        subscriber_peer_id: &str,
-        track_id: &str,
-        enable: bool,
-        media: Option<&str>,
-        preferred_layer: Option<&str>,
-        priority: u32,
-        tenant_id: Option<&str>,
+        request: RtcSfuSubscriptionRequest,
     ) -> Result<CapabilityDispatchResult> {
         self.dispatch(
             rtc_ids::SFU_SET_SUBSCRIPTION,
             rtc_ids::payload_sfu_set_subscription(
-                room_id,
-                subscriber_peer_id,
-                track_id,
-                enable,
-                media,
-                preferred_layer,
-                priority,
+                &request.room_id,
+                &request.subscriber_peer_id,
+                &request.track_id,
+                request.enable,
+                request.media.as_deref(),
+                request.preferred_layer.as_deref(),
+                request.priority,
             ),
-            Some(conversation_id),
-            tenant_id,
+            Some(&request.conversation_id),
+            request.tenant_id.as_deref(),
             None,
         )
         .await?
@@ -801,7 +806,6 @@ pub struct CapabilityDispatchResult {
 
 impl CapabilityDispatchResult {
     /// gRPC 已返回但业务层 `success == false`（SFU/插件不可用或拒绝）时转为 [`FlareError`]，便于宿主直接提示用户。
-    #[must_use]
     pub fn fail_if_unsuccessful(self) -> Result<Self> {
         if self.success {
             return Ok(self);

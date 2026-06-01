@@ -46,10 +46,16 @@ impl IncomingMessageConverger {
                     .get_by_client_msg_id(&message.client_msg_id)
                     .await?
             };
+            let local_by_server = if message.server_id.trim().is_empty() {
+                None
+            } else {
+                self.message_store.get(&message.server_id).await?
+            };
             match MessageDeliveryService::decide_incoming_message_convergence(
                 current_user_id,
                 &message,
                 local_by_client.as_ref(),
+                local_by_server.as_ref(),
             ) {
                 IncomingMessageConvergenceDecision::EmitReceived => out.push(message),
                 IncomingMessageConvergenceDecision::MergePendingAndAck => {
@@ -69,10 +75,12 @@ impl IncomingMessageConverger {
                         self.message_store
                             .update_after_ack(&message.client_msg_id, &merged)
                             .await?;
-                        self.bus
-                            .publish(SdkEvent::Message(MessageEvent::SendAck { ack }));
+                        self.bus.publish(SdkEvent::Message(MessageEvent::SendAck {
+                            ack: Box::new(ack),
+                        }));
                     }
                 }
+                IncomingMessageConvergenceDecision::DropDuplicate => {}
             }
         }
         Ok(out)

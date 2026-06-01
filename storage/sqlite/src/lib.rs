@@ -47,7 +47,7 @@ pub async fn create_pool(database_url: &str) -> AnyhowResult<SqlitePool> {
     let max = std::env::var("FLARE_SQLITE_MAX_CONNECTIONS")
         .ok()
         .and_then(|s| s.parse::<u32>().ok())
-        .filter(|&n| n >= 1 && n <= 256)
+        .filter(|n| (1..=256).contains(n))
         .unwrap_or(20);
 
     Ok(SqlitePoolOptions::new()

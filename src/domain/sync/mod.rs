@@ -11,3 +11,5 @@ pub const QUERY_EVENTS_TIMEOUT_SECS: u64 = 30;
 pub const UPDATE_CURSOR_TIMEOUT_SECS: u64 = 5;
 /// 冷启动会话列表同步可能经多服务读快照，30s 在本地/弱环境易触发误超时。
 pub const CONVERSATIONS_SYNC_TIMEOUT_SECS: u64 = 90;
+/// GetSyncCursor 未命中 L1 时会触发 conversation bootstrap，与全量会话同步同级容错。
+pub const GET_SYNC_CURSOR_TIMEOUT_SECS: u64 = 90;

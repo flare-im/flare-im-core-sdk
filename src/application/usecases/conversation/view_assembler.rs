@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use crate::domain::{ConversationStore, UserReader};
 use crate::error::Result;
-use crate::model::Conversation;
+use crate::model::{Conversation, ConversationListQuery};
 
 pub struct ConversationViewAssembler {
     store: Arc<dyn ConversationStore>,
@@ -18,19 +18,42 @@ impl ConversationViewAssembler {
     }
 
     pub async fn hydrate_conversation(&self, mut conversation: Conversation) -> Conversation {
-        if let Some(last) = conversation.last_message() {
-            if !last.sender_id.is_empty() {
-                if let Ok(Some(profile)) = self.profile_reader.get(&last.sender_id).await {
-                    conversation =
-                        conversation.with_last_sender(profile.display_name(), &profile.avatar_url);
-                }
-            }
+        if let Some(last) = conversation.last_message()
+            && !last.sender_id.is_empty()
+            && let Ok(Some(profile)) = self.profile_reader.get(&last.sender_id).await
+        {
+            conversation =
+                conversation.with_last_sender(profile.display_name(), &profile.avatar_url);
         }
         conversation
     }
 
-    pub async fn list(&self) -> Result<Vec<Conversation>> {
-        let list = self.store.list().await?;
+    pub async fn list(&self, include_archived: bool) -> Result<Vec<Conversation>> {
+        self.list_by_query(&ConversationListQuery {
+            include_archived,
+            ..ConversationListQuery::default()
+        })
+        .await
+    }
+
+    pub async fn list_by_query(&self, query: &ConversationListQuery) -> Result<Vec<Conversation>> {
+        let mut list = self.store.list_by_query(query).await?;
+        if let Some(cursor) = query
+            .cursor
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            let skip = list
+                .iter()
+                .position(|conversation| conversation.conversation_id == cursor)
+                .map(|index| index + 1)
+                .unwrap_or(0);
+            list = list.into_iter().skip(skip).collect();
+        }
+        if let Some(limit) = query.normalized_limit() {
+            list.truncate(limit as usize);
+        }
         let mut views = Vec::with_capacity(list.len());
         for conversation in list {
             views.push(self.hydrate_conversation(conversation).await);
@@ -61,17 +84,15 @@ impl ConversationViewAssembler {
         &self,
         cursor: Option<&str>,
         limit: Option<u32>,
+        include_archived: bool,
     ) -> Result<Vec<Conversation>> {
-        let list = self.list().await?;
-        let skip = cursor
-            .and_then(|value| {
-                list.iter()
-                    .position(|conversation| conversation.conversation_id == value)
-            })
-            .map(|index| index + 1)
-            .unwrap_or(0);
-        let take = limit.map(|value| value as usize).unwrap_or(usize::MAX);
-        Ok(list.into_iter().skip(skip).take(take).collect())
+        self.list_by_query(&ConversationListQuery {
+            include_archived,
+            cursor: cursor.map(str::to_string),
+            limit,
+            ..ConversationListQuery::default()
+        })
+        .await
     }
 
     pub async fn list_raw(&self) -> Result<Vec<Conversation>> {

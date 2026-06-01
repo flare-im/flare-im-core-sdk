@@ -7,7 +7,7 @@ use tokio::sync::RwLock;
 use crate::application::MediaService;
 pub use crate::application::{
     FileDownloadProgress, FileDownloadProgressCallback, UploadPhase, UploadProgress,
-    UploadProgressCallback,
+    UploadProgressCallback, UserFileDownloadRequest,
 };
 use crate::domain::{
     MediaCacheAdmin, MediaCacheStatsVo, MediaCacheStore, UploadManifestStore, UserFileDownloadStore,
@@ -73,6 +73,28 @@ impl MediaApi {
             .await
     }
 
+    pub async fn upload_image_from_path_with_progress(
+        &self,
+        path: impl AsRef<Path>,
+        options: Option<UploadOptions>,
+        on_progress: Option<UploadProgressCallback>,
+    ) -> Result<UploadedMedia> {
+        self.handler
+            .upload_image_from_path_with_progress(path, options, on_progress)
+            .await
+    }
+
+    pub async fn upload_video_from_path_with_progress(
+        &self,
+        path: impl AsRef<Path>,
+        options: Option<UploadOptions>,
+        on_progress: Option<UploadProgressCallback>,
+    ) -> Result<UploadedMedia> {
+        self.handler
+            .upload_video_from_path_with_progress(path, options, on_progress)
+            .await
+    }
+
     pub async fn delete_file(&self, file_id: &str, hard_delete: bool) -> Result<bool> {
         self.handler.delete_file(file_id, hard_delete).await
     }
@@ -126,24 +148,10 @@ impl MediaApi {
     #[cfg(not(target_arch = "wasm32"))]
     pub async fn download_file_to_user_downloads_folder(
         &self,
-        download_key: impl AsRef<str>,
-        display_file_name: impl AsRef<str>,
-        source_path: Option<&str>,
-        source_http_url: Option<&str>,
-        remote_file_id: Option<&str>,
-        expires_in: i32,
-        on_progress: Option<FileDownloadProgressCallback>,
+        request: UserFileDownloadRequest,
     ) -> Result<String> {
         self.handler
-            .download_file_to_user_downloads_folder(
-                download_key,
-                display_file_name,
-                source_path,
-                source_http_url,
-                remote_file_id,
-                expires_in,
-                on_progress,
-            )
+            .download_file_to_user_downloads_folder(request)
             .await
     }
 

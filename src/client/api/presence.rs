@@ -62,7 +62,7 @@ impl PresenceApi {
             endpoint: grpc_endpoint.into(),
             channel: Arc::new(Mutex::new(None)),
             current_user_id,
-            default_tenant_id: default_tenant_id.into(),
+            default_tenant_id: crate::util::normalize_tenant_id(default_tenant_id.into()),
             http_request_context,
             bus,
             subscribed_user_ids: Arc::new(Mutex::new(HashSet::new())),
@@ -91,9 +91,9 @@ impl PresenceApi {
                 .map_err(|e| FlareError::system(format!("x-user-id metadata: {e}")))?;
             req.metadata_mut().insert("x-user-id", v);
         }
-        let tenant = self.default_tenant_id.trim();
+        let tenant = crate::util::normalize_tenant_id(self.default_tenant_id.trim());
         if !tenant.is_empty() {
-            let v = MetadataValue::try_from(tenant)
+            let v = MetadataValue::try_from(tenant.as_str())
                 .map_err(|e| FlareError::system(format!("x-tenant-id metadata: {e}")))?;
             req.metadata_mut().insert("x-tenant-id", v);
         }
@@ -102,10 +102,10 @@ impl PresenceApi {
             req.metadata_mut().insert("x-trace-id", v);
         }
         for (k, v) in self.http_request_context.build_headers().await {
-            if k.eq_ignore_ascii_case("authorization") {
-                if let Ok(mv) = MetadataValue::try_from(v.as_str()) {
-                    req.metadata_mut().insert("authorization", mv);
-                }
+            if k.eq_ignore_ascii_case("authorization")
+                && let Ok(mv) = MetadataValue::try_from(v.as_str())
+            {
+                req.metadata_mut().insert("authorization", mv);
             }
         }
         Ok(())

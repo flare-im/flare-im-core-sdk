@@ -10,6 +10,7 @@
 //! 自定义任务：实现 [SyncTask]（id、mode、weight、execute），通过 [SyncManager::register_task_arc] 或 [crate::client::IMClientBuilder::add_sync_task] 注册。会话/消息/已读等业务任务见 [crate::application::sync_task]。
 
 mod checkpoint;
+mod conversation_summary_sync;
 mod error;
 mod manager;
 mod orchestrator;
@@ -19,6 +20,7 @@ mod task;
 
 #[allow(unused_imports)]
 pub use checkpoint::{CheckpointStore, SyncCheckpoint};
+pub use conversation_summary_sync::ConversationSummarySync;
 #[allow(unused_imports)]
 pub use error::{SyncError, SyncResult};
 pub use manager::SyncManager;

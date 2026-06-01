@@ -77,12 +77,12 @@ fn try_load_default_rtc_env_file() -> std::collections::HashMap<String, String> 
     for anc in manifest_dir.ancestors() {
         push_from_base(anc);
     }
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(exe_dir) = exe.parent() {
-            push_from_base(exe_dir);
-            for anc in exe_dir.ancestors() {
-                push_from_base(anc);
-            }
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(exe_dir) = exe.parent()
+    {
+        push_from_base(exe_dir);
+        for anc in exe_dir.ancestors() {
+            push_from_base(anc);
         }
     }
     candidates.sort();

@@ -5,7 +5,8 @@ use tokio::sync::RwLock;
 use crate::application::event_deduper::EventDeduper;
 use crate::application::message_deduper::MessageDeduper;
 use crate::application::sync_task::{
-    ConversationsSyncTask, KeyEventsSyncTask, MessagesSyncTask, ReadStatesSyncTask,
+    ConversationSettingsSyncTask, ConversationsSyncTask, KeyEventsSyncTask, MessagesSyncTask,
+    ReadStatesSyncTask,
 };
 use crate::application::usecases::{
     ConversationCommandUseCase, ConversationViewAssembler, MessageMutationUseCase,
@@ -22,10 +23,12 @@ use crate::client::api::{
 use crate::client::config::SdkConfig;
 use crate::client::im_client::{IMClient, IMClientInner};
 use crate::core::{
-    CurrentUserIdStore, SdkEngine, SessionSyncRunner, SyncResponseHandler, SyncTask,
+    ConversationSummarySync, CurrentUserIdStore, SdkEngine, SessionSyncRunner, SyncResponseHandler,
+    SyncTask,
 };
 use crate::event::EventBus;
 use crate::middleware::{EventInterceptor, MessageInterceptor, MiddlewareChain};
+use crate::notification::{NotificationHandlerRegistry, NotificationInboundPipeline};
 use crate::protocol::{Codec, ProtobufCodec};
 use crate::store::StoreProvider;
 use crate::transport::{HttpClient, HttpRequestContext, SocketTransport};
@@ -228,13 +231,19 @@ impl IMClientBuilder {
         let bus = EventBus::new();
         let event_deduper = EventDeduper::new(None);
         let message_deduper = MessageDeduper::new(None);
+        let notification_registry = Arc::new(NotificationHandlerRegistry::new());
+        let notification_pipeline = NotificationInboundPipeline::new(
+            notification_registry.clone(),
+            message_deduper.clone(),
+            bus.clone(),
+        );
         let init_msg_concurrency = self.config.init_message_sync_concurrency() as usize;
         let sync_handler: Arc<SyncProtocolAdapter> = Arc::new(SyncProtocolAdapter::new(
             sender.clone(),
             stores.clone(),
             bus.clone(),
             event_deduper.clone(),
-            message_deduper.clone(),
+            notification_pipeline.clone(),
             init_msg_concurrency,
         ));
 
@@ -247,18 +256,22 @@ impl IMClientBuilder {
         }
 
         let current_user_id: CurrentUserIdStore = Arc::new(RwLock::new(String::new()));
-        let engine = SdkEngine::new(
+        let engine = SdkEngine::new(crate::core::SdkEngineConfig {
             stores,
             chain,
             transport,
-            current_user_id.clone(),
+            current_user_id: current_user_id.clone(),
             codec,
             bus,
-            Some(sync_handler.clone() as Arc<dyn SyncResponseHandler>),
-            Some(sync_handler.clone() as Arc<dyn SessionSyncRunner>),
+            sync_response_handler: Some(sync_handler.clone() as Arc<dyn SyncResponseHandler>),
+            session_sync: Some(sync_handler.clone() as Arc<dyn SessionSyncRunner>),
+            conversation_summary_sync: Some(
+                sync_handler.clone() as Arc<dyn ConversationSummarySync>
+            ),
             event_deduper,
             message_deduper,
-        );
+            notification_pipeline,
+        });
 
         // 注入应用层同步任务（构造时传入 SyncProtocolAdapter，execute 内自行调用，与用户扩展一致）
         engine
@@ -273,6 +286,11 @@ impl IMClientBuilder {
         engine
             .sync_manager()
             .register_task_arc(Arc::new(ReadStatesSyncTask::new(sync_handler.clone())));
+        engine
+            .sync_manager()
+            .register_task_arc(Arc::new(ConversationSettingsSyncTask::new(
+                sync_handler.clone(),
+            )));
         for task in self.sync_tasks {
             engine.sync_manager().register_task_arc(task);
         }
@@ -301,6 +319,7 @@ impl IMClientBuilder {
             .tenant_id
             .clone()
             .or_else(|| std::env::var("FLARE_IM_TENANT_ID").ok())
+            .map(crate::util::normalize_tenant_id)
             .unwrap_or_else(|| "0".to_string());
         let http_request_context = self
             .http_request_context
@@ -394,6 +413,8 @@ impl IMClientBuilder {
         let conversation_command_use_case = Arc::new(ConversationCommandUseCase::new(
             store_ref.conversations.clone(),
             current_user_id,
+            Some(sync_handler.clone()),
+            Some(store_ref.cursors.clone()),
         ));
         let conversation_view_assembler = Arc::new(ConversationViewAssembler::new(
             store_ref.conversations.clone(),
@@ -420,6 +441,7 @@ impl IMClientBuilder {
             message_build_api: Some(message_build_api),
             conversation_api: Some(conversation_api),
             http_request_context: Some(http_request_context),
+            notification_registry: Some(notification_registry),
             ..Default::default()
         })
     }

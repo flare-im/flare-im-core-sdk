@@ -9,19 +9,21 @@ use flare_proto::common::{
 
 use flare_im_core_sdk::core::SyncRunContext;
 use flare_im_core_sdk::event::{
-    ConnectionEvent, ConversationEvent, MessageEvent, SdkEvent, SyncNotify, SyncPhase,
+    ConnectionEvent, ConversationEvent, MessageEvent, NotificationEvent, SdkEvent, SyncNotify,
+    SyncPhase,
 };
 
 use crate::model::{
     CallSignalPayload, ConnectedPayload, ConversationDeletedPayload, ConversationUpdatedPayload,
     ConversationsSyncedPayload, DisconnectedPayload, EventPayload, ExtensionPayload,
-    KickedOffPayload, MessageCustomEventPayload, MessageDeletedPayload, MessageEditedPayload,
-    MessageMarkedPayload, MessagePinnedPayload, MessageReactionChangedPayload,
-    MessageReadReceiptPayload, MessageRecalledPayload, MessageSendFailedPayload,
-    MessageUnmarkedPayload, MessageUnpinnedPayload, PresenceChangedPayload, ReconnectingPayload,
-    ServerErrorPayload, StateChangedPayload, SyncCompletedPayload, SyncFailedPayload,
-    SyncFinishedPayload, SyncProgressPayload, SyncRunPayload, SyncStartedPayload,
-    SyncStateChangedPayload, TokenExpiredPayload, TypingPayload, UnreadCountChangedPayload,
+    KickedOffPayload, MessageBurnScheduledPayload, MessageBurnedPayload, MessageCustomEventPayload,
+    MessageDeletedPayload, MessageEditedPayload, MessageHardDeletedPayload, MessageMarkedPayload,
+    MessagePinnedPayload, MessageReactionChangedPayload, MessageReadReceiptPayload,
+    MessageRecalledPayload, MessageSendFailedPayload, MessageUnmarkedPayload,
+    MessageUnpinnedPayload, PresenceChangedPayload, ReconnectingPayload, ServerErrorPayload,
+    StateChangedPayload, SyncCompletedPayload, SyncFailedPayload, SyncFinishedPayload,
+    SyncProgressPayload, SyncRunPayload, SyncStartedPayload, SyncStateChangedPayload,
+    TokenExpiredPayload, TypingPayload, UnreadCountChangedPayload,
 };
 
 /// SdkEvent → (事件名, payload)；无法序列化或不需要转发的返回 `None`。
@@ -77,7 +79,7 @@ pub fn sdk_event_to_tauri(e: &SdkEvent) -> Option<(String, EventPayload)> {
 
         SdkEvent::Message(MessageEvent::Received { message }) => Some((
             "im://message".into(),
-            EventPayload::Message(message.clone()),
+            EventPayload::Message(Box::new(message.as_ref().clone())),
         )),
         SdkEvent::Message(MessageEvent::ReceivedBatch { messages }) => Some((
             "im://message_batch".into(),
@@ -85,7 +87,7 @@ pub fn sdk_event_to_tauri(e: &SdkEvent) -> Option<(String, EventPayload)> {
         )),
         SdkEvent::Message(MessageEvent::SendAck { ack }) => Some((
             "im://send_ack".into(),
-            EventPayload::SendAck(ack.clone().into()),
+            EventPayload::SendAck(ack.as_ref().clone().into()),
         )),
         SdkEvent::Message(MessageEvent::SendFailed {
             client_msg_id,
@@ -167,6 +169,51 @@ pub fn sdk_event_to_tauri(e: &SdkEvent) -> Option<(String, EventPayload)> {
                 user_id: event.user_id.clone(),
                 read_seq: event.read_seq,
                 message_ids: event.message_ids.clone(),
+                burn_after_read: event.burn_after_read.unwrap_or(false),
+            }),
+        )),
+        SdkEvent::Message(MessageEvent::BurnScheduled {
+            conversation_id,
+            event,
+        }) => Some((
+            "im://message_burn_scheduled".into(),
+            EventPayload::MessageBurnScheduled(MessageBurnScheduledPayload {
+                conversation_id: conversation_id.clone(),
+                message_id: event.message_id.clone(),
+                server_id: event.server_id.clone(),
+                reader_id: event.reader_id.clone(),
+                burn_at: event.burn_at,
+                event_time: event.event_time,
+            }),
+        )),
+        SdkEvent::Message(MessageEvent::Burned {
+            conversation_id,
+            event,
+        }) => Some((
+            "im://message_burned".into(),
+            EventPayload::MessageBurned(MessageBurnedPayload {
+                conversation_id: conversation_id.clone(),
+                message_id: event.message_id.clone(),
+                server_id: event.server_id.clone(),
+                reader_id: event.reader_id.clone(),
+                burn_at: event.burn_at,
+                burned_at: event.burned_at,
+                event_time: event.event_time,
+            }),
+        )),
+        SdkEvent::Message(MessageEvent::HardDeleted {
+            conversation_id,
+            event,
+        }) => Some((
+            "im://message_hard_deleted".into(),
+            EventPayload::MessageHardDeleted(MessageHardDeletedPayload {
+                conversation_id: conversation_id.clone(),
+                message_id: event.message_id.clone(),
+                server_id: event.server_id.clone(),
+                reader_id: event.reader_id.clone(),
+                burn_at: event.burn_at,
+                burned_at: event.burned_at,
+                event_time: event.event_time,
             }),
         )),
         SdkEvent::Message(MessageEvent::Pinned {
@@ -247,6 +294,11 @@ pub fn sdk_event_to_tauri(e: &SdkEvent) -> Option<(String, EventPayload)> {
                 payload: event.payload.clone(),
                 metadata: event.metadata.clone(),
             }),
+        )),
+
+        SdkEvent::Notification(NotificationEvent::Received { message }) => Some((
+            "im://message".into(),
+            EventPayload::Message(Box::new(message.as_ref().clone())),
         )),
 
         SdkEvent::Conversation(ConversationEvent::Synced { conversation_ids }) => Some((
@@ -393,9 +445,7 @@ fn call_signal_to_payload(conversation_id: &str, event: &CallSignalEvent) -> Cal
 }
 
 fn direct_peer_user_id(a: Option<&CallAudience>) -> Option<String> {
-    let Some(a) = a else {
-        return None;
-    };
+    let a = a?;
     match &a.shape {
         Some(call_audience::Shape::Direct(d)) if !d.peer_user_id.trim().is_empty() => {
             Some(d.peer_user_id.clone())

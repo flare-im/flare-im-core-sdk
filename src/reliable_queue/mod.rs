@@ -5,4 +5,4 @@
 
 mod actor;
 
-pub use actor::{QueueCommand, ReliableSendQueue};
+pub use actor::{QueueCommand, ReliableSendQueue, ReliableSendQueueConfig};

@@ -5,14 +5,54 @@
 
 use std::sync::Arc;
 
-use crate::application::MessageBuilderService;
+use crate::application::{
+    BuildCardRequest, BuildLinkCardRequest, BuildLocationRequest, BuildMiniProgramRequest,
+    BuildRichDocRequest, BuildScheduleRequest, BuildStickerRequest, MessageBuilderService,
+};
 use crate::conversation;
 use crate::core::CurrentUserIdStore;
-use crate::domain::ConversationStore;
+use crate::domain::{ConversationIdentityService, ConversationStore};
 use crate::error::{ErrorCode, FlareError, Result};
 use crate::model::content_builder::BuiltContent;
 use crate::model::message::IMMessage;
 use flare_proto::common::ImageInfo;
+
+#[derive(Clone, Debug)]
+pub struct CreateLocationRequest {
+    pub conversation_id: String,
+    pub longitude: f64,
+    pub latitude: f64,
+    pub address: String,
+    pub title: String,
+    pub zoom: Option<u8>,
+    pub snapshot_url: Option<String>,
+    pub snapshot_local_path: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct CreateStickerRequest {
+    pub conversation_id: String,
+    pub sticker_id: String,
+    pub package_id: Option<String>,
+    pub url: Option<String>,
+    pub width: Option<i32>,
+    pub height: Option<i32>,
+    pub sticker_format: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct CreateRichDocRequest {
+    pub conversation_id: String,
+    pub doc_json: String,
+    pub content_schema: String,
+    pub plain_text: String,
+    pub input_format: Option<String>,
+    pub input_format_version: Option<i32>,
+    pub source_payload: Option<std::collections::HashMap<String, String>>,
+    pub title: Option<String>,
+    pub search_text: Option<String>,
+    pub render_hints_json: Option<String>,
+}
 
 /// 多类型消息的构建入口（不负责发送）。
 pub struct MessageBuildApi {
@@ -45,7 +85,7 @@ impl MessageBuildApi {
         conversation_id: &str,
         mut msg: IMMessage,
     ) -> Result<IMMessage> {
-        let Some(conv) = self.conversations.get(conversation_id).await? else {
+        let Some(mut conv) = self.conversations.get(conversation_id).await? else {
             if conversation::is_single_chat_conversation(conversation_id) {
                 return Err(FlareError::localized(
                     ErrorCode::InvalidParameter,
@@ -54,6 +94,24 @@ impl MessageBuildApi {
             }
             return Ok(msg);
         };
+
+        if conv.conversation_type.is_single_chat_conversation() {
+            let current_user_id = self.current_sender_id().await?;
+            let peer_hint = conv
+                .participants
+                .iter()
+                .chain(conv.member_preview.iter())
+                .map(|p| p.user_id.trim())
+                .find(|id| !id.is_empty() && *id != current_user_id.as_str())
+                .map(ToOwned::to_owned);
+            if ConversationIdentityService::repair_single_chat_channel(
+                &mut conv,
+                &current_user_id,
+                peer_hint.as_deref(),
+            ) {
+                self.conversations.save_one(&conv).await?;
+            }
+        }
 
         msg.channel_id = conv.channel_id.clone();
         msg.conversation_type = conv.conversation_type.to_proto_int();
@@ -90,9 +148,20 @@ impl MessageBuildApi {
         Ok(msg)
     }
 
-    pub async fn create_text(&self, conversation_id: &str, text: &str) -> Result<IMMessage> {
+    pub async fn create_text(
+        &self,
+        conversation_id: &str,
+        text: &str,
+        mention_all: bool,
+    ) -> Result<IMMessage> {
         let sender_id = self.current_sender_id().await?;
-        let msg = MessageBuilderService::build_text(conversation_id, &sender_id, text, None)?;
+        let msg = MessageBuilderService::build_text(
+            conversation_id,
+            &sender_id,
+            text,
+            None,
+            mention_all,
+        )?;
         self.apply_conversation_routing(conversation_id, msg).await
     }
 
@@ -223,31 +292,22 @@ impl MessageBuildApi {
         self.apply_conversation_routing(conversation_id, msg).await
     }
 
-    pub async fn create_location(
-        &self,
-        conversation_id: &str,
-        longitude: f64,
-        latitude: f64,
-        address: impl Into<String>,
-        title: impl Into<String>,
-        zoom: Option<u8>,
-        snapshot_url: Option<String>,
-        snapshot_local_path: Option<String>,
-    ) -> Result<IMMessage> {
+    pub async fn create_location(&self, request: CreateLocationRequest) -> Result<IMMessage> {
         let sender_id = self.current_sender_id().await?;
-        let msg = MessageBuilderService::build_location(
-            conversation_id,
-            &sender_id,
-            longitude,
-            latitude,
-            address,
-            title,
-            zoom,
-            snapshot_url,
-            snapshot_local_path,
-            None,
-        )?;
-        self.apply_conversation_routing(conversation_id, msg).await
+        let conversation_id = request.conversation_id.clone();
+        let msg = MessageBuilderService::build_location(BuildLocationRequest {
+            conversation_id: request.conversation_id,
+            sender_id,
+            longitude: request.longitude,
+            latitude: request.latitude,
+            address: request.address,
+            title: request.title,
+            zoom: request.zoom,
+            snapshot_url: request.snapshot_url,
+            snapshot_local_path: request.snapshot_local_path,
+            channel_id: None,
+        })?;
+        self.apply_conversation_routing(&conversation_id, msg).await
     }
 
     pub async fn create_card(
@@ -264,42 +324,34 @@ impl MessageBuildApi {
             Some(s) if !s.is_empty() => s,
             _ => "user",
         };
-        let msg = MessageBuilderService::build_card(
-            conversation_id,
-            &sender_id,
-            id,
-            ct,
-            title.unwrap_or(""),
-            subtitle.unwrap_or(""),
-            avatar.unwrap_or(""),
-            None,
-        )?;
+        let msg = MessageBuilderService::build_card(BuildCardRequest {
+            conversation_id: conversation_id.to_string(),
+            sender_id,
+            id: id.to_string(),
+            card_type: ct.to_string(),
+            title: title.unwrap_or("").to_string(),
+            subtitle: subtitle.unwrap_or("").to_string(),
+            avatar: avatar.unwrap_or("").to_string(),
+            channel_id: None,
+        })?;
         self.apply_conversation_routing(conversation_id, msg).await
     }
 
-    pub async fn create_sticker(
-        &self,
-        conversation_id: &str,
-        sticker_id: &str,
-        package_id: Option<&str>,
-        url: Option<&str>,
-        width: Option<i32>,
-        height: Option<i32>,
-        sticker_format: Option<&str>,
-    ) -> Result<IMMessage> {
+    pub async fn create_sticker(&self, request: CreateStickerRequest) -> Result<IMMessage> {
         let sender_id = self.current_sender_id().await?;
-        let msg = MessageBuilderService::build_sticker_with(
-            conversation_id,
-            &sender_id,
-            sticker_id,
-            None,
-            package_id,
-            url,
-            width.unwrap_or(0),
-            height.unwrap_or(0),
-            sticker_format,
-        )?;
-        self.apply_conversation_routing(conversation_id, msg).await
+        let conversation_id = request.conversation_id.clone();
+        let msg = MessageBuilderService::build_sticker_with(BuildStickerRequest {
+            conversation_id: request.conversation_id,
+            sender_id,
+            sticker_id: request.sticker_id,
+            channel_id: None,
+            package_id: request.package_id,
+            url: request.url,
+            width: request.width.unwrap_or(0),
+            height: request.height.unwrap_or(0),
+            sticker_format: request.sticker_format,
+        })?;
+        self.apply_conversation_routing(&conversation_id, msg).await
     }
 
     pub async fn create_emoji(&self, conversation_id: &str, emoji: &str) -> Result<IMMessage> {
@@ -318,16 +370,16 @@ impl MessageBuildApi {
         site_name: Option<&str>,
     ) -> Result<IMMessage> {
         let sender_id = self.current_sender_id().await?;
-        let msg = MessageBuilderService::build_link_card(
-            conversation_id,
-            &sender_id,
-            url,
-            None,
-            title,
-            description,
-            thumbnail_url,
-            site_name,
-        )?;
+        let msg = MessageBuilderService::build_link_card(BuildLinkCardRequest {
+            conversation_id: conversation_id.to_string(),
+            sender_id,
+            url: url.to_string(),
+            channel_id: None,
+            title: title.map(ToOwned::to_owned),
+            description: description.map(ToOwned::to_owned),
+            thumbnail_url: thumbnail_url.map(ToOwned::to_owned),
+            site_name: site_name.map(ToOwned::to_owned),
+        })?;
         self.apply_conversation_routing(conversation_id, msg).await
     }
 
@@ -341,48 +393,37 @@ impl MessageBuildApi {
         extra: Option<std::collections::HashMap<String, String>>,
     ) -> Result<IMMessage> {
         let sender_id = self.current_sender_id().await?;
-        let msg = MessageBuilderService::build_mini_program(
-            conversation_id,
-            &sender_id,
-            app_id,
-            None,
-            title,
-            page_path,
-            thumbnail_url,
+        let msg = MessageBuilderService::build_mini_program(BuildMiniProgramRequest {
+            conversation_id: conversation_id.to_string(),
+            sender_id,
+            app_id: app_id.to_string(),
+            channel_id: None,
+            title: title.map(ToOwned::to_owned),
+            page_path: page_path.map(ToOwned::to_owned),
+            thumbnail_url: thumbnail_url.map(ToOwned::to_owned),
             extra,
-        )?;
+        })?;
         self.apply_conversation_routing(conversation_id, msg).await
     }
 
-    pub async fn create_rich_doc(
-        &self,
-        conversation_id: &str,
-        doc_json: &str,
-        content_schema: &str,
-        plain_text: &str,
-        input_format: Option<&str>,
-        input_format_version: Option<i32>,
-        source_payload: Option<std::collections::HashMap<String, String>>,
-        title: Option<&str>,
-        search_text: Option<&str>,
-        render_hints_json: Option<&str>,
-    ) -> Result<IMMessage> {
+    pub async fn create_rich_doc(&self, request: CreateRichDocRequest) -> Result<IMMessage> {
         let sender_id = self.current_sender_id().await?;
-        let msg = MessageBuilderService::build_rich_doc(
-            conversation_id,
-            &sender_id,
-            doc_json,
-            content_schema,
-            plain_text,
-            None,
-            input_format,
-            input_format_version,
-            source_payload,
-            title,
-            search_text,
-            render_hints_json,
-        )?;
-        self.apply_conversation_routing(conversation_id, msg).await
+        let conversation_id = request.conversation_id.clone();
+        let msg = MessageBuilderService::build_rich_doc(BuildRichDocRequest {
+            conversation_id: request.conversation_id,
+            sender_id,
+            doc_json: request.doc_json,
+            content_schema: request.content_schema,
+            plain_text: request.plain_text,
+            channel_id: None,
+            input_format: request.input_format,
+            input_format_version: request.input_format_version,
+            source_payload: request.source_payload,
+            title: request.title,
+            search_text: request.search_text,
+            render_hints_json: request.render_hints_json,
+        })?;
+        self.apply_conversation_routing(&conversation_id, msg).await
     }
 
     pub async fn create_system(
@@ -461,16 +502,16 @@ impl MessageBuildApi {
         participant_user_ids: Option<Vec<String>>,
     ) -> Result<IMMessage> {
         let sender_id = self.current_sender_id().await?;
-        let msg = MessageBuilderService::build_schedule(
-            conversation_id,
-            &sender_id,
-            schedule_id,
-            title,
-            None,
+        let msg = MessageBuilderService::build_schedule(BuildScheduleRequest {
+            conversation_id: conversation_id.to_string(),
+            sender_id,
+            schedule_id: schedule_id.to_string(),
+            title: title.to_string(),
+            channel_id: None,
             start_time_ms,
             end_time_ms,
             participant_user_ids,
-        )?;
+        })?;
         self.apply_conversation_routing(conversation_id, msg).await
     }
 

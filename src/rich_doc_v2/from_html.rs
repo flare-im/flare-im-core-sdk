@@ -220,10 +220,10 @@ fn map_phrasing_node(node: NodeRef<'_, Node>, out: &mut Vec<Value>) -> Result<()
 #[cfg(not(target_arch = "wasm32"))]
 fn wrap_marks(nodes: &mut [Value], mark: &'static str) {
     for n in nodes.iter_mut() {
-        if let Some(obj) = n.as_object_mut() {
-            if obj.get("type").and_then(|t| t.as_str()) == Some("text") {
-                obj.insert("marks".into(), json!([{"type": mark}]));
-            }
+        if let Some(obj) = n.as_object_mut()
+            && obj.get("type").and_then(|t| t.as_str()) == Some("text")
+        {
+            obj.insert("marks".into(), json!([{"type": mark}]));
         }
     }
 }

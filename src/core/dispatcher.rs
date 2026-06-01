@@ -19,6 +19,7 @@ use crate::domain::{DEFAULT_SYNC_LIMIT, SyncCursorVo};
 use crate::event::{ConversationEvent, EventBus, ExtensionEvent, MessageEvent, SdkEvent};
 use crate::infrastructure::protocol::DownlinkPayload;
 use crate::model::IMMessage;
+use crate::notification::{NotificationInboundPipeline, partition_notification_durability};
 use crate::reliable_queue::ReliableSendQueue;
 use crate::store::StoreProvider;
 
@@ -44,6 +45,7 @@ pub struct Dispatcher {
     current_user_id: Arc<RwLock<String>>,
     event_deduper: EventDeduper,
     message_deduper: MessageDeduper,
+    notification_pipeline: NotificationInboundPipeline,
     incoming_message_converger: Option<IncomingMessageConverger>,
     conversation_projection_applier: Option<ConversationProjectionApplier>,
     seq_repair_state: Arc<AsyncMutex<HashMap<String, SeqRepairState>>>,
@@ -60,6 +62,7 @@ impl Dispatcher {
         current_user_id: Arc<RwLock<String>>,
         event_deduper: EventDeduper,
         message_deduper: MessageDeduper,
+        notification_pipeline: NotificationInboundPipeline,
     ) -> Self {
         let incoming_message_converger = stores.as_ref().map(|provider| {
             IncomingMessageConverger::new(
@@ -80,6 +83,7 @@ impl Dispatcher {
             current_user_id,
             event_deduper,
             message_deduper,
+            notification_pipeline,
             incoming_message_converger,
             conversation_projection_applier,
             seq_repair_state: Arc::new(AsyncMutex::new(HashMap::new())),
@@ -314,45 +318,36 @@ impl Dispatcher {
                         })?;
                 }
                 if !messages.is_empty() {
+                    let (durable_messages, ephemeral_messages): (Vec<IMMessage>, Vec<IMMessage>) =
+                        partition_notification_durability(messages);
                     let mut durable = true;
-                    if let Some(ref stores) = self.stores {
-                        if let Err(e) = stores.messages.save_batch(&messages).await {
+                    if !durable_messages.is_empty()
+                        && let Some(ref stores) = self.stores
+                    {
+                        if let Err(e) = stores.messages.save_batch(&durable_messages).await {
                             warn!(error = %e, "MessagePush save_batch failed");
                             durable = false;
-                        } else if let Some(applier) = &self.conversation_projection_applier {
-                            if let Err(e) =
-                                applier.apply_messages(&messages, &current_user_id).await
-                            {
-                                warn!(error = %e, "MessagePush conversation projection failed");
-                                durable = false;
-                            }
+                        } else if let Some(applier) = &self.conversation_projection_applier
+                            && let Err(e) = applier
+                                .apply_messages(&durable_messages, &current_user_id)
+                                .await
+                        {
+                            warn!(error = %e, "MessagePush conversation projection failed");
+                            durable = false;
                         }
                         if durable {
-                            self.repair_message_seq_after_persist(&messages).await;
+                            self.repair_message_seq_after_persist(&durable_messages)
+                                .await;
                         }
                     }
-                    if !durable {
-                        return Ok(());
-                    }
-
-                    let mut fresh_messages = Vec::new();
-                    for message in messages {
-                        if self.message_deduper.record_if_new(&message).await {
-                            fresh_messages.push(message);
-                        }
-                    }
-                    if fresh_messages.is_empty() {
-                        return Ok(());
-                    }
-                    if fresh_messages.len() == 1 {
-                        self.bus.publish(SdkEvent::Message(MessageEvent::Received {
-                            message: fresh_messages.remove(0),
-                        }));
+                    let mut inbound = if durable {
+                        durable_messages
                     } else {
-                        self.bus
-                            .publish(SdkEvent::Message(MessageEvent::ReceivedBatch {
-                                messages: fresh_messages,
-                            }));
+                        Vec::new()
+                    };
+                    inbound.extend(ephemeral_messages);
+                    if !inbound.is_empty() {
+                        self.notification_pipeline.finish_batch(inbound).await;
                     }
                 }
             }
@@ -370,28 +365,29 @@ impl Dispatcher {
             }
             DownlinkPayload::SendAck(ack) => {
                 let mut ack = ack;
-                if ack.conversation_id.trim().is_empty() {
-                    if let Some(ref stores) = self.stores {
-                        match stores
-                            .messages
-                            .get_by_client_msg_id(&ack.client_msg_id)
-                            .await
-                        {
-                            Ok(Some(local)) if !local.conversation_id.trim().is_empty() => {
-                                ack.conversation_id = local.conversation_id.clone();
-                            }
-                            Ok(_) => {}
-                            Err(e) => {
-                                warn!(error = %e, client_msg_id = %ack.client_msg_id, "enrich send ack conversation_id failed");
-                            }
+                if ack.conversation_id.trim().is_empty()
+                    && let Some(ref stores) = self.stores
+                {
+                    match stores
+                        .messages
+                        .get_by_client_msg_id(&ack.client_msg_id)
+                        .await
+                    {
+                        Ok(Some(local)) if !local.conversation_id.trim().is_empty() => {
+                            ack.conversation_id = local.conversation_id.clone();
+                        }
+                        Ok(_) => {}
+                        Err(e) => {
+                            warn!(error = %e, client_msg_id = %ack.client_msg_id, "enrich send ack conversation_id failed");
                         }
                     }
                 }
                 if let Some(q) = &self.reliable_queue {
                     let _ = q.on_ack(ack.clone()).await;
                 } else {
-                    self.bus
-                        .publish(SdkEvent::Message(MessageEvent::SendAck { ack }));
+                    self.bus.publish(SdkEvent::Message(MessageEvent::SendAck {
+                        ack: Box::new(ack),
+                    }));
                 }
             }
             DownlinkPayload::CustomData(data) => {
@@ -451,8 +447,9 @@ impl Dispatcher {
             }
             for imm in messages {
                 if self.message_deduper.record_if_new(&imm).await {
-                    self.bus
-                        .publish(SdkEvent::Message(MessageEvent::Received { message: imm }));
+                    self.bus.publish(SdkEvent::Message(MessageEvent::Received {
+                        message: Box::new(imm),
+                    }));
                 }
             }
         }
@@ -460,20 +457,19 @@ impl Dispatcher {
         if let Some(p) = &ev.payload {
             match p {
                 EventPayload::Recall(recall) => {
-                    if let Some(ref stores) = self.stores {
-                        if let Err(e) = stores
+                    if let Some(ref stores) = self.stores
+                        && let Err(e) = stores
                             .messages
                             .update_status(&recall.server_msg_id, MessageStatus::Recalled as i32)
                             .await
-                        {
-                            warn!(
-                                error = %e,
-                                server_msg_id = %recall.server_msg_id,
-                                "Recall: update_status failed; event will be retried"
-                            );
-                            self.event_deduper.forget(ev).await;
-                            return;
-                        }
+                    {
+                        warn!(
+                            error = %e,
+                            server_msg_id = %recall.server_msg_id,
+                            "Recall: update_status failed; event will be retried"
+                        );
+                        self.event_deduper.forget(ev).await;
+                        return;
                     }
                     self.bus.publish(SdkEvent::Message(MessageEvent::Recalled {
                         conversation_id: conv_id,
@@ -630,6 +626,126 @@ impl Dispatcher {
                             conversation_id: conv_id,
                             event: read.clone(),
                         }));
+                }
+                EventPayload::BurnScheduled(burn_scheduled) => {
+                    let mut should_publish = true;
+                    if let Some(ref stores) = self.stores {
+                        match stores
+                            .messages
+                            .apply_burn_scheduled_event(
+                                &burn_scheduled.message_id,
+                                burn_scheduled.burn_at,
+                                burn_scheduled.event_time,
+                                operation_seq(ev),
+                            )
+                            .await
+                        {
+                            Ok(crate::domain::OperationApplyResult::IgnoredStale) => {
+                                should_publish = false;
+                            }
+                            Ok(crate::domain::OperationApplyResult::Applied) => {}
+                            Ok(crate::domain::OperationApplyResult::NotFound) => {
+                                warn!(
+                                    message_id = %burn_scheduled.message_id,
+                                    "Event BurnScheduled: no local row matched; event will be retried after message sync"
+                                );
+                                self.event_deduper.forget(ev).await;
+                                return;
+                            }
+                            Err(error) => {
+                                warn!(error = %error, message_id = %burn_scheduled.message_id, "Event BurnScheduled apply failed");
+                                self.event_deduper.forget(ev).await;
+                                return;
+                            }
+                        }
+                    }
+                    if should_publish {
+                        self.bus
+                            .publish(SdkEvent::Message(MessageEvent::BurnScheduled {
+                                conversation_id: conv_id,
+                                event: burn_scheduled.clone(),
+                            }));
+                    }
+                }
+                EventPayload::Burned(burned) => {
+                    let mut should_publish = true;
+                    if let Some(ref stores) = self.stores {
+                        match stores
+                            .messages
+                            .apply_burned_event(
+                                &burned.message_id,
+                                burned.burn_at,
+                                burned.burned_at,
+                                operation_seq(ev),
+                            )
+                            .await
+                        {
+                            Ok(crate::domain::OperationApplyResult::IgnoredStale) => {
+                                should_publish = false;
+                            }
+                            Ok(crate::domain::OperationApplyResult::Applied) => {}
+                            Ok(crate::domain::OperationApplyResult::NotFound) => {
+                                warn!(
+                                    message_id = %burned.message_id,
+                                    "Event Burned: no local row matched; event will be retried after message sync"
+                                );
+                                self.event_deduper.forget(ev).await;
+                                return;
+                            }
+                            Err(error) => {
+                                warn!(error = %error, message_id = %burned.message_id, "Event Burned apply failed");
+                                self.event_deduper.forget(ev).await;
+                                return;
+                            }
+                        }
+                    }
+                    if should_publish {
+                        self.bus.publish(SdkEvent::Message(MessageEvent::Burned {
+                            conversation_id: conv_id,
+                            event: burned.clone(),
+                        }));
+                    }
+                }
+                EventPayload::HardDeleted(hard_deleted) => {
+                    let mut should_publish = true;
+                    if let Some(ref stores) = self.stores {
+                        match stores
+                            .messages
+                            .apply_hard_deleted_event(
+                                &hard_deleted.message_id,
+                                hard_deleted.burn_at,
+                                hard_deleted.burned_at,
+                                hard_deleted.event_time,
+                                operation_seq(ev),
+                            )
+                            .await
+                        {
+                            Ok(crate::domain::OperationApplyResult::IgnoredStale) => {
+                                should_publish = false;
+                            }
+                            Ok(crate::domain::OperationApplyResult::Applied) => {}
+                            Ok(crate::domain::OperationApplyResult::NotFound) => {
+                                warn!(
+                                    message_id = %hard_deleted.message_id,
+                                    "Event HardDeleted: no local row matched; event will be retried after message sync"
+                                );
+                                self.event_deduper.forget(ev).await;
+                                return;
+                            }
+                            Err(error) => {
+                                warn!(error = %error, message_id = %hard_deleted.message_id, "Event HardDeleted apply failed");
+                                self.event_deduper.forget(ev).await;
+                                return;
+                            }
+                        }
+                    }
+                    if should_publish {
+                        self.bus
+                            .publish(SdkEvent::Message(MessageEvent::HardDeleted {
+                                conversation_id: conv_id,
+                                event: hard_deleted.clone(),
+                            }));
+                    }
                 }
                 EventPayload::Pin(pin) => {
                     let mut should_publish = true;
@@ -794,7 +910,7 @@ impl Dispatcher {
                     self.bus
                         .publish(SdkEvent::Message(MessageEvent::CallSignal {
                             conversation_id: conv_id,
-                            event: call.clone(),
+                            event: Box::new(call.clone()),
                         }));
                 }
                 EventPayload::Custom(custom) => {
@@ -816,6 +932,15 @@ impl Dispatcher {
                         }));
                 }
                 EventPayload::ConversationDelete(_) => {
+                    if let Some(stores) = self.stores.as_ref()
+                        && let Err(error) = stores.conversations.delete(&conv_id).await
+                    {
+                        warn!(
+                            conversation_id = %conv_id,
+                            error = %error,
+                            "ConversationDelete push: local conversation purge failed"
+                        );
+                    }
                     self.bus
                         .publish(SdkEvent::Conversation(ConversationEvent::Deleted {
                             conversation_id: conv_id,
@@ -922,8 +1047,9 @@ mod tests {
     use crate::event::{EventBus, MessageEvent, SdkEvent};
     use crate::infrastructure::protocol::DownlinkPayload;
     use crate::model::IMMessage;
+    use crate::notification::{NotificationHandlerRegistry, NotificationInboundPipeline};
     use crate::protocol::{Codec, PacketSender, ProtobufCodec};
-    use crate::reliable_queue::ReliableSendQueue;
+    use crate::reliable_queue::{ReliableSendQueue, ReliableSendQueueConfig};
     use crate::store::StoreProvider;
     use async_trait::async_trait;
     use flare_proto::common::{MessageDeleteEvent, SendAck};
@@ -931,6 +1057,14 @@ mod tests {
     use std::sync::Arc;
     use tokio::sync::{Mutex, RwLock};
     use tokio::time::{Duration, timeout};
+
+    fn test_notification_pipeline(bus: EventBus) -> NotificationInboundPipeline {
+        NotificationInboundPipeline::new(
+            Arc::new(NotificationHandlerRegistry::new()),
+            MessageDeduper::new(Some(64)),
+            bus,
+        )
+    }
 
     struct MemoryPendingSendStore {
         data: Mutex<Vec<PendingSendVo>>,
@@ -1013,6 +1147,15 @@ mod tests {
         }
 
         async fn search(&self, _keyword: &str, _limit: u32) -> Result<Vec<IMMessage>> {
+            Ok(Vec::new())
+        }
+
+        async fn search_in_conversation(
+            &self,
+            _conversation_id: &str,
+            _keyword: &str,
+            _limit: u32,
+        ) -> Result<Vec<IMMessage>> {
             Ok(Vec::new())
         }
     }
@@ -1107,11 +1250,23 @@ mod tests {
             Ok(())
         }
 
+        async fn mark_unread(&self, _conversation_id: &str) -> Result<u32> {
+            Ok(1)
+        }
+
         async fn update_draft(&self, _conversation_id: &str, _draft: Option<&str>) -> Result<()> {
             Ok(())
         }
 
         async fn delete(&self, _conversation_id: &str) -> Result<()> {
+            Ok(())
+        }
+
+        async fn clear_local_chat_history(
+            &self,
+            _conversation_id: &str,
+            _cleared_through_seq: u64,
+        ) -> Result<()> {
             Ok(())
         }
 
@@ -1172,16 +1327,17 @@ mod tests {
             Arc::new(Mutex::new(None)),
             Arc::new(ProtobufCodec) as Arc<dyn Codec>,
         ));
-        let reliable_queue = Arc::new(ReliableSendQueue::new(
-            pending_store.clone(),
-            pending_store,
+        let reliable_queue = Arc::new(ReliableSendQueue::new(ReliableSendQueueConfig {
+            pending_reader: pending_store.clone(),
+            pending_writer: pending_store,
             sender,
             message_store,
-            current_user_id.clone(),
-            bus.clone(),
-            Some(60),
-            Some(3),
-        ));
+            conversation_store: Arc::new(NoopConversationStore),
+            current_user_id: current_user_id.clone(),
+            bus: bus.clone(),
+            timeout_secs: Some(60),
+            max_retries: Some(3),
+        }));
 
         let dispatcher = Dispatcher::new(
             bus.clone(),
@@ -1192,6 +1348,7 @@ mod tests {
             current_user_id,
             EventDeduper::new(Some(64)),
             MessageDeduper::new(Some(64)),
+            test_notification_pipeline(bus.clone()),
         );
 
         let mut message = IMMessage::new(flare_proto::common::Message::default());
@@ -1256,16 +1413,17 @@ mod tests {
             Arc::new(Mutex::new(None)),
             Arc::new(ProtobufCodec) as Arc<dyn Codec>,
         ));
-        let reliable_queue = Arc::new(ReliableSendQueue::new(
-            pending_store.clone(),
-            pending_store,
+        let reliable_queue = Arc::new(ReliableSendQueue::new(ReliableSendQueueConfig {
+            pending_reader: pending_store.clone(),
+            pending_writer: pending_store,
             sender,
-            message_store.clone(),
-            current_user_id.clone(),
-            bus.clone(),
-            Some(60),
-            Some(3),
-        ));
+            message_store: message_store.clone(),
+            conversation_store: Arc::new(NoopConversationStore),
+            current_user_id: current_user_id.clone(),
+            bus: bus.clone(),
+            timeout_secs: Some(60),
+            max_retries: Some(3),
+        }));
 
         let dispatcher = Dispatcher::new(
             bus.clone(),
@@ -1276,6 +1434,7 @@ mod tests {
             current_user_id,
             EventDeduper::new(Some(64)),
             MessageDeduper::new(Some(64)),
+            test_notification_pipeline(bus.clone()),
         );
 
         let mut optimistic = IMMessage::new(flare_proto::common::Message::default());
@@ -1285,19 +1444,20 @@ mod tests {
         reliable_queue.enqueue(optimistic).await.unwrap();
         tokio::time::sleep(Duration::from_millis(20)).await;
 
-        let mut proto_message = flare_proto::common::Message::default();
-        proto_message.server_id = "server-self-1".to_string();
-        proto_message.client_msg_id = "client-self-1".to_string();
-        proto_message.conversation_id = "conv-1".to_string();
-        proto_message.sender_id = "u1".to_string();
-        proto_message.seq = 11;
+        let proto_message = flare_proto::common::Message {
+            server_id: "server-self-1".to_string(),
+            client_msg_id: "client-self-1".to_string(),
+            conversation_id: "conv-1".to_string(),
+            sender_id: "u1".to_string(),
+            seq: 11,
+            ..Default::default()
+        };
 
         dispatcher
             .dispatch(DownlinkPayload::MessagePush(
                 flare_proto::common::MessagePush {
                     messages: vec![proto_message],
                     notifications: Vec::new(),
-                    ..Default::default()
                 },
             ))
             .await
@@ -1333,16 +1493,17 @@ mod tests {
             Arc::new(Mutex::new(None)),
             Arc::new(ProtobufCodec) as Arc<dyn Codec>,
         ));
-        let reliable_queue = Arc::new(ReliableSendQueue::new(
-            pending_store.clone(),
-            pending_store,
+        let reliable_queue = Arc::new(ReliableSendQueue::new(ReliableSendQueueConfig {
+            pending_reader: pending_store.clone(),
+            pending_writer: pending_store,
             sender,
             message_store,
-            current_user_id.clone(),
-            bus.clone(),
-            Some(60),
-            Some(3),
-        ));
+            conversation_store: Arc::new(NoopConversationStore),
+            current_user_id: current_user_id.clone(),
+            bus: bus.clone(),
+            timeout_secs: Some(60),
+            max_retries: Some(3),
+        }));
         let dispatcher = Dispatcher::new(
             bus.clone(),
             Some(reliable_queue.clone()),
@@ -1352,6 +1513,7 @@ mod tests {
             current_user_id,
             EventDeduper::new(Some(64)),
             MessageDeduper::new(Some(64)),
+            test_notification_pipeline(bus.clone()),
         );
 
         let mut message1 = IMMessage::new(flare_proto::common::Message::default());
@@ -1454,9 +1616,14 @@ mod tests {
             current_user_id,
             deduper.clone(),
             MessageDeduper::new(Some(64)),
+            test_notification_pipeline(bus.clone()),
         );
-        let sync_apply =
-            SyncApplyUseCase::new(stores, bus.clone(), deduper, MessageDeduper::new(Some(64)));
+        let sync_apply = SyncApplyUseCase::new(
+            stores,
+            bus.clone(),
+            deduper,
+            test_notification_pipeline(bus.clone()),
+        );
 
         let mut event = flare_proto::common::Event::default();
         event.event_id = "evt-delete-1".to_string();
@@ -1524,22 +1691,29 @@ mod tests {
             current_user_id,
             deduper.clone(),
             message_deduper.clone(),
+            test_notification_pipeline(bus.clone()),
         );
-        let sync_apply = SyncApplyUseCase::new(stores, bus.clone(), deduper, message_deduper);
+        let sync_apply = SyncApplyUseCase::new(
+            stores,
+            bus.clone(),
+            deduper,
+            test_notification_pipeline(bus.clone()),
+        );
 
-        let mut proto_message = flare_proto::common::Message::default();
-        proto_message.server_id = "server-msg-1".to_string();
-        proto_message.client_msg_id = "client-msg-1".to_string();
-        proto_message.conversation_id = "conv-1".to_string();
-        proto_message.sender_id = "u2".to_string();
-        proto_message.seq = 10;
+        let proto_message = flare_proto::common::Message {
+            server_id: "server-msg-1".to_string(),
+            client_msg_id: "client-msg-1".to_string(),
+            conversation_id: "conv-1".to_string(),
+            sender_id: "u2".to_string(),
+            seq: 10,
+            ..Default::default()
+        };
 
         dispatcher
             .dispatch(DownlinkPayload::MessagePush(
                 flare_proto::common::MessagePush {
                     messages: vec![proto_message.clone()],
                     notifications: Vec::new(),
-                    ..Default::default()
                 },
             ))
             .await

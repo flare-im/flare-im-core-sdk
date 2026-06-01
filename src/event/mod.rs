@@ -44,8 +44,8 @@ mod types;
 
 pub use event_bus::{EventBus, EventReceiver, Subscription};
 pub use types::{
-    ConnectionEvent, ConversationEvent, ExtensionEvent, MessageEvent, SdkEvent, SyncNotify,
-    SyncPhase,
+    ConnectionEvent, ConversationEvent, ExtensionEvent, MessageEvent, NotificationEvent, SdkEvent,
+    SyncNotify, SyncPhase,
 };
 
 use std::sync::Arc;

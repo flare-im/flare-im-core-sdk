@@ -7,9 +7,7 @@ pub const CORE_RESERVED_CAPABILITY_NAMESPACES: &[&str] = &["rtc"];
 
 #[must_use]
 pub fn is_reserved_namespace(namespace: &str) -> bool {
-    CORE_RESERVED_CAPABILITY_NAMESPACES
-        .iter()
-        .any(|n| *n == namespace)
+    CORE_RESERVED_CAPABILITY_NAMESPACES.contains(&namespace)
 }
 
 /// 返回插件命中的核心保留命名空间（为空表示无冲突）。

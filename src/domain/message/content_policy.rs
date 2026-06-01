@@ -1,5 +1,5 @@
 use crate::error::{ErrorCode, FlareError, Result};
-use crate::model::decoder::{DecodedContent, decode_content_bytes};
+use crate::model::decoder::decode_content_bytes;
 use crate::model::message::IMMessage;
 use crate::model::message_elem::Elem;
 
@@ -53,9 +53,8 @@ impl MessageContentPolicy {
                 "sdk.message.invalid_content_encoding",
             )
         })?;
-        if let DecodedContent::Content(flare_proto::common::message_content::Content::Quote(
-            quote,
-        )) = decoded
+        if let Some(flare_proto::common::message_content::Content::Quote(quote)) =
+            decoded.as_content()
         {
             if quote.quoted_message_id.trim().is_empty() {
                 return Err(FlareError::localized(

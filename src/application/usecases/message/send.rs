@@ -252,10 +252,10 @@ fn file_url_to_path_str(after_scheme: &str) -> Option<&str> {
 
 fn image_info_local_path(info: &ImageInfoElem) -> Option<&Path> {
     let id = info.image_id.trim();
-    if !id.is_empty() {
-        if let Some(p) = extract_local_path(id) {
-            return Some(p);
-        }
+    if !id.is_empty()
+        && let Some(p) = extract_local_path(id)
+    {
+        return Some(p);
     }
     let u = info.uuid.trim();
     if u.is_empty() {

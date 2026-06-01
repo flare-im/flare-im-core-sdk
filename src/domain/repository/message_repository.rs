@@ -2,8 +2,8 @@ use async_trait::async_trait;
 use std::collections::HashMap;
 
 use crate::error::Result;
-use crate::model::IMMessage;
 use crate::model::message::ReactionEntry;
+use crate::model::{IMMessage, MessageSearchQuery};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EditApplyResult {
@@ -34,6 +34,34 @@ pub trait MessageReader: Send + Sync {
         limit: u32,
     ) -> Result<Vec<IMMessage>>;
     async fn search(&self, keyword: &str, limit: u32) -> Result<Vec<IMMessage>>;
+    async fn search_by_query(&self, query: &MessageSearchQuery) -> Result<Vec<IMMessage>> {
+        if let Some(conversation_id) = query
+            .conversation_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            return self
+                .search_in_conversation(
+                    conversation_id,
+                    query.keyword.as_deref().unwrap_or_default(),
+                    query.normalized_limit(),
+                )
+                .await;
+        }
+        self.search(
+            query.keyword.as_deref().unwrap_or_default(),
+            query.normalized_limit(),
+        )
+        .await
+    }
+    /// 在指定会话内按正文关键字搜索（本地 SQLite）。
+    async fn search_in_conversation(
+        &self,
+        conversation_id: &str,
+        keyword: &str,
+        limit: u32,
+    ) -> Result<Vec<IMMessage>>;
 }
 
 /// 消息写操作
@@ -106,6 +134,40 @@ pub trait MessageStore: MessageReader + MessageWriter {
         Ok(OperationApplyResult::Applied)
     }
 
+    /// 应用阅后即焚「已安排倒计时」事件到存储层；实现可基于 `event_seq/seq` 防旧事件回放覆盖新状态。
+    async fn apply_burn_scheduled_event(
+        &self,
+        _message_id: &str,
+        _burn_at: i64,
+        _first_read_at: i64,
+        _event_seq: Option<u64>,
+    ) -> Result<OperationApplyResult> {
+        Ok(OperationApplyResult::NotFound)
+    }
+
+    /// 应用阅后即焚「已焚毁」事件到存储层；实现可基于 `event_seq/seq` 防旧事件回放覆盖新状态。
+    async fn apply_burned_event(
+        &self,
+        _message_id: &str,
+        _burn_at: i64,
+        _burned_at: i64,
+        _event_seq: Option<u64>,
+    ) -> Result<OperationApplyResult> {
+        Ok(OperationApplyResult::NotFound)
+    }
+
+    /// 应用阅后即焚「硬删除」事件到存储层；实现可基于 `event_seq/seq` 防旧事件回放覆盖新状态。
+    async fn apply_hard_deleted_event(
+        &self,
+        _message_id: &str,
+        _burn_at: Option<i64>,
+        _burned_at: Option<i64>,
+        _hard_deleted_at: i64,
+        _event_seq: Option<u64>,
+    ) -> Result<OperationApplyResult> {
+        Ok(OperationApplyResult::NotFound)
+    }
+
     /// 对方已读回执落地：将当前用户在该会话中 `seq <= read_seq` 的已发送消息标记为已读。
     async fn mark_outgoing_read_upto_seq(
         &self,
@@ -113,6 +175,23 @@ pub trait MessageStore: MessageReader + MessageWriter {
         _sender_user_id: &str,
         _read_seq: u64,
     ) -> Result<()> {
+        Ok(())
+    }
+
+    /// 以服务端会话摘要中的对端已读位点为权威，修正当前用户发出消息的已读投影。
+    ///
+    /// `peer_read_seq` 之前的消息可被标记为已读；其后的消息如果本地曾被 ACK/回显污染成已读，
+    /// 需要回退到已发送，避免“对方离线但立刻双对号”。
+    async fn reconcile_outgoing_read_by_peer_seq(
+        &self,
+        conversation_id: &str,
+        sender_user_id: &str,
+        peer_read_seq: u64,
+    ) -> Result<()> {
+        if peer_read_seq > 0 {
+            self.mark_outgoing_read_upto_seq(conversation_id, sender_user_id, peer_read_seq)
+                .await?;
+        }
         Ok(())
     }
 

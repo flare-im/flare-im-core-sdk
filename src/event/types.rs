@@ -4,8 +4,9 @@
 //! 不暴露大 trait，便于 FFI / Swift / Kotlin / TypeScript 绑定。
 
 use flare_proto::common::{
-    CallSignalEvent, CustomEvent, MarkEvent, MessageDeleteEvent, MessageRecallEvent, PinEvent,
-    PresenceEvent, ReadReceiptEvent, SendAck, TypingEvent, UnmarkEvent, UnpinEvent,
+    CallSignalEvent, CustomEvent, MarkEvent, MessageBurnScheduledEvent, MessageBurnedEvent,
+    MessageDeleteEvent, MessageHardDeletedEvent, MessageRecallEvent, PinEvent, PresenceEvent,
+    ReadReceiptEvent, SendAck, TypingEvent, UnmarkEvent, UnpinEvent,
 };
 
 use crate::core::{SdkState, SyncRunContext};
@@ -44,11 +45,11 @@ pub enum ConnectionEvent {
 #[derive(Clone, Debug)]
 pub enum MessageEvent {
     /// 收到一条新消息（单聊/群聊推送或同步拉取）
-    Received { message: IMMessage },
+    Received { message: Box<IMMessage> },
     /// 新消息批量（同步或批量推送时一次下发多条，减少回调次数）
     ReceivedBatch { messages: Vec<IMMessage> },
     /// 消息发送成功（服务端回执）
-    SendAck { ack: SendAck },
+    SendAck { ack: Box<SendAck> },
     /// 消息发送失败（client_msg_id + 原因）
     SendFailed {
         client_msg_id: String,
@@ -90,6 +91,21 @@ pub enum MessageEvent {
         conversation_id: String,
         event: ReadReceiptEvent,
     },
+    /// 阅后即焚倒计时已安排
+    BurnScheduled {
+        conversation_id: String,
+        event: MessageBurnScheduledEvent,
+    },
+    /// 阅后即焚消息已焚毁
+    Burned {
+        conversation_id: String,
+        event: MessageBurnedEvent,
+    },
+    /// 阅后即焚消息已硬删除
+    HardDeleted {
+        conversation_id: String,
+        event: MessageHardDeletedEvent,
+    },
     /// 消息被置顶
     Pinned {
         conversation_id: String,
@@ -118,7 +134,7 @@ pub enum MessageEvent {
     /// 通话信令事件（call_signal）
     CallSignal {
         conversation_id: String,
-        event: CallSignalEvent,
+        event: Box<CallSignalEvent>,
     },
     /// 自定义领域事件（custom）
     Custom {
@@ -201,6 +217,12 @@ pub struct ExtensionEvent {
     pub payload: Vec<u8>,
 }
 
+/// Notification 域事件：IM 下行 `NotificationContent`（与聊天 `MessageEvent::Received` 分离）。
+#[derive(Clone, Debug)]
+pub enum NotificationEvent {
+    Received { message: Box<IMMessage> },
+}
+
 /// 同步阶段（用于 SyncFinished）
 #[derive(Clone, Debug)]
 pub enum SyncPhase {
@@ -215,6 +237,7 @@ pub enum SyncPhase {
 pub enum SdkEvent {
     Connection(ConnectionEvent),
     Message(MessageEvent),
+    Notification(NotificationEvent),
     Conversation(ConversationEvent),
     Sync(SyncNotify),
     Extension(ExtensionEvent),

@@ -196,7 +196,7 @@ async fn main() -> anyhow::Result<()> {
         let msg = sender_client
             .message_build()
             .context("sender message_build")?
-            .create_text(&conversation_id, &body)
+            .create_text(&conversation_id, &body, false)
             .await
             .with_context(|| format!("create_text #{}", i + 1))?;
         sent_client_ids.push(msg.client_msg_id.clone());
@@ -290,7 +290,7 @@ async fn main() -> anyhow::Result<()> {
         let msg = sender_client
             .message_build()
             .context("sender message_build zero phase")?
-            .create_text(&conversation_id, &body)
+            .create_text(&conversation_id, &body, false)
             .await
             .with_context(|| format!("create_text zero phase #{}", i + 1))?;
         sent_client_ids_zero.push(msg.client_msg_id.clone());

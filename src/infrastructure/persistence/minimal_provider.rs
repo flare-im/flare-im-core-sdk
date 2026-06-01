@@ -24,11 +24,3 @@ pub fn in_memory_empty_im_provider() -> StoreProvider {
         user_profiles_writer: Some(user_profiles),
     }
 }
-
-#[deprecated(
-    since = "0.2.1",
-    note = "renamed to `in_memory_empty_im_provider`; social contacts/groups live in flare-social-sdk"
-)]
-pub fn in_memory_minimal_provider() -> StoreProvider {
-    in_memory_empty_im_provider()
-}

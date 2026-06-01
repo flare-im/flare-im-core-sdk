@@ -1,13 +1,20 @@
-use crate::Result;
+use crate::domain::{ConversationIdentityService, ReadPosition};
 use crate::event::{ConversationEvent, EventBus, SdkEvent};
 use crate::model::conversation::ConversationType;
 use crate::model::message_elem::MessagePreviewElem;
 use crate::model::{Conversation, IMMessage};
 use crate::store::StoreProvider;
+use crate::{Result, conversation};
 
 pub(crate) struct ConversationProjectionApplier {
     stores: StoreProvider,
     bus: EventBus,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum UnreadApplyMode {
+    RealtimePush,
+    SyncReplay,
 }
 
 impl ConversationProjectionApplier {
@@ -19,6 +26,25 @@ impl ConversationProjectionApplier {
         &self,
         messages: &[IMMessage],
         current_user_id: &str,
+    ) -> Result<()> {
+        self.apply_messages_with_mode(messages, current_user_id, UnreadApplyMode::RealtimePush)
+            .await
+    }
+
+    pub(crate) async fn apply_synced_messages(
+        &self,
+        messages: &[IMMessage],
+        current_user_id: &str,
+    ) -> Result<()> {
+        self.apply_messages_with_mode(messages, current_user_id, UnreadApplyMode::SyncReplay)
+            .await
+    }
+
+    async fn apply_messages_with_mode(
+        &self,
+        messages: &[IMMessage],
+        current_user_id: &str,
+        unread_mode: UnreadApplyMode,
     ) -> Result<()> {
         if messages.is_empty() {
             return Ok(());
@@ -63,7 +89,13 @@ impl ConversationProjectionApplier {
                 .cloned()
                 .flatten();
             let previous_unread = previous.as_ref().map(|c| c.unread_count).unwrap_or(0);
-            self.ensure_conversation_shell(latest).await?;
+            let previous_read = previous
+                .as_ref()
+                .map(ReadPosition::from_conversation)
+                .unwrap_or_default()
+                .normalize_for_unread_delta();
+            self.ensure_or_repair_conversation_shell(latest, current_user_id)
+                .await?;
 
             let previous_max_seq = previous
                 .as_ref()
@@ -90,13 +122,28 @@ impl ConversationProjectionApplier {
             }
 
             if !current_user_id.is_empty() {
-                let _ = self
-                    .stores
-                    .conversations
-                    .recompute_unread_for_user(&conversation_id, current_user_id)
-                    .await;
-                if let Ok(Some(updated)) = self.stores.conversations.get(&conversation_id).await {
-                    if updated.unread_count != previous_unread {
+                let unread_delta = self.unread_delta_for_conversation(
+                    messages,
+                    &conversation_id,
+                    current_user_id,
+                    previous_read,
+                    unread_mode,
+                );
+                if unread_delta > 0 {
+                    let next_unread = previous_unread.saturating_add(unread_delta);
+                    let next_read_seq = Self::read_seq_for_unread_window(
+                        previous_read,
+                        conversation_max_seq,
+                        next_unread,
+                    );
+                    let _ = self
+                        .stores
+                        .conversations
+                        .update_unread(&conversation_id, next_unread, next_read_seq)
+                        .await;
+                    if let Ok(Some(updated)) = self.stores.conversations.get(&conversation_id).await
+                        && updated.unread_count != previous_unread
+                    {
                         self.bus.publish(SdkEvent::Conversation(
                             ConversationEvent::UnreadCountChanged {
                                 conversation_id: conversation_id.clone(),
@@ -123,42 +170,84 @@ impl ConversationProjectionApplier {
         Ok(())
     }
 
-    async fn ensure_conversation_shell(&self, message: &IMMessage) -> Result<()> {
+    fn read_seq_for_unread_window(
+        previous_read: ReadPosition,
+        conversation_max_seq: u64,
+        unread_count: u32,
+    ) -> u64 {
+        let read_upper_bound = conversation_max_seq.saturating_sub(unread_count as u64);
+        previous_read.last_read_seq.min(read_upper_bound)
+    }
+
+    fn unread_delta_for_conversation(
+        &self,
+        messages: &[IMMessage],
+        conversation_id: &str,
+        current_user_id: &str,
+        previous_read: ReadPosition,
+        unread_mode: UnreadApplyMode,
+    ) -> u32 {
+        messages
+            .iter()
+            .filter(|message| message.conversation_id == conversation_id)
+            .filter(|message| message.sender_id() != current_user_id)
+            .filter(|message| !message.is_recalled)
+            .filter(|message| Self::should_count_unread(message, previous_read, unread_mode))
+            .count()
+            .min(u32::MAX as usize) as u32
+    }
+
+    fn should_count_unread(
+        message: &IMMessage,
+        previous_read: ReadPosition,
+        unread_mode: UnreadApplyMode,
+    ) -> bool {
+        let accounted_through = previous_read
+            .last_read_seq
+            .saturating_add(previous_read.unread_count as u64);
+        match unread_mode {
+            UnreadApplyMode::SyncReplay => {
+                message.seq > previous_read.last_read_seq && message.seq > accounted_through
+            }
+            UnreadApplyMode::RealtimePush => {
+                if message.seq > previous_read.last_read_seq && message.seq > accounted_through {
+                    return true;
+                }
+
+                // 历史 delivery/read ACK 混淆可能污染服务端摘要：max_seq/last_read_seq 已推进，
+                // 但本地从未见过这条实时消息。对零未读的会话尾部新鲜消息做本地恢复。
+                previous_read.unread_count == 0
+                    && previous_read.max_seq > 0
+                    && message.seq >= previous_read.max_seq
+                    && message.seq >= previous_read.last_read_seq
+            }
+        }
+    }
+
+    async fn ensure_or_repair_conversation_shell(
+        &self,
+        message: &IMMessage,
+        current_user_id: &str,
+    ) -> Result<()> {
         let conversation_id = message.conversation_id.trim();
-        if conversation_id.is_empty() {
+        if conversation_id.is_empty() || conversation_id.starts_with("sync:") {
             return Ok(());
         }
-        if self
-            .stores
-            .conversations
-            .get(conversation_id)
-            .await?
-            .is_some()
-        {
+        if let Some(mut existing) = self.stores.conversations.get(conversation_id).await? {
+            if Self::repair_existing_single_chat_channel(&mut existing, message, current_user_id) {
+                self.stores.conversations.save_one(&existing).await?;
+            }
             return Ok(());
         }
 
         let conversation_type = ConversationType::from_proto_int(message.conversation_type);
-        let display_name = if message.channel_id.trim().is_empty() {
-            if message.sender_name.trim().is_empty() {
-                if message.sender_id.trim().is_empty() {
-                    conversation_id.to_string()
-                } else {
-                    message.sender_id.clone()
-                }
-            } else {
-                message.sender_name.clone()
-            }
-        } else {
-            message.channel_id.clone()
-        };
         let preview = message.text_for_storage().unwrap_or_default();
         let mut conversation = Conversation {
             conversation_id: conversation_id.to_string(),
             conversation_type,
             business_type: "chat".to_string(),
             channel_id: message.channel_id.clone(),
-            display_name,
+            display_name: String::new(),
             last_message_id: if message.server_id.trim().is_empty() {
                 None
             } else {
@@ -190,10 +279,70 @@ impl ConversationProjectionApplier {
         if conversation.channel_id.trim().is_empty()
             && conversation.conversation_type.is_single_chat_conversation()
         {
-            conversation.channel_id = message.sender_id.clone();
+            let sender = message.sender_id.trim();
+            let me = current_user_id.trim();
+            if !sender.is_empty() && sender != me {
+                conversation.channel_id = sender.to_string();
+            }
         }
+        ConversationIdentityService::repair_single_chat_channel(
+            &mut conversation,
+            current_user_id,
+            None,
+        );
+        conversation.display_name = Self::shell_display_name(message, &conversation);
         self.stores.conversations.save_one(&conversation).await?;
         Ok(())
+    }
+
+    fn repair_existing_single_chat_channel(
+        conversation: &mut Conversation,
+        message: &IMMessage,
+        current_user_id: &str,
+    ) -> bool {
+        let is_single = conversation.conversation_type.is_single_chat_conversation()
+            || ConversationType::from_proto_int(message.conversation_type)
+                .is_single_chat_conversation()
+            || conversation::is_single_chat_conversation(&conversation.conversation_id);
+        if !is_single {
+            return false;
+        }
+        let sender = message.sender_id.trim();
+        let me = current_user_id.trim();
+        if sender.is_empty() || (!me.is_empty() && sender == me) {
+            return false;
+        }
+        if ConversationIdentityService::repair_single_chat_channel(
+            conversation,
+            current_user_id,
+            Some(sender),
+        ) {
+            conversation.conversation_type = ConversationType::Single;
+            if conversation.display_name.trim().is_empty() || conversation.display_name == me {
+                conversation.display_name = sender.to_string();
+            }
+            return true;
+        }
+        false
+    }
+
+    fn shell_display_name(message: &IMMessage, conversation: &Conversation) -> String {
+        if conversation.conversation_type.is_single_chat_conversation() {
+            if !conversation.channel_id.trim().is_empty() {
+                return conversation.channel_id.clone();
+            }
+            if !message.sender_name.trim().is_empty() {
+                return message.sender_name.clone();
+            }
+            if !message.sender_id.trim().is_empty() {
+                return message.sender_id.clone();
+            }
+        } else if !message.channel_id.trim().is_empty() {
+            return message.channel_id.clone();
+        } else if !message.sender_name.trim().is_empty() {
+            return message.sender_name.clone();
+        }
+        conversation.conversation_id.clone()
     }
 }
 
@@ -277,11 +426,23 @@ mod tests {
             Ok(())
         }
 
+        async fn mark_unread(&self, _conversation_id: &str) -> Result<u32> {
+            Ok(1)
+        }
+
         async fn update_draft(&self, _conversation_id: &str, _draft: Option<&str>) -> Result<()> {
             Ok(())
         }
 
         async fn delete(&self, _conversation_id: &str) -> Result<()> {
+            Ok(())
+        }
+
+        async fn clear_local_chat_history(
+            &self,
+            _conversation_id: &str,
+            _cleared_through_seq: u64,
+        ) -> Result<()> {
             Ok(())
         }
 
@@ -355,6 +516,15 @@ mod tests {
         }
 
         async fn search(&self, _keyword: &str, _limit: u32) -> Result<Vec<IMMessage>> {
+            Ok(Vec::new())
+        }
+
+        async fn search_in_conversation(
+            &self,
+            _conversation_id: &str,
+            _keyword: &str,
+            _limit: u32,
+        ) -> Result<Vec<IMMessage>> {
             Ok(Vec::new())
         }
     }
@@ -433,6 +603,16 @@ mod tests {
         (conversations, store_provider)
     }
 
+    fn conversation_summary(max_seq: u64, last_read_seq: u64, unread_count: u32) -> Conversation {
+        Conversation {
+            conversation_id: "conv-1".to_string(),
+            max_seq,
+            last_read_seq,
+            unread_count,
+            ..Default::default()
+        }
+    }
+
     #[tokio::test]
     async fn remote_message_updates_unread_once_and_publishes_change() {
         let (conversations, stores) = stores();
@@ -449,7 +629,7 @@ mod tests {
         applier.apply_messages(&[message], "u1").await.unwrap();
 
         let updated = conversations.get("conv-1").await.unwrap().unwrap();
-        assert_eq!(updated.unread_count, 5);
+        assert_eq!(updated.unread_count, 1);
 
         let event = timeout(Duration::from_millis(200), receiver.recv())
             .await
@@ -461,7 +641,7 @@ mod tests {
                 unread_count,
             }) => {
                 assert_eq!(conversation_id, "conv-1");
-                assert_eq!(unread_count, 5);
+                assert_eq!(unread_count, 1);
             }
             other => panic!("unexpected event: {other:?}"),
         }
@@ -514,6 +694,212 @@ mod tests {
         let updated = conversations.get("conv-1").await.unwrap().unwrap();
         assert_eq!(updated.last_message_id.as_deref(), Some("server-new"));
         assert_eq!(updated.max_seq, 9);
+        assert_eq!(updated.unread_count, 2);
+    }
+
+    #[tokio::test]
+    async fn incoming_single_message_repairs_existing_wrong_channel_id() {
+        let (conversations, stores) = stores();
+        let bus = EventBus::new();
+        let applier = ConversationProjectionApplier::new(stores, bus);
+
+        conversations
+            .save_one(&Conversation {
+                conversation_id: "1A-single".to_string(),
+                conversation_type: crate::model::conversation::ConversationType::Single,
+                channel_id: "me".to_string(),
+                display_name: "me".to_string(),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        let mut message = IMMessage::new(flare_proto::common::Message::default());
+        message.server_id = "server-peer".to_string();
+        message.conversation_id = "1A-single".to_string();
+        message.conversation_type =
+            crate::model::conversation::ConversationType::Single.to_proto_int();
+        message.sender_id = "peer".to_string();
+        message.seq = 1;
+        message.timestamp = 12_345;
+
+        applier.apply_messages(&[message], "me").await.unwrap();
+
+        let updated = conversations.get("1A-single").await.unwrap().unwrap();
+        assert_eq!(updated.channel_id, "peer");
+        assert_eq!(
+            updated.conversation_type,
+            crate::model::conversation::ConversationType::Single
+        );
+    }
+
+    #[tokio::test]
+    async fn realtime_message_recovers_unread_when_summary_advanced_with_zero_unread() {
+        let (conversations, stores) = stores();
+        let summary = conversation_summary(5, 4, 0);
+        conversations.save_one(&summary).await.unwrap();
+
+        let bus = EventBus::new();
+        let applier = ConversationProjectionApplier::new(stores, bus);
+        let mut message = IMMessage::new(flare_proto::common::Message::default());
+        message.server_id = "server-5".to_string();
+        message.conversation_id = "conv-1".to_string();
+        message.sender_id = "u2".to_string();
+        message.seq = 5;
+
+        applier.apply_messages(&[message], "u1").await.unwrap();
+
+        let updated = conversations.get("conv-1").await.unwrap().unwrap();
+        assert_eq!(updated.unread_count, 1);
+        assert_eq!(updated.last_read_seq, 4);
+    }
+
+    #[tokio::test]
+    async fn realtime_message_recovers_unread_when_read_seq_was_polluted_to_tail() {
+        let (conversations, stores) = stores();
+        let summary = conversation_summary(5, 5, 0);
+        conversations.save_one(&summary).await.unwrap();
+
+        let bus = EventBus::new();
+        let applier = ConversationProjectionApplier::new(stores, bus);
+        let mut message = IMMessage::new(flare_proto::common::Message::default());
+        message.server_id = "server-5".to_string();
+        message.conversation_id = "conv-1".to_string();
+        message.sender_id = "u2".to_string();
+        message.seq = 5;
+
+        applier.apply_messages(&[message], "u1").await.unwrap();
+
+        let updated = conversations.get("conv-1").await.unwrap().unwrap();
+        assert_eq!(updated.unread_count, 1);
+        assert_eq!(updated.last_read_seq, 4);
+    }
+
+    #[tokio::test]
+    async fn realtime_messages_keep_incrementing_after_read_seq_tail_repair() {
+        let (conversations, stores) = stores();
+        let summary = conversation_summary(5, 5, 0);
+        conversations.save_one(&summary).await.unwrap();
+
+        let bus = EventBus::new();
+        let applier = ConversationProjectionApplier::new(stores, bus);
+        let mut first = IMMessage::new(flare_proto::common::Message::default());
+        first.server_id = "server-5".to_string();
+        first.conversation_id = "conv-1".to_string();
+        first.sender_id = "u2".to_string();
+        first.seq = 5;
+
+        let mut second = IMMessage::new(flare_proto::common::Message::default());
+        second.server_id = "server-6".to_string();
+        second.conversation_id = "conv-1".to_string();
+        second.sender_id = "u2".to_string();
+        second.seq = 6;
+
+        applier.apply_messages(&[first], "u1").await.unwrap();
+        applier.apply_messages(&[second], "u1").await.unwrap();
+
+        let updated = conversations.get("conv-1").await.unwrap().unwrap();
+        assert_eq!(updated.unread_count, 2);
+        assert_eq!(updated.last_read_seq, 4);
+        assert_eq!(updated.max_seq, 6);
+    }
+
+    #[tokio::test]
+    async fn realtime_message_does_not_double_count_when_summary_already_has_unread() {
+        let (conversations, stores) = stores();
+        let summary = conversation_summary(5, 4, 1);
+        conversations.save_one(&summary).await.unwrap();
+
+        let bus = EventBus::new();
+        let applier = ConversationProjectionApplier::new(stores, bus);
+        let mut message = IMMessage::new(flare_proto::common::Message::default());
+        message.server_id = "server-5".to_string();
+        message.conversation_id = "conv-1".to_string();
+        message.sender_id = "u2".to_string();
+        message.seq = 5;
+
+        applier.apply_messages(&[message], "u1").await.unwrap();
+
+        let updated = conversations.get("conv-1").await.unwrap().unwrap();
+        assert_eq!(updated.unread_count, 1);
+        assert_eq!(updated.last_read_seq, 4);
+    }
+
+    #[tokio::test]
+    async fn realtime_messages_increment_after_summary_advanced_beyond_unread_window() {
+        let (conversations, stores) = stores();
+        let summary = conversation_summary(8, 4, 1);
+        conversations.save_one(&summary).await.unwrap();
+
+        let bus = EventBus::new();
+        let applier = ConversationProjectionApplier::new(stores, bus);
+        let mut messages = Vec::new();
+        for seq in 6..=8 {
+            let mut message = IMMessage::new(flare_proto::common::Message::default());
+            message.server_id = format!("server-{seq}");
+            message.conversation_id = "conv-1".to_string();
+            message.sender_id = "u2".to_string();
+            message.seq = seq;
+            messages.push(message);
+        }
+
+        applier.apply_messages(&messages, "u1").await.unwrap();
+
+        let updated = conversations.get("conv-1").await.unwrap().unwrap();
+        assert_eq!(updated.unread_count, 4);
+        assert_eq!(updated.last_read_seq, 4);
+    }
+
+    #[tokio::test]
+    async fn sync_replay_heals_under_counted_summary_with_fresh_messages() {
+        let (conversations, stores) = stores();
+        let summary = conversation_summary(8, 4, 1);
+        conversations.save_one(&summary).await.unwrap();
+
+        let bus = EventBus::new();
+        let applier = ConversationProjectionApplier::new(stores, bus);
+        let mut messages = Vec::new();
+        for seq in 6..=8 {
+            let mut message = IMMessage::new(flare_proto::common::Message::default());
+            message.server_id = format!("server-{seq}");
+            message.conversation_id = "conv-1".to_string();
+            message.sender_id = "u2".to_string();
+            message.seq = seq;
+            messages.push(message);
+        }
+
+        applier
+            .apply_synced_messages(&messages, "u1")
+            .await
+            .unwrap();
+
+        let updated = conversations.get("conv-1").await.unwrap().unwrap();
+        assert_eq!(updated.unread_count, 4);
+        assert_eq!(updated.last_read_seq, 4);
+    }
+
+    #[tokio::test]
+    async fn sync_replay_preserves_server_summary_unread_inside_known_tail() {
+        let (conversations, stores) = stores();
+        let summary = conversation_summary(10, 7, 3);
+        conversations.save_one(&summary).await.unwrap();
+
+        let bus = EventBus::new();
+        let applier = ConversationProjectionApplier::new(stores, bus);
+        let mut message = IMMessage::new(flare_proto::common::Message::default());
+        message.server_id = "server-8".to_string();
+        message.conversation_id = "conv-1".to_string();
+        message.sender_id = "u2".to_string();
+        message.seq = 8;
+
+        applier
+            .apply_synced_messages(&[message], "u1")
+            .await
+            .unwrap();
+
+        let updated = conversations.get("conv-1").await.unwrap().unwrap();
+        assert_eq!(updated.unread_count, 3);
+        assert_eq!(updated.last_read_seq, 7);
     }
 
     #[tokio::test]

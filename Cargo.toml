@@ -117,3 +117,23 @@ once_cell = "1"
 [[example]]
 name = "two_clients_chat"
 required-features = ["lifecycle-sqlite"]
+
+[[example]]
+name = "e2e_event_observer"
+required-features = ["lifecycle-sqlite"]
+
+[[example]]
+name = "e2e_full_event_observer"
+required-features = ["lifecycle-sqlite"]
+
+[[example]]
+name = "e2e_full_event_ops"
+required-features = ["lifecycle-sqlite"]
+
+[[example]]
+name = "e2e_message_ops"
+required-features = ["lifecycle-sqlite"]
+
+[[example]]
+name = "e2e_unread_regression"
+required-features = ["lifecycle-sqlite"]

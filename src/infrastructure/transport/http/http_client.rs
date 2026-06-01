@@ -2,9 +2,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use base64::Engine as _;
 use super::http_error_from_response_status;
 use crate::error::{FlareError, Result};
+use base64::Engine as _;
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
@@ -86,7 +86,7 @@ impl HttpRequestContext {
         }
         let tid = tenant_id.trim();
         if !tid.is_empty() {
-            *self.tenant_id.write().await = tid.to_string();
+            *self.tenant_id.write().await = crate::util::normalize_tenant_id(tid);
         }
     }
 
@@ -116,18 +116,19 @@ impl HttpRequestContext {
         } else {
             im_token
         };
-        let mut tenant_id = self.tenant_id.read().await.trim().to_string();
+        let mut tenant_id = crate::util::normalize_tenant_id(self.tenant_id.read().await.trim());
         let mut user_id = self.user_id.read().await.trim().to_string();
-        if user_id.is_empty() && !token.trim().is_empty() {
-            if let Some(sub) = jwt_sub_unverified(token.trim()) {
-                user_id = sub.clone();
-                *self.user_id.write().await = sub;
-            }
+        if user_id.is_empty()
+            && !token.trim().is_empty()
+            && let Some(sub) = jwt_sub_unverified(token.trim())
+        {
+            user_id = sub.clone();
+            *self.user_id.write().await = sub;
         }
         if tenant_id.is_empty() {
             tenant_id = "0".to_string();
-            *self.tenant_id.write().await = tenant_id.clone();
         }
+        *self.tenant_id.write().await = tenant_id.clone();
         let trace_id = self.trace_id.read().await.clone();
         let language = self.language.read().await.clone();
         let mut headers = HashMap::new();

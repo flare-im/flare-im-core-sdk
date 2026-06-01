@@ -26,7 +26,7 @@ pub use empty_stores::MemorySyncCursorStore;
 pub use indexeddb_adapter::{MessageBackendAdapter, MessageStorageBackend};
 pub use layered::LayeredPendingSendStore;
 pub use memory::{MemoryPendingSendStore, MemoryUserProfileStore};
-pub use minimal_provider::{in_memory_empty_im_provider, in_memory_minimal_provider};
+pub use minimal_provider::in_memory_empty_im_provider;
 
 #[cfg(feature = "storage-sqlite")]
 pub use sqlite::{

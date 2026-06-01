@@ -37,10 +37,50 @@ impl ConversationIdentityService {
         Ok(conversation_id)
     }
 
+    /// 单聊 `channel_id` 须为对端 user_id。历史壳层可能误存为当前用户 id 或昵称等非 id 字符串。
+    pub fn repair_single_chat_channel(
+        conversation: &mut Conversation,
+        current_user_id: &str,
+        peer_hint: Option<&str>,
+    ) -> bool {
+        if !conversation.conversation_type.is_single_chat_conversation() {
+            return false;
+        }
+        let me = current_user_id.trim();
+        if me.is_empty() {
+            return false;
+        }
+        if let Some(peer) = peer_hint
+            .map(str::trim)
+            .filter(|p| !p.is_empty() && *p != me)
+        {
+            if conversation.channel_id != peer {
+                conversation.channel_id = peer.to_string();
+                return true;
+            }
+            return false;
+        }
+        let ch = conversation.channel_id.trim();
+        if !ch.is_empty() && ch != me {
+            return false;
+        }
+        if let Some(sender) = conversation
+            .last_sender_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty() && *s != me)
+        {
+            conversation.channel_id = sender.to_string();
+            return true;
+        }
+        false
+    }
+
     pub fn merge_or_create(
         &self,
         existing: Option<Conversation>,
         conversation_id: String,
+        current_user_id: &str,
         source_id: &str,
         conversation_type: &ConversationType,
     ) -> (Conversation, bool) {
@@ -51,11 +91,18 @@ impl ConversationIdentityService {
                     conversation.channel_id = source_id.to_string();
                     needs_persist = true;
                 }
+                if Self::repair_single_chat_channel(
+                    &mut conversation,
+                    current_user_id,
+                    Some(source_id),
+                ) {
+                    needs_persist = true;
+                }
                 (conversation, needs_persist)
             }
             None => {
                 let mut summary = Conversation::from_conversation_id(conversation_id);
-                summary.conversation_type = conversation_type.clone();
+                summary.conversation_type = *conversation_type;
                 summary.channel_id = source_id.to_string();
                 summary.display_name = source_id.to_string();
                 summary.business_type = conversation_type.as_str().to_string();
@@ -78,5 +125,26 @@ impl ConversationIdentityService {
         summary.display_name = display_name.unwrap_or(channel_id.as_str()).to_string();
         summary.channel_id = channel_id;
         summary
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::conversation::ConversationType;
+
+    #[test]
+    fn repair_single_chat_channel_overwrites_wrong_peer_with_hint() {
+        let mut conversation = Conversation::from_conversation_id("1Atest".into());
+        conversation.conversation_type = ConversationType::Single;
+        conversation.channel_id = "123456".into();
+
+        let changed = ConversationIdentityService::repair_single_chat_channel(
+            &mut conversation,
+            "me",
+            Some("317501061667487232"),
+        );
+        assert!(changed);
+        assert_eq!(conversation.channel_id, "317501061667487232");
     }
 }

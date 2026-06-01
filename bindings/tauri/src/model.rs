@@ -6,7 +6,7 @@
 
 use std::collections::HashMap;
 
-use flare_proto::common::SendAck as ProtoSendAck;
+use flare_proto::common::{ErrorDetail as ProtoErrorDetail, SendAck as ProtoSendAck};
 use serde::{Deserialize, Serialize};
 
 // ---------- 上层可传入的 SDK 配置（snake_case JSON，与 [flare_im_core_sdk::client::SdkConfigOverlay] 一致） ----------
@@ -45,6 +45,26 @@ pub struct SendAckPayload {
     pub success: bool,
     pub error_code: i32,
     pub error_message: String,
+    pub error_detail: Option<SendAckErrorDetailPayload>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SendAckErrorDetailPayload {
+    pub code: i32,
+    pub reason: String,
+    pub message: String,
+    pub track: String,
+}
+
+impl From<ProtoErrorDetail> for SendAckErrorDetailPayload {
+    fn from(detail: ProtoErrorDetail) -> Self {
+        Self {
+            code: detail.code,
+            reason: detail.reason,
+            message: detail.message,
+            track: detail.track,
+        }
+    }
 }
 
 /// 媒体上传进度（sdk_send_with_media_progress 通过 im://upload_progress 推送）
@@ -57,6 +77,14 @@ pub struct UploadProgressPayload {
     pub total_bytes: u64,
     pub chunk_index: Option<u32>,
     pub total_chunks: Option<u32>,
+}
+
+/// 媒体删除进度（删除是单请求操作，仍统一用 started/finished/failed 阶段上报）
+#[derive(Debug, Clone, Serialize)]
+pub struct MediaDeleteProgressPayload {
+    pub file_id: String,
+    pub phase: String,
+    pub done: bool,
 }
 
 impl From<flare_im_core_sdk::client::UploadProgress> for UploadProgressPayload {
@@ -90,6 +118,7 @@ impl From<ProtoSendAck> for SendAckPayload {
             success: a.success,
             error_code: a.error_code,
             error_message: a.error_message,
+            error_detail: a.error_detail.map(Into::into),
         }
     }
 }
@@ -157,6 +186,47 @@ pub struct MessageReadReceiptPayload {
     pub user_id: String,
     pub read_seq: u64,
     pub message_ids: Vec<String>,
+    pub burn_after_read: bool,
+}
+
+/// 阅后即焚倒计时已安排
+#[derive(Debug, Clone, Serialize)]
+pub struct MessageBurnScheduledPayload {
+    pub conversation_id: String,
+    pub message_id: String,
+    pub server_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reader_id: Option<String>,
+    pub burn_at: i64,
+    pub event_time: i64,
+}
+
+/// 阅后即焚消息已焚毁
+#[derive(Debug, Clone, Serialize)]
+pub struct MessageBurnedPayload {
+    pub conversation_id: String,
+    pub message_id: String,
+    pub server_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reader_id: Option<String>,
+    pub burn_at: i64,
+    pub burned_at: i64,
+    pub event_time: i64,
+}
+
+/// 阅后即焚消息已硬删除
+#[derive(Debug, Clone, Serialize)]
+pub struct MessageHardDeletedPayload {
+    pub conversation_id: String,
+    pub message_id: String,
+    pub server_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reader_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub burn_at: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub burned_at: Option<i64>,
+    pub event_time: i64,
 }
 
 /// 置顶事件
@@ -477,7 +547,7 @@ pub struct ExtensionPayload {
 pub enum EventPayload {
     StateChanged(StateChangedPayload),
     SyncStateChanged(SyncStateChangedPayload),
-    Message(IMMessage),
+    Message(Box<IMMessage>),
     MessageBatch(Vec<IMMessage>),
     SendAck(SendAckPayload),
     MessageSendFailed(MessageSendFailedPayload),
@@ -486,6 +556,9 @@ pub enum EventPayload {
     MessageReactionChanged(MessageReactionChangedPayload),
     MessageDeleted(MessageDeletedPayload),
     MessageReadReceipt(MessageReadReceiptPayload),
+    MessageBurnScheduled(MessageBurnScheduledPayload),
+    MessageBurned(MessageBurnedPayload),
+    MessageHardDeleted(MessageHardDeletedPayload),
     MessagePinned(MessagePinnedPayload),
     MessageUnpinned(MessageUnpinnedPayload),
     MessageMarked(MessageMarkedPayload),

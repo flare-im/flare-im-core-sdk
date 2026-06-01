@@ -26,6 +26,7 @@ pub enum MessageTransportAction {
         user_id: String,
         message_ids: Vec<String>,
         read_seq: u64,
+        burn_after_read: bool,
     },
     Typing {
         conversation_id: String,

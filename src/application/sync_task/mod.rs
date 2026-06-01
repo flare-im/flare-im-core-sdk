@@ -2,11 +2,13 @@
 //!
 //! 核心引擎在 [crate::core::sync]；本模块提供可注册的 [SyncTask] 实现。
 
+mod conversation_settings;
 mod conversations;
 mod key_events;
 mod messages;
 mod read_states;
 
+pub use conversation_settings::{ConversationSettingsSyncTask, ConversationUserSettingsPatch};
 pub use conversations::ConversationsSyncTask;
 pub use key_events::KeyEventsSyncTask;
 pub use messages::MessagesSyncTask;

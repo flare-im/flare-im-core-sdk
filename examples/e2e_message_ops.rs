@@ -108,7 +108,7 @@ async fn main() -> anyhow::Result<()> {
     let msg = client
         .message_build()
         .context("message_build api")?
-        .create_text(&conversation_id, &text)
+        .create_text(&conversation_id, &text, false)
         .await
         .context("create_text")?;
     let client_msg_id = msg.client_msg_id.clone();

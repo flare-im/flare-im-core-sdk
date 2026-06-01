@@ -12,7 +12,7 @@ use flare_proto::common::message_content::Content as ProtoContent;
 #[derive(Clone, Debug)]
 pub enum DecodedContent {
     /// 与 message_content.proto 的 MessageContent.content 一一对应
-    Content(ProtoContent),
+    Content(Box<ProtoContent>),
     Unknown,
 }
 
@@ -39,7 +39,7 @@ impl DecodedContent {
     /// 取得内部 proto Content，便于按类型细粒度访问字段
     pub fn as_content(&self) -> Option<&ProtoContent> {
         match self {
-            DecodedContent::Content(c) => Some(c),
+            DecodedContent::Content(c) => Some(c.as_ref()),
             DecodedContent::Unknown => None,
         }
     }
@@ -93,7 +93,7 @@ pub fn decode_content_bytes(bytes: &[u8]) -> Result<DecodedContent> {
         crate::error::FlareError::deserialization_error(format!("decode MessageContent: {}", e))
     })?;
     Ok(match mc.content {
-        Some(c) => DecodedContent::Content(c),
+        Some(c) => DecodedContent::Content(Box::new(c)),
         None => DecodedContent::Unknown,
     })
 }

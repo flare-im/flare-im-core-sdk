@@ -100,7 +100,37 @@ impl MessageReader for MemoryMessageStore {
 
     async fn search(&self, _keyword: &str, limit: u32) -> Result<Vec<IMMessage>> {
         let data = self.data.read().await;
-        let results: Vec<_> = data.values().cloned().take(limit as usize).collect();
+        let results: Vec<_> = data.values().take(limit as usize).cloned().collect();
+        Ok(results)
+    }
+
+    async fn search_in_conversation(
+        &self,
+        conversation_id: &str,
+        keyword: &str,
+        limit: u32,
+    ) -> Result<Vec<IMMessage>> {
+        let kw = keyword.trim().to_lowercase();
+        let data = self.data.read().await;
+        let mut results: Vec<_> = data
+            .values()
+            .filter(|m| {
+                if m.conversation_id != conversation_id {
+                    return false;
+                }
+                let from_extra = m
+                    .extra
+                    .get("contentText")
+                    .is_some_and(|t| t.to_lowercase().contains(&kw));
+                let from_preview = m
+                    .text_for_storage()
+                    .is_some_and(|t| t.to_lowercase().contains(&kw));
+                from_extra || from_preview
+            })
+            .cloned()
+            .collect();
+        results.sort_by(|a, b| b.seq.cmp(&a.seq));
+        results.truncate(limit as usize);
         Ok(results)
     }
 }
@@ -121,7 +151,7 @@ impl MessageWriter for MemoryMessageStore {
     }
 
     async fn save_one(&self, message: &IMMessage) -> Result<()> {
-        MessageWriter::save_batch(self, &[message.clone()]).await
+        MessageWriter::save_batch(self, std::slice::from_ref(message)).await
     }
 
     async fn update_status(&self, message_id: &str, status: i32) -> Result<()> {
@@ -244,7 +274,7 @@ impl ConversationWriter for MemoryConversationStore {
     }
 
     async fn save_one(&self, conversation: &Conversation) -> Result<()> {
-        ConversationWriter::save_batch(self, &[conversation.clone()]).await
+        ConversationWriter::save_batch(self, std::slice::from_ref(conversation)).await
     }
 
     async fn update_unread(
@@ -293,6 +323,20 @@ impl ConversationWriter for MemoryConversationStore {
         Ok(())
     }
 
+    async fn mark_unread(&self, conversation_id: &str) -> Result<u32> {
+        let mut data = self.data.write().await;
+        if let Some(conv) = data.get(conversation_id) {
+            let mut updated = conv.clone();
+            if updated.max_seq > 0 {
+                updated.last_read_seq = updated.max_seq.saturating_sub(1);
+            }
+            updated.unread_count = 1;
+            data.insert(conversation_id.to_string(), updated.clone());
+            return Ok(updated.unread_count);
+        }
+        Ok(0)
+    }
+
     async fn update_draft(&self, conversation_id: &str, draft: Option<&str>) -> Result<()> {
         let mut data = self.data.write().await;
         if let Some(conv) = data.get(conversation_id) {
@@ -306,6 +350,27 @@ impl ConversationWriter for MemoryConversationStore {
     async fn delete(&self, conversation_id: &str) -> Result<()> {
         let mut data = self.data.write().await;
         data.remove(conversation_id);
+        Ok(())
+    }
+
+    async fn clear_local_chat_history(
+        &self,
+        conversation_id: &str,
+        cleared_through_seq: u64,
+    ) -> Result<()> {
+        let mut data = self.data.write().await;
+        if let Some(conv) = data.get_mut(conversation_id) {
+            conv.last_message_id = None;
+            conv.last_message_preview = None;
+            conv.last_message_at = None;
+            conv.unread_count = 0;
+            if cleared_through_seq > 0 {
+                flare_im_core_sdk::domain::set_local_cleared_through_seq(
+                    &mut conv.ext,
+                    cleared_through_seq,
+                );
+            }
+        }
         Ok(())
     }
 
@@ -376,19 +441,17 @@ impl SyncCursorReader for MemoryCursorStore {
     ) -> Result<Option<flare_im_core_sdk::domain::SyncCursorVo>> {
         let key = format!("{user_id}:{conversation_id}");
         let data = self.data.read().await;
-        if let Some(cursor_str) = data.get(&key) {
-            if let Some((seq_str, synced_str)) = cursor_str.split_once(':') {
-                if let (Ok(last_seq), Ok(synced_at)) =
-                    (seq_str.parse::<u64>(), synced_str.parse::<u64>())
-                {
-                    return Ok(Some(flare_im_core_sdk::domain::SyncCursorVo {
-                        user_id: user_id.to_string(),
-                        conversation_id: conversation_id.to_string(),
-                        last_seq,
-                        synced_at,
-                    }));
-                }
-            }
+        if let Some(cursor_str) = data.get(&key)
+            && let Some((seq_str, synced_str)) = cursor_str.split_once(':')
+            && let (Ok(last_seq), Ok(synced_at)) =
+                (seq_str.parse::<u64>(), synced_str.parse::<u64>())
+        {
+            return Ok(Some(flare_im_core_sdk::domain::SyncCursorVo {
+                user_id: user_id.to_string(),
+                conversation_id: conversation_id.to_string(),
+                last_seq,
+                synced_at,
+            }));
         }
         Ok(None)
     }

@@ -83,10 +83,10 @@ impl SocketTransport {
             .await
             .map_err(|e| FlareError::connection_failed(e.to_string()))?;
 
-        if let Some(old_client) = self.client.lock().await.take() {
-            if let Err(error) = old_client.disconnect().await {
-                warn!(error = %error, "closing stale socket client before reconnect failed");
-            }
+        if let Some(old_client) = self.client.lock().await.take()
+            && let Err(error) = old_client.disconnect().await
+        {
+            warn!(error = %error, "closing stale socket client before reconnect failed");
         }
 
         *self.client.lock().await = Some(flare_client);

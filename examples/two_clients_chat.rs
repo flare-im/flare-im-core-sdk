@@ -100,12 +100,11 @@ fn register_subscriptions(
     client
         .on_sync_finished(move |phase| {
             info!("[sync] finished phase={:?}", phase);
-            if matches!(phase, SyncPhase::Background) {
-                if let Ok(mut g) = sync_done_cb.lock() {
-                    if let Some(tx) = g.take() {
-                        let _ = tx.send(());
-                    }
-                }
+            if matches!(phase, SyncPhase::Background)
+                && let Ok(mut g) = sync_done_cb.lock()
+                && let Some(tx) = g.take()
+            {
+                let _ = tx.send(());
             }
         })
         .map_err(|e| anyhow::anyhow!(e))?;
@@ -356,7 +355,7 @@ async fn main() -> anyhow::Result<()> {
             let msg = c
                 .message_build()
                 .map_err(|e| e.to_string())?
-                .create_text(&conversation_id, &text)
+                .create_text(&conversation_id, &text, false)
                 .await
                 .map_err(|e| e.to_string())?;
             let mut tried = 0u32;

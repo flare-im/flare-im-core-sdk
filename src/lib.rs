@@ -114,6 +114,8 @@ pub mod application;
 pub mod capability;
 pub mod config;
 pub mod infrastructure;
+pub mod notification;
+pub mod profile_center;
 
 /// 通话 / RTC 插件 crate 再导出（需启用 **`plugin-call`** feature）。
 #[cfg(feature = "plugin-call")]
@@ -160,8 +162,18 @@ pub mod prelude {
     pub use crate::types::{ConversationId, UserId};
 
     // event
-    pub use crate::event::{ConversationEvent, MessageEvent};
+    pub use crate::event::{ConversationEvent, MessageEvent, NotificationEvent};
     pub use crate::event::{EventBus, EventReceiver, SdkEvent, Subscription};
+
+    // notification
+    pub use crate::notification::{
+        InboundNotificationView, NotificationHandleResult, NotificationHandler,
+        NotificationHandlerRegistry,
+    };
+    pub use crate::profile_center::{
+        ProfileCenterAction, ProfileCenterActionKind, ProfileCenterContract, ProfileCenterSummary,
+        default_profile_center_actions,
+    };
 
     // store
     pub use crate::domain::{ConversationStore, MessageStore, SyncCursorStore};
@@ -196,5 +208,7 @@ pub mod prelude {
 
     // 领域视图（含昵称、头像）
     pub use crate::domain::UserProfile;
-    pub use crate::model::{Conversation, IMMessage};
+    pub use crate::model::{
+        Conversation, ConversationListQuery, IMMessage, MessageSearchKind, MessageSearchQuery,
+    };
 }

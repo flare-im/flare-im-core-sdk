@@ -32,10 +32,10 @@ fn is_edited_from_extra(extra: &HashMap<String, String>) -> bool {
     if extra.get("messageFsmState").map(|s| s.as_str()) == Some("EDITED") {
         return true;
     }
-    if let Some(v) = extra.get("currentEditVersion") {
-        if v.trim().parse::<i32>().unwrap_or(0) > 0 {
-            return true;
-        }
+    if let Some(v) = extra.get("currentEditVersion")
+        && v.trim().parse::<i32>().unwrap_or(0) > 0
+    {
+        return true;
     }
     false
 }
@@ -184,6 +184,27 @@ pub struct IMMessage {
     pub is_edited: bool,
 
     // ==============================
+    // Burn-after-read FSM
+    // ==============================
+    /// 是否启用阅后即焚
+    pub burn_enabled: bool,
+
+    /// 首次阅读后多少秒焚毁（服务端权威）
+    pub burn_after_read_seconds: Option<i64>,
+
+    /// 阅后即焚状态（见 proto BurnStatus）
+    pub burn_status: i32,
+
+    /// 首次阅读时间（Unix 秒）
+    pub first_read_at: Option<i64>,
+
+    /// 计划焚毁时间（Unix 秒）
+    pub burn_at: Option<i64>,
+
+    /// 实际焚毁时间（Unix 秒）
+    pub burned_at: Option<i64>,
+
+    // ==============================
     // Mention
     // ==============================
     pub mention_users: Vec<String>,
@@ -226,16 +247,14 @@ pub struct IMMessage {
 impl IMMessage {
     pub fn new(message: ProtoMessage) -> Self {
         let decoded_opt = decode_content_bytes(&message.content).ok();
-        let content = decoded_opt
-            .as_ref()
-            .and_then(|decoded| decoded_content_to_elem(decoded));
+        let content = decoded_opt.as_ref().and_then(decoded_content_to_elem);
         let mut extra = message.extra.clone();
-        if content.is_none() {
-            if let Some(ref decoded) = decoded_opt {
-                let p = decoded.text_preview();
-                if !is_redundant_content_text_extra(&p) {
-                    extra.entry("contentText".into()).or_insert(p);
-                }
+        if content.is_none()
+            && let Some(ref decoded) = decoded_opt
+        {
+            let p = decoded.text_preview();
+            if !is_redundant_content_text_extra(&p) {
+                extra.entry("contentText".into()).or_insert(p);
             }
         }
         let is_edited = is_edited_from_extra(&extra);
@@ -282,6 +301,12 @@ impl IMMessage {
             is_read: false,
             is_recalled,
             is_edited,
+            burn_enabled: message.burn_enabled,
+            burn_after_read_seconds: message.burn_after_read_seconds,
+            burn_status: message.burn_status,
+            first_read_at: message.first_read_at,
+            burn_at: message.burn_at,
+            burned_at: message.burned_at,
             mention_users: Vec::new(),
             mention_all: false,
             offline_push_info: message.offline_push_info,
@@ -385,6 +410,12 @@ impl IMMessage {
             sender_avatar: self.sender_avatar.clone(),
             content,
             status: self.status,
+            burn_enabled: self.burn_enabled,
+            burn_after_read_seconds: self.burn_after_read_seconds,
+            burn_status: self.burn_status,
+            first_read_at: self.first_read_at,
+            burn_at: self.burn_at,
+            burned_at: self.burned_at,
             offline_push_info: self.offline_push_info.clone(),
             extra: self.extra.clone(),
             extensions: self.extensions.clone(),
@@ -452,6 +483,6 @@ impl From<ProtoMessage> for IMMessage {
 // Re-export proto 消息相关类型（供上层使用）
 pub use flare_proto::common::MessageType;
 pub use flare_proto::common::{
-    AudioInfo, ConversationType, DeleteScope, DeleteType, ImageInfo, MarkType, Message,
+    AudioInfo, BurnStatus, ConversationType, DeleteScope, DeleteType, ImageInfo, MarkType, Message,
     MessageSource, MessageStatus, ReactionAction, SendAck, VideoInfo,
 };

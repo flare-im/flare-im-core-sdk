@@ -3,11 +3,12 @@
 
 use std::collections::HashMap;
 
+use flare_im_core_sdk::client::{CreateRichDocRequest, EditRichDocRequest};
 use flare_im_core_sdk::model::IMMessage;
 use flare_im_core_sdk::rich_doc_v2::{
     NormalizeOutput, normalize_from_doc_json, normalize_from_html, normalize_from_markdown,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tauri::State;
 
@@ -26,6 +27,34 @@ pub struct RichDocV2Normalized {
     pub input_format: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source_payload: Option<HashMap<String, String>>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RichDocV2CreateMessagePayload {
+    pub conversation_id: String,
+    pub doc_json: String,
+    pub content_schema: String,
+    pub plain_text: String,
+    pub input_format: Option<String>,
+    pub input_format_version: Option<i32>,
+    pub source_payload: Option<HashMap<String, String>>,
+    pub title: Option<String>,
+    pub search_text: Option<String>,
+    pub render_hints_json: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RichDocV2EditMessagePayload {
+    pub message_id: String,
+    pub doc_json: String,
+    pub content_schema: String,
+    pub plain_text: String,
+    pub input_format: Option<String>,
+    pub input_format_version: Option<i32>,
+    pub source_payload: Option<HashMap<String, String>>,
+    pub title: Option<String>,
+    pub search_text: Option<String>,
+    pub render_hints_json: Option<String>,
 }
 
 impl From<NormalizeOutput> for RichDocV2Normalized {
@@ -74,33 +103,24 @@ pub fn sdk_rich_doc_v2_normalize_from_doc_json(
 #[tauri::command]
 pub async fn sdk_rich_doc_v2_create_message(
     state: State<'_, SdkState>,
-    conversation_id: String,
-    doc_json: String,
-    content_schema: String,
-    plain_text: String,
-    input_format: Option<String>,
-    input_format_version: Option<i32>,
-    source_payload: Option<HashMap<String, String>>,
-    title: Option<String>,
-    search_text: Option<String>,
-    render_hints_json: Option<String>,
+    payload: RichDocV2CreateMessagePayload,
 ) -> std::result::Result<IMMessage, String> {
     state
         .message_build_api()
         .await
         .map_err(|e| e.to_string())?
-        .create_rich_doc(
-            &conversation_id,
-            &doc_json,
-            &content_schema,
-            &plain_text,
-            input_format.as_deref(),
-            input_format_version,
-            source_payload,
-            title.as_deref(),
-            search_text.as_deref(),
-            render_hints_json.as_deref(),
-        )
+        .create_rich_doc(CreateRichDocRequest {
+            conversation_id: payload.conversation_id,
+            doc_json: payload.doc_json,
+            content_schema: payload.content_schema,
+            plain_text: payload.plain_text,
+            input_format: payload.input_format,
+            input_format_version: payload.input_format_version,
+            source_payload: payload.source_payload,
+            title: payload.title,
+            search_text: payload.search_text,
+            render_hints_json: payload.render_hints_json,
+        })
         .await
         .map_err(|e| e.to_string())
 }
@@ -108,33 +128,24 @@ pub async fn sdk_rich_doc_v2_create_message(
 #[tauri::command]
 pub async fn sdk_rich_doc_v2_edit_message(
     state: State<'_, SdkState>,
-    message_id: String,
-    doc_json: String,
-    content_schema: String,
-    plain_text: String,
-    input_format: Option<String>,
-    input_format_version: Option<i32>,
-    source_payload: Option<HashMap<String, String>>,
-    title: Option<String>,
-    search_text: Option<String>,
-    render_hints_json: Option<String>,
+    payload: RichDocV2EditMessagePayload,
 ) -> std::result::Result<(), String> {
     state
         .message_api()
         .await
         .map_err(|e| e.to_string())?
-        .edit_rich_doc_by_message_id(
-            &message_id,
-            doc_json,
-            content_schema,
-            plain_text,
-            input_format.as_deref(),
-            input_format_version,
-            source_payload,
-            title.as_deref(),
-            search_text.as_deref(),
-            render_hints_json.as_deref(),
-        )
+        .edit_rich_doc_by_message_id(EditRichDocRequest {
+            message_id: payload.message_id,
+            doc_json: payload.doc_json,
+            content_schema: payload.content_schema,
+            plain_text: payload.plain_text,
+            input_format: payload.input_format,
+            input_format_version: payload.input_format_version,
+            source_payload: payload.source_payload,
+            title: payload.title,
+            search_text: payload.search_text,
+            render_hints_json: payload.render_hints_json,
+        })
         .await
         .map_err(|e| e.to_string())
 }

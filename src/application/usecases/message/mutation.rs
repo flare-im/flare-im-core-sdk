@@ -170,9 +170,26 @@ impl MessageMutationUseCase {
         read_seq: u64,
     ) -> Result<()> {
         let actor = self.actor().await?;
-        let plan =
-            self.mutation_service
-                .plan_read_receipt(&actor, conversation_id, message_ids, read_seq);
+        let plan = self.mutation_service.plan_read_receipt(
+            &actor,
+            conversation_id,
+            message_ids,
+            read_seq,
+            false,
+        );
+        self.dispatch_transport_action(&plan.transport_action).await
+    }
+
+    pub async fn mark_read_and_burn(&self, message_id: &str) -> Result<()> {
+        let actor = self.actor().await?;
+        let resolved = self.resolve_message(message_id).await?;
+        let plan = self.mutation_service.plan_read_receipt(
+            &actor,
+            resolved.conversation_id(),
+            vec![resolved.server_id().to_string()],
+            resolved.message.seq(),
+            true,
+        );
         self.dispatch_transport_action(&plan.transport_action).await
     }
 

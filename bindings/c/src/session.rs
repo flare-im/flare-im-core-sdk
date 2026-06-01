@@ -2,11 +2,11 @@
 
 use std::sync::Arc;
 
+use flare_im_core_sdk::Result;
 use flare_im_core_sdk::client::api::{
-    CapabilityApi, ConversationApi, MediaApi, MessageApi, MessageBuildApi, PresenceApi,
+    CapabilityApi, ConversationApi, MediaApi, MessageApi, MessageBuildApi,
 };
 use flare_im_core_sdk::client::{ConnectedApis, IMClient};
-use flare_im_core_sdk::Result;
 use tokio::sync::RwLock;
 
 #[derive(Clone)]
@@ -24,10 +24,7 @@ pub struct ImSessionSlot {
 impl ImSessionSlot {
     pub async fn install(&self, client: &IMClient, apis: ConnectedApis) {
         let generation = client.session_generation().await;
-        *self.inner.write().await = Some(ImSessionCache {
-            generation,
-            apis,
-        });
+        *self.inner.write().await = Some(ImSessionCache { generation, apis });
     }
 
     pub async fn clear(&self) {
@@ -36,10 +33,10 @@ impl ImSessionSlot {
 
     async fn session_or_live(&self, client: &IMClient) -> Result<ConnectedApis> {
         let generation = client.session_generation().await;
-        if let Some(cache) = self.inner.read().await.as_ref() {
-            if cache.generation == generation {
-                return Ok(cache.apis.clone());
-            }
+        if let Some(cache) = self.inner.read().await.as_ref()
+            && cache.generation == generation
+        {
+            return Ok(cache.apis.clone());
         }
         let apis = client.connected_apis().await?;
         *self.inner.write().await = Some(ImSessionCache {
@@ -67,9 +64,5 @@ impl ImSessionSlot {
 
     pub async fn capability_api(&self, client: &IMClient) -> Result<Arc<CapabilityApi>> {
         Ok(self.session_or_live(client).await?.capability_api)
-    }
-
-    pub async fn presence_api(&self, client: &IMClient) -> Result<Arc<PresenceApi>> {
-        Ok(self.session_or_live(client).await?.presence_api)
     }
 }

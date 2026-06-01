@@ -7,8 +7,100 @@ use crate::model::message_builder::MessageBuilder;
 use crate::model::message_elem::{elem_plain_summary, elem_to_message_content};
 use crate::util::date::ms_to_prost_timestamp;
 use flare_proto::common::{ForwardItem, ForwardMode, ImageInfo};
+use std::collections::HashMap;
 
 pub struct MessageBuilderService;
+
+#[derive(Clone, Debug)]
+pub struct BuildLocationRequest {
+    pub conversation_id: String,
+    pub sender_id: String,
+    pub longitude: f64,
+    pub latitude: f64,
+    pub address: String,
+    pub title: String,
+    pub zoom: Option<u8>,
+    pub snapshot_url: Option<String>,
+    pub snapshot_local_path: Option<String>,
+    pub channel_id: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct BuildCardRequest {
+    pub conversation_id: String,
+    pub sender_id: String,
+    pub id: String,
+    pub card_type: String,
+    pub title: String,
+    pub subtitle: String,
+    pub avatar: String,
+    pub channel_id: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct BuildStickerRequest {
+    pub conversation_id: String,
+    pub sender_id: String,
+    pub sticker_id: String,
+    pub channel_id: Option<String>,
+    pub package_id: Option<String>,
+    pub url: Option<String>,
+    pub width: i32,
+    pub height: i32,
+    pub sticker_format: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct BuildLinkCardRequest {
+    pub conversation_id: String,
+    pub sender_id: String,
+    pub url: String,
+    pub channel_id: Option<String>,
+    pub title: Option<String>,
+    pub description: Option<String>,
+    pub thumbnail_url: Option<String>,
+    pub site_name: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct BuildMiniProgramRequest {
+    pub conversation_id: String,
+    pub sender_id: String,
+    pub app_id: String,
+    pub channel_id: Option<String>,
+    pub title: Option<String>,
+    pub page_path: Option<String>,
+    pub thumbnail_url: Option<String>,
+    pub extra: Option<HashMap<String, String>>,
+}
+
+#[derive(Clone, Debug)]
+pub struct BuildRichDocRequest {
+    pub conversation_id: String,
+    pub sender_id: String,
+    pub doc_json: String,
+    pub content_schema: String,
+    pub plain_text: String,
+    pub channel_id: Option<String>,
+    pub input_format: Option<String>,
+    pub input_format_version: Option<i32>,
+    pub source_payload: Option<HashMap<String, String>>,
+    pub title: Option<String>,
+    pub search_text: Option<String>,
+    pub render_hints_json: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct BuildScheduleRequest {
+    pub conversation_id: String,
+    pub sender_id: String,
+    pub schedule_id: String,
+    pub title: String,
+    pub channel_id: Option<String>,
+    pub start_time_ms: i64,
+    pub end_time_ms: i64,
+    pub participant_user_ids: Option<Vec<String>>,
+}
 
 impl MessageBuilderService {
     pub fn build_text(
@@ -16,9 +108,19 @@ impl MessageBuilderService {
         sender_id: impl Into<String>,
         text: impl AsRef<str>,
         channel_id: Option<&str>,
+        mention_all: bool,
     ) -> Result<IMMessage> {
-        let content = ContentBuilder::text(text.as_ref()).build();
+        let text_str = text.as_ref();
+        let mut content_builder = ContentBuilder::text(text_str);
+        if mention_all {
+            let len = text_str.chars().count().min(i32::MAX as usize) as i32;
+            content_builder = content_builder.mention_all(0, len.max(1));
+        }
+        let content = content_builder.build();
         let mut builder = MessageBuilder::new(conversation_id, sender_id).content(content);
+        if mention_all {
+            builder = builder.extra("mention_all", "true");
+        }
         if let Some(channel_id) = channel_id {
             builder = builder.channel(channel_id).single_chat();
         }
@@ -53,10 +155,10 @@ impl MessageBuilderService {
         let mut quote_builder = ContentBuilder::quote(quoted_message_id.clone())
             .quoted_text_preview(&quote_preview)
             .current(current);
-        if let Some(sender_id) = quoted_sender_id {
-            if !sender_id.trim().is_empty() {
-                quote_builder = quote_builder.quoted_sender_id(sender_id.trim());
-            }
+        if let Some(sender_id) = quoted_sender_id
+            && !sender_id.trim().is_empty()
+        {
+            quote_builder = quote_builder.quoted_sender_id(sender_id.trim());
         }
         quote_builder = quote_builder.quoted(quoted_content);
         let content = quote_builder.build();
@@ -228,52 +330,32 @@ impl MessageBuilderService {
         )
     }
 
-    pub fn build_location(
-        conversation_id: impl Into<String>,
-        sender_id: impl Into<String>,
-        longitude: f64,
-        latitude: f64,
-        address: impl Into<String>,
-        title: impl Into<String>,
-        zoom: Option<u8>,
-        snapshot_url: Option<String>,
-        snapshot_local_path: Option<String>,
-        channel_id: Option<&str>,
-    ) -> Result<IMMessage> {
+    pub fn build_location(request: BuildLocationRequest) -> Result<IMMessage> {
         Self::build_with_content(
-            conversation_id,
-            sender_id,
-            ContentBuilder::location(latitude, longitude)
-                .address(address)
-                .title(title)
-                .location_zoom(zoom)
-                .location_snapshot_url(snapshot_url)
-                .location_snapshot_local_path(snapshot_local_path)
+            request.conversation_id,
+            request.sender_id,
+            ContentBuilder::location(request.latitude, request.longitude)
+                .address(request.address)
+                .title(request.title)
+                .location_zoom(request.zoom)
+                .location_snapshot_url(request.snapshot_url)
+                .location_snapshot_local_path(request.snapshot_local_path)
                 .build(),
-            channel_id,
+            request.channel_id.as_deref(),
         )
     }
 
-    pub fn build_card(
-        conversation_id: impl Into<String>,
-        sender_id: impl Into<String>,
-        id: impl Into<String>,
-        card_type: impl Into<String>,
-        title: impl Into<String>,
-        subtitle: impl Into<String>,
-        avatar: impl Into<String>,
-        channel_id: Option<&str>,
-    ) -> Result<IMMessage> {
+    pub fn build_card(request: BuildCardRequest) -> Result<IMMessage> {
         Self::build_with_content(
-            conversation_id,
-            sender_id,
-            ContentBuilder::card(id)
-                .card_type(card_type)
-                .title(title)
-                .subtitle(subtitle)
-                .avatar(avatar)
+            request.conversation_id,
+            request.sender_id,
+            ContentBuilder::card(request.id)
+                .card_type(request.card_type)
+                .title(request.title)
+                .subtitle(request.subtitle)
+                .avatar(request.avatar)
                 .build(),
-            channel_id,
+            request.channel_id.as_deref(),
         )
     }
 
@@ -283,53 +365,56 @@ impl MessageBuilderService {
         sticker_id: impl Into<String>,
         channel_id: Option<&str>,
     ) -> Result<IMMessage> {
-        Self::build_sticker_with(
-            conversation_id,
-            sender_id,
-            sticker_id,
-            channel_id,
-            None,
-            None,
-            0,
-            0,
-            None,
-        )
+        Self::build_sticker_with(BuildStickerRequest {
+            conversation_id: conversation_id.into(),
+            sender_id: sender_id.into(),
+            sticker_id: sticker_id.into(),
+            channel_id: channel_id.map(ToOwned::to_owned),
+            package_id: None,
+            url: None,
+            width: 0,
+            height: 0,
+            sticker_format: None,
+        })
     }
 
     /// 构建贴纸消息（`package_id` / `format` 与 proto `StickerContent` 一致）
-    pub fn build_sticker_with(
-        conversation_id: impl Into<String>,
-        sender_id: impl Into<String>,
-        sticker_id: impl Into<String>,
-        channel_id: Option<&str>,
-        package_id: Option<&str>,
-        url: Option<&str>,
-        width: i32,
-        height: i32,
-        sticker_format: Option<&str>,
-    ) -> Result<IMMessage> {
-        let mut b = ContentBuilder::sticker(sticker_id);
-        if let Some(p) = package_id.filter(|s| !s.trim().is_empty()) {
+    pub fn build_sticker_with(request: BuildStickerRequest) -> Result<IMMessage> {
+        let mut b = ContentBuilder::sticker(request.sticker_id);
+        if let Some(p) = request
+            .package_id
+            .as_deref()
+            .filter(|s| !s.trim().is_empty())
+        {
             b = b.package_id(p);
         }
-        if let Some(u) = url.filter(|s| !s.trim().is_empty()) {
+        if let Some(u) = request.url.as_deref().filter(|s| !s.trim().is_empty()) {
             b = b.url(u);
         }
-        let w = if width > 0 {
-            width
+        let w = if request.width > 0 {
+            request.width
         } else {
             DEFAULT_STICKER_DISPLAY_SIDE
         };
-        let h = if height > 0 {
-            height
+        let h = if request.height > 0 {
+            request.height
         } else {
             DEFAULT_STICKER_DISPLAY_SIDE
         };
         b = b.size(w, h);
-        if let Some(f) = sticker_format.filter(|s| !s.trim().is_empty()) {
+        if let Some(f) = request
+            .sticker_format
+            .as_deref()
+            .filter(|s| !s.trim().is_empty())
+        {
             b = b.sticker_format(f);
         }
-        Self::build_with_content(conversation_id, sender_id, b.build(), channel_id)
+        Self::build_with_content(
+            request.conversation_id,
+            request.sender_id,
+            b.build(),
+            request.channel_id.as_deref(),
+        )
     }
 
     pub fn build_emoji(
@@ -346,95 +431,118 @@ impl MessageBuilderService {
         )
     }
 
-    pub fn build_link_card(
-        conversation_id: impl Into<String>,
-        sender_id: impl Into<String>,
-        url: impl Into<String>,
-        channel_id: Option<&str>,
-        title: Option<&str>,
-        description: Option<&str>,
-        thumbnail_url: Option<&str>,
-        site_name: Option<&str>,
-    ) -> Result<IMMessage> {
-        let mut b = ContentBuilder::link_card(url);
-        if let Some(t) = title.map(str::trim).filter(|s| !s.is_empty()) {
+    pub fn build_link_card(request: BuildLinkCardRequest) -> Result<IMMessage> {
+        let mut b = ContentBuilder::link_card(request.url);
+        if let Some(t) = request
+            .title
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
             b = b.title(t);
         }
-        if let Some(d) = description.map(str::trim).filter(|s| !s.is_empty()) {
+        if let Some(d) = request
+            .description
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
             b = b.description(d);
         }
-        if let Some(u) = thumbnail_url.map(str::trim).filter(|s| !s.is_empty()) {
+        if let Some(u) = request
+            .thumbnail_url
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
             b = b.link_card_thumbnail_url(u);
         }
-        if let Some(s) = site_name.map(str::trim).filter(|s| !s.is_empty()) {
+        if let Some(s) = request
+            .site_name
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
             b = b.link_card_site_name(s);
         }
-        Self::build_with_content(conversation_id, sender_id, b.build(), channel_id)
+        Self::build_with_content(
+            request.conversation_id,
+            request.sender_id,
+            b.build(),
+            request.channel_id.as_deref(),
+        )
     }
 
-    pub fn build_mini_program(
-        conversation_id: impl Into<String>,
-        sender_id: impl Into<String>,
-        app_id: impl Into<String>,
-        channel_id: Option<&str>,
-        title: Option<&str>,
-        page_path: Option<&str>,
-        thumbnail_url: Option<&str>,
-        extra: Option<std::collections::HashMap<String, String>>,
-    ) -> Result<IMMessage> {
-        let mut b = ContentBuilder::mini_program(app_id);
-        if let Some(t) = title.map(str::trim).filter(|s| !s.is_empty()) {
+    pub fn build_mini_program(request: BuildMiniProgramRequest) -> Result<IMMessage> {
+        let mut b = ContentBuilder::mini_program(request.app_id);
+        if let Some(t) = request
+            .title
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
             b = b.title(t);
         }
-        if let Some(p) = page_path.map(str::trim).filter(|s| !s.is_empty()) {
+        if let Some(p) = request
+            .page_path
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
             b = b.page_path(p);
         }
-        if let Some(u) = thumbnail_url.map(str::trim).filter(|s| !s.is_empty()) {
+        if let Some(u) = request
+            .thumbnail_url
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
             b = b.mini_program_thumbnail_url(u);
         }
-        if let Some(e) = extra.filter(|m| !m.is_empty()) {
+        if let Some(e) = request.extra.filter(|m| !m.is_empty()) {
             b = b.mini_program_extend_extra(e);
         }
-        Self::build_with_content(conversation_id, sender_id, b.build(), channel_id)
+        Self::build_with_content(
+            request.conversation_id,
+            request.sender_id,
+            b.build(),
+            request.channel_id.as_deref(),
+        )
     }
 
     /// 富文本（Rich Doc 主存储）。`content_schema == rich_doc` 时校验 `doc_json` 根结构。
-    pub fn build_rich_doc(
-        conversation_id: impl Into<String>,
-        sender_id: impl Into<String>,
-        doc_json: impl Into<String>,
-        content_schema: impl Into<String>,
-        plain_text: impl Into<String>,
-        channel_id: Option<&str>,
-        input_format: Option<&str>,
-        input_format_version: Option<i32>,
-        source_payload: Option<std::collections::HashMap<String, String>>,
-        title: Option<&str>,
-        search_text: Option<&str>,
-        render_hints_json: Option<&str>,
-    ) -> Result<IMMessage> {
-        let mut cb =
-            ContentBuilder::try_rich_doc(doc_json, content_schema, plain_text).map_err(|e| {
-                FlareError::localized(
-                    ErrorCode::InvalidParameter,
-                    format!("sdk.message.rich_doc_v2.invalid: {e}"),
-                )
-            })?;
-        if let Some(f) = input_format {
+    pub fn build_rich_doc(request: BuildRichDocRequest) -> Result<IMMessage> {
+        let mut cb = ContentBuilder::try_rich_doc(
+            request.doc_json,
+            request.content_schema,
+            request.plain_text,
+        )
+        .map_err(|e| {
+            FlareError::localized(
+                ErrorCode::InvalidParameter,
+                format!("sdk.message.rich_doc_v2.invalid: {e}"),
+            )
+        })?;
+        if let Some(f) = request.input_format {
             cb = cb.rich_text_input_format(f);
         }
-        if let Some(v) = input_format_version {
+        if let Some(v) = request.input_format_version {
             cb = cb.rich_text_input_format_version(v);
         }
-        if let Some(map) = source_payload {
+        if let Some(map) = request.source_payload {
             for (k, v) in map {
                 cb = cb.rich_text_source_payload_entry(k, v);
             }
         }
-        cb = cb.rich_text_title(title.map(|s| s.to_string()));
-        cb = cb.rich_text_search_text(search_text.map(|s| s.to_string()));
-        cb = cb.rich_text_render_hints_json(render_hints_json.map(|s| s.to_string()));
-        Self::build_with_content(conversation_id, sender_id, cb.build(), channel_id)
+        cb = cb.rich_text_title(request.title);
+        cb = cb.rich_text_search_text(request.search_text);
+        cb = cb.rich_text_render_hints_json(request.render_hints_json);
+        Self::build_with_content(
+            request.conversation_id,
+            request.sender_id,
+            cb.build(),
+            request.channel_id.as_deref(),
+        )
     }
 
     pub fn build_system(
@@ -500,22 +608,18 @@ impl MessageBuilderService {
         Self::build_with_content(conversation_id, sender_id, b.build(), channel_id)
     }
 
-    pub fn build_schedule(
-        conversation_id: impl Into<String>,
-        sender_id: impl Into<String>,
-        schedule_id: impl Into<String>,
-        title: impl Into<String>,
-        channel_id: Option<&str>,
-        start_time_ms: i64,
-        end_time_ms: i64,
-        participant_user_ids: Option<Vec<String>>,
-    ) -> Result<IMMessage> {
-        let mut b = ContentBuilder::schedule(schedule_id, title)
-            .schedule_times_ms(start_time_ms, end_time_ms);
-        if let Some(p) = participant_user_ids.filter(|v| !v.is_empty()) {
+    pub fn build_schedule(request: BuildScheduleRequest) -> Result<IMMessage> {
+        let mut b = ContentBuilder::schedule(request.schedule_id, request.title)
+            .schedule_times_ms(request.start_time_ms, request.end_time_ms);
+        if let Some(p) = request.participant_user_ids.filter(|v| !v.is_empty()) {
             b = b.schedule_participant_user_ids(p);
         }
-        Self::build_with_content(conversation_id, sender_id, b.build(), channel_id)
+        Self::build_with_content(
+            request.conversation_id,
+            request.sender_id,
+            b.build(),
+            request.channel_id.as_deref(),
+        )
     }
 
     pub fn build_announcement(

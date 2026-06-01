@@ -24,6 +24,10 @@ use flare_im_core_sdk::event::{ConnectionEvent, ExtensionEvent, SyncNotify};
 use flare_im_core_sdk::model::conversation::*;
 use flare_im_core_sdk::prelude::*;
 
+fn message_api(client: &IMClient) -> MessageApi {
+    client.message().expect("message api")
+}
+
 fn test_sync_run() -> SyncRunContext {
     SyncRunContext::initial_login()
 }
@@ -473,7 +477,7 @@ mod server_tests {
         establish_connection(&mut client, SENDER).await;
 
         let msg = build_single_text("conv_svr_001", SENDER, RECEIVER, "确保会话存在");
-        let ack = client.message().send(msg).await.unwrap();
+        let ack = message_api(&client).send(msg).await.unwrap();
         assert!(ack.success);
 
         tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
@@ -497,7 +501,7 @@ mod server_tests {
         establish_connection(&mut client, SENDER).await;
 
         let msg = build_single_text("conv_svr_002", SENDER, RECEIVER, "查询会话详情");
-        let ack = client.message().send(msg).await.unwrap();
+        let ack = message_api(&client).send(msg).await.unwrap();
         assert!(ack.success);
 
         tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
@@ -525,7 +529,7 @@ mod server_tests {
         establish_connection(&mut client, SENDER).await;
 
         let msg = build_single_text("conv_svr_003", SENDER, RECEIVER, "标记已读测试");
-        let ack = client.message().send(msg).await.unwrap();
+        let ack = message_api(&client).send(msg).await.unwrap();
         assert!(ack.success);
         tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
 
@@ -556,7 +560,7 @@ mod server_tests {
         establish_connection(&mut client, SENDER).await;
 
         let msg = build_single_text("conv_svr_del", SENDER, RECEIVER, "删除会话测试");
-        let ack = client.message().send(msg).await.unwrap();
+        let ack = message_api(&client).send(msg).await.unwrap();
         assert!(ack.success);
         tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
 
@@ -585,7 +589,7 @@ mod server_tests {
         establish_connection(&mut client, SENDER).await;
 
         let msg = build_single_text("conv_sync_001", SENDER, RECEIVER, "同步测试");
-        let ack = client.message().send(msg).await.unwrap();
+        let ack = message_api(&client).send(msg).await.unwrap();
         assert!(ack.success);
         tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
 

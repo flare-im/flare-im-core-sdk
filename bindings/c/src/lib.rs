@@ -68,8 +68,9 @@ pub use dispatch::{flare_message_build_json, flare_message_dispatch_json};
 // 重新导出会话 API
 pub use conversation::{
     flare_conversation_delete, flare_conversation_get, flare_conversation_get_one,
-    flare_conversation_list, flare_conversation_mark_all_read, flare_conversation_mark_read,
-    flare_conversation_set_pinned, flare_conversation_update_draft,
+    flare_conversation_list, flare_conversation_list_by_query_json,
+    flare_conversation_mark_all_read, flare_conversation_mark_read, flare_conversation_set_pinned,
+    flare_conversation_update_draft,
 };
 
 // 重新导出媒体 API

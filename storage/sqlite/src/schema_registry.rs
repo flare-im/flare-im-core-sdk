@@ -8,6 +8,10 @@ use anyhow::Result as AnyhowResult;
 use once_cell::sync::Lazy;
 use sqlx::SqlitePool;
 
+type SchemaInitEntry = (String, Arc<dyn SchemaInitializer>);
+type SchemaInitRegistry = Mutex<Vec<SchemaInitEntry>>;
+type SchemaInitSnapshot = Vec<SchemaInitEntry>;
+
 /// 可注册的 schema 初始化器：接收 pool，执行异步初始化（如建表）。
 pub trait SchemaInitializer: Send + Sync {
     fn run<'a>(
@@ -49,8 +53,7 @@ where
     }
 }
 
-static REGISTRY: Lazy<Mutex<Vec<(String, Arc<dyn SchemaInitializer>)>>> =
-    Lazy::new(|| Mutex::new(Vec::new()));
+static REGISTRY: Lazy<SchemaInitRegistry> = Lazy::new(|| Mutex::new(Vec::new()));
 
 /// 注册在创建 pool 后统一调用的 schema 初始化逻辑（返回 `anyhow::Result<()>`）。
 pub fn register_schema_init<N, F, Fut>(name: N, f: F)
@@ -91,8 +94,7 @@ where
 
 /// 执行所有已注册的 schema 初始化器（内部使用）
 pub async fn run_registered_schema_inits(pool: &SqlitePool) -> AnyhowResult<()> {
-    let inits: Vec<(String, Arc<dyn SchemaInitializer>)> =
-        REGISTRY.lock().expect("schema registry mutex").clone();
+    let inits: SchemaInitSnapshot = REGISTRY.lock().expect("schema registry mutex").clone();
     for (name, init) in inits {
         init.run(pool)
             .await

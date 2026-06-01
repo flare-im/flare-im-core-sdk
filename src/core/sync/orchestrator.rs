@@ -108,6 +108,37 @@ impl Orchestrator {
             }));
         })
     }
+
+    /// 静默执行指定 Background 任务（不中断登录/重连全量 sync）。
+    pub fn spawn_background_tasks(
+        &self,
+        user_id: String,
+        run: SyncRunContext,
+        tasks: Vec<Arc<dyn SyncTask>>,
+    ) {
+        if tasks.is_empty() {
+            return;
+        }
+        let store = self.store.clone();
+        let bus = self.bus.clone();
+        let checkpoint_store = self.checkpoint_store.clone();
+        let weight: u32 = tasks.iter().map(|task| task.weight()).sum();
+        tokio::spawn(async move {
+            let progress_reporter: Arc<dyn SyncProgressReporter> = Arc::new(
+                EventBusProgressReporter::new(bus.clone(), run.clone(), weight),
+            );
+            let _ = run_phase(
+                &bus,
+                &user_id,
+                run,
+                &store,
+                &checkpoint_store,
+                progress_reporter,
+                tasks,
+            )
+            .await;
+        });
+    }
 }
 
 async fn run_phase(

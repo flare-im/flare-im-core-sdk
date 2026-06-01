@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use crate::domain::{MessageStore, UserReader};
 use crate::error::Result;
-use crate::model::IMMessage;
+use crate::model::{IMMessage, MessageSearchQuery};
 
 pub struct MessageViewAssembler {
     store: Arc<dyn MessageStore>,
@@ -61,7 +61,26 @@ impl MessageViewAssembler {
     }
 
     pub async fn search(&self, keyword: &str, limit: u32) -> Result<Vec<IMMessage>> {
-        let mut views = self.store.search(keyword, limit).await?;
+        self.search_by_query(&MessageSearchQuery::text(keyword, limit))
+            .await
+    }
+
+    pub async fn search_in_conversation(
+        &self,
+        conversation_id: &str,
+        keyword: &str,
+        limit: u32,
+    ) -> Result<Vec<IMMessage>> {
+        self.search_by_query(&MessageSearchQuery::in_conversation(
+            conversation_id,
+            keyword,
+            limit,
+        ))
+        .await
+    }
+
+    pub async fn search_by_query(&self, query: &MessageSearchQuery) -> Result<Vec<IMMessage>> {
+        let mut views = self.store.search_by_query(query).await?;
         self.hydrate_reactions_for_messages(&mut views).await?;
         for view in &mut views {
             self.fill_sender_profile(view).await;
@@ -110,7 +129,7 @@ impl MessageViewAssembler {
     }
 
     async fn fill_sender_profile(&self, view: &mut IMMessage) {
-        if let Ok(Some(profile)) = self.profile_reader.get(&view.sender_id().to_string()).await {
+        if let Ok(Some(profile)) = self.profile_reader.get(view.sender_id()).await {
             *view = view.clone().with_sender_profile(profile.display_name());
         }
     }

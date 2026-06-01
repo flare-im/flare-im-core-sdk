@@ -10,13 +10,16 @@ mod message_build;
 mod presence;
 
 pub use capability::{
-    CapabilityApi, CapabilityDescriptorDto, CapabilityDispatchResult, UserCapabilityGrantDto,
+    CapabilityApi, CapabilityDescriptorDto, CapabilityDispatchResult, RtcSfuSubscriptionRequest,
+    UserCapabilityGrantDto,
 };
 pub use conversation::ConversationApi;
 pub use media::{
     FileDownloadProgress, FileDownloadProgressCallback, MediaApi, UploadPhase, UploadProgress,
     UploadProgressCallback,
 };
-pub use message::MessageApi;
-pub use message_build::MessageBuildApi;
+pub use message::{EditRichDocRequest, MessageApi};
+pub use message_build::{
+    CreateLocationRequest, CreateRichDocRequest, CreateStickerRequest, MessageBuildApi,
+};
 pub use presence::{DevicePresenceDto, PresenceApi, UserPresenceDto};

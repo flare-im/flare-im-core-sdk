@@ -35,3 +35,14 @@ pub struct FileDownloadProgress {
 }
 
 pub type FileDownloadProgressCallback = Arc<dyn Fn(FileDownloadProgress) + Send + Sync>;
+
+#[derive(Clone)]
+pub struct UserFileDownloadRequest {
+    pub download_key: String,
+    pub display_file_name: String,
+    pub source_path: Option<String>,
+    pub source_http_url: Option<String>,
+    pub remote_file_id: Option<String>,
+    pub expires_in: i32,
+    pub on_progress: Option<FileDownloadProgressCallback>,
+}

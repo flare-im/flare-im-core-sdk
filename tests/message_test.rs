@@ -59,7 +59,7 @@ async fn test_content_builder_text_with_mentions() {
         .build()
         .unwrap();
     let decoded = decode_content(&msg).unwrap();
-    if let DecodedContent::Content(ProtoContent::Text(text)) = &decoded {
+    if let Some(ProtoContent::Text(text)) = decoded.as_content() {
         assert_eq!(text.mentions.len(), 2);
     } else {
         panic!("expected Text");
@@ -415,7 +415,7 @@ async fn test_content_roundtrip_text() {
         Some("Hello @Alice!")
     );
 
-    if let DecodedContent::Content(ProtoContent::Text(text)) = &decoded {
+    if let Some(ProtoContent::Text(text)) = decoded.as_content() {
         assert_eq!(text.text, "Hello @Alice!");
         assert_eq!(text.mentions.len(), 1);
         assert_eq!(text.mentions[0].user_id, "alice_id");
@@ -628,13 +628,13 @@ async fn test_event_bus_on_message_callback() {
     });
 
     bus.publish(SdkEvent::Message(MessageEvent::Received {
-        message: IMMessage::new(Message {
+        message: Box::new(IMMessage::new(Message {
             server_id: "srv_001".into(),
             conversation_id: "conv_001".into(),
             sender_id: "user_002".into(),
             message_type: MessageType::Text as i32,
             ..Default::default()
-        }),
+        })),
     }));
     tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
     assert_eq!(count.load(Ordering::Relaxed), 1);
@@ -677,13 +677,13 @@ async fn test_event_bus_subscribe_send_ack() {
     let mut rx = bus.subscribe();
 
     bus.publish(SdkEvent::Message(MessageEvent::SendAck {
-        ack: SendAck {
+        ack: Box::new(SendAck {
             client_msg_id: "cli_001".into(),
             server_msg_id: "srv_001".into(),
             seq: 42,
             success: true,
             ..Default::default()
-        },
+        }),
     }));
 
     let event = tokio::time::timeout(tokio::time::Duration::from_millis(200), rx.recv())
@@ -717,7 +717,7 @@ async fn test_event_bus_multiple_subscribers() {
     });
 
     bus.publish(SdkEvent::Message(MessageEvent::Received {
-        message: IMMessage::new(Message::default()),
+        message: Box::new(IMMessage::new(Message::default())),
     }));
 
     tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
@@ -738,7 +738,7 @@ async fn test_event_bus_drop_subscription() {
     tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
 
     bus.publish(SdkEvent::Message(MessageEvent::Received {
-        message: IMMessage::new(Message::default()),
+        message: Box::new(IMMessage::new(Message::default())),
     }));
     tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
     // 当前实现：Subscription 仅持有一个 handle，drop 不会从总线移除回调，回调仍会触发
@@ -764,7 +764,7 @@ async fn test_message_store_save_and_get() {
         ..Default::default()
     });
 
-    store.save_batch(&[msg.clone()]).await.unwrap();
+    store.save_batch(std::slice::from_ref(&msg)).await.unwrap();
     let loaded = store.get("srv_001").await.unwrap();
     assert!(loaded.is_some());
     assert_eq!(loaded.unwrap().sender_id(), "user_001");
@@ -841,6 +841,10 @@ mod server_tests {
     const RECEIVER: &str = "user_test_002";
     const CONV: &str = "conv_test_001";
 
+    fn message_api(client: &IMClient) -> MessageApi {
+        client.message().expect("message api")
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     #[ignore = "requires running server"]
     async fn test_send_text_message() {
@@ -849,7 +853,7 @@ mod server_tests {
         establish_connection(&mut client, SENDER).await;
 
         let msg = build_single_text(CONV, SENDER, RECEIVER, "集成测试消息");
-        let ack = client.message().send(msg).await.unwrap();
+        let ack = message_api(&client).send(msg).await.unwrap();
         assert!(ack.success, "send should succeed");
         // 服务端可能先返回 success 再异步填充 server_msg_id，此处仅校验成功；若有 server_msg_id 则 seq 通常 > 0
         if !ack.server_msg_id.is_empty() {
@@ -888,7 +892,10 @@ mod server_tests {
             .build()
             .unwrap();
 
-        let ack = client.message().send(IMMessage::new(msg)).await.unwrap();
+        let ack = message_api(&client)
+            .send(IMMessage::new(msg))
+            .await
+            .unwrap();
         assert!(ack.success);
 
         teardown(&mut client).await;
@@ -914,7 +921,10 @@ mod server_tests {
             .build()
             .unwrap();
 
-        let ack = client.message().send(IMMessage::new(msg)).await.unwrap();
+        let ack = message_api(&client)
+            .send(IMMessage::new(msg))
+            .await
+            .unwrap();
         assert!(ack.success);
 
         teardown(&mut client).await;
@@ -928,11 +938,11 @@ mod server_tests {
         establish_connection(&mut client, SENDER).await;
 
         let msg = build_single_text(CONV, SENDER, RECEIVER, "将被撤回的消息");
-        let ack = client.message().send(msg).await.unwrap();
+        let ack = message_api(&client).send(msg).await.unwrap();
         assert!(ack.success);
         tokio::time::sleep(tokio::time::Duration::from_millis(1200)).await;
 
-        let result = client.message().recall(&ack.server_msg_id).await;
+        let result = message_api(&client).recall(&ack.server_msg_id).await;
         assert!(result.is_ok(), "recall should succeed: {:?}", result.err());
 
         teardown(&mut client).await;
@@ -946,13 +956,12 @@ mod server_tests {
         establish_connection(&mut client, SENDER).await;
 
         let msg = build_single_text(CONV, SENDER, RECEIVER, "原始内容");
-        let ack = client.message().send(msg).await.unwrap();
+        let ack = message_api(&client).send(msg).await.unwrap();
         assert!(ack.success);
         tokio::time::sleep(tokio::time::Duration::from_millis(1200)).await;
 
         let new_content = ContentBuilder::text("编辑后的内容").build();
-        let result = client
-            .message()
+        let result = message_api(&client)
             .edit_content(CONV, &ack.server_msg_id, new_content)
             .await;
         assert!(result.is_ok(), "edit should succeed: {:?}", result.err());
@@ -968,11 +977,11 @@ mod server_tests {
         establish_connection(&mut client, SENDER).await;
 
         let msg = build_single_text(CONV, SENDER, RECEIVER, "将被删除的消息");
-        let ack = client.message().send(msg).await.unwrap();
+        let ack = message_api(&client).send(msg).await.unwrap();
         assert!(ack.success);
         tokio::time::sleep(tokio::time::Duration::from_millis(1200)).await;
 
-        let result = client.message().delete(&ack.server_msg_id).await;
+        let result = message_api(&client).delete(&ack.server_msg_id).await;
         assert!(result.is_ok(), "delete should succeed: {:?}", result.err());
 
         teardown(&mut client).await;
@@ -985,7 +994,7 @@ mod server_tests {
         let mut client = create_test_client().await;
         establish_connection(&mut client, SENDER).await;
 
-        let result = client.message().mark_read(CONV, 100).await;
+        let result = message_api(&client).mark_read(CONV, 100).await;
         assert!(
             result.is_ok(),
             "mark_read should succeed: {:?}",
@@ -1002,8 +1011,8 @@ mod server_tests {
         let mut client = create_test_client().await;
         establish_connection(&mut client, SENDER).await;
 
-        client.message().typing(CONV, true).await.unwrap();
-        client.message().typing(CONV, false).await.unwrap();
+        message_api(&client).typing(CONV, true).await.unwrap();
+        message_api(&client).typing(CONV, false).await.unwrap();
 
         teardown(&mut client).await;
     }
@@ -1016,17 +1025,15 @@ mod server_tests {
         establish_connection(&mut client, SENDER).await;
 
         let msg = build_single_text(CONV, SENDER, RECEIVER, "测试反应");
-        let ack = client.message().send(msg).await.unwrap();
+        let ack = message_api(&client).send(msg).await.unwrap();
         assert!(ack.success);
         tokio::time::sleep(tokio::time::Duration::from_millis(1200)).await;
 
-        client
-            .message()
+        message_api(&client)
             .add_reaction(&ack.server_msg_id, "👍")
             .await
             .unwrap();
-        client
-            .message()
+        message_api(&client)
             .remove_reaction(&ack.server_msg_id, "👍")
             .await
             .unwrap();
@@ -1042,17 +1049,15 @@ mod server_tests {
         establish_connection(&mut client, SENDER).await;
 
         let msg = build_single_text(CONV, SENDER, RECEIVER, "测试置顶");
-        let ack = client.message().send(msg).await.unwrap();
+        let ack = message_api(&client).send(msg).await.unwrap();
         assert!(ack.success);
         tokio::time::sleep(tokio::time::Duration::from_millis(1200)).await;
 
-        client
-            .message()
+        message_api(&client)
             .pin(CONV, &ack.server_msg_id)
             .await
             .unwrap();
-        client
-            .message()
+        message_api(&client)
             .unpin(CONV, &ack.server_msg_id)
             .await
             .unwrap();
@@ -1068,17 +1073,15 @@ mod server_tests {
         establish_connection(&mut client, SENDER).await;
 
         let msg = build_single_text(CONV, SENDER, RECEIVER, "测试标记");
-        let ack = client.message().send(msg).await.unwrap();
+        let ack = message_api(&client).send(msg).await.unwrap();
         assert!(ack.success);
         tokio::time::sleep(tokio::time::Duration::from_millis(1200)).await;
 
-        client
-            .message()
+        message_api(&client)
             .mark(CONV, &ack.server_msg_id, MarkType::Important)
             .await
             .unwrap();
-        client
-            .message()
+        message_api(&client)
             .unmark(CONV, &ack.server_msg_id, MarkType::Important)
             .await
             .unwrap();
@@ -1095,13 +1098,13 @@ mod server_tests {
 
         for i in 0..3 {
             let msg = build_single_text(CONV, SENDER, RECEIVER, &format!("查询测试 {i}"));
-            let ack = client.message().send(msg).await.unwrap();
+            let ack = message_api(&client).send(msg).await.unwrap();
             assert!(ack.success);
         }
 
         tokio::time::sleep(tokio::time::Duration::from_millis(800)).await;
 
-        let messages = client.message().list(CONV, u64::MAX, 50).await.unwrap();
+        let messages = message_api(&client).list(CONV, u64::MAX, 50).await.unwrap();
         assert!(!messages.is_empty(), "should have messages");
         assert!(
             messages.len() >= 3,
@@ -1124,13 +1127,13 @@ mod server_tests {
         let mut sent_ids = Vec::with_capacity(N);
         for i in 0..N {
             let msg = build_single_text(CONV, SENDER, RECEIVER, &format!("sync_integrity_{i}"));
-            let ack = client.message().send(msg).await.unwrap();
+            let ack = message_api(&client).send(msg).await.unwrap();
             assert!(ack.success, "send {} should succeed", i);
             sent_ids.push(ack.server_msg_id.clone());
         }
 
         tokio::time::sleep(tokio::time::Duration::from_millis(800)).await;
-        let messages = client.message().list(CONV, u64::MAX, 50).await.unwrap();
+        let messages = message_api(&client).list(CONV, u64::MAX, 50).await.unwrap();
         assert!(
             messages.len() >= N,
             "sync must not drop messages: sent {}, list len {}",

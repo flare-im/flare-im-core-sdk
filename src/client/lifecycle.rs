@@ -4,8 +4,8 @@
 //! - **IndexedDB（Web）**：宿主实现 [`crate::store`] 后 [`LoginDbKind::IndexedDb`] 传入 [`super::IMClient::login`]。
 
 pub use crate::util::paths::{
-    dev_data_dir_relative_to_cwd, parse_data_url_to_path, resolve_user_db_path,
-    sanitize_user_id_for_dir,
+    default_sdk_data_root, dev_data_dir_relative_to_cwd, parse_data_url_to_path,
+    resolve_sdk_data_root, resolve_user_db_path, sanitize_user_id_for_dir,
 };
 
 use crate::Result;

@@ -7,8 +7,7 @@ use async_trait::async_trait;
 use tokio::sync::RwLock;
 
 use crate::domain::{
-    ConversationReader, ConversationStore, ConversationWriter, MessageReader, MessageStore,
-    MessageWriter,
+    ConversationReader, ConversationWriter, MessageReader, MessageStore, MessageWriter,
 };
 use crate::error::Result;
 use crate::model::Conversation;
@@ -36,6 +35,15 @@ impl MessageReader for EmptyMessageStore {
     }
 
     async fn search(&self, _keyword: &str, _limit: u32) -> Result<Vec<IMMessage>> {
+        Ok(Vec::new())
+    }
+
+    async fn search_in_conversation(
+        &self,
+        _conversation_id: &str,
+        _keyword: &str,
+        _limit: u32,
+    ) -> Result<Vec<IMMessage>> {
         Ok(Vec::new())
     }
 }
@@ -109,6 +117,10 @@ impl ConversationWriter for EmptyConversationStore {
         Ok(())
     }
 
+    async fn mark_unread(&self, _conversation_id: &str) -> Result<u32> {
+        Ok(1)
+    }
+
     async fn set_archived(&self, _conversation_id: &str, _archived: bool) -> Result<()> {
         Ok(())
     }
@@ -118,6 +130,14 @@ impl ConversationWriter for EmptyConversationStore {
     }
 
     async fn delete(&self, _conversation_id: &str) -> Result<()> {
+        Ok(())
+    }
+
+    async fn clear_local_chat_history(
+        &self,
+        _conversation_id: &str,
+        _cleared_through_seq: u64,
+    ) -> Result<()> {
         Ok(())
     }
 

@@ -438,9 +438,8 @@ pub extern "C" fn flare_event_subscribe(
     context: *mut c_void,
     callback: FlareEventCallback,
 ) -> FlareSubscriptionHandle {
-    abi::catch_ffi_subscription_handle(|| match subscribe_events_inner(handle, context, callback) {
-        Ok(sub) => sub,
-        Err(_) => 0,
+    abi::catch_ffi_subscription_handle(|| {
+        subscribe_events_inner(handle, context, callback).unwrap_or_default()
     })
 }
 

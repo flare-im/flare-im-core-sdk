@@ -11,11 +11,12 @@ mod engine;
 mod sync;
 
 pub use dispatcher::Dispatcher;
+pub(crate) use engine::SdkEngineConfig;
 pub use engine::{SdkEngine, SdkState};
 pub use sync::{
-    SessionSyncRunner, SyncContext, SyncFailurePolicy, SyncManager, SyncMode, SyncPhase,
-    SyncProgress, SyncReason, SyncResponseHandler, SyncResult, SyncRunContext, SyncScope, SyncTask,
-    SyncTaskResult, SyncTrigger, SyncVisibility,
+    ConversationSummarySync, SessionSyncRunner, SyncContext, SyncFailurePolicy, SyncManager,
+    SyncMode, SyncPhase, SyncProgress, SyncReason, SyncResponseHandler, SyncResult, SyncRunContext,
+    SyncScope, SyncTask, SyncTaskResult, SyncTrigger, SyncVisibility,
 };
 
 use std::sync::Arc;

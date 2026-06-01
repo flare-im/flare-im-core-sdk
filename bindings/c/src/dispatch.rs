@@ -12,6 +12,10 @@ use crate::helpers::{c_str_to_string, parse_json, to_json_string};
 use crate::registry::require_instance;
 use crate::types::{FlareHandle, FlareResultCallback};
 
+use flare_im_core_sdk::client::{
+    CreateLocationRequest, CreateRichDocRequest, CreateStickerRequest,
+};
+use flare_im_core_sdk::model::MessageSearchQuery;
 use flare_im_core_sdk::model::content_builder::BuiltContent;
 use flare_im_core_sdk::model::message::{IMMessage, MarkType, SendAck};
 use flare_im_core_sdk::model::message_elem::{Elem, elem_to_message_content};
@@ -191,6 +195,21 @@ pub extern "C" fn flare_message_dispatch_json(
                     async move {
                         let api = inst.message_api().await?;
                         api.search(&kw, limit).await
+                    },
+                    |list| to_json_string(&list),
+                );
+            }
+            "search_by_query" | "search_advanced" => {
+                let query: MessageSearchQuery = match serde_json::from_value(params.clone()) {
+                    Ok(q) => q,
+                    Err(_) => bad_param!(),
+                };
+                execute_async(
+                    instance,
+                    ctx,
+                    async move {
+                        let api = inst.message_api().await?;
+                        api.search_by_query(query).await
                     },
                     |list| to_json_string(&list),
                 );
@@ -567,7 +586,7 @@ pub extern "C" fn flare_message_dispatch_json(
                                 media_types.as_slice(),
                             )
                             .map_err(|e| {
-                                flare_im_core_sdk::error::FlareError::general_error(&e.to_string())
+                                flare_im_core_sdk::error::FlareError::general_error(e.to_string())
                             })?
                         }
                         "accept" => flare_im_core_sdk::capability::call_event::call_accept(
@@ -740,7 +759,7 @@ pub extern "C" fn flare_message_build_json(
                     ctx,
                     async move {
                         let b = inst.message_build_api().await?;
-                        b.create_text(&conversation_id, &text).await
+                        b.create_text(&conversation_id, &text, false).await
                     },
                     |m| to_json_string(&m),
                 );
@@ -953,16 +972,16 @@ pub extern "C" fn flare_message_build_json(
                     ctx,
                     async move {
                         let b = inst.message_build_api().await?;
-                        b.create_location(
-                            &conversation_id,
-                            lon,
-                            lat,
+                        b.create_location(CreateLocationRequest {
+                            conversation_id,
+                            longitude: lon,
+                            latitude: lat,
                             address,
                             title,
                             zoom,
                             snapshot_url,
                             snapshot_local_path,
-                        )
+                        })
                         .await
                     },
                     |m| to_json_string(&m),
@@ -993,15 +1012,15 @@ pub extern "C" fn flare_message_build_json(
                     ctx,
                     async move {
                         let b = inst.message_build_api().await?;
-                        b.create_sticker(
-                            &conversation_id,
-                            &sticker_id,
-                            package_id.as_deref(),
-                            url.as_deref(),
+                        b.create_sticker(CreateStickerRequest {
+                            conversation_id,
+                            sticker_id,
+                            package_id,
+                            url,
                             width,
                             height,
-                            sticker_format.as_deref(),
-                        )
+                            sticker_format,
+                        })
                         .await
                     },
                     |m| to_json_string(&m),
@@ -1168,18 +1187,18 @@ pub extern "C" fn flare_message_build_json(
                     ctx,
                     async move {
                         let b = inst.message_build_api().await?;
-                        b.create_rich_doc(
-                            &conversation_id,
-                            &doc_json,
-                            &content_schema,
-                            &plain_text,
-                            input_format.as_deref(),
+                        b.create_rich_doc(CreateRichDocRequest {
+                            conversation_id,
+                            doc_json,
+                            content_schema,
+                            plain_text,
+                            input_format,
                             input_format_version,
                             source_payload,
-                            title.as_deref(),
-                            search_text.as_deref(),
-                            render_hints_json.as_deref(),
-                        )
+                            title,
+                            search_text,
+                            render_hints_json,
+                        })
                         .await
                     },
                     |m| to_json_string(&m),

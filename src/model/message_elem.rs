@@ -5,7 +5,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
 use crate::model::decoder::DecodedContent;
-use crate::model::preview_storage::{PreviewStoragePayload, decode_or_user_text, keys};
+use crate::model::preview_storage::{
+    PreviewStoragePayload, decode_or_user_text, keys, localizable_notification_preview,
+    localizable_system_preview,
+};
 use crate::util::date::{ms_to_prost_timestamp, prost_timestamp_to_ms};
 use flare_proto::common::ImageFormat;
 use flare_proto::common::message_content::Content as ProtoContent;
@@ -414,27 +417,9 @@ pub fn elem_preview_storage_payload(elem: &Elem) -> PreviewStoragePayload {
             k: keys::IMAGE_GROUP.to_string(),
             a: Map::new(),
         },
-        System(s) => {
-            let mut a = Map::new();
-            if !s.body.trim().is_empty() {
-                a.insert("t".into(), Value::String(s.body.clone()));
-            }
-            PreviewStoragePayload {
-                k: keys::SYSTEM.to_string(),
-                a,
-            }
-        }
+        System(s) => localizable_system_preview(&s.event_kind, &s.body, &s.data),
         Notification(n) => {
-            let mut a = Map::new();
-            if !n.body.trim().is_empty() {
-                a.insert("body".into(), Value::String(n.body.clone()));
-            } else if !n.title.trim().is_empty() {
-                a.insert("title".into(), Value::String(n.title.clone()));
-            }
-            PreviewStoragePayload {
-                k: keys::NOTIFICATION.to_string(),
-                a,
-            }
+            localizable_notification_preview(&n.notification_type, &n.title, &n.body, &n.data)
         }
         Vote(_) => PreviewStoragePayload {
             k: keys::VOTE.to_string(),
@@ -664,12 +649,12 @@ pub fn image_info_elem_is_motion(s: &ImageInfoElem) -> bool {
 
 /// `ImageContent` 层级：源图是否为动图类
 pub fn image_elem_is_motion(i: &ImageElem) -> bool {
-    i.source.as_ref().map_or(false, image_info_elem_is_motion)
+    i.source.as_ref().is_some_and(image_info_elem_is_motion)
 }
 
 /// 解码前 proto `ImageContent` 是否视为动图（与 [image_elem_is_motion] 语义一致）
 pub fn proto_image_content_is_motion(i: &flare_proto::common::ImageContent) -> bool {
-    i.source.as_ref().map_or(false, |s| {
+    i.source.as_ref().is_some_and(|s| {
         if s.animated {
             return true;
         }
@@ -1058,7 +1043,7 @@ fn elem_to_proto_content(elem: &Elem) -> ProtoContent {
             latitude: l.latitude,
             address: l.address.clone(),
             title: l.title.clone(),
-            zoom: l.zoom.map(|z| i32::from(z)),
+            zoom: l.zoom.map(i32::from),
             snapshot_url: l.snapshot_url.clone(),
             snapshot_local_path: l.snapshot_local_path.clone(),
         }),

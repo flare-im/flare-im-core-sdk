@@ -1,4 +1,10 @@
-# Flare IM Core SDK - UniFFI Bindings
+# Flare IM Core SDK - UniFFI Bindings（已废弃）
+
+> **状态：Archived / 不维护**  
+> 客户端统一使用 [`bindings/c`](../c) 作为唯一 L1 出口；多端 SDK 见 [`flare-im-core-client-sdk`](../../../flare-im-core-client-sdk)。  
+> 本目录保留仅供历史参考，`workspace` 已 `exclude`，`lib.rs` 待新 API 重做前请勿依赖。
+
+---
 
 UniFFI 绑定层，为 Flare IM Core SDK 提供跨语言绑定支持（Kotlin、Swift 等）。
 

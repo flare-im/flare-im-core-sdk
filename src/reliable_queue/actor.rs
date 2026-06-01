@@ -10,8 +10,8 @@ use tokio::time::{Instant, interval_at};
 use tracing::{debug, warn};
 
 use crate::domain::{
-    DeliveryLocalSnapshot, InFlightReconcileDecision, MessageDeliveryService, MessageStore,
-    PendingDispatchDecision, PendingSendReader, PendingSendVo, PendingSendWriter,
+    ConversationStore, DeliveryLocalSnapshot, InFlightReconcileDecision, MessageDeliveryService,
+    MessageStore, PendingDispatchDecision, PendingSendReader, PendingSendVo, PendingSendWriter,
     REASON_ORPHAN_RECOVERED, RetryDecision,
 };
 use crate::error::{ErrorCode, FlareError, Result};
@@ -27,11 +27,11 @@ use crate::util::{RELIABLE_QUEUE_MAX_RETRIES, RELIABLE_QUEUE_TIMEOUT_SECS};
 pub enum QueueCommand {
     /// 入队发送（SDK 内部统一 IMMessage）
     Enqueue {
-        message: IMMessage,
+        message: Box<IMMessage>,
         resp: oneshot::Sender<Result<()>>,
     },
     /// 收到 SendAck（由外部收到下行后注入）
-    AckReceived(SendAck),
+    AckReceived(Box<SendAck>),
     /// 登录时清空队列（包含 in_flight + pending），并将本地消息收敛为 failed
     ResetPendingOnLogin {
         resp: oneshot::Sender<Result<Vec<String>>>,
@@ -48,11 +48,24 @@ pub struct ReliableSendQueue {
     worker: tokio::task::JoinHandle<()>,
 }
 
+pub struct ReliableSendQueueConfig {
+    pub pending_reader: Arc<dyn PendingSendReader>,
+    pub pending_writer: Arc<dyn PendingSendWriter>,
+    pub sender: Arc<PacketSender>,
+    pub message_store: Arc<dyn MessageStore>,
+    pub conversation_store: Arc<dyn ConversationStore>,
+    pub current_user_id: crate::core::CurrentUserIdStore,
+    pub bus: EventBus,
+    pub timeout_secs: Option<u64>,
+    pub max_retries: Option<u32>,
+}
+
 struct QueueState {
     pending_reader: Arc<dyn PendingSendReader>,
     pending_writer: Arc<dyn PendingSendWriter>,
     sender: Arc<PacketSender>,
     message_store: Arc<dyn MessageStore>,
+    conversation_store: Arc<dyn ConversationStore>,
     current_user_id: crate::core::CurrentUserIdStore,
     bus: EventBus,
     timeout_duration: Duration,
@@ -68,16 +81,18 @@ struct QueueState {
 impl ReliableSendQueue {
     /// 构建队列并启动后台任务；收到 ack 需由调用方往 `on_ack` 注入。
     /// reader 与 writer 通常为同一实现体（如 SqlitePendingSendRepo）的两个 Arc。
-    pub fn new(
-        pending_reader: Arc<dyn PendingSendReader>,
-        pending_writer: Arc<dyn PendingSendWriter>,
-        sender: Arc<PacketSender>,
-        message_store: Arc<dyn MessageStore>,
-        current_user_id: crate::core::CurrentUserIdStore,
-        bus: EventBus,
-        timeout_secs: Option<u64>,
-        max_retries: Option<u32>,
-    ) -> Self {
+    pub fn new(config: ReliableSendQueueConfig) -> Self {
+        let ReliableSendQueueConfig {
+            pending_reader,
+            pending_writer,
+            sender,
+            message_store,
+            conversation_store,
+            current_user_id,
+            bus,
+            timeout_secs,
+            max_retries,
+        } = config;
         let (tx, mut rx) = mpsc::channel::<QueueCommand>(256);
         let timeout_duration =
             Duration::from_secs(timeout_secs.unwrap_or(RELIABLE_QUEUE_TIMEOUT_SECS));
@@ -88,6 +103,7 @@ impl ReliableSendQueue {
             pending_writer,
             sender,
             message_store,
+            conversation_store,
             current_user_id,
             bus,
             timeout_duration,
@@ -124,7 +140,10 @@ impl ReliableSendQueue {
     pub async fn enqueue(&self, message: IMMessage) -> Result<()> {
         let (resp, rx) = oneshot::channel();
         self.tx
-            .send(QueueCommand::Enqueue { message, resp })
+            .send(QueueCommand::Enqueue {
+                message: Box::new(message),
+                resp,
+            })
             .await
             .map_err(|_| {
                 FlareError::localized(ErrorCode::InternalError, "reliable queue closed")
@@ -136,7 +155,7 @@ impl ReliableSendQueue {
     /// 将收到的 SendAck 注入队列（由 Dispatcher 或 Engine 在收到下行 ack 时调用）
     pub async fn on_ack(&self, ack: SendAck) -> Result<()> {
         self.tx
-            .send(QueueCommand::AckReceived(ack))
+            .send(QueueCommand::AckReceived(Box::new(ack)))
             .await
             .map_err(|_| FlareError::localized(ErrorCode::InternalError, "reliable queue closed"))
     }
@@ -190,6 +209,7 @@ async fn handle_command(
     let mut st = state.lock().await;
     match cmd {
         QueueCommand::Enqueue { message: msg, resp } => {
+            let msg = *msg;
             let enqueued_at_ms = id::now_millis();
             let mut optimistic = msg.clone();
             optimistic.server_id = msg.client_msg_id.clone();
@@ -222,6 +242,7 @@ async fn handle_command(
             try_send_next(&mut st).await?;
         }
         QueueCommand::AckReceived(ack) => {
+            let ack = *ack;
             if let Some((entry, deadline)) = st.in_flight.take() {
                 if entry.client_msg_id == ack.client_msg_id {
                     apply_ack_and_publish(&mut st, &entry, ack).await;
@@ -430,7 +451,10 @@ async fn reconcile_in_flight_terminal_state(st: &mut QueueState) -> Result<bool>
             let _ = st.pending_writer.pop(&entry.client_msg_id).await?;
             st.retry_count.remove(&entry.client_msg_id);
             st.bus.publish(SdkEvent::Message(MessageEvent::SendAck {
-                ack: MessageDeliveryService::synthetic_ack(&entry.client_msg_id, &snapshot),
+                ack: Box::new(MessageDeliveryService::synthetic_ack(
+                    &entry.client_msg_id,
+                    &snapshot,
+                )),
             }));
             Ok(true)
         }
@@ -566,8 +590,24 @@ async fn apply_ack_and_publish(st: &mut QueueState, entry: &PendingSendVo, ack: 
         if let Err(e) = st.message_store.update_after_ack(&cid, &msg).await {
             warn!(%e, "update_after_ack failed");
         }
-        st.bus
-            .publish(SdkEvent::Message(MessageEvent::SendAck { ack }));
+        if msg.seq > 0
+            && let Err(e) = st
+                .conversation_store
+                .update_last_message(
+                    &msg.conversation_id,
+                    msg.server_id(),
+                    msg.sender_id(),
+                    msg.timestamp,
+                    msg.text_for_storage().as_deref(),
+                    msg.seq,
+                )
+                .await
+        {
+            warn!(%e, conversation_id = %msg.conversation_id, "update conversation projection after ack failed");
+        }
+        st.bus.publish(SdkEvent::Message(MessageEvent::SendAck {
+            ack: Box::new(ack),
+        }));
         return;
     }
     let failed_msg = MessageDeliveryService::mark_failed(&entry.message);
@@ -580,8 +620,9 @@ async fn apply_ack_and_publish(st: &mut QueueState, entry: &PendingSendVo, ack: 
         ack.error_message.clone()
     };
     let client_msg_id = ack.client_msg_id.clone();
-    st.bus
-        .publish(SdkEvent::Message(MessageEvent::SendAck { ack }));
+    st.bus.publish(SdkEvent::Message(MessageEvent::SendAck {
+        ack: Box::new(ack),
+    }));
     st.bus.publish(SdkEvent::Message(MessageEvent::SendFailed {
         client_msg_id,
         reason,
@@ -590,17 +631,20 @@ async fn apply_ack_and_publish(st: &mut QueueState, entry: &PendingSendVo, ack: 
 
 #[cfg(all(test, feature = "storage-sqlite"))]
 mod tests {
-    use super::ReliableSendQueue;
+    use super::{ReliableSendQueue, ReliableSendQueueConfig};
     use crate::core::CurrentUserIdStore;
     use crate::domain::{
-        MessageReader, MessageWriter, PendingSendReader, PendingSendVo, PendingSendWriter,
+        ConversationReader, ConversationWriter, MessageReader, MessageWriter, PendingSendReader,
+        PendingSendVo, PendingSendWriter,
     };
     use crate::event::{EventBus, MessageEvent, SdkEvent};
     use crate::infrastructure::persistence::sqlite::{
-        SqliteMessageRepo, SqlitePendingSendRepo, init_schema as sqlite_init_schema,
+        SqliteConversationRepo, SqliteMessageRepo, SqlitePendingSendRepo,
+        init_schema as sqlite_init_schema,
     };
-    use crate::model::IMMessage;
+    use crate::model::{Conversation, IMMessage};
     use crate::protocol::{Codec, PacketSender, ProtobufCodec};
+    use flare_proto::common::SendAck;
     use sqlx::SqlitePool;
     use std::sync::Arc;
     use tokio::sync::{Mutex, RwLock};
@@ -621,17 +665,19 @@ mod tests {
         let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
         sqlite_init_schema(&pool).await.unwrap();
         let pending_store = Arc::new(SqlitePendingSendRepo::new(pool.clone()));
-        let message_store = Arc::new(SqliteMessageRepo::new(pool));
-        let queue = ReliableSendQueue::new(
-            pending_store.clone(),
-            pending_store,
-            dummy_sender(),
-            message_store.clone(),
+        let message_store = Arc::new(SqliteMessageRepo::new(pool.clone()));
+        let conversation_store = Arc::new(SqliteConversationRepo::new(pool));
+        let queue = ReliableSendQueue::new(ReliableSendQueueConfig {
+            pending_reader: pending_store.clone(),
+            pending_writer: pending_store,
+            sender: dummy_sender(),
+            message_store: message_store.clone(),
+            conversation_store,
             current_user_id,
             bus,
-            Some(60),
-            Some(3),
-        );
+            timeout_secs: Some(60),
+            max_retries: Some(3),
+        });
         let mut message = IMMessage::new(flare_proto::common::Message::default());
         message.client_msg_id = "client-1".to_string();
         message.conversation_id = "conv-1".to_string();
@@ -651,6 +697,80 @@ mod tests {
 
     #[cfg(feature = "storage-sqlite")]
     #[tokio::test]
+    async fn ack_updates_conversation_last_message_projection_before_publish() {
+        let bus = EventBus::new();
+        let mut receiver = bus.subscribe_raw();
+        let current_user_id: CurrentUserIdStore = Arc::new(RwLock::new("u1".to_string()));
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        sqlite_init_schema(&pool).await.unwrap();
+        let pending_store = Arc::new(SqlitePendingSendRepo::new(pool.clone()));
+        let message_store = Arc::new(SqliteMessageRepo::new(pool.clone()));
+        let conversation_store = Arc::new(SqliteConversationRepo::new(pool));
+        conversation_store
+            .save_one(&Conversation {
+                conversation_id: "conv-ack".to_string(),
+                last_message_id: Some("server-old".to_string()),
+                last_sender_id: Some("u2".to_string()),
+                last_message_at: Some(1_000),
+                last_message_preview: Some("old".to_string()),
+                max_seq: 4,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        let queue = ReliableSendQueue::new(ReliableSendQueueConfig {
+            pending_reader: pending_store.clone(),
+            pending_writer: pending_store,
+            sender: dummy_sender(),
+            message_store,
+            conversation_store: conversation_store.clone(),
+            current_user_id,
+            bus,
+            timeout_secs: Some(60),
+            max_retries: Some(3),
+        });
+        let mut message = IMMessage::new(flare_proto::common::Message::default());
+        message.client_msg_id = "client-ack".to_string();
+        message.server_id = "client-ack".to_string();
+        message.conversation_id = "conv-ack".to_string();
+        message.sender_id = "u1".to_string();
+
+        queue.enqueue(message).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        queue
+            .on_ack(SendAck {
+                client_msg_id: "client-ack".to_string(),
+                server_msg_id: "server-new".to_string(),
+                seq: 5,
+                conversation_id: "conv-ack".to_string(),
+                success: true,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        let event = timeout(Duration::from_millis(200), receiver.recv())
+            .await
+            .expect("expected send ack")
+            .expect("bus closed");
+        assert!(matches!(
+            event,
+            SdkEvent::Message(MessageEvent::SendAck { .. })
+        ));
+        let updated = conversation_store
+            .get("conv-ack")
+            .await
+            .unwrap()
+            .expect("conversation should exist");
+        assert_eq!(updated.last_message_id.as_deref(), Some("server-new"));
+        assert_eq!(updated.last_sender_id.as_deref(), Some("u1"));
+        assert_eq!(updated.max_seq, 5);
+        assert_ne!(updated.last_message_preview.as_deref(), Some("old"));
+        assert_eq!(updated.unread_count, 0);
+    }
+
+    #[cfg(feature = "storage-sqlite")]
+    #[tokio::test]
     async fn recover_pending_for_current_user_drops_cross_account_entries() {
         let bus = EventBus::new();
         let mut receiver = bus.subscribe_raw();
@@ -658,7 +778,8 @@ mod tests {
         let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
         sqlite_init_schema(&pool).await.unwrap();
         let pending_store = Arc::new(SqlitePendingSendRepo::new(pool.clone()));
-        let message_store = Arc::new(SqliteMessageRepo::new(pool));
+        let message_store = Arc::new(SqliteMessageRepo::new(pool.clone()));
+        let conversation_store = Arc::new(SqliteConversationRepo::new(pool));
         let mut message = IMMessage::new(flare_proto::common::Message::default());
         message.server_id = "c1".to_string();
         message.client_msg_id = "c1".to_string();
@@ -676,16 +797,17 @@ mod tests {
             })
             .await
             .unwrap();
-        let queue = ReliableSendQueue::new(
-            pending_store.clone(),
-            pending_store.clone(),
-            dummy_sender(),
+        let queue = ReliableSendQueue::new(ReliableSendQueueConfig {
+            pending_reader: pending_store.clone(),
+            pending_writer: pending_store.clone(),
+            sender: dummy_sender(),
             message_store,
+            conversation_store,
             current_user_id,
-            bus.clone(),
-            Some(60),
-            Some(3),
-        );
+            bus: bus.clone(),
+            timeout_secs: Some(60),
+            max_retries: Some(3),
+        });
 
         let affected = queue.recover_pending_for_current_user().await.unwrap();
         assert_eq!(affected, vec!["c1".to_string()]);
@@ -712,7 +834,8 @@ mod tests {
         let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
         sqlite_init_schema(&pool).await.unwrap();
         let pending_store = Arc::new(SqlitePendingSendRepo::new(pool.clone()));
-        let message_store = Arc::new(SqliteMessageRepo::new(pool));
+        let message_store = Arc::new(SqliteMessageRepo::new(pool.clone()));
+        let conversation_store = Arc::new(SqliteConversationRepo::new(pool));
         let mut message = IMMessage::new(flare_proto::common::Message::default());
         message.server_id = "orphan-1".to_string();
         message.client_msg_id = "orphan-1".to_string();
@@ -721,16 +844,17 @@ mod tests {
         message.local_state.sending = true;
         message.local_state.is_local = true;
         message_store.save_batch(&[message]).await.unwrap();
-        let queue = ReliableSendQueue::new(
-            pending_store.clone(),
-            pending_store,
-            dummy_sender(),
+        let queue = ReliableSendQueue::new(ReliableSendQueueConfig {
+            pending_reader: pending_store.clone(),
+            pending_writer: pending_store,
+            sender: dummy_sender(),
             message_store,
+            conversation_store,
             current_user_id,
-            bus.clone(),
-            Some(60),
-            Some(3),
-        );
+            bus: bus.clone(),
+            timeout_secs: Some(60),
+            max_retries: Some(3),
+        });
 
         let affected = queue.recover_pending_for_current_user().await.unwrap();
         assert_eq!(affected, vec!["orphan-1".to_string()]);

@@ -67,6 +67,7 @@ pub fn event_from_transport_action(action: &MessageTransportAction) -> Event {
             user_id,
             message_ids,
             read_seq,
+            burn_after_read,
         } => Event {
             conversation_id: conversation_id.clone(),
             r#type: EventType::EventReadReceipt as i32,
@@ -75,6 +76,7 @@ pub fn event_from_transport_action(action: &MessageTransportAction) -> Event {
                 user_id: user_id.clone(),
                 message_ids: message_ids.clone(),
                 read_seq: *read_seq,
+                burn_after_read: Some(*burn_after_read),
                 ..Default::default()
             })),
             ..Default::default()
@@ -132,7 +134,6 @@ pub fn event_from_transport_action(action: &MessageTransportAction) -> Event {
             r#type: EventType::EventUnpin as i32,
             payload: Some(EventPayload::Unpin(UnpinEvent {
                 server_msg_id: server_msg_id.clone(),
-                ..Default::default()
             })),
             ..Default::default()
         },

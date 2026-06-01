@@ -42,6 +42,7 @@ pub struct FlareBytesView {
 
 /// 错误结构
 #[repr(C)]
+#[derive(Default)]
 pub struct FlareError {
     pub code: i32,
     pub message: FlareString,
@@ -108,16 +109,6 @@ impl FlareBytes {
         let ptr = v.as_mut_ptr();
         std::mem::forget(v);
         Self { ptr, len, cap }
-    }
-}
-
-impl Default for FlareError {
-    fn default() -> Self {
-        Self {
-            code: 0,
-            message: FlareString::default(),
-            details_json: FlareString::default(),
-        }
     }
 }
 

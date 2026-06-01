@@ -17,13 +17,14 @@ use crate::client::api::{
 use crate::client::builder::IMClientBuilder;
 use crate::client::connected_apis::ConnectedApis;
 use crate::client::lifecycle::{
-    LoginDbKind, SdkConfigOverlay, default_ws_url, merge_sdk_config, parse_data_url_to_path,
-    resolve_connect_token,
+    LoginDbKind, SdkConfigOverlay, default_ws_url, merge_sdk_config, resolve_connect_token,
+    resolve_sdk_data_root,
 };
-use crate::core::{SdkEngine, SdkState};
+use crate::core::{SdkEngine, SdkState, SyncRunContext};
 use crate::error::ErrorCode;
 use crate::event::{ConnectionEvent, EventBus, MessageEvent, SdkEvent};
 use crate::model::message::MessageLocalState;
+use crate::notification::NotificationHandlerRegistry;
 use crate::store::StoreProvider;
 use crate::transport::http::HttpRequestContext;
 use crate::util::generate_test_token as util_generate_test_token;
@@ -45,6 +46,7 @@ pub(crate) struct IMClientInner {
     pub capability_api: Option<Arc<CapabilityApi>>,
     pub presence_api: Option<Arc<PresenceApi>>,
     pub capability_registry: Option<Arc<SdkCapabilityRegistry>>,
+    pub notification_registry: Option<Arc<NotificationHandlerRegistry>>,
     pub message_build_api: Option<Arc<MessageBuildApi>>,
     pub conversation_api: Option<Arc<ConversationApi>>,
     pub http_request_context: Option<Arc<HttpRequestContext>>,
@@ -101,6 +103,7 @@ impl IMClient {
             .and_then(|c| c.tenant_id.clone())
             .filter(|t| !t.is_empty())
             .or_else(|| std::env::var("FLARE_IM_TENANT_ID").ok())
+            .map(crate::util::normalize_tenant_id)
             .unwrap_or_else(|| "0".to_string())
     }
 
@@ -122,10 +125,7 @@ impl IMClient {
         Ok(f(e))
     }
 
-    pub(crate) async fn with_engine_async<R>(
-        &self,
-        f: impl FnOnce(&SdkEngine) -> R,
-    ) -> Result<R> {
+    pub(crate) async fn with_engine_async<R>(&self, f: impl FnOnce(&SdkEngine) -> R) -> Result<R> {
         let g = self.read_inner_async().await?;
         let e = g.engine.as_ref().ok_or_else(Self::not_connected)?;
         Ok(f(e))
@@ -135,10 +135,7 @@ impl IMClient {
     pub async fn connected_apis(&self) -> Result<ConnectedApis> {
         let g = self.read_inner_async().await?;
         Ok(ConnectedApis {
-            message_api: g
-                .message_api
-                .clone()
-                .ok_or_else(Self::not_connected)?,
+            message_api: g.message_api.clone().ok_or_else(Self::not_connected)?,
             conversation_api: g
                 .conversation_api
                 .as_ref()
@@ -161,7 +158,8 @@ impl IMClient {
     /// 初始化运行环境与 SDK 配置快照。
     ///
     /// - 仅更新本地配置，不建连；
-    /// - 若传入 `sdk_config.data_url`，会解析并创建数据目录；
+    /// - 若传入 `sdk_config.data_url`，会解析为数据根；未传则使用 SDK 默认系统数据目录；
+    /// - 会确保数据根存在，登录时按用户自动创建 SQLite 与媒体缓存目录；
     /// - 后续 [`Self::login`] 会基于该配置构建实际存储与连接参数。
     pub async fn init(
         &self,
@@ -170,41 +168,35 @@ impl IMClient {
     ) -> Result<()> {
         let mut g = self.inner.write().await;
         g.environment = environment;
-        g.data_root = None;
-        if let Some(ref cfg) = sdk_config {
-            if let Some(ref url) = cfg.data_url {
-                let path = parse_data_url_to_path(url)?;
-                std::fs::create_dir_all(&path).map_err(|e| {
-                    FlareError::localized(
-                        ErrorCode::InvalidParameter,
-                        format!("data_url create_dir_all failed: {}", e),
-                    )
-                })?;
-                g.data_root = Some(path);
-            }
-        }
+        let data_root =
+            resolve_sdk_data_root(sdk_config.as_ref().and_then(|cfg| cfg.data_url.as_deref()))?;
+        std::fs::create_dir_all(&data_root).map_err(|e| {
+            FlareError::localized(
+                ErrorCode::InvalidParameter,
+                format!("sdk data root create_dir_all failed: {}", e),
+            )
+        })?;
+        g.data_root = Some(data_root);
         g.sdk_config = sdk_config;
         Ok(())
     }
 
-    /// 返回当前配置的 SDK 数据根目录（来自 `init(sdkConfig.dataUrl)`）。
+    /// 返回当前配置的 SDK 数据根目录（未传 `dataUrl` 时为 SDK 默认系统数据目录）。
     pub async fn data_root(&self) -> Option<PathBuf> {
         self.inner.read().await.data_root.clone()
     }
 
     /// 基于数据根目录解析一个子路径并确保父目录存在。
     ///
-    /// 常用于上层保存附件、缓存或导出文件。若尚未 `init` 或未设置 `dataUrl` 会返回错误。
+    /// 常用于上层保存附件、缓存或导出文件。若尚未 `init`，会使用 SDK 默认系统数据目录。
     pub async fn resolve_data_subpath(
         &self,
         relative: impl AsRef<std::path::Path>,
     ) -> Result<PathBuf> {
-        let root = self.data_root().await.ok_or_else(|| {
-            FlareError::localized(
-                ErrorCode::InvalidParameter,
-                "init: set sdkConfig.dataUrl before resolving subpaths",
-            )
-        })?;
+        let root = self
+            .data_root()
+            .await
+            .unwrap_or_else(crate::util::default_sdk_data_root);
         let p = root.join(relative.as_ref());
         if let Some(parent) = p.parent() {
             std::fs::create_dir_all(parent).map_err(|e| {
@@ -388,16 +380,24 @@ impl IMClient {
                 extra_sync_tasks,
             )
         };
+        let data_root = match snap.2.clone() {
+            Some(path) => path,
+            None => {
+                let path =
+                    resolve_sdk_data_root(snap.1.as_ref().and_then(|cfg| cfg.data_url.as_deref()))?;
+                std::fs::create_dir_all(&path).map_err(|e| {
+                    FlareError::localized(
+                        ErrorCode::InvalidParameter,
+                        format!("sdk data root create_dir_all failed: {}", e),
+                    )
+                })?;
+                path
+            }
+        };
         let stores = match db {
             #[cfg(feature = "lifecycle-sqlite")]
             LoginDbKind::Sqlite => {
-                let base = snap.2.clone().ok_or_else(|| {
-                    FlareError::localized(
-                        ErrorCode::InvalidParameter,
-                        "init: set sdkConfig.dataUrl before SQLite login",
-                    )
-                })?;
-                crate::util::sqlite_store::open_sqlite_store_for_user(&base, user_id).await?
+                crate::util::sqlite_store::open_sqlite_store_for_user(&data_root, user_id).await?
             }
             LoginDbKind::IndexedDb(stores) => stores,
         };
@@ -419,7 +419,7 @@ impl IMClient {
         let mut inner = child.into_inner();
         inner.environment = snap.0;
         inner.sdk_config = snap.1;
-        inner.data_root = snap.2;
+        inner.data_root = Some(data_root);
         if inner.http_request_context.is_none() {
             inner.http_request_context = snap.3;
         }
@@ -432,7 +432,8 @@ impl IMClient {
         *self.inner.write().await = inner;
         tokio::task::yield_now().await;
         self.reset_pending_queue_on_login().await?;
-        self.connect_internal(user_id, explicit_token, false).await?;
+        self.connect_internal(user_id, explicit_token, false)
+            .await?;
         let session_generation = self.inner.read().await.session_generation;
         self.spawn_terminal_session_watcher(session_generation, bus.clone());
         self.spawn_reconnect_session_watcher(session_generation, bus);
@@ -560,6 +561,7 @@ impl IMClient {
         let tenant = tenant_id
             .map(str::to_string)
             .unwrap_or_else(|| Self::resolve_tenant_id(&g));
+        let tenant = crate::util::normalize_tenant_id(tenant);
         let http = g.http_request_context.clone().ok_or_else(|| {
             FlareError::localized(
                 ErrorCode::InvalidParameter,
@@ -692,6 +694,13 @@ impl IMClient {
     /// 获取 SDK 事件总线（用于原始事件订阅或桥接到宿主事件系统）。
     pub async fn bus(&self) -> Result<EventBus> {
         self.with_engine_async(|e| e.bus().clone()).await
+    }
+
+    pub async fn notification_handlers(&self) -> Result<Arc<NotificationHandlerRegistry>> {
+        let g = self.read_inner_async().await?;
+        g.notification_registry
+            .clone()
+            .ok_or_else(|| FlareError::localized(ErrorCode::InternalError, "IMClient not built"))
     }
 
     /// 同步获取事件总线：仅用于非 async 上下文；热路径请用 [`Self::bus`].
@@ -923,10 +932,10 @@ impl IMClient {
             g.conversation_api = None;
             g.engine.take()
         };
-        if let Some(mut e) = engine {
-            if let Err(err) = e.disconnect().await {
-                tracing::warn!(%err, "disconnect after terminal event failed");
-            }
+        if let Some(mut e) = engine
+            && let Err(err) = e.disconnect().await
+        {
+            tracing::warn!(%err, "disconnect after terminal event failed");
         }
         true
     }
@@ -938,47 +947,47 @@ impl IMClient {
     /// - 重连路径不触发该逻辑，仍保留同账号历史待发消息继续发送。
     async fn reset_pending_queue_on_login(&self) -> Result<()> {
         let mut should_publish_failed = true;
-        let dropped_client_ids = if let Some(queue) = self.with_engine_async(|e| e.reliable_queue()).await?
-        {
-            // 由队列 actor 原子处理 in_flight + pending，避免与后台 tick 竞态。
-            should_publish_failed = false;
-            queue.reset_pending_on_login().await?
-        } else {
-            // 兜底分支：无可靠队列实现时，沿用仓储清理逻辑。
-            let current_user_id = self.current_user_id().await.unwrap_or_default();
-            if current_user_id.trim().is_empty() {
-                return Ok(());
-            }
-            let stores = self.stores_async().await?;
-            let Some((pending_reader, pending_writer)) = stores.pending_sends() else {
-                return Ok(());
-            };
-            let pending_entries = pending_reader.list().await?;
-            if pending_entries.is_empty() {
-                return Ok(());
-            }
-            let mut dropped_client_ids = Vec::with_capacity(pending_entries.len());
-            for entry in pending_entries {
-                let _ = pending_writer.pop(&entry.client_msg_id).await?;
-                if let Some(mut local) = stores
-                    .messages
-                    .get_by_client_msg_id(&entry.client_msg_id)
-                    .await?
-                {
-                    local.server_id = local.client_msg_id.clone();
-                    local.local_state = MessageLocalState {
-                        sending: false,
-                        failed: true,
-                        is_local: true,
-                        sort_ts: local.local_state.sort_ts,
-                    };
-                    local.status = MessageStatus::Failed as i32;
-                    stores.messages.save_batch(&[local]).await?;
+        let dropped_client_ids =
+            if let Some(queue) = self.with_engine_async(|e| e.reliable_queue()).await? {
+                // 由队列 actor 原子处理 in_flight + pending，避免与后台 tick 竞态。
+                should_publish_failed = false;
+                queue.reset_pending_on_login().await?
+            } else {
+                // 兜底分支：无可靠队列实现时，沿用仓储清理逻辑。
+                let current_user_id = self.current_user_id().await.unwrap_or_default();
+                if current_user_id.trim().is_empty() {
+                    return Ok(());
                 }
-                dropped_client_ids.push(entry.client_msg_id);
-            }
-            dropped_client_ids
-        };
+                let stores = self.stores_async().await?;
+                let Some((pending_reader, pending_writer)) = stores.pending_sends() else {
+                    return Ok(());
+                };
+                let pending_entries = pending_reader.list().await?;
+                if pending_entries.is_empty() {
+                    return Ok(());
+                }
+                let mut dropped_client_ids = Vec::with_capacity(pending_entries.len());
+                for entry in pending_entries {
+                    let _ = pending_writer.pop(&entry.client_msg_id).await?;
+                    if let Some(mut local) = stores
+                        .messages
+                        .get_by_client_msg_id(&entry.client_msg_id)
+                        .await?
+                    {
+                        local.server_id = local.client_msg_id.clone();
+                        local.local_state = MessageLocalState {
+                            sending: false,
+                            failed: true,
+                            is_local: true,
+                            sort_ts: local.local_state.sort_ts,
+                        };
+                        local.status = MessageStatus::Failed as i32;
+                        stores.messages.save_batch(&[local]).await?;
+                    }
+                    dropped_client_ids.push(entry.client_msg_id);
+                }
+                dropped_client_ids
+            };
 
         if dropped_client_ids.is_empty() {
             return Ok(());
@@ -1018,6 +1027,42 @@ impl IMClient {
         runner.request_message_sync(conversation_id).await
     }
 
+    /// 静默拉取会话列表摘要（多端补偿，不阻塞 UI）。
+    pub async fn sync_conversation_summaries_silent(&self) -> Result<()> {
+        let sync = self
+            .with_engine_async(|engine| engine.conversation_summary_sync())
+            .await?
+            .ok_or_else(|| FlareError::localized(ErrorCode::NotConnected, "未配置同步"))?;
+        let user_id = self.current_user_id().await.unwrap_or_default();
+        if user_id.is_empty() {
+            return Err(FlareError::localized(ErrorCode::NotConnected, "未连接"));
+        }
+        sync.sync_conversation_summaries(
+            &user_id,
+            SyncRunContext::silent_multidevice_private_data(),
+        )
+        .await
+    }
+
+    /// 按 task id 静默触发 Background 同步任务。
+    pub async fn spawn_background_sync_tasks(&self, task_ids: &[&str]) -> Result<()> {
+        let (sync_manager, store, bus) = self
+            .with_engine_async(|engine| {
+                (
+                    engine.sync_manager(),
+                    engine.stores().clone(),
+                    engine.bus().clone(),
+                )
+            })
+            .await?;
+        let user_id = self.current_user_id().await.unwrap_or_default();
+        if user_id.is_empty() {
+            return Err(FlareError::localized(ErrorCode::NotConnected, "未连接"));
+        }
+        sync_manager.spawn_background_tasks_by_ids(&user_id, task_ids, store, bus);
+        Ok(())
+    }
+
     pub async fn sync_conversation_participants(
         &self,
         conversation_id: &str,
@@ -1055,9 +1100,7 @@ impl IMClient {
     /// 内部会同时更新 `message` 与 `conversation` 读态，并发送读回执。
     pub async fn mark_session_read(&self, conversation_id: &str, read_seq: u64) -> Result<()> {
         let conversation = self.conversation_async().await?;
-        conversation
-            .mark_read(conversation_id, read_seq)
-            .await?;
+        conversation.mark_read(conversation_id, read_seq).await?;
         let effective_read_seq = conversation
             .get(conversation_id)
             .await?
@@ -1073,10 +1116,7 @@ impl IMClient {
         message
             .mark_read(conversation_id, effective_read_seq)
             .await?;
-        if let Some(runner) = self
-            .with_engine_async(|e| e.session_sync_runner())
-            .await?
-        {
+        if let Some(runner) = self.with_engine_async(|e| e.session_sync_runner()).await? {
             // 上报“真实已读位点”到服务端。
             // 历史上 read_seq=0 会直接上报 0，但后端并未统一按“全部已读”解释 0，
             // 会导致重登后 last_read_seq 未推进、已读双勾丢失。

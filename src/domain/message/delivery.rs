@@ -55,11 +55,23 @@ pub enum InFlightReconcileDecision {
 pub enum IncomingMessageConvergenceDecision {
     EmitReceived,
     MergePendingAndAck,
+    DropDuplicate,
 }
 
 pub struct MessageDeliveryService;
 
 impl MessageDeliveryService {
+    fn apply_send_ack_state(message: &mut IMMessage) {
+        message.local_state = MessageLocalState {
+            sending: false,
+            failed: false,
+            is_local: false,
+            sort_ts: message.local_state.sort_ts,
+        };
+        message.status = MessageStatus::Sent as i32;
+        message.is_read = false;
+    }
+
     pub fn decide_pending_dispatch(
         connected_user_id: &str,
         client_msg_id: &str,
@@ -148,7 +160,12 @@ impl MessageDeliveryService {
         current_user_id: &str,
         incoming: &IMMessage,
         local_by_client: Option<&IMMessage>,
+        local_by_server: Option<&IMMessage>,
     ) -> IncomingMessageConvergenceDecision {
+        if local_by_server.is_some() {
+            return IncomingMessageConvergenceDecision::DropDuplicate;
+        }
+
         if current_user_id.is_empty()
             || incoming.client_msg_id.trim().is_empty()
             || incoming.sender_id.trim().is_empty()
@@ -196,13 +213,7 @@ impl MessageDeliveryService {
             sent_message.timestamp = server_ms;
             sent_message.client_timestamp = server_ms;
         }
-        sent_message.local_state = MessageLocalState {
-            sending: false,
-            failed: false,
-            is_local: false,
-            sort_ts: sent_message.local_state.sort_ts,
-        };
-        sent_message.status = MessageStatus::Sent as i32;
+        Self::apply_send_ack_state(&mut sent_message);
         sent_message
     }
 
@@ -216,10 +227,14 @@ impl MessageDeliveryService {
                 .map(|message| message.local_state.sort_ts)
                 .unwrap_or(incoming.local_state.sort_ts.max(incoming.timestamp)),
         };
-        if merged.status < MessageStatus::Sent as i32 {
-            merged.status = MessageStatus::Sent as i32;
-        }
+        Self::apply_send_ack_state(&mut merged);
         merged
+    }
+
+    pub fn sanitize_send_ack_message(message: &IMMessage) -> IMMessage {
+        let mut sanitized = message.clone();
+        Self::apply_send_ack_state(&mut sanitized);
+        sanitized
     }
 
     pub fn synthetic_ack(client_msg_id: &str, snapshot: &DeliveryLocalSnapshot) -> SendAck {
@@ -248,10 +263,10 @@ impl MessageDeliveryService {
 #[cfg(test)]
 mod tests {
     use super::{
-        DeliveryLocalSnapshot, InFlightReconcileDecision, MessageDeliveryService,
-        PendingDispatchDecision, RetryDecision,
+        DeliveryLocalSnapshot, InFlightReconcileDecision, IncomingMessageConvergenceDecision,
+        MessageDeliveryService, PendingDispatchDecision, RetryDecision,
     };
-    use crate::model::message::MessageStatus;
+    use crate::model::message::{IMMessage, MessageStatus};
 
     #[test]
     fn pending_dispatch_drops_cross_account_entry() {
@@ -308,5 +323,68 @@ mod tests {
             }
             _ => panic!("expected synthetic ack decision"),
         }
+    }
+
+    #[test]
+    fn incoming_duplicate_by_server_id_is_dropped() {
+        let mut incoming = IMMessage::new(flare_proto::common::Message::default());
+        incoming.server_id = "server-1".to_string();
+        incoming.sender_id = "u2".to_string();
+
+        let decision = MessageDeliveryService::decide_incoming_message_convergence(
+            "u1",
+            &incoming,
+            None,
+            Some(&incoming),
+        );
+
+        assert_eq!(decision, IncomingMessageConvergenceDecision::DropDuplicate);
+    }
+
+    #[test]
+    fn incoming_self_echo_is_send_ack_not_read_receipt() {
+        let mut local = IMMessage::new(flare_proto::common::Message::default());
+        local.client_msg_id = "client-1".to_string();
+        local.server_id = "client-1".to_string();
+        local.sender_id = "u1".to_string();
+        local.status = MessageStatus::Created as i32;
+        local.is_read = false;
+        local.local_state.sending = true;
+        local.local_state.is_local = true;
+        local.local_state.sort_ts = 42;
+
+        let mut incoming = IMMessage::new(flare_proto::common::Message::default());
+        incoming.client_msg_id = "client-1".to_string();
+        incoming.server_id = "server-1".to_string();
+        incoming.sender_id = "u1".to_string();
+        incoming.seq = 7;
+        incoming.status = MessageStatus::Read as i32;
+        incoming.is_read = true;
+
+        let merged = MessageDeliveryService::merge_incoming_as_sent(Some(&local), &incoming);
+
+        assert_eq!(merged.server_id, "server-1");
+        assert_eq!(merged.seq, 7);
+        assert_eq!(merged.status, MessageStatus::Sent as i32);
+        assert!(!merged.is_read);
+        assert!(!merged.local_state.sending);
+        assert!(!merged.local_state.is_local);
+        assert_eq!(merged.local_state.sort_ts, 42);
+    }
+
+    #[test]
+    fn send_ack_sanitizer_never_preserves_read_state() {
+        let mut message = IMMessage::new(flare_proto::common::Message::default());
+        message.status = MessageStatus::Read as i32;
+        message.is_read = true;
+        message.local_state.sending = true;
+        message.local_state.is_local = true;
+
+        let sanitized = MessageDeliveryService::sanitize_send_ack_message(&message);
+
+        assert_eq!(sanitized.status, MessageStatus::Sent as i32);
+        assert!(!sanitized.is_read);
+        assert!(!sanitized.local_state.sending);
+        assert!(!sanitized.local_state.is_local);
     }
 }

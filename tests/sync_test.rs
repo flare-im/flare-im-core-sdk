@@ -194,7 +194,7 @@ async fn test_sync_phase_callbacks_with_server() {
     let done = Arc::new(tokio::sync::Notify::new());
     let done_clone = done.clone();
 
-    let bus = client.bus().clone();
+    let bus = client.bus().await.expect("event bus").clone();
 
     // 使用 Listener 方式注册各状态回调（blocking_write 在 spawn_blocking 中执行）
     tokio::task::spawn_blocking(move || {

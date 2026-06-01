@@ -39,6 +39,24 @@ pub fn dev_data_dir_relative_to_cwd() -> PathBuf {
     temp_data
 }
 
+/// SDK 默认数据根。宿主未显式传入 `dataUrl` 时使用。
+pub fn default_sdk_data_root() -> PathBuf {
+    let base = default_system_data_dir();
+    base.join("flare-im-core-sdk")
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn default_system_data_dir() -> PathBuf {
+    dirs::data_dir()
+        .or_else(|| dirs::home_dir().map(|home| home.join(".local").join("share")))
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
+}
+
+#[cfg(target_arch = "wasm32")]
+fn default_system_data_dir() -> PathBuf {
+    PathBuf::from(".")
+}
+
 /// 将 `init` 传入的 `dataUrl`（如 `file:///path`）解析为本地路径。
 pub fn parse_data_url_to_path(data_url: &str) -> Result<PathBuf> {
     let t = data_url.trim();
@@ -60,6 +78,15 @@ pub fn parse_data_url_to_path(data_url: &str) -> Result<PathBuf> {
         return Ok(PathBuf::from(rest));
     }
     Ok(PathBuf::from(t))
+}
+
+/// 解析 SDK 数据根：宿主传入 base path 则使用；未传或为空则使用系统默认应用数据目录。
+pub fn resolve_sdk_data_root(data_url: Option<&str>) -> Result<PathBuf> {
+    if let Some(url) = data_url.map(str::trim).filter(|s| !s.is_empty()) {
+        parse_data_url_to_path(url)
+    } else {
+        Ok(default_sdk_data_root())
+    }
 }
 
 /// `data_root` 下按用户隔离的 SQLite 文件路径（`{sanitized_user_id}/flare_im_sdk.db`）。
