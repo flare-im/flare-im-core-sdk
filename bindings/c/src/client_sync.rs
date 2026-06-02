@@ -51,7 +51,11 @@ pub extern "C" fn flare_sdk_disconnect(
         };
         let ctx = CallbackContext::new(context, callback);
         let client = instance.client.clone();
-        execute_async_unit(instance, ctx, async move { client.disconnect().await });
+        let session = instance.im_session.clone();
+        execute_async_unit(instance, ctx, async move {
+            session.clear().await;
+            client.disconnect().await
+        });
         0
     })
 }

@@ -43,10 +43,11 @@ pub use types::{
 
 // 重新导出生命周期 API
 pub use lifecycle::{
-    flare_sdk_create, flare_sdk_current_user_id, flare_sdk_ffi_contract_version,
+    flare_sdk_create, flare_sdk_current_user_id, flare_sdk_data_root,
+    flare_sdk_ffi_contract_version,
     flare_sdk_generate_test_token, flare_sdk_hard_reset, flare_sdk_init, flare_sdk_is_connected,
     flare_sdk_login, flare_sdk_logout, flare_sdk_release, flare_sdk_session_active,
-    flare_sdk_version,
+    flare_sdk_uninit, flare_sdk_version,
 };
 
 // 与 IMClient 直接方法对齐（状态、断开、同步、输入态等）

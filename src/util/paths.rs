@@ -67,6 +67,14 @@ pub fn parse_data_url_to_path(data_url: &str) -> Result<PathBuf> {
         ));
     }
     if let Some(rest) = t.strip_prefix("file://") {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Ok(url) = url::Url::parse(t)
+            && url.scheme() == "file"
+            && let Ok(path) = url.to_file_path()
+        {
+            return Ok(path);
+        }
+
         let rest = rest.trim();
         #[cfg(windows)]
         {
@@ -89,10 +97,12 @@ pub fn resolve_sdk_data_root(data_url: Option<&str>) -> Result<PathBuf> {
     }
 }
 
-/// `data_root` 下按用户隔离的 SQLite 文件路径（`{sanitized_user_id}/flare_im_sdk.db`）。
+/// `data_root` 下按用户隔离的 SQLite 文件路径（`users/{sanitized_user_id}/flare_im_sdk.db`）。
+///
+/// 用户目录统一放在 `users/` 命名空间下，避免用户 ID 与 SDK 根目录下的其他文件或旧异常文件冲突。
 pub fn resolve_user_db_path(base: &std::path::Path, user_id: &str) -> PathBuf {
     let user_dir = sanitize_user_id_for_dir(user_id);
-    let user_data_dir = base.join(user_dir);
+    let user_data_dir = base.join("users").join(user_dir);
     let _ = std::fs::create_dir_all(&user_data_dir);
     user_data_dir.join("flare_im_sdk.db")
 }
@@ -112,4 +122,17 @@ pub fn resolve_media_cache_dir_next_to_db(db_file: &std::path::Path) -> PathBuf 
     let cache = parent.join("media_cache");
     let _ = std::fs::create_dir_all(&cache);
     cache
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_file_data_url_decodes_encoded_path() {
+        let path = parse_data_url_to_path("file:///tmp/Application%20Support/flare_im_sdk")
+            .expect("parse file url");
+
+        assert_eq!(path, PathBuf::from("/tmp/Application Support/flare_im_sdk"));
+    }
 }

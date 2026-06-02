@@ -78,7 +78,6 @@ prost = "0.14"
 prost-types = { workspace = true }
 tracing = "0.1"
 flate2 = "1.0"
-jsonwebtoken = "9"
 sha2 = "0.10"
 rand = "0.8"
 hex = "0.4"
@@ -97,6 +96,7 @@ tokio-util = { version = "0.7", features = ["rt"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 flare-grpc-proto = { workspace = true }
 tonic = { workspace = true }
+jsonwebtoken = "9"
 uuid = { version = "1", features = ["v4"] }
 dirs = "5.0"
 futures-util = "0.3"

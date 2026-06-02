@@ -1,5 +1,23 @@
 use serde::{Deserialize, Serialize};
 
+/// Transport selection policy.
+///
+/// Browser/WASM must use WebSocket because QUIC/native protocol racing is not
+/// available in the browser sandbox. Native targets can keep protocol racing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TransportPolicy {
+    Auto,
+    WebSocketOnly,
+    ProtocolRace,
+}
+
+impl Default for TransportPolicy {
+    fn default() -> Self {
+        Self::Auto
+    }
+}
+
 /// SDK 配置
 ///
 /// ```ignore
@@ -19,6 +37,7 @@ pub struct SdkConfig {
     pub connect_timeout_secs: Option<u64>,
     pub reconnect_interval_secs: Option<u64>,
     pub max_reconnect_attempts: Option<u32>,
+    pub transport_policy: TransportPolicy,
     pub sync_batch_size: Option<u32>,
     pub init_message_sync_concurrency: Option<u32>,
     pub ack_timeout_secs: Option<u64>,
@@ -53,6 +72,15 @@ impl SdkConfig {
     pub fn init_message_sync_concurrency(&self) -> u32 {
         self.init_message_sync_concurrency.unwrap_or(4).max(1)
     }
+
+    /// Effective transport policy for the current compilation target.
+    pub fn effective_transport_policy(&self) -> TransportPolicy {
+        if cfg!(target_arch = "wasm32") {
+            TransportPolicy::WebSocketOnly
+        } else {
+            self.transport_policy
+        }
+    }
 }
 
 impl Default for SdkConfig {
@@ -67,6 +95,7 @@ impl Default for SdkConfig {
             connect_timeout_secs: Some(30),
             reconnect_interval_secs: Some(5),
             max_reconnect_attempts: None,
+            transport_policy: TransportPolicy::Auto,
             sync_batch_size: Some(200),
             init_message_sync_concurrency: None,
             ack_timeout_secs: Some(10),
@@ -125,6 +154,11 @@ impl SdkConfigBuilder {
     /// 设置最大重连次数。
     pub fn max_reconnect_attempts(mut self, n: u32) -> Self {
         self.config.max_reconnect_attempts = Some(n);
+        self
+    }
+    /// 设置传输策略。
+    pub fn transport_policy(mut self, policy: TransportPolicy) -> Self {
+        self.config.transport_policy = policy;
         self
     }
     /// 设置单次同步批大小。

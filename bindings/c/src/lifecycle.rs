@@ -11,7 +11,7 @@ use flare_im_core_sdk::util::generate_test_token as util_generate_test_token;
 
 use crate::abi;
 use crate::executor::{CallbackContext, execute_async, execute_async_unit, return_error};
-use crate::helpers::{c_str_to_string, parse_json, string_to_flare};
+use crate::helpers::{c_str_to_string, parse_json, string_to_flare, to_json_string};
 use crate::registry::{
     SdkInstance, register_instance, release_all_instances, release_instance, require_instance,
     retain_instance,
@@ -85,6 +85,31 @@ pub extern "C" fn flare_sdk_init(
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn flare_sdk_uninit(
+    handle: FlareHandle,
+    context: *mut c_void,
+    callback: FlareResultCallback,
+) -> i32 {
+    abi::catch_ffi_i32(|| {
+        let instance = match require_instance(handle) {
+            Ok(i) => i,
+            Err(e) => return e,
+        };
+
+        let ctx = CallbackContext::new(context, callback);
+        let client = instance.client.clone();
+        let session = instance.im_session.clone();
+
+        execute_async_unit(instance, ctx, async move {
+            session.clear().await;
+            client.uninit().await
+        });
+
+        0
+    })
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn flare_sdk_login(
     handle: FlareHandle,
     user_id: *const c_char,
@@ -117,12 +142,28 @@ pub extern "C" fn flare_sdk_login(
             }
         };
 
-        let _ = store_config_json;
+        let login_config = if store_config_json.is_null() {
+            None
+        } else {
+            match parse_json::<SdkConfigOverlay>(store_config_json) {
+                Ok(config) => Some(config),
+                Err(code) => {
+                    let ctx = CallbackContext::new(context, callback);
+                    return_error(&ctx, code, "Invalid store_config JSON");
+                    return code;
+                }
+            }
+        };
 
         let ctx = CallbackContext::new(context, callback);
         let inst = instance.clone();
 
         execute_async_unit(instance, ctx, async move {
+            inst.im_session.clear().await;
+            if let Some(config) = login_config {
+                inst.client.init(None, Some(config)).await?;
+                inst.im_session.clear().await;
+            }
             let apis = inst
                 .client
                 .login(
@@ -172,6 +213,38 @@ pub extern "C" fn flare_sdk_version() -> FlareString {
 #[unsafe(no_mangle)]
 pub extern "C" fn flare_sdk_ffi_contract_version() -> FlareString {
     abi::catch_ffi_flare_string(|| string_to_flare(FLARE_FFI_CONTRACT_VERSION.to_string()))
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn flare_sdk_data_root(
+    handle: FlareHandle,
+    context: *mut c_void,
+    callback: FlareResultCallback,
+) -> i32 {
+    abi::catch_ffi_i32(|| {
+        let instance = match require_instance(handle) {
+            Ok(i) => i,
+            Err(e) => return e,
+        };
+
+        let ctx = CallbackContext::new(context, callback);
+        let client = instance.client.clone();
+
+        execute_async(
+            instance,
+            ctx,
+            async move {
+                Ok(client
+                    .data_root()
+                    .await
+                    .map(|path| path.display().to_string())
+                    .unwrap_or_default())
+            },
+            |data_root| to_json_string(&serde_json::json!({ "data_root": data_root })),
+        );
+
+        0
+    })
 }
 
 #[unsafe(no_mangle)]

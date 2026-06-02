@@ -78,7 +78,7 @@ impl FlareString {
         }
         match CString::new(s) {
             Ok(cstr) => {
-                let len = cstr.as_bytes_with_nul().len();
+                let len = cstr.as_bytes().len();
                 let ptr = cstr.into_raw();
                 Self { ptr, len }
             }
@@ -120,3 +120,18 @@ unsafe impl Send for FlareBytesView {}
 unsafe impl Sync for FlareBytesView {}
 unsafe impl Send for FlareError {}
 unsafe impl Sync for FlareError {}
+
+#[cfg(test)]
+mod tests {
+    use super::FlareString;
+
+    #[test]
+    fn flare_string_len_excludes_nul_terminator() {
+        let s = FlareString::from_rust_string("[]".to_string());
+
+        assert_eq!(s.len, 2);
+        assert!(!s.ptr.is_null());
+
+        crate::helpers::flare_string_free(s);
+    }
+}

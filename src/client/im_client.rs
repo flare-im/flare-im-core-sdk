@@ -299,6 +299,24 @@ impl IMClient {
         Ok(())
     }
 
+    /// 反初始化 SDK 运行态。
+    ///
+    /// 与 [`Self::logout`] 的区别：`logout` 只结束当前用户会话并保留 `init` 配置；
+    /// `uninit` 会在结束会话后清空环境、配置、数据根与宿主 HTTP 上下文，允许同一 client
+    /// 以新的 `SdkConfigOverlay` 重新 [`Self::init`]。
+    pub async fn uninit(&self) -> Result<()> {
+        let logout_result = self.logout().await;
+        {
+            let mut g = self.inner.write().await;
+            g.environment = None;
+            g.sdk_config = None;
+            g.data_root = None;
+            g.http_request_context = None;
+            g.notification_registry = None;
+        }
+        logout_result
+    }
+
     /// 登录前清理旧会话：presence / disconnect 带短超时，避免 Consul 或 gRPC 阻塞 `sdk_login`。
     async fn logout_for_login(&self) -> Result<()> {
         const PRESENCE_LOGOUT_TIMEOUT: Duration = Duration::from_secs(2);
@@ -1209,7 +1227,10 @@ impl Default for IMClient {
 
 #[cfg(test)]
 mod tests {
-    use super::{reconnect_delay_secs, should_skip_reconnect_for_disconnect_reason};
+    use super::{
+        IMClient, SdkConfigOverlay, reconnect_delay_secs,
+        should_skip_reconnect_for_disconnect_reason,
+    };
 
     #[test]
     fn reconnect_delay_uses_capped_exponential_backoff() {
@@ -1234,5 +1255,33 @@ mod tests {
         assert!(should_skip_reconnect_for_disconnect_reason(
             "websocket Closed by client"
         ));
+    }
+
+    #[tokio::test]
+    async fn uninit_clears_init_configuration() {
+        let client = IMClient::new();
+        let data_root =
+            std::env::temp_dir().join(format!("flare-im-uninit-test-{}", std::process::id()));
+        client
+            .init(
+                Some("dev".to_string()),
+                Some(SdkConfigOverlay {
+                    data_url: Some(format!("file://{}", data_root.display())),
+                    ws_url: Some("ws://localhost:60051".to_string()),
+                    ..SdkConfigOverlay::default()
+                }),
+            )
+            .await
+            .expect("init sdk");
+
+        assert!(client.data_root().await.is_some());
+        client.uninit().await.expect("uninit sdk");
+
+        let (environment, sdk_config) = client.config_snapshot().await;
+        assert!(environment.is_none());
+        assert!(sdk_config.is_none());
+        assert!(client.data_root().await.is_none());
+        assert!(!client.session_active_sync());
+        let _ = std::fs::remove_dir_all(data_root);
     }
 }

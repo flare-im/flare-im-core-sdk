@@ -22,7 +22,7 @@ pub use api::{
     UserCapabilityGrantDto,
 };
 pub use builder::IMClientBuilder;
-pub use config::{SdkConfig, SdkConfigBuilder};
+pub use config::{SdkConfig, SdkConfigBuilder, TransportPolicy};
 pub use connected_apis::ConnectedApis;
 pub use im_client::IMClient;
 pub use lifecycle::{

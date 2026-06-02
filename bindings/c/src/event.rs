@@ -21,6 +21,7 @@ pub const FLARE_EVENT_CONNECTION_RECONNECTING: i32 = 1003;
 pub const FLARE_EVENT_MESSAGE_RECEIVED: i32 = 2001;
 pub const FLARE_EVENT_MESSAGE_SEND_ACK: i32 = 2002;
 pub const FLARE_EVENT_CONVERSATION_UPDATED: i32 = 3001;
+pub const FLARE_EVENT_SYNC_UPDATED: i32 = 4001;
 
 lazy_static::lazy_static! {
     static ref EVENT_SUBSCRIPTIONS: DashMap<u64, oneshot::Sender<()>> = DashMap::new();
@@ -71,13 +72,16 @@ fn event_type_to_code(event: &flare_im_core_sdk::event::SdkEvent) -> i32 {
         | SdkEvent::Conversation(ConversationEvent::Deleted { .. }) => {
             FLARE_EVENT_CONVERSATION_UPDATED
         }
+        SdkEvent::Sync(_) => FLARE_EVENT_SYNC_UPDATED,
         _ => 0, // 保留给未来扩展；不会在下游被丢弃
     }
 }
 
 /// 将事件转换为 JSON 字符串（手动序列化）
 fn event_to_json(event: &flare_im_core_sdk::event::SdkEvent) -> String {
-    use flare_im_core_sdk::event::{ConnectionEvent, ConversationEvent, MessageEvent, SdkEvent};
+    use flare_im_core_sdk::event::{
+        ConnectionEvent, ConversationEvent, MessageEvent, SdkEvent, SyncNotify,
+    };
 
     match event {
         SdkEvent::Connection(ConnectionEvent::Connected) => {
@@ -233,7 +237,92 @@ fn event_to_json(event: &flare_im_core_sdk::event::SdkEvent) -> String {
                 }
             }
         }
+        SdkEvent::Sync(SyncNotify::StateChanged { run, state }) => serde_json::json!({
+            "type": "sync",
+            "event": "stateChanged",
+            "run_id": run.run_id,
+            "trigger": run.trigger.as_str(),
+            "scope": run.scope.as_str(),
+            "visibility": run.visibility.as_str(),
+            "reason": run.reason.as_str(),
+            "state": format!("{state:?}"),
+        })
+        .to_string(),
+        SdkEvent::Sync(SyncNotify::Started { run }) => serde_json::json!({
+            "type": "sync",
+            "event": "started",
+            "run_id": run.run_id,
+            "trigger": run.trigger.as_str(),
+            "scope": run.scope.as_str(),
+            "visibility": run.visibility.as_str(),
+            "reason": run.reason.as_str(),
+        })
+        .to_string(),
+        SdkEvent::Sync(SyncNotify::Finished { run, phase }) => serde_json::json!({
+            "type": "sync",
+            "event": "finished",
+            "run_id": run.run_id,
+            "trigger": run.trigger.as_str(),
+            "scope": run.scope.as_str(),
+            "visibility": run.visibility.as_str(),
+            "reason": run.reason.as_str(),
+            "phase": sync_phase_to_str(phase),
+        })
+        .to_string(),
+        SdkEvent::Sync(SyncNotify::Failed { run, task, message }) => serde_json::json!({
+            "type": "sync",
+            "event": "failed",
+            "run_id": run.run_id,
+            "trigger": run.trigger.as_str(),
+            "scope": run.scope.as_str(),
+            "visibility": run.visibility.as_str(),
+            "reason": run.reason.as_str(),
+            "task": task,
+            "error": {
+                "code": "sync_failed",
+                "message": message,
+                "operation": task,
+                "retryable": true
+            }
+        })
+        .to_string(),
+        SdkEvent::Sync(SyncNotify::Progress {
+            run,
+            task,
+            progress,
+            detail,
+        }) => serde_json::json!({
+            "type": "sync",
+            "event": "progress",
+            "run_id": run.run_id,
+            "trigger": run.trigger.as_str(),
+            "scope": run.scope.as_str(),
+            "visibility": run.visibility.as_str(),
+            "reason": run.reason.as_str(),
+            "task": task,
+            "progress": (*progress * 100.0).round() as i32,
+            "detail": detail,
+        })
+        .to_string(),
+        SdkEvent::Sync(SyncNotify::TaskCompleted { run, task }) => serde_json::json!({
+            "type": "sync",
+            "event": "taskCompleted",
+            "run_id": run.run_id,
+            "trigger": run.trigger.as_str(),
+            "scope": run.scope.as_str(),
+            "visibility": run.visibility.as_str(),
+            "reason": run.reason.as_str(),
+            "task": task,
+        })
+        .to_string(),
         _ => r#"{"type":"unknown"}"#.to_string(),
+    }
+}
+
+fn sync_phase_to_str(phase: &flare_im_core_sdk::event::SyncPhase) -> &'static str {
+    match phase {
+        flare_im_core_sdk::event::SyncPhase::Init => "Init",
+        flare_im_core_sdk::event::SyncPhase::Background => "Background",
     }
 }
 

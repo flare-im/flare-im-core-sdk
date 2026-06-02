@@ -60,11 +60,16 @@ pub async fn create_pool(database_url: &str) -> AnyhowResult<SqlitePool> {
 
 /// 将本地文件路径转为 `sqlite://` URL
 pub fn database_url_from_path(path: &Path) -> String {
+    if let Ok(file_url) = url::Url::from_file_path(path) {
+        return format!("sqlite://{}?mode=rwc", file_url.path());
+    }
+
     let path_str = path.to_string_lossy().replace('\\', "/");
-    if path_str.starts_with('/') {
-        format!("sqlite://{}?mode=rwc", path_str)
+    let encoded = path_str.replace(' ', "%20");
+    if encoded.starts_with('/') {
+        format!("sqlite://{}?mode=rwc", encoded)
     } else {
-        format!("sqlite:///{}?mode=rwc", path_str)
+        format!("sqlite:///{}?mode=rwc", encoded)
     }
 }
 
@@ -73,4 +78,33 @@ pub async fn open_pool(database_url: &str) -> AnyhowResult<SqlitePool> {
     let pool = create_pool(database_url).await?;
     schema_registry::run_registered_schema_inits(&pool).await?;
     Ok(pool)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn database_url_from_path_encodes_spaces() {
+        let url = database_url_from_path(Path::new("/tmp/Application Support/flare_im_sdk.db"));
+
+        assert!(url.starts_with("sqlite:///tmp/"));
+        assert!(url.contains("Application%20Support"));
+        assert!(url.ends_with("?mode=rwc"));
+    }
+
+    #[tokio::test]
+    async fn create_pool_supports_paths_with_spaces() {
+        let root =
+            std::env::temp_dir().join(format!("flare sqlite path test {}", std::process::id()));
+        let db = root.join("flare im sdk.db");
+        std::fs::create_dir_all(&root).expect("create temp sqlite dir");
+
+        let url = database_url_from_path(&db);
+        let pool = create_pool(&url).await.expect("open sqlite db");
+        pool.close().await;
+
+        assert!(db.exists());
+        let _ = std::fs::remove_dir_all(root);
+    }
 }

@@ -95,7 +95,53 @@ pub async fn open_sqlite_store_for_user(
 ) -> Result<StoreProvider> {
     let db_path = resolve_user_db_path(base_data_dir, user_id);
     let cache_dir = resolve_media_cache_dir_next_to_db(&db_path);
+    if let Some(parent) = db_path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| {
+            FlareError::localized(
+                ErrorCode::ConfigurationError,
+                format!(
+                    "sqlite database directory create_dir_all failed: path={}, error={}",
+                    parent.display(),
+                    e
+                ),
+            )
+        })?;
+    }
+    std::fs::create_dir_all(&cache_dir).map_err(|e| {
+        FlareError::localized(
+            ErrorCode::ConfigurationError,
+            format!(
+                "media cache directory create_dir_all failed: path={}, error={}",
+                cache_dir.display(),
+                e
+            ),
+        )
+    })?;
     tracing::info!(db = %db_path.display(), cache = %cache_dir.display(), "Opening SQLite store");
     let database_url = sqlite_database_url_from_path(&db_path);
     open_sqlite_store_provider(&database_url, Some(&cache_dir)).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn open_sqlite_store_for_user_supports_data_root_with_spaces() {
+        let root =
+            std::env::temp_dir().join(format!("flare im sdk data root {}", std::process::id()));
+        {
+            let _stores = open_sqlite_store_for_user(&root, "hugo")
+                .await
+                .expect("open store");
+        }
+
+        assert!(
+            root.join("users")
+                .join("hugo")
+                .join("flare_im_sdk.db")
+                .exists()
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
 }

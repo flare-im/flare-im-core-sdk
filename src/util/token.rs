@@ -1,6 +1,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+#[cfg(not(target_arch = "wasm32"))]
 use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
 use serde::Serialize;
 
@@ -66,6 +67,17 @@ pub fn generate_test_token(
     device_id: Option<&str>,
     tenant_id: Option<&str>,
 ) -> Result<String> {
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = (secret, issuer, user_id, ttl_secs, device_id, tenant_id);
+        return Err(crate::error::FlareError::localized(
+            crate::error::ErrorCode::OperationNotSupported,
+            "generate_test_token is not available inside the WASM core runtime; generate the development token in the Web host and pass it to login/connect",
+        ));
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    {
     let now = SystemTime::now().duration_since(UNIX_EPOCH).map_err(|e| {
         crate::error::FlareError::localized(
             crate::error::ErrorCode::ConfigurationError,
@@ -97,4 +109,5 @@ pub fn generate_test_token(
             format!("token encode failed: {e}"),
         )
     })
+    }
 }
