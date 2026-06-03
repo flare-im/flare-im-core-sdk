@@ -3,22 +3,21 @@ use std::sync::Arc as StdArc;
 
 use tokio::sync::RwLock;
 
-use crate::application::event_deduper::EventDeduper;
-use crate::application::message_deduper::MessageDeduper;
+use crate::application::notification::NotificationInboundPipeline;
+use crate::application::services::EventDeduper;
+use crate::application::services::MessageDeduper;
+use crate::core::event::{ConnectionEvent as SdkConnectionEvent, EventBus, SdkEvent};
 use crate::core::{
-    ConversationSummarySync, SessionSyncRunner, SyncManager, SyncResponseHandler, SyncRunContext,
+    ConnectionEvent, ConnectionFsm, ConnectionState, ConversationSummarySync, ReliableSendQueue,
+    ReliableSendQueueConfig, SessionSyncRunner, SyncManager, SyncResponseHandler, SyncRunContext,
 };
-use crate::error::FlareError;
-use crate::event::{ConnectionEvent as SdkConnectionEvent, EventBus, SdkEvent};
-use crate::fsm::{ConnectionEvent, ConnectionFsm, ConnectionState};
-use crate::middleware::MiddlewareChain;
-use crate::notification::NotificationInboundPipeline;
-use crate::protocol::{Codec, PacketSender};
-use crate::reliable_queue::{ReliableSendQueue, ReliableSendQueueConfig};
-use crate::store::StoreProvider;
-use crate::transport::{SocketHandler, SocketTransport};
+use crate::extension::middleware::MiddlewareChain;
+use crate::infrastructure::persistence::StoreProvider;
+use crate::infrastructure::protocol::{Codec, PacketSender};
+use crate::infrastructure::transport::{SocketHandler, SocketTransport};
+use crate::shared::error::FlareError;
 
-/// 对外暴露的连接状态（与 fsm::ConnectionState 对齐，便于 UI 展示）
+/// 对外暴露的连接状态（与 core FSM ConnectionState 对齐，便于 UI 展示）
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SdkState {
     Disconnected,
@@ -28,9 +27,9 @@ pub enum SdkState {
     Reconnecting,
 }
 
-impl From<crate::fsm::ConnectionState> for SdkState {
-    fn from(s: crate::fsm::ConnectionState) -> Self {
-        use crate::fsm::ConnectionState as S;
+impl From<ConnectionState> for SdkState {
+    fn from(s: ConnectionState) -> Self {
+        use ConnectionState as S;
         match s {
             S::Disconnected => SdkState::Disconnected,
             S::Connecting => SdkState::Connecting,
@@ -52,7 +51,7 @@ pub struct SdkEngine {
     session_sync: Option<Arc<dyn SessionSyncRunner>>,
     conversation_summary_sync: Option<Arc<dyn ConversationSummarySync>>,
     codec: Arc<dyn Codec>,
-    _chain: Arc<MiddlewareChain>,
+    chain: Arc<MiddlewareChain>,
     reliable_queue: Option<Arc<ReliableSendQueue>>,
     connection_state: StdArc<RwLock<ConnectionState>>,
     event_deduper: EventDeduper,
@@ -62,7 +61,7 @@ pub struct SdkEngine {
 
 pub(crate) struct SdkEngineConfig {
     pub stores: StoreProvider,
-    pub chain: MiddlewareChain,
+    pub chain: Arc<MiddlewareChain>,
     pub transport: SocketTransport,
     pub current_user_id: crate::core::CurrentUserIdStore,
     pub codec: Arc<dyn Codec>,
@@ -118,7 +117,7 @@ impl SdkEngine {
             session_sync,
             conversation_summary_sync,
             codec,
-            _chain: Arc::new(chain),
+            chain,
             reliable_queue,
             connection_state: StdArc::new(RwLock::new(ConnectionState::Disconnected)),
             event_deduper,
@@ -181,7 +180,7 @@ impl SdkEngine {
         user_id: &str,
         token: &str,
         sync_run: SyncRunContext,
-    ) -> crate::error::Result<()> {
+    ) -> crate::shared::error::Result<()> {
         let ready = Arc::new(tokio::sync::Notify::new());
         let listener = Arc::new(SocketHandler::new(
             Arc::new(Dispatcher::new(
@@ -222,7 +221,11 @@ impl SdkEngine {
     }
 
     /// 连接服务器。同一用户已就绪时幂等返回；正在连接中或已连接为其他用户时返回错误，避免重复建连导致服务端踢线。
-    pub async fn connect(&mut self, user_id: &str, token: &str) -> crate::error::Result<()> {
+    pub async fn connect(
+        &mut self,
+        user_id: &str,
+        token: &str,
+    ) -> crate::shared::error::Result<()> {
         let (state, current_uid) = {
             let s = *self.connection_state.read().await;
             let uid = self.current_user_id.read().await.clone();
@@ -258,7 +261,11 @@ impl SdkEngine {
         self.transition(ConnectionEvent::Disconnected).await;
     }
 
-    pub async fn reconnect(&mut self, user_id: &str, token: &str) -> crate::error::Result<()> {
+    pub async fn reconnect(
+        &mut self,
+        user_id: &str,
+        token: &str,
+    ) -> crate::shared::error::Result<()> {
         let state = *self.connection_state.read().await;
         match state {
             ConnectionState::Ready => self.transition(ConnectionEvent::ReconnectRequested).await,
@@ -279,7 +286,7 @@ impl SdkEngine {
             .await
     }
 
-    pub async fn disconnect(&mut self) -> crate::error::Result<()> {
+    pub async fn disconnect(&mut self) -> crate::shared::error::Result<()> {
         self.transition(ConnectionEvent::DisconnectRequested).await;
         self.sync_manager.stop_sync();
         self.transport.disconnect().await?;
@@ -293,7 +300,10 @@ impl SdkEngine {
         Ok(())
     }
 
-    pub async fn bootstrap(&mut self, sync_run: SyncRunContext) -> crate::error::Result<()> {
+    pub async fn bootstrap(
+        &mut self,
+        sync_run: SyncRunContext,
+    ) -> crate::shared::error::Result<()> {
         let user_id = self.current_user_id.read().await.clone();
         if user_id.is_empty() {
             return Ok(());
@@ -331,6 +341,10 @@ impl SdkEngine {
         &self.stores
     }
 
+    pub fn middleware_chain(&self) -> Arc<MiddlewareChain> {
+        self.chain.clone()
+    }
+
     pub fn sync_manager(&self) -> Arc<SyncManager> {
         self.sync_manager.clone()
     }
@@ -344,7 +358,7 @@ impl SdkEngine {
         self.conversation_summary_sync.clone()
     }
 
-    pub fn reliable_queue(&self) -> Option<Arc<ReliableSendQueue>> {
+    pub(crate) fn reliable_queue(&self) -> Option<Arc<ReliableSendQueue>> {
         self.reliable_queue.clone()
     }
 

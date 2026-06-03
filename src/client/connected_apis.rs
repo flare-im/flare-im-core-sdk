@@ -2,10 +2,10 @@
 
 use std::sync::Arc;
 
-use crate::capability::SdkCapabilityRegistry;
 use crate::client::api::{
     CapabilityApi, ConversationApi, MediaApi, MessageApi, MessageBuildApi, PresenceApi,
 };
+use crate::extension::capability::SdkCapabilityRegistry;
 
 /// 已连接会话的 Facade 克隆集合（不持有 `IMClient` 全局写锁）。
 #[derive(Clone)]

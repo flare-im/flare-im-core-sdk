@@ -12,8 +12,8 @@ use crate::domain::{
     CONVERSATIONS_SYNC_TIMEOUT_SECS, GET_SYNC_CURSOR_TIMEOUT_SECS, QUERY_EVENTS_TIMEOUT_SECS,
     UPDATE_CURSOR_TIMEOUT_SECS,
 };
-use crate::error::{FlareError, Result};
-use crate::protocol::PacketSender;
+use crate::infrastructure::protocol::PacketSender;
+use crate::shared::error::{FlareError, Result};
 
 const DEFAULT_TIMEOUT_SECS: u64 = 30;
 

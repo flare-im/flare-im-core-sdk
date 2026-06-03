@@ -78,15 +78,16 @@ pub async fn sdk_send_call_invite(
     } else {
         vec![CallMediaType::Audio]
     };
-    let mut ev = flare_im_core_sdk::capability::call_event::call_invite_for_conversation(
-        req.conversation_id.clone(),
-        req.call_id.clone(),
-        from,
-        req.to_user_id,
-        req.participant_user_ids,
-        types.as_slice(),
-    )
-    .map_err(|e| e.to_string())?;
+    let mut ev =
+        flare_im_core_sdk::extension::capability::call_event::call_invite_for_conversation(
+            req.conversation_id.clone(),
+            req.call_id.clone(),
+            from,
+            req.to_user_id,
+            req.participant_user_ids,
+            types.as_slice(),
+        )
+        .map_err(|e| e.to_string())?;
     apply_sfu_runtime_hint(
         &mut ev,
         req.sfu_room_id,
@@ -121,7 +122,7 @@ pub async fn sdk_send_call_accept(
     } else {
         vec![CallMediaType::Audio]
     };
-    let ev = flare_im_core_sdk::capability::call_event::call_accept(
+    let ev = flare_im_core_sdk::extension::capability::call_event::call_accept(
         req.conversation_id.clone(),
         req.call_id,
         from,
@@ -162,7 +163,7 @@ pub async fn sdk_send_call_hangup(
     if from.is_empty() {
         return Err("not logged in".to_string());
     }
-    let ev = flare_im_core_sdk::capability::call_event::call_hangup_with_metadata(
+    let ev = flare_im_core_sdk::extension::capability::call_event::call_hangup_with_metadata(
         req.conversation_id.clone(),
         req.call_id,
         from,
@@ -209,7 +210,7 @@ pub async fn sdk_send_call_reject(
     if from.is_empty() {
         return Err("not logged in".to_string());
     }
-    let ev = flare_im_core_sdk::capability::call_event::call_reject(
+    let ev = flare_im_core_sdk::extension::capability::call_event::call_reject(
         req.conversation_id.clone(),
         req.call_id,
         from,
@@ -253,7 +254,7 @@ pub async fn sdk_send_call_ice_candidate(
         "sdpMLineIndex": req.sdp_mline_index
     })
     .to_string();
-    let ev = flare_im_core_sdk::capability::call_event::call_ice_candidate_with_json(
+    let ev = flare_im_core_sdk::extension::capability::call_event::call_ice_candidate_with_json(
         req.conversation_id.clone(),
         req.call_id,
         from,
@@ -297,7 +298,7 @@ pub async fn sdk_send_call_webrtc_sdp(
     if from.is_empty() {
         return Err("not logged in".to_string());
     }
-    let ev = flare_im_core_sdk::capability::call_event::call_renegotiate_p2p_sdp(
+    let ev = flare_im_core_sdk::extension::capability::call_event::call_renegotiate_p2p_sdp(
         req.conversation_id.clone(),
         req.call_id,
         from,

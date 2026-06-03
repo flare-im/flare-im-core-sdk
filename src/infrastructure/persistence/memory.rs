@@ -9,7 +9,7 @@ use tokio::sync::RwLock;
 use crate::domain::{
     PendingSendReader, PendingSendVo, PendingSendWriter, UserProfile, UserReader, UserWriter,
 };
-use crate::error::Result;
+use crate::shared::error::Result;
 
 /// 内存用户资料存储（未配置 SQLite 时由 StoreProvider 提供）
 pub struct MemoryUserProfileStore {

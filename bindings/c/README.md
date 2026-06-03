@@ -1,6 +1,15 @@
 # Flare IM SDK - C ABI Bindings
 
-跨平台 C ABI SDK,支持 iOS、Android、Flutter、鸿蒙、C/C++、Node、Unity。
+跨平台 C ABI SDK。它是当前多端客户端 SDK 的唯一通用 native L1
+边界，契约来源见 [`../contract/manifest.json`](../contract/manifest.json)。
+API、事件、错误的完整机器可读契约分别见：
+
+- [`../contract/apis.json`](../contract/apis.json)
+- [`../contract/events.json`](../contract/events.json)
+- [`../contract/errors.json`](../contract/errors.json)
+
+支持 iOS、Android、Flutter、鸿蒙、C/C++、Node、Unity、React Native native
+module 等通过 native bridge 接入的运行时。
 
 ## 架构
 
@@ -19,12 +28,17 @@ bindings/c/
 ├── build.rs            # 构建脚本
 ├── ARCHITECTURE.md     # 架构设计文档
 └── src/
+    ├── abi.rs           # panic 边界与 FFI 返回保护
+    ├── client_sync.rs   # IMClient 同步/状态类透传
+    ├── dispatch.rs      # JSON 分发入口
+    ├── event.rs         # EventBus 订阅与事件 JSON 映射
+    ├── executor.rs      # async -> callback_once
+    ├── ffi_runtime.rs   # Tokio runtime
     ├── lib.rs           # 入口
     ├── types.rs         # C ABI 类型定义
     ├── registry.rs      # 句柄注册表
     ├── error_convert.rs # 错误转换
     ├── helpers.rs       # 辅助工具
-    ├── executor.rs      # 回调执行器
     └── lifecycle.rs     # 生命周期 API
 ```
 
@@ -41,6 +55,7 @@ void flare_sdk_release(FlareHandle handle);
 int32_t flare_sdk_init(FlareHandle handle, const char* config_json, void* context, FlareResultCallback callback);
 int32_t flare_sdk_login(FlareHandle handle, const char* user_id, const char* token, const char* store_config_json, void* context, FlareResultCallback callback);
 int32_t flare_sdk_logout(FlareHandle handle, void* context, FlareResultCallback callback);
+int32_t flare_sdk_update_access_token(FlareHandle handle, const char* access_token, const char* tenant_id, void* context, FlareResultCallback callback);
 
 // 同步查询
 FlareString flare_sdk_version();
@@ -60,6 +75,33 @@ void flare_string_free(FlareString s);
 void flare_bytes_free(FlareBytes b);
 void flare_error_free(FlareError e);
 ```
+
+### API 覆盖
+
+热路径和稳定形状使用 direct C ABI，例如：
+
+- lifecycle: `flare_sdk_*`
+- events: `flare_event_*`
+- conversation: `flare_conversation_*`
+- media: `flare_media_*`
+- simple message paths: `flare_message_create_text`, `flare_message_send`,
+  `flare_message_list`, `flare_message_recall`, `flare_message_delete`
+
+大型或快速演进的消息构建/消息 mutation 使用 JSON dispatch：
+
+```c
+int32_t flare_message_build_json(FlareHandle handle, const char* request_json, void* context, FlareResultCallback callback);
+int32_t flare_message_dispatch_json(FlareHandle handle, const char* op, const char* params_json, void* context, FlareResultCallback callback);
+```
+
+所有 canonical API id、C entrypoint、Tauri command 的对应关系以
+[`../contract/apis.json`](../contract/apis.json) 为准。
+
+### 事件覆盖
+
+`flare_event_subscribe` 会转发完整 `SdkEvent` 域事件。`event_type` 是稳定
+整数码，`event_json` 是 snake_case JSON。事件码和 payload 字段以
+[`../contract/events.json`](../contract/events.json) 为准。
 
 ## 构建
 

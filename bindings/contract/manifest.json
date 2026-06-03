@@ -1,0 +1,202 @@
+{
+  "schemaVersion": 1,
+  "name": "flare-im-core-sdk-bindings",
+  "contractVersion": "flare-im-ffi/v1",
+  "coreCrate": "flare-im-core-sdk",
+  "sourceOfTruth": {
+    "core": "../../src",
+    "clientSdk": "../../../flare-im-core-client-sdk",
+    "ffiEntry": "../c",
+    "apiContract": "apis.json",
+    "eventContract": "events.json",
+    "errorContract": "errors.json"
+  },
+  "architecture": {
+    "l0": {
+      "name": "Rust core",
+      "path": "../../src",
+      "owns": [
+        "messages",
+        "conversations",
+        "connection",
+        "sync",
+        "reliable_delivery",
+        "media_pipeline",
+        "capabilities"
+      ]
+    },
+    "l1": {
+      "name": "bindings",
+      "path": "..",
+      "owns": [
+        "abi_shape",
+        "handle_lifecycle",
+        "callback_threading",
+        "event_mapping",
+        "error_mapping",
+        "native_artifact_contract"
+      ]
+    },
+    "l2": {
+      "name": "runtime adapters",
+      "path": "../../../flare-im-core-client-sdk/native",
+      "owns": [
+        "library_loading",
+        "thread_dispatch",
+        "platform_storage_paths",
+        "callback_bridge"
+      ]
+    },
+    "l3": {
+      "name": "typed platform SDKs",
+      "path": "../../../flare-im-core-client-sdk/packages",
+      "owns": [
+        "platform_friendly_api",
+        "typed_models",
+        "typed_errors",
+        "typed_event_streams"
+      ]
+    }
+  },
+  "bindings": [
+    {
+      "id": "c",
+      "path": "../c",
+      "package": "flare-im-core-sdk-ffi",
+      "status": "active",
+      "recommendedFor": [
+        "android",
+        "ios",
+        "flutter",
+        "harmony_arkts",
+        "harmony_cangjie",
+        "native_desktop",
+        "node_native",
+        "unity"
+      ],
+      "contract": {
+        "abi": "C",
+        "async": "callback_once",
+        "complexPayload": "json",
+        "events": "subscription_callback",
+        "memory": "rust_alloc_client_free",
+        "errors": "FlareError"
+      }
+    },
+    {
+      "id": "tauri",
+      "path": "../tauri",
+      "package": "flare-im-core-sdk-tauri",
+      "status": "active_desktop_shell",
+      "recommendedFor": [
+        "tauri_desktop"
+      ],
+      "contract": {
+        "abi": "tauri_commands",
+        "async": "promise",
+        "complexPayload": "snake_case_json",
+        "events": "tauri_emit_im_scheme",
+        "errors": "stringified_core_error"
+      }
+    },
+    {
+      "id": "uniffi",
+      "path": "../uniffi",
+      "package": "flare-im-core-sdk-uniffi",
+      "status": "archived_placeholder",
+      "recommendedFor": [],
+      "contract": {
+        "abi": "none",
+        "async": "none",
+        "complexPayload": "none",
+        "events": "none",
+        "errors": "none"
+      }
+    },
+    {
+      "id": "wasm",
+      "path": "../wasm",
+      "package": null,
+      "status": "planned_blocked_by_runtime_ports",
+      "recommendedFor": [],
+      "contract": {
+        "abi": "wasm_bindgen_planned",
+        "async": "promise_planned",
+        "complexPayload": "typed_js_or_json_planned",
+        "events": "event_stream_planned",
+        "errors": "typed_js_error_planned"
+      },
+      "blockedBy": [
+        "web_socket_transport_adapter",
+        "web_http_adapter",
+        "web_media_adapter",
+        "web_presence_adapter",
+        "browser_storage_runtime",
+        "wasm_public_api_contract"
+      ]
+    }
+  ],
+  "platformMap": {
+    "android": {
+      "l1": "c",
+      "clientPackage": "packages/flare-core-android-sdk",
+      "runtime": "jni_or_jna"
+    },
+    "ios": {
+      "l1": "c",
+      "clientPackage": "packages/flare-core-apple-sdk",
+      "runtime": "swift_c_bridge"
+    },
+    "flutter": {
+      "l1": "c",
+      "clientPackage": "packages/flare-core-flutter-sdk",
+      "runtime": "dart_ffi"
+    },
+    "harmony_arkts": {
+      "l1": "c",
+      "clientPackage": "packages/flare-core-harmony-arkts-sdk",
+      "runtime": "napi_or_native_bridge"
+    },
+    "harmony_cangjie": {
+      "l1": "c",
+      "clientPackage": "packages/flare-core-harmony-cangjie-sdk",
+      "runtime": "c_abi"
+    },
+    "web": {
+      "l1": "host_runtime",
+      "futureL1": "wasm",
+      "clientPackage": "packages/flare-core-typescript-sdk",
+      "runtime": "typescript_adapter",
+      "note": "No native C ABI in browser. Use TS runtime adapter today; wasm binding is planned only after Web runtime ports are implemented."
+    },
+    "react_native": {
+      "l1": "c",
+      "clientPackage": "packages/flare-core-typescript-sdk",
+      "runtime": "native_module_bridge"
+    },
+    "uni_app": {
+      "l1": "host_runtime",
+      "futureL1": "wasm",
+      "clientPackage": "packages/flare-core-typescript-sdk",
+      "runtime": "uni_native_plugin_or_web_adapter"
+    },
+    "tauri": {
+      "l1": "tauri",
+      "clientPackage": "packages/flare-core-tauri-sdk",
+      "runtime": "tauri_commands",
+      "note": "TS adapter is scaffold-only; Rust bindings/tauri is active."
+    }
+  },
+  "rules": [
+    "L0 core owns IM behavior; bindings never duplicate business rules.",
+    "L1 bindings keep one stable native boundary: bindings/c.",
+    "Tauri bindings are a desktop shell adapter, not the universal native boundary.",
+    "UniFFI is archived until a deliberate redesign is approved.",
+    "WASM is planned but blocked until Web transport, HTTP, media, presence, and storage runtime ports are implemented.",
+    "All complex C ABI payloads are UTF-8 JSON with core-sdk snake_case field names.",
+    "All async C ABI functions return immediate submit status and invoke callback exactly once.",
+    "Callbacks may run on arbitrary runtime threads; client SDKs own UI/main-thread dispatch.",
+    "Rust-allocated strings and bytes must be released by the paired flare_*_free function.",
+    "Errors must keep stable code plus human message; platform SDKs map them to typed errors."
+  ]
+}

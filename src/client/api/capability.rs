@@ -21,9 +21,10 @@ use tonic::metadata::MetadataValue;
 #[cfg(not(target_arch = "wasm32"))]
 use tonic::transport::{Channel, Endpoint};
 
-use crate::capability::rtc_ids;
-use crate::error::{ErrorCode, FlareError, Result};
+#[cfg(not(target_arch = "wasm32"))]
+use crate::extension::capability::rtc_ids;
 use crate::infrastructure::transport::http::http_client::HttpRequestContext;
+use crate::shared::error::{ErrorCode, FlareError, Result};
 
 #[derive(Clone)]
 pub struct CapabilityApi {
@@ -31,8 +32,11 @@ pub struct CapabilityApi {
     endpoint: String,
     #[cfg(not(target_arch = "wasm32"))]
     channel: Arc<Mutex<Option<Channel>>>,
+    #[cfg(not(target_arch = "wasm32"))]
     current_user_id: Arc<RwLock<String>>,
+    #[cfg(not(target_arch = "wasm32"))]
     default_tenant_id: String,
+    #[cfg(not(target_arch = "wasm32"))]
     http_request_context: Arc<HttpRequestContext>,
 }
 
@@ -56,13 +60,22 @@ impl CapabilityApi {
         default_tenant_id: impl Into<String>,
         http_request_context: Arc<HttpRequestContext>,
     ) -> Self {
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = (
+                grpc_endpoint.into(),
+                current_user_id,
+                default_tenant_id.into(),
+                http_request_context,
+            );
+            Self {}
+        }
+        #[cfg(not(target_arch = "wasm32"))]
         Self {
-            #[cfg(not(target_arch = "wasm32"))]
             endpoint: grpc_endpoint.into(),
-            #[cfg(not(target_arch = "wasm32"))]
             channel: Arc::new(Mutex::new(None)),
             current_user_id,
-            default_tenant_id: crate::util::normalize_tenant_id(default_tenant_id.into()),
+            default_tenant_id: crate::shared::util::normalize_tenant_id(default_tenant_id.into()),
             http_request_context,
         }
     }
@@ -91,7 +104,7 @@ impl CapabilityApi {
                 .map_err(|e| FlareError::system(format!("x-user-id metadata: {e}")))?;
             req.metadata_mut().insert("x-user-id", v);
         }
-        let tenant = crate::util::normalize_tenant_id(self.default_tenant_id.trim());
+        let tenant = crate::shared::util::normalize_tenant_id(self.default_tenant_id.trim());
         if !tenant.is_empty() {
             let v = MetadataValue::try_from(tenant.as_str())
                 .map_err(|e| FlareError::system(format!("x-tenant-id metadata: {e}")))?;
@@ -123,12 +136,13 @@ impl CapabilityApi {
         Ok(user_id)
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     fn effective_tenant_id(&self, tenant_id: Option<&str>) -> String {
         tenant_id
             .map(str::trim)
             .filter(|s| !s.is_empty())
-            .map(crate::util::normalize_tenant_id)
-            .unwrap_or_else(|| crate::util::normalize_tenant_id(&self.default_tenant_id))
+            .map(crate::shared::util::normalize_tenant_id)
+            .unwrap_or_else(|| crate::shared::util::normalize_tenant_id(&self.default_tenant_id))
     }
 
     #[cfg(not(target_arch = "wasm32"))]

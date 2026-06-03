@@ -14,23 +14,23 @@ use flare_proto::common::{
 };
 use tokio::sync::Mutex as AsyncMutex;
 
-use crate::application::event_deduper::EventDeduper;
+use crate::application::notification::NotificationInboundPipeline;
+use crate::application::services::EventDeduper;
 use crate::application::usecases::sync_request::SyncRequestUseCase;
 use crate::application::usecases::{SyncApplyUseCase, local_message_sync_start_seq};
 use crate::core::ConversationSummarySync;
+use crate::core::event::SyncNotify;
+use crate::core::event::{EventBus, SdkEvent};
 use crate::core::{SessionSyncRunner, SyncResponseHandler, SyncRunContext, SyncTrigger};
+use crate::core::{SyncFsm, SyncState, SyncTransition};
 use crate::domain::{
     CONVERSATION_CURSOR_KEY, CRITICAL_EVENT_CURSOR_KEY, DEFAULT_SYNC_LIMIT, ReadPosition,
     SyncPolicy,
 };
-use crate::error::{FlareError, Result};
-use crate::event::SyncNotify;
-use crate::event::{EventBus, SdkEvent};
-use crate::fsm::{SyncFsm, SyncState, SyncTransition};
-use crate::notification::NotificationInboundPipeline;
-use crate::protocol::PacketSender;
-use crate::store::StoreProvider;
-use crate::util::date::{ms_to_prost_timestamp, system_time_to_prost_timestamp};
+use crate::infrastructure::persistence::StoreProvider;
+use crate::infrastructure::protocol::PacketSender;
+use crate::shared::error::{FlareError, Result};
+use crate::shared::util::date::{ms_to_prost_timestamp, system_time_to_prost_timestamp};
 
 #[derive(Debug, Clone, Default)]
 struct QueryEventsReqV1 {
@@ -150,10 +150,7 @@ impl SyncProtocolAdapter {
         }
     }
 
-    pub fn set_reliable_queue(
-        &self,
-        reliable_queue: Option<Arc<crate::reliable_queue::ReliableSendQueue>>,
-    ) {
+    pub fn set_reliable_queue(&self, reliable_queue: Option<Arc<crate::core::ReliableSendQueue>>) {
         self.sync_apply_use_case.set_reliable_queue(reliable_queue);
     }
 
@@ -324,8 +321,8 @@ impl SyncProtocolAdapter {
             .conversations
             .save_batch(&[conversation])
             .await?;
-        self.bus.publish(crate::event::SdkEvent::Conversation(
-            crate::event::ConversationEvent::Updated {
+        self.bus.publish(crate::core::event::SdkEvent::Conversation(
+            crate::core::event::ConversationEvent::Updated {
                 conversation_id: conversation_id.to_string(),
             },
         ));

@@ -5,9 +5,9 @@
 use std::ffi::{c_char, c_void};
 use std::sync::Arc;
 
+use flare_im_core_sdk::client::lifecycle::SdkConfigOverlay;
 use flare_im_core_sdk::client::{IMClient, LoginDbKind};
-use flare_im_core_sdk::lifecycle::SdkConfigOverlay;
-use flare_im_core_sdk::util::generate_test_token as util_generate_test_token;
+use flare_im_core_sdk::shared::util::generate_test_token as util_generate_test_token;
 
 use crate::abi;
 use crate::executor::{CallbackContext, execute_async, execute_async_unit, return_error};
@@ -24,7 +24,13 @@ pub const FLARE_FFI_CONTRACT_VERSION: &str = "flare-im-ffi/v1";
 pub extern "C" fn flare_sdk_create() -> FlareHandle {
     abi::catch_ffi_handle(|| {
         let client = IMClient::new();
-        let runtime = crate::ffi_runtime::sdk_runtime_handle();
+        let runtime = match crate::ffi_runtime::sdk_runtime_handle() {
+            Ok(runtime) => runtime,
+            Err(error) => {
+                tracing::error!(target: "flare_im_ffi", %error, "failed to create SDK instance");
+                return 0;
+            }
+        };
         let instance = Arc::new(SdkInstance {
             client,
             runtime,
@@ -199,6 +205,51 @@ pub extern "C" fn flare_sdk_logout(
         execute_async_unit(instance, ctx, async move {
             inst.im_session.clear().await;
             inst.client.logout().await
+        });
+
+        0
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn flare_sdk_update_access_token(
+    handle: FlareHandle,
+    access_token: *const c_char,
+    tenant_id: *const c_char,
+    context: *mut c_void,
+    callback: FlareResultCallback,
+) -> i32 {
+    abi::catch_ffi_i32(|| {
+        let instance = match require_instance(handle) {
+            Ok(i) => i,
+            Err(e) => return e,
+        };
+
+        let access_token = match c_str_to_string(access_token) {
+            Ok(s) => s,
+            Err(code) => {
+                let ctx = CallbackContext::new(context, callback);
+                return_error(&ctx, code, "Invalid access_token");
+                return code;
+            }
+        };
+
+        let tenant_id = match abi::read_c_str_opt(tenant_id) {
+            Ok(v) => v,
+            Err(code) => {
+                let ctx = CallbackContext::new(context, callback);
+                return_error(&ctx, code, "Invalid tenant_id");
+                return code;
+            }
+        };
+
+        let ctx = CallbackContext::new(context, callback);
+        let client = instance.client.clone();
+
+        execute_async_unit(instance, ctx, async move {
+            client
+                .update_access_token(access_token, tenant_id.as_deref())
+                .await
         });
 
         0

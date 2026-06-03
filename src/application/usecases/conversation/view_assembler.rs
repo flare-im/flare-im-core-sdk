@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
 use crate::domain::{ConversationStore, UserReader};
-use crate::error::Result;
 use crate::model::{Conversation, ConversationListQuery};
+use crate::shared::error::Result;
 
 pub struct ConversationViewAssembler {
     store: Arc<dyn ConversationStore>,

@@ -29,8 +29,8 @@
 use async_trait::async_trait;
 use prost::Message;
 
-use crate::error::Result;
 use crate::model::IMMessage;
+use crate::shared::error::Result;
 
 /// 可选：将「按 key 存 blob」的后端统一为 Message 的读/写。
 /// 实现此 trait 后，可用 [MessageBackendAdapter] 得到 [MessageReader] + [MessageWriter]。
@@ -69,8 +69,8 @@ impl<B: MessageStorageBackend> MessageBackendAdapter<B> {
             None => return Ok(None),
         };
         let msg = Message::decode(data.as_slice()).map_err(|e| {
-            crate::error::FlareError::localized(
-                crate::error::ErrorCode::DatabaseError,
+            crate::shared::error::FlareError::localized(
+                crate::shared::error::ErrorCode::DatabaseError,
                 e.to_string(),
             )
         })?;

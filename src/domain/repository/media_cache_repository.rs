@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 
 use crate::domain::MediaCacheEntryVo;
-use crate::error::Result;
+use crate::shared::error::Result;
 
 /// 媒体文件本地缓存端口：持久化 file_id 与落盘路径对照（通常由 SQLite + 文件系统实现）。
 #[async_trait]

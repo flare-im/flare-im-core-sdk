@@ -8,8 +8,7 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 
 use crate::FlareError;
-use crate::Result;
-use crate::capability::SdkCapabilityRegistry;
+use crate::application::notification::NotificationHandlerRegistry;
 use crate::client::api::{
     CapabilityApi, CapabilityDispatchResult, ConversationApi, MediaApi, MessageApi,
     MessageBuildApi, PresenceApi, UserCapabilityGrantDto, UserPresenceDto,
@@ -20,14 +19,15 @@ use crate::client::lifecycle::{
     LoginDbKind, SdkConfigOverlay, default_ws_url, merge_sdk_config, resolve_connect_token,
     resolve_sdk_data_root,
 };
+use crate::core::event::{ConnectionEvent, EventBus, MessageEvent, SdkEvent};
 use crate::core::{SdkEngine, SdkState, SyncRunContext};
-use crate::error::ErrorCode;
-use crate::event::{ConnectionEvent, EventBus, MessageEvent, SdkEvent};
+use crate::extension::capability::SdkCapabilityRegistry;
+use crate::infrastructure::persistence::StoreProvider;
+use crate::infrastructure::transport::http::HttpRequestContext;
 use crate::model::message::MessageLocalState;
-use crate::notification::NotificationHandlerRegistry;
-use crate::store::StoreProvider;
-use crate::transport::http::HttpRequestContext;
-use crate::util::generate_test_token as util_generate_test_token;
+use crate::shared::error::ErrorCode;
+use crate::shared::error::Result;
+use crate::shared::util::generate_test_token as util_generate_test_token;
 use flare_proto::common::CallSignalEvent;
 use flare_proto::common::MessageStatus;
 use serde_json::Value;
@@ -82,10 +82,13 @@ impl IMClient {
         }
     }
 
-    pub(crate) fn into_inner(self) -> IMClientInner {
+    pub(crate) fn into_inner(self) -> Result<IMClientInner> {
         match Arc::try_unwrap(self.inner) {
-            Ok(rw) => rw.into_inner(),
-            Err(_) => panic!("IMClient must be uniquely owned"),
+            Ok(rw) => Ok(rw.into_inner()),
+            Err(_) => Err(FlareError::localized(
+                ErrorCode::InternalError,
+                "IMClient must be uniquely owned",
+            )),
         }
     }
 
@@ -103,7 +106,7 @@ impl IMClient {
             .and_then(|c| c.tenant_id.clone())
             .filter(|t| !t.is_empty())
             .or_else(|| std::env::var("FLARE_IM_TENANT_ID").ok())
-            .map(crate::util::normalize_tenant_id)
+            .map(crate::shared::util::normalize_tenant_id)
             .unwrap_or_else(|| "0".to_string())
     }
 
@@ -196,7 +199,7 @@ impl IMClient {
         let root = self
             .data_root()
             .await
-            .unwrap_or_else(crate::util::default_sdk_data_root);
+            .unwrap_or_else(crate::shared::util::default_sdk_data_root);
         let p = root.join(relative.as_ref());
         if let Some(parent) = p.parent() {
             std::fs::create_dir_all(parent).map_err(|e| {
@@ -380,7 +383,9 @@ impl IMClient {
         before_connect: F,
     ) -> Result<ConnectedApis>
     where
-        F: FnOnce(crate::event::EventBus, Arc<dyn crate::domain::MessageStore>) + Send + 'static,
+        F: FnOnce(crate::core::event::EventBus, Arc<dyn crate::domain::MessageStore>)
+            + Send
+            + 'static,
     {
         self.logout_for_login().await?;
         let snap = {
@@ -415,7 +420,8 @@ impl IMClient {
         let stores = match db {
             #[cfg(feature = "lifecycle-sqlite")]
             LoginDbKind::Sqlite => {
-                crate::util::sqlite_store::open_sqlite_store_for_user(&data_root, user_id).await?
+                crate::shared::util::sqlite_store::open_sqlite_store_for_user(&data_root, user_id)
+                    .await?
             }
             LoginDbKind::IndexedDb(stores) => stores,
         };
@@ -428,13 +434,13 @@ impl IMClient {
         for task in snap.4 {
             child_builder = child_builder.add_sync_task_arc(task);
         }
-        let child = child_builder.build();
+        let child = child_builder.build()?;
         // 对齐 old-dev：在子 client 上、connect 前注册事件订阅（早于 merge / 同步）。
         let bus = child.bus().await?.clone();
         let msg_store = child.stores_async().await?.messages.clone();
         before_connect(bus.clone(), msg_store);
         // 再合并到父 client 后 connect，避免子 client 上跑同步导致 sdk_login 长期不返回。
-        let mut inner = child.into_inner();
+        let mut inner = child.into_inner()?;
         inner.environment = snap.0;
         inner.sdk_config = snap.1;
         inner.data_root = Some(data_root);
@@ -579,7 +585,7 @@ impl IMClient {
         let tenant = tenant_id
             .map(str::to_string)
             .unwrap_or_else(|| Self::resolve_tenant_id(&g));
-        let tenant = crate::util::normalize_tenant_id(tenant);
+        let tenant = crate::shared::util::normalize_tenant_id(tenant);
         let http = g.http_request_context.clone().ok_or_else(|| {
             FlareError::localized(
                 ErrorCode::InvalidParameter,
@@ -703,8 +709,11 @@ impl IMClient {
         conversation_id: &str,
         call: CallSignalEvent,
     ) -> Result<()> {
-        let wire =
-            crate::capability::call_event::event_call_signal_uplink(conversation_id, 0, call);
+        let wire = crate::extension::capability::call_event::event_call_signal_uplink(
+            conversation_id,
+            0,
+            call,
+        );
         let sender = self.with_engine_async(|e| e.sender().clone()).await?;
         sender.send_event(&wire, Duration::from_secs(30)).await
     }

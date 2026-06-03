@@ -3,8 +3,8 @@
 use std::sync::{Arc, Mutex};
 use tokio::task::JoinHandle;
 
-use crate::event::EventBus;
-use crate::store::StoreProvider;
+use crate::core::event::EventBus;
+use crate::infrastructure::persistence::StoreProvider;
 
 use super::orchestrator::Orchestrator;
 use super::{SyncMode, SyncRunContext, SyncTask};

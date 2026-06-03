@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use sqlx::SqlitePool;
 
 use crate::domain::{SyncCursorReader, SyncCursorVo, SyncCursorWriter};
-use crate::error::{ErrorCode, FlareError, Result};
+use crate::shared::error::{ErrorCode, FlareError, Result};
 
 pub struct SqliteSyncCursorRepo {
     pool: SqlitePool,

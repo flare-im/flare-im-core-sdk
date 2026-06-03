@@ -1,5 +1,5 @@
-use crate::error::{ErrorCode, FlareError, Result};
 use crate::model::message::IMMessage;
+use crate::shared::error::{ErrorCode, FlareError, Result};
 
 #[derive(Debug, Clone)]
 pub struct MessageActor {

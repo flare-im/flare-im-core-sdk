@@ -3,14 +3,14 @@ use std::time::Duration;
 
 use super::transport_mapper::event_from_transport_action;
 use crate::core::CurrentUserIdStore;
+use crate::core::event::{EventBus, MessageEvent, SdkEvent};
 use crate::domain::{
     MessageActor, MessageLocalUpdate, MessageLocatorService, MessageMutationService, MessageStore,
     MessageTransportAction, ResolvedMessage,
 };
-use crate::error::{ErrorCode, FlareError, Result};
-use crate::event::{EventBus, MessageEvent, SdkEvent};
+use crate::infrastructure::protocol::PacketSender;
 use crate::model::message::{MarkType, ReactionAction};
-use crate::protocol::PacketSender;
+use crate::shared::error::{ErrorCode, FlareError, Result};
 
 const REQUEST_TIMEOUT_SECS: u64 = 15;
 const RESOLVE_WAIT_STEP_MS: u64 = 100;

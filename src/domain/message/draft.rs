@@ -1,7 +1,7 @@
 use crate::domain::{MessageActor, MessageContentPolicy};
-use crate::error::{ErrorCode, FlareError, Result};
 use crate::model::message::IMMessage;
-use crate::util::id;
+use crate::shared::error::{ErrorCode, FlareError, Result};
+use crate::shared::util::id;
 
 pub struct MessageDraftService {
     content_policy: MessageContentPolicy,

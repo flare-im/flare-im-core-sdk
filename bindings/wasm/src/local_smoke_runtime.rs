@@ -1,0 +1,1211 @@
+// Temporary in-memory browser runtime used only for Web SDK smoke tests.
+//
+// This module intentionally lives behind `lib.rs` so the wasm binding entry
+// stays thin. Do not add durable IM behavior here. Add shared behavior under
+// `flare-im-core-sdk/src`, then route the wasm binding to that core facade.
+
+use flare_im_core_sdk::model::conversation::{Conversation, ConversationType};
+use flare_im_core_sdk::model::message::{IMMessage, ReactionEntry};
+use flare_im_core_sdk::model::message_elem::{
+    CustomElem, Elem, EmojiElem, MentionElem, StickerElem, TextElem,
+};
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
+use wasm_bindgen::prelude::*;
+
+use crate::operation::{message_build_catalog, normalize_operation};
+use crate::web_model::{
+    content_text, conversation_to_json, conversations_to_json, message_to_json, messages_to_json,
+};
+
+const CONTRACT_VERSION: &str = "flare-im-ffi/v1";
+
+#[derive(Debug, Default, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SdkConfig {
+    ws_url: Option<String>,
+    data_url: Option<String>,
+    tenant_id: Option<String>,
+}
+
+#[wasm_bindgen]
+pub struct FlareImWasmRuntime {
+    initialized: bool,
+    connected: bool,
+    current_user_id: Option<String>,
+    config: Option<SdkConfig>,
+    conversations: Vec<Conversation>,
+    messages: Vec<IMMessage>,
+    event_subscription_ids: Vec<u64>,
+    next_subscription_id: u64,
+    next_seq: u64,
+    next_message_id: u64,
+}
+
+#[wasm_bindgen(js_name = createWasmRuntime)]
+pub fn create_wasm_runtime() -> FlareImWasmRuntime {
+    FlareImWasmRuntime::new()
+}
+
+#[wasm_bindgen]
+impl FlareImWasmRuntime {
+    #[wasm_bindgen(constructor)]
+    pub fn new() -> FlareImWasmRuntime {
+        FlareImWasmRuntime {
+            initialized: false,
+            connected: false,
+            current_user_id: None,
+            config: None,
+            conversations: Vec::new(),
+            messages: Vec::new(),
+            event_subscription_ids: Vec::new(),
+            next_subscription_id: 1,
+            next_seq: 1,
+            next_message_id: 1,
+        }
+    }
+
+    pub fn invoke(&mut self, operation: &str, request_json: &str) -> Result<JsValue, JsValue> {
+        let request = parse_request(request_json)?;
+        let result = self.invoke_json(operation, request)?;
+        result
+            .serialize(&serde_wasm_bindgen::Serializer::json_compatible())
+            .map_err(|error| js_error("wasm.serialize_failed", error))
+    }
+
+    pub fn dispose(&mut self) {
+        self.initialized = false;
+        self.connected = false;
+        self.current_user_id = None;
+        self.conversations.clear();
+        self.messages.clear();
+        self.event_subscription_ids.clear();
+    }
+}
+
+impl FlareImWasmRuntime {
+    fn invoke_json(&mut self, operation: &str, request: Value) -> Result<Value, JsValue> {
+        let normalized = normalize_operation(operation, request);
+        let operation = normalized.name.as_str();
+        let request = normalized.request;
+        match operation {
+            "sdk.create" => Ok(json!({ "handle": 1 })),
+            "sdk.init" => {
+                self.config = Some(parse_config(request));
+                self.initialized = true;
+                Ok(Value::Null)
+            }
+            "sdk.uninit" => {
+                self.initialized = false;
+                self.connected = false;
+                Ok(Value::Null)
+            }
+            "sdk.login" => self.login(request),
+            "sdk.logout" | "connection.disconnect" => {
+                self.connected = false;
+                Ok(Value::Null)
+            }
+            "sdk.dispose" => {
+                self.dispose();
+                Ok(Value::Null)
+            }
+            "sdk.hard_reset" => {
+                self.dispose();
+                Ok(Value::Null)
+            }
+            "sdk.current_user_id" => {
+                Ok(json!({ "userId": self.current_user_id.clone().unwrap_or_default() }))
+            }
+            "sdk.is_connected" | "sdk.session_active" => Ok(json!(self.connected)),
+            "sdk.generate_test_token" => {
+                let user_id = string_field(&request, "user_id")
+                    .or_else(|| string_field(&request, "userId"))
+                    .unwrap_or_else(|| "web-user".to_string());
+                Ok(json!({ "token": format!("wasm-dev-token-{user_id}") }))
+            }
+            "sdk.init_logging" => Ok(Value::Null),
+            "sdk.update_access_token" => Ok(Value::Null),
+            "connection.get_state" => Ok(json!(if self.connected {
+                "ready"
+            } else {
+                "disconnected"
+            })),
+            "conversation.list"
+            | "conversation.list_raw"
+            | "conversation.list_including_archived"
+            | "conversation.list_paginated"
+            | "conversation.list_by_query"
+            | "conversation.get_multiple" => {
+                Ok(json!({ "conversations": conversations_to_json(&self.conversations) }))
+            }
+            "conversation.get" | "conversation.get_one" | "conversation.get_group_by_user_ids" => {
+                let conversation = self.resolve_conversation(&request);
+                Ok(conversation_to_json(&conversation))
+            }
+            "conversation.mark_read" => {
+                if let Some(id) = conversation_id(&request) {
+                    if let Some(conversation) = self
+                        .conversations
+                        .iter_mut()
+                        .find(|item| item.conversation_id == id)
+                    {
+                        conversation.unread_count = 0;
+                        conversation.last_read_seq = conversation.max_seq;
+                    }
+                }
+                Ok(Value::Null)
+            }
+            "conversation.mark_all_read" => {
+                for conversation in &mut self.conversations {
+                    conversation.unread_count = 0;
+                    conversation.last_read_seq = conversation.max_seq;
+                }
+                Ok(Value::Null)
+            }
+            "conversation.mark_unread" => {
+                if let Some(id) = conversation_id(&request) {
+                    if let Some(conversation) = self
+                        .conversations
+                        .iter_mut()
+                        .find(|item| item.conversation_id == id)
+                    {
+                        conversation.unread_count = conversation.unread_count.max(1);
+                        conversation.updated_at = now_ms();
+                        conversation.version += 1;
+                        return Ok(conversation_to_json(conversation));
+                    }
+                }
+                Ok(Value::Null)
+            }
+            "conversation.set_pinned" | "conversation.set_muted" | "conversation.set_archived" => {
+                self.update_conversation_flag(operation, &request);
+                Ok(Value::Null)
+            }
+            "conversation.update_draft" => {
+                if let Some(id) = conversation_id(&request) {
+                    let draft = string_field(&request, "draft").unwrap_or_default();
+                    if let Some(conversation) = self
+                        .conversations
+                        .iter_mut()
+                        .find(|item| item.conversation_id == id)
+                    {
+                        conversation.draft = if draft.is_empty() { None } else { Some(draft) };
+                        conversation.updated_at = now_ms();
+                        conversation.version += 1;
+                    }
+                }
+                Ok(Value::Null)
+            }
+            "conversation.clear_local_chat_history" => {
+                if let Some(id) = conversation_id(&request) {
+                    self.messages.retain(|item| item.conversation_id != id);
+                    if let Some(conversation) = self
+                        .conversations
+                        .iter_mut()
+                        .find(|item| item.conversation_id == id)
+                    {
+                        conversation.last_message_id = None;
+                        conversation.last_message_at = None;
+                        conversation.last_message_preview = None;
+                        conversation.max_seq = 0;
+                        conversation.unread_count = 0;
+                    }
+                }
+                Ok(Value::Null)
+            }
+            "conversation.delete" => {
+                if let Some(id) = conversation_id(&request) {
+                    self.conversations.retain(|item| item.conversation_id != id);
+                    self.messages.retain(|item| item.conversation_id != id);
+                }
+                Ok(Value::Null)
+            }
+            "message_builder.list_catalog" => Ok(json!({ "entries": message_build_catalog() })),
+            "message.build" => Ok(message_to_json(&self.build_message(&request))),
+            "message.create_text" => {
+                let message = self.build_text_message(&request);
+                Ok(message_to_json(&message))
+            }
+            "message.send" | "message.send_no_oss" => self.send_message(request),
+            "message.list" => {
+                let id = conversation_id(&request).unwrap_or_default();
+                let mut messages = self
+                    .messages
+                    .iter()
+                    .filter(|item| item.conversation_id == id)
+                    .cloned()
+                    .collect::<Vec<_>>();
+                messages.sort_by_key(|item| item.seq);
+                Ok(json!({ "messages": messages_to_json(&messages) }))
+            }
+            "message.dispatch" => self.dispatch_message(request),
+            "message.typing" => Ok(json!({ "typing": true })),
+            "sync.conversation" | "sync.messages" => {
+                Ok(json!({ "synced": true, "syncedAt": now_ms() }))
+            }
+            "sync.mark_session_read" => {
+                if let Some(id) = conversation_id(&request) {
+                    let read_seq = request
+                        .get("readSeq")
+                        .or_else(|| request.get("read_seq"))
+                        .and_then(Value::as_u64);
+                    if let Some(conversation) = self
+                        .conversations
+                        .iter_mut()
+                        .find(|item| item.conversation_id == id)
+                    {
+                        let seq = read_seq.unwrap_or(conversation.max_seq);
+                        conversation.last_read_seq = seq;
+                        conversation.unread_count = 0;
+                    }
+                    for message in self
+                        .messages
+                        .iter_mut()
+                        .filter(|item| item.conversation_id == id)
+                    {
+                        message.is_read = true;
+                    }
+                }
+                Ok(Value::Null)
+            }
+            "message.get" | "message.get_raw" => {
+                let id = string_field(&request, "message_id")
+                    .or_else(|| string_field(&request, "messageId"))
+                    .unwrap_or_default();
+                Ok(self
+                    .messages
+                    .iter()
+                    .find(|item| item.server_id == id || item.client_msg_id == id)
+                    .map(message_to_json)
+                    .unwrap_or(Value::Null))
+            }
+            "message.search" | "message.search_by_query" | "message.search_in_conversation" => {
+                let keyword = string_field(&request, "keyword").unwrap_or_default();
+                let messages = self
+                    .messages
+                    .iter()
+                    .filter(|item| message_text(item).contains(&keyword))
+                    .cloned()
+                    .collect::<Vec<_>>();
+                Ok(json!({ "messages": messages_to_json(&messages) }))
+            }
+            "message.recall"
+            | "message.delete"
+            | "message.delete_for_self"
+            | "message.delete_for_everyone" => {
+                if let Some(id) = string_field(&request, "message_id")
+                    .or_else(|| string_field(&request, "messageId"))
+                {
+                    self.messages
+                        .retain(|item| item.server_id != id && item.client_msg_id != id);
+                }
+                Ok(Value::Null)
+            }
+            "message.edit_text_by_message_id"
+            | "message.mark_read"
+            | "message.mark_read_with_ids"
+            | "message.mark_read_and_burn"
+            | "message.add_reaction"
+            | "message.remove_reaction"
+            | "message.pin"
+            | "message.unpin"
+            | "message.pin_by_message_id"
+            | "message.unpin_by_message_id"
+            | "message.mark"
+            | "message.mark_with_color"
+            | "message.unmark"
+            | "message.mark_by_message_id"
+            | "message.unmark_by_message_id"
+            | "message.edit_rich_doc_by_message_id" => Ok(Value::Null),
+            "presence.get" => {
+                let user_id = string_field(&request, "userId")
+                    .or_else(|| string_field(&request, "user_id"))
+                    .unwrap_or_default();
+                Ok(json!({
+                    "userId": user_id,
+                    "status": "unknown",
+                    "available": false,
+                    "lastSeenAt": Value::Null
+                }))
+            }
+            "presence.batch_get" => {
+                let user_ids = request
+                    .get("userIds")
+                    .or_else(|| request.get("user_ids"))
+                    .and_then(Value::as_array)
+                    .cloned()
+                    .unwrap_or_default();
+                let items = user_ids
+                    .into_iter()
+                    .filter_map(|value| value.as_str().map(str::to_string))
+                    .map(|user_id| json!({ "userId": user_id, "status": "unknown", "available": false }))
+                    .collect::<Vec<_>>();
+                Ok(json!({ "items": items }))
+            }
+            "presence.subscribe" => Ok(json!({ "subscribed": true })),
+            "capability.list" => Ok(json!({ "capabilities": [] })),
+            "capability.list_user" => Ok(json!({ "capabilities": [] })),
+            "capability.dispatch"
+            | "capability.grant"
+            | "capability.revoke"
+            | "capability.send_call_signal" => Err(js_message(
+                "capabilityUnavailable",
+                operation,
+                "WASM capability runtime is not connected to a host plugin adapter",
+            )),
+            "rich_doc_v2.normalize_from_markdown"
+            | "rich_doc_v2.normalize_from_html"
+            | "rich_doc_v2.normalize_from_doc_json" => {
+                Ok(self.normalize_rich_doc(operation, &request))
+            }
+            op if op.starts_with("media.") => Err(js_message(
+                "capabilityUnavailable",
+                operation,
+                "WASM media runtime requires a browser media host adapter",
+            )),
+            "event.subscribe" => {
+                let id = self.next_subscription_id;
+                self.next_subscription_id += 1;
+                self.event_subscription_ids.push(id);
+                Ok(json!({ "id": id }))
+            }
+            "event.unsubscribe" => {
+                if let Some(id) = request.get("id").and_then(Value::as_u64) {
+                    self.event_subscription_ids.retain(|item| *item != id);
+                }
+                Ok(Value::Null)
+            }
+            "event.unsubscribe_all" => {
+                self.event_subscription_ids.clear();
+                Ok(Value::Null)
+            }
+            "diagnostics.sdk_version" => {
+                Ok(json!({ "version": env!("CARGO_PKG_VERSION"), "runtime": "wasm" }))
+            }
+            "diagnostics.ffi_contract_version" => Ok(json!({ "version": CONTRACT_VERSION })),
+            "diagnostics.data_root" => {
+                let cfg = self.config.clone().unwrap_or_default();
+                Ok(json!({
+                    "dataRoot": cfg.data_url.unwrap_or_else(|| "memory://flare-im-core-sdk-wasm".to_string()),
+                    "wsUrl": cfg.ws_url,
+                    "tenantId": cfg.tenant_id
+                }))
+            }
+            _ => Err(js_message(
+                "invalidParameter",
+                operation,
+                "Unsupported WASM SDK operation",
+            )),
+        }
+    }
+
+    fn login(&mut self, request: Value) -> Result<Value, JsValue> {
+        if !self.initialized {
+            self.initialized = true;
+        }
+        let user_id = string_field(&request, "user_id")
+            .or_else(|| string_field(&request, "userId"))
+            .ok_or_else(|| js_message("invalidParameter", "sdk.login", "userId is required"))?;
+        self.current_user_id = Some(user_id.clone());
+        self.connected = true;
+        self.ensure_seed_conversation(&user_id);
+        Ok(Value::Null)
+    }
+
+    fn ensure_seed_conversation(&mut self, user_id: &str) {
+        if !self.conversations.is_empty() {
+            return;
+        }
+        if user_id == "hugo" {
+            self.seed_hugo_workspace();
+            return;
+        }
+        let peer = if user_id == "alice" { "bob" } else { "alice" };
+        self.create_seed_conversation(
+            format!("single:{user_id}:{peer}"),
+            "single",
+            peer,
+            format!("{} (WASM)", peer),
+            false,
+            0,
+            None,
+        );
+    }
+
+    fn seed_hugo_workspace(&mut self) {
+        let support = self.create_seed_conversation(
+            "single:hugo:alice".to_string(),
+            "single",
+            "alice",
+            "Alice 产品支持",
+            true,
+            2,
+            Some("明天上午我会把 SDK 接入 checklist 发你。"),
+        );
+        let ops = self.create_seed_conversation(
+            "single:hugo:bob".to_string(),
+            "single",
+            "bob",
+            "Bob 后端联调",
+            false,
+            1,
+            Some("wasm runtime 的会话列表已经可以拉取。"),
+        );
+        let group = self.create_seed_conversation(
+            "group:hugo:core-sdk".to_string(),
+            "group",
+            "core-sdk",
+            "Core SDK 联调群",
+            true,
+            2,
+            Some("消息发送 ack 需要回写 clientMsgId 和 serverId。"),
+        );
+        let system = self.create_seed_conversation(
+            "system:hugo:release".to_string(),
+            "system",
+            "release",
+            "发布通知",
+            false,
+            0,
+            Some("wasm 包已生成，可进入 Web 示例验证。"),
+        );
+        self.push_seed_message(
+            &support,
+            "alice",
+            "明天上午我会把 SDK 接入 checklist 发你。",
+            1,
+            true,
+        );
+        self.push_seed_message(
+            &support,
+            "hugo",
+            "收到，我先把 Web 端会话同步状态补齐。",
+            2,
+            false,
+        );
+        self.push_seed_message(
+            &ops,
+            "bob",
+            "wasm runtime 的会话列表已经可以拉取。",
+            1,
+            true,
+        );
+        self.push_seed_message(
+            &group,
+            "alice",
+            "请确认 Web、Android、Flutter 的字段契约一致。",
+            1,
+            true,
+        );
+        self.push_seed_message(
+            &group,
+            "bob",
+            "消息发送 ack 需要回写 clientMsgId 和 serverId。",
+            2,
+            true,
+        );
+        self.push_seed_message(
+            &system,
+            "system",
+            "wasm 包已生成，可进入 Web 示例验证。",
+            1,
+            false,
+        );
+    }
+
+    fn create_seed_conversation(
+        &mut self,
+        id: String,
+        conversation_type: &str,
+        channel_id: &str,
+        display_name: impl Into<String>,
+        pinned: bool,
+        unread_count: u32,
+        preview: Option<&str>,
+    ) -> String {
+        let now = now_ms();
+        let conversation_type = ConversationType::from(conversation_type);
+        let max_seq = u64::from(unread_count);
+        self.conversations.push(Conversation {
+            conversation_id: id.clone(),
+            conversation_type,
+            business_type: conversation_type.as_str().to_string(),
+            channel_id: channel_id.to_string(),
+            members_count: if conversation_type == ConversationType::Group {
+                8
+            } else {
+                2
+            },
+            display_name: display_name.into(),
+            avatar_url: String::new(),
+            last_message_id: preview.map(|_| format!("seed-{}", self.next_message_id)),
+            last_sender_id: None,
+            last_message_at: preview.map(|_| now),
+            last_message_preview: preview.map(ToString::to_string),
+            last_sender_nickname: String::new(),
+            last_sender_avatar_url: String::new(),
+            unread_count,
+            last_read_seq: max_seq.saturating_sub(u64::from(unread_count)),
+            peer_read_seq: 0,
+            max_seq,
+            visible_after_seq: 0,
+            is_pinned: pinned,
+            is_muted: false,
+            is_archived: false,
+            version: 1,
+            updated_at: now,
+            created_at: now,
+            participant_version: 1,
+            draft: None,
+            mention_count: 0,
+            mention_me: false,
+            ..Default::default()
+        });
+        id
+    }
+
+    fn push_seed_message(
+        &mut self,
+        conversation_id: &str,
+        sender_id: &str,
+        text: &str,
+        seq: u64,
+        unread: bool,
+    ) {
+        let now = now_ms() - (10_000 - seq * 1_000);
+        let server_id = format!("seed-{seq}-{}", self.next_message_id);
+        self.next_message_id += 1;
+        self.messages.push(IMMessage {
+            server_id: server_id.clone(),
+            client_msg_id: format!("seed-local-{seq}"),
+            conversation_id: conversation_id.to_string(),
+            conversation_type: if conversation_id.starts_with("group:") {
+                2
+            } else {
+                1
+            },
+            channel_id: conversation_id
+                .rsplit(':')
+                .next()
+                .unwrap_or_default()
+                .to_string(),
+            sender_id: sender_id.to_string(),
+            source: if sender_id == self.current_user_id.as_deref().unwrap_or("") {
+                1
+            } else {
+                2
+            },
+            seq,
+            timestamp: now,
+            client_timestamp: now,
+            message_type: 0,
+            content: Some(text_elem(text)),
+            sender_name: sender_id.to_string(),
+            sender_avatar: String::new(),
+            sender_display_name: sender_id.to_string(),
+            status: 2,
+            is_read: !unread,
+            is_recalled: false,
+            is_edited: false,
+            burn_enabled: false,
+            burn_after_read_seconds: None,
+            burn_status: 0,
+            first_read_at: None,
+            burn_at: None,
+            burned_at: None,
+            mention_users: Vec::new(),
+            mention_all: false,
+            offline_push_info: None,
+            reply_to: None,
+            quote_preview: None,
+            extra: Default::default(),
+            extensions: Default::default(),
+            reactions: Vec::new(),
+            version: 1,
+            updated_at: now,
+            content_bytes: Vec::new(),
+            local_state: Default::default(),
+        });
+        if let Some(conversation) = self
+            .conversations
+            .iter_mut()
+            .find(|item| item.conversation_id == conversation_id)
+        {
+            conversation.last_message_id = Some(server_id);
+            conversation.last_sender_id = Some(sender_id.to_string());
+            conversation.last_message_at = Some(now);
+            conversation.last_message_preview = Some(text.to_string());
+            conversation.last_sender_nickname = sender_id.to_string();
+            conversation.max_seq = conversation.max_seq.max(seq);
+            conversation.updated_at = now;
+        }
+        self.next_seq = self.next_seq.max(seq + 1);
+    }
+
+    fn resolve_conversation(&mut self, request: &Value) -> Conversation {
+        let id = conversation_id(request)
+            .or_else(|| {
+                string_field(request, "source_id").map(|source| {
+                    format!(
+                        "single:{}:{source}",
+                        self.current_user_id
+                            .clone()
+                            .unwrap_or_else(|| "web-user".to_string())
+                    )
+                })
+            })
+            .unwrap_or_else(|| {
+                self.conversations
+                    .first()
+                    .map(|item| item.conversation_id.clone())
+                    .unwrap_or_else(|| "single:web-user:alice".to_string())
+            });
+        if let Some(conversation) = self
+            .conversations
+            .iter()
+            .find(|item| item.conversation_id == id)
+        {
+            return conversation.clone();
+        }
+        let now = now_ms();
+        let conversation = Conversation {
+            conversation_id: id.clone(),
+            conversation_type: ConversationType::Single,
+            business_type: "single".to_string(),
+            channel_id: id.rsplit(':').next().unwrap_or("peer").to_string(),
+            members_count: 2,
+            display_name: id.rsplit(':').next().unwrap_or("peer").to_string(),
+            avatar_url: String::new(),
+            last_message_id: None,
+            last_sender_id: None,
+            last_message_at: None,
+            last_message_preview: None,
+            last_sender_nickname: String::new(),
+            last_sender_avatar_url: String::new(),
+            unread_count: 0,
+            last_read_seq: 0,
+            peer_read_seq: 0,
+            max_seq: 0,
+            visible_after_seq: 0,
+            is_pinned: false,
+            is_muted: false,
+            is_archived: false,
+            version: 1,
+            updated_at: now,
+            created_at: now,
+            participant_version: 1,
+            draft: None,
+            mention_count: 0,
+            mention_me: false,
+            ..Default::default()
+        };
+        self.conversations.push(conversation.clone());
+        conversation
+    }
+
+    fn update_conversation_flag(&mut self, operation: &str, request: &Value) {
+        let Some(id) = conversation_id(request) else {
+            return;
+        };
+        let value = bool_field(request, "pinned")
+            .or_else(|| bool_field(request, "muted"))
+            .or_else(|| bool_field(request, "archived"))
+            .unwrap_or(false);
+        if let Some(conversation) = self
+            .conversations
+            .iter_mut()
+            .find(|item| item.conversation_id == id)
+        {
+            match operation {
+                "conversation.set_pinned" => conversation.is_pinned = value,
+                "conversation.set_muted" => conversation.is_muted = value,
+                "conversation.set_archived" => conversation.is_archived = value,
+                _ => {}
+            }
+        }
+    }
+
+    fn build_message(&mut self, request: &Value) -> IMMessage {
+        let op = string_field(request, "op").unwrap_or_else(|| "create_text".to_string());
+        match op.as_str() {
+            "create_text" => self.build_text_message(request),
+            "create_emoji" => self.build_content_message(
+                request,
+                8,
+                Elem::Emoji(EmojiElem {
+                    emoji: string_field(request, "emoji").unwrap_or_else(|| "🙂".to_string()),
+                    description: String::new(),
+                    extra: Default::default(),
+                }),
+            ),
+            "create_sticker" => self.build_content_message(
+                request,
+                7,
+                Elem::Sticker(StickerElem {
+                    sticker_id: string_field(request, "sticker_id")
+                        .or_else(|| string_field(request, "stickerId"))
+                        .unwrap_or_else(|| "001".to_string()),
+                    package_id: string_field(request, "package_id")
+                        .or_else(|| string_field(request, "packageId"))
+                        .unwrap_or_else(|| "default".to_string()),
+                    url: String::new(),
+                    width: 0,
+                    height: 0,
+                    format: String::new(),
+                    extra: Default::default(),
+                }),
+            ),
+            _ => self.build_content_message(
+                request,
+                22,
+                Elem::Custom(CustomElem {
+                    r#type: op,
+                    payload: serde_json::to_vec(request).unwrap_or_default(),
+                    description: String::new(),
+                    metadata: Default::default(),
+                }),
+            ),
+        }
+    }
+
+    fn build_text_message(&mut self, request: &Value) -> IMMessage {
+        let text = string_field(request, "text")
+            .or_else(|| string_field(request, "body"))
+            .unwrap_or_default();
+        self.build_content_message(request, 0, text_elem(&text))
+    }
+
+    fn build_content_message(
+        &mut self,
+        request: &Value,
+        message_type: i32,
+        content: Elem,
+    ) -> IMMessage {
+        let conversation_id = conversation_id(request).unwrap_or_else(|| {
+            self.conversations
+                .first()
+                .map(|item| item.conversation_id.clone())
+                .unwrap_or_else(|| "single:web-user:alice".to_string())
+        });
+        let sender_id = self
+            .current_user_id
+            .clone()
+            .unwrap_or_else(|| "web-user".to_string());
+        let now = now_ms();
+        let client_msg_id = format!("wasm-local-{}", self.next_message_id);
+        self.next_message_id += 1;
+        let conversation_type = self
+            .conversations
+            .iter()
+            .find(|item| item.conversation_id == conversation_id)
+            .map(|item| item.conversation_type.to_proto_int())
+            .unwrap_or(ConversationType::Single.to_proto_int());
+        IMMessage {
+            server_id: String::new(),
+            client_msg_id,
+            conversation_id: conversation_id.clone(),
+            conversation_type,
+            channel_id: conversation_id
+                .rsplit(':')
+                .next()
+                .unwrap_or_default()
+                .to_string(),
+            sender_id: sender_id.clone(),
+            source: 1,
+            seq: 0,
+            timestamp: now,
+            client_timestamp: now,
+            message_type,
+            content: Some(content),
+            sender_name: sender_id.clone(),
+            sender_avatar: String::new(),
+            sender_display_name: sender_id,
+            status: 1,
+            is_read: false,
+            is_recalled: false,
+            is_edited: false,
+            burn_enabled: false,
+            burn_after_read_seconds: None,
+            burn_status: 0,
+            first_read_at: None,
+            burn_at: None,
+            burned_at: None,
+            mention_users: Vec::new(),
+            mention_all: false,
+            offline_push_info: None,
+            reply_to: None,
+            quote_preview: None,
+            extra: Default::default(),
+            extensions: Default::default(),
+            reactions: Vec::new(),
+            version: 1,
+            updated_at: now,
+            content_bytes: Vec::new(),
+            local_state: Default::default(),
+        }
+    }
+
+    fn send_message(&mut self, request: Value) -> Result<Value, JsValue> {
+        let mut message = self.message_from_request(request.get("message").unwrap_or(&request))?;
+        let seq = self
+            .messages
+            .iter()
+            .filter(|item| item.conversation_id == message.conversation_id)
+            .map(|item| item.seq)
+            .max()
+            .unwrap_or(0)
+            + 1;
+        self.next_seq = self.next_seq.max(seq + 1);
+        let now = now_ms();
+        message.seq = seq;
+        message.timestamp = now;
+        message.updated_at = now;
+        if message.server_id.is_empty() {
+            message.server_id = format!("wasm-server-{seq}");
+        }
+        message.status = 2;
+        self.upsert_conversation_from_message(&message);
+        self.messages.push(message.clone());
+        Ok(json!({
+            "serverId": message.server_id,
+            "serverMsgId": message.server_id,
+            "clientMsgId": message.client_msg_id,
+            "conversationId": message.conversation_id,
+            "seq": message.seq,
+            "timestamp": message.timestamp
+        }))
+    }
+
+    fn dispatch_message(&mut self, request: Value) -> Result<Value, JsValue> {
+        let op = string_field(&request, "op").unwrap_or_default();
+        let params = request
+            .get("params")
+            .cloned()
+            .unwrap_or_else(|| request.clone());
+        let id = string_field(&params, "messageId")
+            .or_else(|| string_field(&params, "message_id"))
+            .or_else(|| string_field(&params, "clientMsgId"))
+            .or_else(|| string_field(&params, "client_msg_id"))
+            .unwrap_or_default();
+        let now = now_ms();
+        if op.contains("delete") {
+            self.messages
+                .retain(|item| item.server_id != id && item.client_msg_id != id);
+            return Ok(json!({ "deleted": true, "messageId": id }));
+        }
+        if let Some(message) = self
+            .messages
+            .iter_mut()
+            .find(|item| item.server_id == id || item.client_msg_id == id)
+        {
+            if op.contains("edit") {
+                let text = string_field(&params, "text").unwrap_or_default();
+                message.content = Some(text_elem(&text));
+                message.is_edited = true;
+                message.updated_at = now;
+                return Ok(json!({ "edited": true, "messageId": id }));
+            }
+            if op.contains("pin") {
+                message
+                    .extra
+                    .insert("pinned".to_string(), "true".to_string());
+                message.updated_at = now;
+                return Ok(json!({ "pinned": true, "messageId": id }));
+            }
+            if op.contains("reaction") {
+                let emoji = string_field(&params, "emoji").unwrap_or_else(|| "👍".to_string());
+                message.reactions.push(ReactionEntry {
+                    emoji,
+                    user_ids: vec![self.current_user_id.clone().unwrap_or_default()],
+                    count: 1,
+                });
+                message.updated_at = now;
+                return Ok(json!({ "reacted": true, "messageId": id }));
+            }
+        }
+        Ok(json!({ "handled": true, "op": op, "messageId": id }))
+    }
+
+    fn normalize_rich_doc(&self, operation: &str, request: &Value) -> Value {
+        let raw = string_field(request, "markdown")
+            .or_else(|| string_field(request, "html"))
+            .or_else(|| string_field(request, "docJson"))
+            .or_else(|| string_field(request, "doc_json"))
+            .unwrap_or_else(|| request.to_string());
+        json!({
+            "operation": operation,
+            "doc": {
+                "type": "rich_doc_v2",
+                "text": raw,
+                "blocks": []
+            },
+            "plainText": raw
+        })
+    }
+
+    fn message_from_request(&mut self, value: &Value) -> Result<IMMessage, JsValue> {
+        let conversation_id = string_field(value, "conversationId")
+            .or_else(|| string_field(value, "conversation_id"))
+            .ok_or_else(|| {
+                js_message(
+                    "invalidParameter",
+                    "message.send",
+                    "message.conversationId is required",
+                )
+            })?;
+        let sender_id = string_field(value, "senderId")
+            .or_else(|| string_field(value, "sender_id"))
+            .or_else(|| self.current_user_id.clone())
+            .unwrap_or_else(|| "web-user".to_string());
+        let message_type = value
+            .get("messageType")
+            .or_else(|| value.get("message_type"))
+            .and_then(Value::as_i64)
+            .unwrap_or(0) as i32;
+        let now = now_ms();
+        let mut message = IMMessage {
+            server_id: string_field(value, "serverId")
+                .or_else(|| string_field(value, "server_id"))
+                .unwrap_or_default(),
+            client_msg_id: string_field(value, "clientMsgId")
+                .or_else(|| string_field(value, "client_msg_id"))
+                .unwrap_or_else(|| {
+                    let id = format!("wasm-local-{}", self.next_message_id);
+                    self.next_message_id += 1;
+                    id
+                }),
+            conversation_id: conversation_id.clone(),
+            conversation_type: value
+                .get("conversationType")
+                .or_else(|| value.get("conversation_type"))
+                .and_then(Value::as_i64)
+                .map(|value| value as i32)
+                .unwrap_or_else(|| self.conversation_type_for(&conversation_id).to_proto_int()),
+            channel_id: string_field(value, "channelId")
+                .or_else(|| string_field(value, "channel_id"))
+                .unwrap_or_else(|| {
+                    conversation_id
+                        .rsplit(':')
+                        .next()
+                        .unwrap_or_default()
+                        .to_string()
+                }),
+            sender_id: sender_id.clone(),
+            source: value.get("source").and_then(Value::as_i64).unwrap_or(1) as i32,
+            seq: value.get("seq").and_then(Value::as_u64).unwrap_or_default(),
+            timestamp: value
+                .get("timestamp")
+                .and_then(Value::as_u64)
+                .unwrap_or(now),
+            client_timestamp: value
+                .get("clientTimestamp")
+                .or_else(|| value.get("client_timestamp"))
+                .and_then(Value::as_u64)
+                .unwrap_or(now),
+            message_type,
+            content: parse_web_content(value.get("content"), message_type),
+            content_bytes: Vec::new(),
+            sender_name: string_field(value, "senderName")
+                .or_else(|| string_field(value, "sender_name"))
+                .unwrap_or_else(|| sender_id.clone()),
+            sender_avatar: string_field(value, "senderAvatar")
+                .or_else(|| string_field(value, "sender_avatar"))
+                .unwrap_or_default(),
+            sender_display_name: string_field(value, "senderDisplayName")
+                .or_else(|| string_field(value, "sender_display_name"))
+                .unwrap_or_else(|| sender_id.clone()),
+            reply_to: None,
+            quote_preview: None,
+            status: value.get("status").and_then(Value::as_i64).unwrap_or(1) as i32,
+            is_read: value
+                .get("isRead")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+            is_recalled: value
+                .get("isRecalled")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+            is_edited: value
+                .get("isEdited")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+            burn_enabled: value
+                .get("burnEnabled")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+            burn_after_read_seconds: None,
+            burn_status: value.get("burnStatus").and_then(Value::as_i64).unwrap_or(0) as i32,
+            first_read_at: None,
+            burn_at: None,
+            burned_at: None,
+            mention_users: Vec::new(),
+            mention_all: false,
+            offline_push_info: None,
+            extra: Default::default(),
+            extensions: Default::default(),
+            reactions: Vec::new(),
+            version: value.get("version").and_then(Value::as_u64).unwrap_or(1),
+            updated_at: value
+                .get("updatedAt")
+                .or_else(|| value.get("updated_at"))
+                .and_then(Value::as_u64)
+                .unwrap_or(now),
+            local_state: Default::default(),
+        };
+        if message.content.is_none() {
+            message.content = Some(text_elem(""));
+        }
+        Ok(message)
+    }
+
+    fn conversation_type_for(&self, conversation_id: &str) -> ConversationType {
+        self.conversations
+            .iter()
+            .find(|item| item.conversation_id == conversation_id)
+            .map(|item| item.conversation_type)
+            .unwrap_or_else(|| {
+                if conversation_id.starts_with("group:") {
+                    ConversationType::Group
+                } else if conversation_id.starts_with("system:") {
+                    ConversationType::System
+                } else {
+                    ConversationType::Single
+                }
+            })
+    }
+
+    fn upsert_conversation_from_message(&mut self, message: &IMMessage) {
+        let preview = message_text(message);
+        let now = message.timestamp;
+        if let Some(conversation) = self
+            .conversations
+            .iter_mut()
+            .find(|item| item.conversation_id == message.conversation_id)
+        {
+            conversation.last_message_id = Some(message.server_id.clone());
+            conversation.last_sender_id = Some(message.sender_id.clone());
+            conversation.last_message_at = Some(now);
+            conversation.last_message_preview = Some(preview);
+            conversation.last_sender_nickname = message.sender_display_name.clone();
+            conversation.max_seq = message.seq;
+            conversation.updated_at = now;
+            conversation.version += 1;
+            return;
+        }
+        let mut conversation =
+            self.resolve_conversation(&json!({ "conversation_id": message.conversation_id }));
+        conversation.last_message_id = Some(message.server_id.clone());
+        conversation.last_sender_id = Some(message.sender_id.clone());
+        conversation.last_message_at = Some(now);
+        conversation.last_message_preview = Some(preview);
+        conversation.max_seq = message.seq;
+        conversation.updated_at = now;
+        if let Some(stored) = self
+            .conversations
+            .iter_mut()
+            .find(|item| item.conversation_id == conversation.conversation_id)
+        {
+            *stored = conversation;
+        }
+    }
+}
+
+fn parse_request(request_json: &str) -> Result<Value, JsValue> {
+    if request_json.trim().is_empty() {
+        return Ok(json!({}));
+    }
+    serde_json::from_str(request_json).map_err(|error| js_error("wasm.invalid_json", error))
+}
+
+fn parse_config(value: Value) -> SdkConfig {
+    serde_json::from_value(value).unwrap_or_default()
+}
+
+fn string_field(value: &Value, key: &str) -> Option<String> {
+    value
+        .get(key)
+        .and_then(Value::as_str)
+        .map(ToString::to_string)
+}
+
+fn bool_field(value: &Value, key: &str) -> Option<bool> {
+    value.get(key).and_then(Value::as_bool)
+}
+
+fn conversation_id(value: &Value) -> Option<String> {
+    string_field(value, "conversation_id")
+        .or_else(|| string_field(value, "conversationId"))
+        .or_else(|| {
+            value
+                .get("message")
+                .and_then(|message| conversation_id(message))
+        })
+}
+
+fn message_text(message: &IMMessage) -> String {
+    content_text(message.content.as_ref())
+}
+
+fn parse_web_content(value: Option<&Value>, message_type: i32) -> Option<Elem> {
+    let content = value?;
+    let data = content.get("data").unwrap_or(content);
+    let content_type = content
+        .get("contentType")
+        .or_else(|| content.get("content_type"))
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let content_type_index = content
+        .get("contentType")
+        .or_else(|| content.get("content_type"))
+        .and_then(Value::as_i64)
+        .unwrap_or(i64::from(message_type));
+    if content_type == "emoji" || content_type_index == 8 || message_type == 8 {
+        return Some(Elem::Emoji(EmojiElem {
+            emoji: string_field(data, "emoji").unwrap_or_default(),
+            description: string_field(data, "description").unwrap_or_default(),
+            extra: Default::default(),
+        }));
+    }
+    if content_type == "sticker" || content_type_index == 7 || message_type == 7 {
+        return Some(Elem::Sticker(StickerElem {
+            sticker_id: string_field(data, "stickerId")
+                .or_else(|| string_field(data, "sticker_id"))
+                .unwrap_or_default(),
+            package_id: string_field(data, "packageId")
+                .or_else(|| string_field(data, "package_id"))
+                .unwrap_or_default(),
+            url: string_field(data, "url").unwrap_or_default(),
+            width: data.get("width").and_then(Value::as_i64).unwrap_or(0) as i32,
+            height: data.get("height").and_then(Value::as_i64).unwrap_or(0) as i32,
+            format: string_field(data, "format").unwrap_or_default(),
+            extra: Default::default(),
+        }));
+    }
+    Some(text_elem(&string_field(data, "text").unwrap_or_default()))
+}
+
+fn text_elem(text: &str) -> Elem {
+    Elem::Text(TextElem {
+        text: text.to_string(),
+        mentions: Vec::<MentionElem>::new(),
+    })
+}
+
+fn now_ms() -> u64 {
+    js_sys::Date::now() as u64
+}
+
+fn js_error(code: &str, error: impl std::fmt::Display) -> JsValue {
+    js_message(code, "wasm.invoke", &error.to_string())
+}
+
+fn js_message(code: &str, operation: &str, message: &str) -> JsValue {
+    let error = js_sys::Error::new(message);
+    let _ = js_sys::Reflect::set(&error, &JsValue::from_str("code"), &JsValue::from_str(code));
+    let _ = js_sys::Reflect::set(
+        &error,
+        &JsValue::from_str("operation"),
+        &JsValue::from_str(operation),
+    );
+    error.into()
+}

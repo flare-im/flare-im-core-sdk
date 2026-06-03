@@ -1,5 +1,5 @@
 use crate::domain::models::PendingSendVo;
-use crate::error::Result;
+use crate::shared::error::Result;
 use async_trait::async_trait;
 
 /// 待发送队列查询（只读）

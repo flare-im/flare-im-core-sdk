@@ -65,7 +65,7 @@ impl PreviewStoragePayload {
     }
 }
 
-/// 若已是合法 JSON 载荷则解析；否则视为用户可见原文（兼容历史或非结构化 `plain_text`）。
+/// 若已是合法 JSON 载荷则解析；否则视为用户可见原文。
 pub fn decode_or_user_text(s: &str) -> PreviewStoragePayload {
     let t = s.trim();
     if t.is_empty() {

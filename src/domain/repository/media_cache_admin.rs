@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 
 use crate::domain::MediaCacheStatsVo;
-use crate::error::Result;
+use crate::shared::error::Result;
 
 /// 媒体缓存管理：容量、目录、清空（与 [`crate::domain::MediaCacheStore`] 配套，通常仅 SQLite 实现）。
 #[async_trait]

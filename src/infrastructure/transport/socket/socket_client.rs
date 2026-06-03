@@ -7,9 +7,9 @@ use flare_core::common::device::{DeviceInfo, DevicePlatform};
 use tokio::sync::{Mutex, Notify};
 use tracing::{info, warn};
 
-use crate::client::config::SdkConfig;
-use crate::error::{ErrorCode, FlareError, Result};
+use crate::client::config::{SdkConfig, TransportPolicy};
 use crate::infrastructure::protocol::{Codec, PacketSender, ProtobufCodec};
+use crate::shared::error::{ErrorCode, FlareError, Result};
 
 /// Socket 传输层 — 基于 flare-core 的多协议长连接封装
 pub struct SocketTransport {
@@ -69,13 +69,20 @@ impl SocketTransport {
             builder = builder.with_max_reconnect_attempts(Some(max));
         }
 
-        if let Some(ref quic_url) = self.config.quic_url {
+        let policy = self.config.effective_transport_policy();
+        if matches!(
+            policy,
+            TransportPolicy::Auto | TransportPolicy::ProtocolRace
+        ) && let Some(ref quic_url) = self.config.quic_url
+        {
             builder = builder
                 .with_protocol_url(CoreTransport::QUIC, quic_url.clone())
                 .with_protocol_url(CoreTransport::WebSocket, ws_url.to_string())
                 .with_protocol_race(vec![CoreTransport::QUIC, CoreTransport::WebSocket]);
 
             info!(ws = ws_url, quic = %quic_url, "protocol race enabled (WebSocket + QUIC)");
+        } else {
+            info!(ws = ws_url, policy = ?policy, "WebSocket transport selected");
         }
 
         let flare_client = builder

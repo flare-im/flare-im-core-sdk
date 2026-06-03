@@ -1,5 +1,5 @@
 use crate::domain::SyncCursorVo;
-use crate::error::Result;
+use crate::shared::error::Result;
 use async_trait::async_trait;
 
 /// 同步游标查询（只读）

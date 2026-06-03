@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 
 use crate::model::message_elem::{MessagePreviewElem, message_preview_from_proto};
-use crate::util::date::{ms_to_prost_timestamp, prost_timestamp_to_ms};
+use crate::shared::util::date::{ms_to_prost_timestamp, prost_timestamp_to_ms};
 
 // ---------- 会话类型（严格对齐 `flare.common.v1.ConversationType`，并与 flare_core CID 前缀一致）----------
 
@@ -63,12 +63,12 @@ impl ConversationType {
         }
     }
 
-    /// 是否为单聊会话（与 [crate::conversation::is_single_chat_conversation] 语义一致）
+    /// 是否为单聊会话（与 [crate::domain::conversation::id::is_single_chat_conversation] 语义一致）
     pub fn is_single_chat_conversation(&self) -> bool {
         *self == ConversationType::Single
     }
 
-    /// 是否为群聊会话（与 [crate::conversation::is_group_chat_conversation] 语义一致）
+    /// 是否为群聊会话（与 [crate::domain::conversation::id::is_group_chat_conversation] 语义一致）
     pub fn is_group_chat_conversation(&self) -> bool {
         *self == ConversationType::Group
     }

@@ -1,7 +1,7 @@
 use crate::model::message::MessageLocalState;
 use crate::model::message::MessageStatus;
 use crate::model::message::{IMMessage, SendAck};
-use crate::util::date::prost_timestamp_to_ms;
+use crate::shared::util::date::prost_timestamp_to_ms;
 
 pub const REASON_PENDING_ANOTHER_ACCOUNT: &str = "pending message belongs to another account";
 pub const REASON_MAX_RETRIES_EXCEEDED: &str = "max retries exceeded";

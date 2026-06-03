@@ -8,7 +8,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::store::StoreProvider;
+use crate::infrastructure::persistence::StoreProvider;
 
 use super::checkpoint::{CheckpointStore, SyncCheckpoint};
 use super::error::SyncResult;
@@ -20,18 +20,18 @@ pub trait SessionSyncRunner: Send + Sync {
     fn request_message_sync(
         &self,
         conversation_id: &str,
-    ) -> Pin<Box<dyn std::future::Future<Output = crate::error::Result<()>> + Send + '_>>;
+    ) -> Pin<Box<dyn std::future::Future<Output = crate::shared::error::Result<()>> + Send + '_>>;
     fn request_message_sync_from_seq(
         &self,
         conversation_id: &str,
         last_seq: u64,
         limit: i32,
-    ) -> Pin<Box<dyn std::future::Future<Output = crate::error::Result<()>> + Send + '_>>;
+    ) -> Pin<Box<dyn std::future::Future<Output = crate::shared::error::Result<()>> + Send + '_>>;
     fn send_read_ack(
         &self,
         conversation_id: &str,
         read_seq: u64,
-    ) -> Pin<Box<dyn std::future::Future<Output = crate::error::Result<()>> + Send + '_>>;
+    ) -> Pin<Box<dyn std::future::Future<Output = crate::shared::error::Result<()>> + Send + '_>>;
     fn request_participants_sync(
         &self,
         conversation_id: &str,
@@ -39,7 +39,9 @@ pub trait SessionSyncRunner: Send + Sync {
     ) -> Pin<
         Box<
             dyn std::future::Future<
-                    Output = crate::error::Result<Vec<crate::model::ConversationParticipant>>,
+                    Output = crate::shared::error::Result<
+                        Vec<crate::model::ConversationParticipant>,
+                    >,
                 > + Send
                 + '_,
         >,
@@ -299,7 +301,7 @@ impl SyncContext {
         }
     }
 
-    pub async fn load_checkpoint(&self) -> crate::error::Result<Option<SyncCheckpoint>> {
+    pub async fn load_checkpoint(&self) -> crate::shared::error::Result<Option<SyncCheckpoint>> {
         let Some(ref store) = self.checkpoint_store else {
             return Ok(None);
         };
@@ -310,7 +312,7 @@ impl SyncContext {
     pub async fn save_checkpoint(
         &self,
         cursor: Option<impl AsRef<str>>,
-    ) -> crate::error::Result<()> {
+    ) -> crate::shared::error::Result<()> {
         let Some(ref store) = self.checkpoint_store else {
             return Ok(());
         };

@@ -1,5 +1,5 @@
 use crate::domain::models::UserProfile;
-use crate::error::Result;
+use crate::shared::error::Result;
 use async_trait::async_trait;
 
 /// 用户资料查询（只读）

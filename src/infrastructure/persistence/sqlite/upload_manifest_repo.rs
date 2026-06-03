@@ -5,7 +5,7 @@ use crate::domain::{
     MediaUploadManifestVo, MediaUploadPartVo, UploadManifestState, UploadManifestStore,
     UploadSourceKind,
 };
-use crate::error::{ErrorCode, FlareError, Result};
+use crate::shared::error::{ErrorCode, FlareError, Result};
 
 pub struct SqliteUploadManifestRepo {
     pool: SqlitePool,

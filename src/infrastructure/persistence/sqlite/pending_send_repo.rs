@@ -3,7 +3,7 @@ use prost::Message as ProstMessage;
 use sqlx::SqlitePool;
 
 use crate::domain::{PendingSendReader, PendingSendVo, PendingSendWriter};
-use crate::error::{ErrorCode, FlareError, Result};
+use crate::shared::error::{ErrorCode, FlareError, Result};
 
 pub struct SqlitePendingSendRepo {
     pool: SqlitePool,
@@ -21,7 +21,10 @@ fn encode_entry(vo: &PendingSendVo) -> Vec<u8> {
 
 fn decode_entry(data: &[u8], enqueued_at_ms: u64) -> Result<PendingSendVo> {
     let proto = crate::model::Message::decode(data).map_err(|e| {
-        FlareError::localized(crate::error::ErrorCode::DatabaseError, e.to_string())
+        FlareError::localized(
+            crate::shared::error::ErrorCode::DatabaseError,
+            e.to_string(),
+        )
     })?;
     let message = crate::model::IMMessage::from(proto);
     Ok(PendingSendVo {

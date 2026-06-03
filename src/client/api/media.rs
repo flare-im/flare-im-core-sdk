@@ -1,30 +1,36 @@
-//! 媒体 Facade — 委托 [`crate::application::MediaService`]（上传与下载）。
+//! 媒体 Facade — 委托 [`crate::platform::ports::media::MediaServicePort`]（上传与下载）。
 
 use std::path::Path;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
-use crate::application::MediaService;
+#[cfg(not(target_arch = "wasm32"))]
+pub use crate::application::UserFileDownloadRequest;
 pub use crate::application::{
     FileDownloadProgress, FileDownloadProgressCallback, UploadPhase, UploadProgress,
-    UploadProgressCallback, UserFileDownloadRequest,
+    UploadProgressCallback,
 };
 use crate::domain::{
     MediaCacheAdmin, MediaCacheStatsVo, MediaCacheStore, UploadManifestStore, UserFileDownloadStore,
 };
-use crate::error::Result;
+use crate::infrastructure::transport::HttpClient;
 use crate::model::{
     MediaAccessUrl, MediaCacheEntryVo, MediaResolvedAccess, UploadOptions, UploadedMedia,
 };
-use crate::transport::HttpClient;
+use crate::platform::adapters::media::MediaService;
+use crate::platform::ports::media::{
+    MediaMetadata, MediaServicePort, MediaSourceDescriptor, MediaSourceKind, ProcessedMedia,
+    UploadProgressSink,
+};
+use crate::shared::error::Result;
 
 #[derive(Clone)]
 pub struct MediaApi {
-    handler: Arc<MediaService>,
+    handler: Arc<dyn MediaServicePort>,
 }
 
 impl MediaApi {
-    pub fn from_handler(handler: Arc<MediaService>) -> Self {
+    pub fn from_handler(handler: Arc<dyn MediaServicePort>) -> Self {
         Self { handler }
     }
 
@@ -36,20 +42,15 @@ impl MediaApi {
         media_cache_admin: Option<Arc<dyn MediaCacheAdmin>>,
         user_file_download_store: Option<Arc<dyn UserFileDownloadStore>>,
     ) -> Self {
-        Self {
-            handler: Arc::new(MediaService::new(
-                http,
-                current_user_id,
-                upload_manifest_store,
-                media_cache_store,
-                media_cache_admin,
-                user_file_download_store,
-            )),
-        }
-    }
-
-    pub fn http(&self) -> &HttpClient {
-        self.handler.http()
+        let handler: Arc<dyn MediaServicePort> = Arc::new(MediaService::new(
+            http,
+            current_user_id,
+            upload_manifest_store,
+            media_cache_store,
+            media_cache_admin,
+            user_file_download_store,
+        ));
+        Self { handler }
     }
 
     pub async fn upload_file_from_path(
@@ -57,8 +58,7 @@ impl MediaApi {
         path: impl AsRef<Path>,
         options: Option<UploadOptions>,
     ) -> Result<UploadedMedia> {
-        self.handler
-            .upload_file_from_path_with_progress(path, options, None)
+        self.upload_file_from_path_with_progress(path, options, None)
             .await
     }
 
@@ -68,9 +68,75 @@ impl MediaApi {
         options: Option<UploadOptions>,
         on_progress: Option<UploadProgressCallback>,
     ) -> Result<UploadedMedia> {
-        self.handler
-            .upload_file_from_path_with_progress(path, options, on_progress)
+        let source = MediaSourceDescriptor::path(path.as_ref().to_string_lossy().to_string());
+        self.upload_source_with_progress(source, options, on_progress)
             .await
+    }
+
+    pub async fn upload_source(
+        &self,
+        source: MediaSourceDescriptor,
+        options: Option<UploadOptions>,
+    ) -> Result<UploadedMedia> {
+        self.upload_source_with_progress(source, options, None)
+            .await
+    }
+
+    pub async fn upload_source_with_progress(
+        &self,
+        source: MediaSourceDescriptor,
+        options: Option<UploadOptions>,
+        on_progress: Option<UploadProgressCallback>,
+    ) -> Result<UploadedMedia> {
+        let metadata = source.metadata.clone().unwrap_or_default();
+        let media = ProcessedMedia {
+            source,
+            metadata,
+            payload: None,
+        };
+        let progress: Option<UploadProgressSink> =
+            on_progress.map(|callback| Box::new(move |progress| callback(progress)) as _);
+        self.handler.upload(media, options, progress).await
+    }
+
+    pub async fn upload_bytes(
+        &self,
+        bytes: Vec<u8>,
+        file_name: impl Into<String>,
+        mime_type: impl Into<String>,
+        options: Option<UploadOptions>,
+    ) -> Result<UploadedMedia> {
+        self.upload_bytes_with_progress(bytes, file_name, mime_type, options, None)
+            .await
+    }
+
+    pub async fn upload_bytes_with_progress(
+        &self,
+        bytes: Vec<u8>,
+        file_name: impl Into<String>,
+        mime_type: impl Into<String>,
+        options: Option<UploadOptions>,
+        on_progress: Option<UploadProgressCallback>,
+    ) -> Result<UploadedMedia> {
+        let metadata = MediaMetadata {
+            file_name: file_name.into(),
+            mime_type: mime_type.into(),
+            size: bytes.len() as u64,
+            ..Default::default()
+        };
+        let source = MediaSourceDescriptor {
+            kind: MediaSourceKind::Bytes,
+            locator: "memory".to_string(),
+            metadata: Some(metadata.clone()),
+        };
+        let media = ProcessedMedia {
+            source,
+            metadata,
+            payload: Some(bytes),
+        };
+        let progress: Option<UploadProgressSink> =
+            on_progress.map(|callback| Box::new(move |progress| callback(progress)) as _);
+        self.handler.upload(media, options, progress).await
     }
 
     pub async fn upload_image_from_path_with_progress(
@@ -79,8 +145,7 @@ impl MediaApi {
         options: Option<UploadOptions>,
         on_progress: Option<UploadProgressCallback>,
     ) -> Result<UploadedMedia> {
-        self.handler
-            .upload_image_from_path_with_progress(path, options, on_progress)
+        self.upload_file_from_path_with_progress(path, options, on_progress)
             .await
     }
 
@@ -90,8 +155,7 @@ impl MediaApi {
         options: Option<UploadOptions>,
         on_progress: Option<UploadProgressCallback>,
     ) -> Result<UploadedMedia> {
-        self.handler
-            .upload_video_from_path_with_progress(path, options, on_progress)
+        self.upload_file_from_path_with_progress(path, options, on_progress)
             .await
     }
 

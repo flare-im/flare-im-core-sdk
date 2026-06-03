@@ -11,7 +11,7 @@ pub use media_dto::{
     PresignedUploadPartHttp, UploadFileHttpResponse, UploadFileMetadataHttp, UploadedPartInfoHttp,
 };
 
-use crate::error::{ErrorCode, FlareError, Result};
+use crate::shared::error::{ErrorCode, FlareError, Result};
 
 /// SDK 统一 HTTP 包装响应（与 gateway ApiResponse 对齐）
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

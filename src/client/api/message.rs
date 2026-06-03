@@ -8,10 +8,10 @@ use super::media::UploadProgressCallback;
 use crate::application::usecases::{
     MessageMutationUseCase, MessageSendUseCase, MessageViewAssembler,
 };
-use crate::error::{ErrorCode, FlareError, Result};
 use crate::model::MessageSearchQuery;
 use crate::model::content_builder::{BuiltContent, ContentBuilder};
 use crate::model::message::{IMMessage, MarkType, SendAck};
+use crate::shared::error::{ErrorCode, FlareError, Result};
 
 #[derive(Clone, Debug)]
 pub struct EditRichDocRequest {

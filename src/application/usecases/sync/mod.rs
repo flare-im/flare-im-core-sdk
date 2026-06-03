@@ -2,19 +2,21 @@ mod decoding;
 mod event_applier;
 mod models;
 
-use crate::application::conversation_projection_applier::ConversationProjectionApplier;
-use crate::application::event_deduper::EventDeduper;
-use crate::application::incoming_message_converger::IncomingMessageConverger;
+use crate::application::projections::ConversationProjectionApplier;
+use crate::application::services::EventDeduper;
+use crate::application::services::IncomingMessageConverger;
 use decoding::decode_single_conversation_items;
 use event_applier::SyncEventApplier;
 use models::{AppliedConversationIncremental, AppliedSingleConversationPage, ReplayMode};
 
+use crate::application::notification::{
+    NotificationInboundPipeline, partition_notification_durability,
+};
+use crate::core::event::{ConversationEvent, EventBus, SdkEvent};
 use crate::domain::{SyncCursorVo, filter_messages_after_clear, local_cleared_through_seq};
-use crate::error::Result;
-use crate::event::{ConversationEvent, EventBus, SdkEvent};
+use crate::infrastructure::persistence::StoreProvider;
 use crate::model::IMMessage;
-use crate::notification::{NotificationInboundPipeline, partition_notification_durability};
-use crate::store::StoreProvider;
+use crate::shared::error::Result;
 use flare_proto::common::{ConversationsSyncRes, SingleConversationSyncRes};
 
 pub struct SyncApplyUseCase {
@@ -50,7 +52,7 @@ impl SyncApplyUseCase {
 
     pub fn set_reliable_queue(
         &self,
-        reliable_queue: Option<std::sync::Arc<crate::reliable_queue::ReliableSendQueue>>,
+        reliable_queue: Option<std::sync::Arc<crate::core::ReliableSendQueue>>,
     ) {
         self.incoming_message_converger
             .set_reliable_queue(reliable_queue);
@@ -256,7 +258,7 @@ impl SyncApplyUseCase {
         } else {
             tracing::debug!(
                 has_more = response.has_more,
-                server_cursor_ms = crate::util::date::prost_timestamp_to_ms(
+                server_cursor_ms = crate::shared::util::date::prost_timestamp_to_ms(
                     response.server_conversation_cursor.as_ref()
                 ),
                 "会话增量同步无变更"
@@ -270,7 +272,7 @@ impl SyncApplyUseCase {
 
         Ok(AppliedConversationIncremental {
             has_more: response.has_more,
-            server_cursor_ms: crate::util::date::prost_timestamp_to_ms(
+            server_cursor_ms: crate::shared::util::date::prost_timestamp_to_ms(
                 response.server_conversation_cursor.as_ref(),
             ),
             message_sync_conversation_ids,

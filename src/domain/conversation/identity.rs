@@ -1,7 +1,7 @@
-use crate::conversation;
-use crate::error::{ErrorCode, FlareError, Result};
+use crate::domain::conversation::id as conversation_id;
 use crate::model::Conversation;
 use crate::model::conversation::ConversationType;
+use crate::shared::error::{ErrorCode, FlareError, Result};
 
 pub struct ConversationIdentityService;
 
@@ -14,19 +14,19 @@ impl ConversationIdentityService {
     ) -> Result<String> {
         let conversation_id = match conversation_type {
             ConversationType::Single => {
-                conversation::generate_single_chat_conversation_id(current_user_id, source_id)
+                conversation_id::generate_single_chat_conversation_id(current_user_id, source_id)
             }
-            ConversationType::Group => conversation::generate_group_conversation_id(source_id),
+            ConversationType::Group => conversation_id::generate_group_conversation_id(source_id),
             ConversationType::Ai => {
-                conversation::generate_ai_conversation_id(current_user_id, source_id)
+                conversation_id::generate_ai_conversation_id(current_user_id, source_id)
             }
             ConversationType::Customer => {
-                conversation::generate_customer_conversation_id(current_user_id, source_id)
+                conversation_id::generate_customer_conversation_id(current_user_id, source_id)
             }
             ConversationType::System => {
-                conversation::generate_system_conversation_id(source_id, None)
+                conversation_id::generate_system_conversation_id(source_id, None)
             }
-            ConversationType::Temp => conversation::generate_temp_conversation_id(),
+            ConversationType::Temp => conversation_id::generate_temp_conversation_id(),
             _ => {
                 return Err(FlareError::localized(
                     ErrorCode::InvalidParameter,

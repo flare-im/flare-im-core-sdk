@@ -3,7 +3,7 @@
 use std::pin::Pin;
 
 use crate::core::SyncRunContext;
-use crate::error::Result;
+use crate::shared::error::Result;
 
 pub trait ConversationSummarySync: Send + Sync {
     fn sync_conversation_summaries(

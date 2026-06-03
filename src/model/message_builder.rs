@@ -1,10 +1,10 @@
 //! 消息构建器 — 构建发送用 Message
 
-use crate::error::Result;
 use crate::model::content_builder::BuiltContent;
 use crate::model::message::{ConversationType, Message};
-use crate::util::date::ms_to_prost_timestamp;
-use crate::util::id::now_millis;
+use crate::shared::error::Result;
+use crate::shared::util::date::ms_to_prost_timestamp;
+use crate::shared::util::id::now_millis;
 use flare_proto::common::{MessageSource, OfflinePushInfo};
 
 /// 消息构建器
@@ -96,8 +96,8 @@ impl MessageBuilder {
 
     pub fn build(self) -> Result<Message> {
         let content = self.content.ok_or_else(|| {
-            crate::error::FlareError::localized(
-                crate::error::ErrorCode::InvalidParameter,
+            crate::shared::error::FlareError::localized(
+                crate::shared::error::ErrorCode::InvalidParameter,
                 "message content required",
             )
         })?;
@@ -108,7 +108,7 @@ impl MessageBuilder {
         Ok(Message {
             server_id: String::new(),
             conversation_id: self.conversation_id,
-            client_msg_id: crate::util::id::generate_client_msg_id(),
+            client_msg_id: crate::shared::util::id::generate_client_msg_id(),
             sender_id: self.sender_id,
             sender_name: self.sender_name,
             sender_avatar: self.sender_avatar,

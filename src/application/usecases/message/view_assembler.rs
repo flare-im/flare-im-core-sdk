@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
 use crate::domain::{MessageStore, UserReader};
-use crate::error::Result;
 use crate::model::{IMMessage, MessageSearchQuery};
+use crate::shared::error::Result;
 
 pub struct MessageViewAssembler {
     store: Arc<dyn MessageStore>,

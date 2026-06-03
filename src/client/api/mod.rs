@@ -1,12 +1,17 @@
 //! 消息与会话 **Facade**：对应用层引擎与构建器的稳定调用面。
 //!
-//! 由 [`crate::client::IMClient`] 在连接后持有；事件订阅为 `IMClient::on_*`（见 [`crate::client::events`]，委托 [`crate::event::EventBus`]）。
+//! 由 [`crate::client::IMClient`] 在连接后持有；事件订阅为 `IMClient::on_*`（见 [`crate::client::events`]，委托 [`crate::core::event::EventBus`]）。
 
 mod capability;
 mod conversation;
 mod media;
 mod message;
 mod message_build;
+#[cfg(target_arch = "wasm32")]
+#[path = "presence/web.rs"]
+mod presence;
+#[cfg(not(target_arch = "wasm32"))]
+#[path = "presence/native.rs"]
 mod presence;
 
 pub use capability::{

@@ -1,12 +1,12 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::core::ReliableSendQueue;
 use crate::domain::MessageStore;
-use crate::error::Result;
-use crate::middleware::MiddlewareChain;
+use crate::extension::middleware::{MessageMiddlewareContext, MessageOperation, MiddlewareChain};
+use crate::infrastructure::protocol::PacketSender;
 use crate::model::message::{IMMessage, SendAck};
-use crate::protocol::PacketSender;
-use crate::reliable_queue::ReliableSendQueue;
+use crate::shared::error::Result;
 
 const TIMEOUT_SECS: u64 = 15;
 
@@ -24,28 +24,60 @@ impl SendMessageCommand {
         &self,
         sender: &Arc<PacketSender>,
         store: &dyn MessageStore,
-        _chain: &MiddlewareChain,
+        chain: &MiddlewareChain,
     ) -> Result<SendAck> {
+        let ctx = MessageMiddlewareContext::new(MessageOperation::DirectSend);
         let mut msg = self.message.clone();
+        if let Err(error) = chain.before_send(&mut msg, &ctx).await {
+            chain.notify_send_error(&msg, &error, &ctx).await;
+            return Err(error);
+        }
         msg.materialize_content_bytes_from_elem();
         let proto = msg.to_proto();
-        sender
+        if let Err(error) = sender
             .send_message(&proto, Duration::from_secs(TIMEOUT_SECS))
-            .await?;
-        store.save_batch(&[msg]).await?;
-        Ok(SendAck {
-            client_msg_id: self.message.client_msg_id.clone(),
-            server_msg_id: self.message.server_id.clone(),
-            seq: self.message.seq,
+            .await
+        {
+            chain.notify_send_error(&msg, &error, &ctx).await;
+            return Err(error);
+        }
+        if let Err(error) = store.save_batch(std::slice::from_ref(&msg)).await {
+            chain.notify_send_error(&msg, &error, &ctx).await;
+            return Err(error);
+        }
+        let ack = SendAck {
+            client_msg_id: msg.client_msg_id.clone(),
+            server_msg_id: msg.server_id.clone(),
+            seq: msg.seq,
             success: true,
             ..Default::default()
-        })
+        };
+        chain.after_send(&msg, Some(&ack), &ctx).await;
+        Ok(ack)
     }
 
     /// 经可靠队列入队（SendAck 由调用方通过 EventBus 等待）
-    pub async fn execute_via_queue(&self, queue: &ReliableSendQueue) -> Result<()> {
+    pub async fn execute_via_queue(
+        &self,
+        queue: &ReliableSendQueue,
+        chain: &MiddlewareChain,
+    ) -> Result<()> {
+        let ctx = MessageMiddlewareContext::new(MessageOperation::ReliableQueueEnqueue);
         let mut msg = self.message.clone();
+        if let Err(error) = chain.before_send(&mut msg, &ctx).await {
+            chain.notify_send_error(&msg, &error, &ctx).await;
+            return Err(error);
+        }
         msg.materialize_content_bytes_from_elem();
-        queue.enqueue(msg).await
+        if chain.has_message_interceptors() {
+            if let Err(error) = queue.enqueue(msg.clone()).await {
+                chain.notify_send_error(&msg, &error, &ctx).await;
+                return Err(error);
+            }
+            chain.after_send(&msg, None, &ctx).await;
+            Ok(())
+        } else {
+            queue.enqueue(msg).await
+        }
     }
 }

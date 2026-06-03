@@ -5,9 +5,9 @@
 
 use flare_im_core_sdk::client::IMClient;
 use flare_im_core_sdk::client::api::ConversationApi;
+use flare_im_core_sdk::infrastructure::persistence::StoreProvider;
 use flare_im_core_sdk::model::conversation::ConversationType;
 use flare_im_core_sdk::model::{Conversation, ConversationListQuery, ConversationParticipant};
-use flare_im_core_sdk::store::StoreProvider;
 
 pub async fn list(api: &ConversationApi) -> Result<Vec<Conversation>, String> {
     api.list().await.map_err(|e| e.to_string())

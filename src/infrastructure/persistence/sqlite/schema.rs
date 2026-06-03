@@ -1,6 +1,6 @@
 //! SQLite 表结构初始化，供 `create_pool` 后调用。
 
-use crate::error::{ErrorCode, FlareError, Result};
+use crate::shared::error::{ErrorCode, FlareError, Result};
 use sqlx::SqlitePool;
 
 /// 创建所有仓储所需表（messages / conversations / pending_sends / user_profiles / sync_cursors / sync_conversation_cursors）

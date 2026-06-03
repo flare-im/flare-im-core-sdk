@@ -8,7 +8,7 @@ use crate::model::RtcIceConfigSnapshotPayload;
 use crate::model::SdkInitArgs;
 use crate::state::SdkState;
 use flare_im_core_sdk::client::{IMClient, LoginDbKind};
-use flare_im_core_sdk::event::SdkEvent;
+use flare_im_core_sdk::core::event::SdkEvent;
 
 fn env_bool(name: &str, default: bool) -> bool {
     match std::env::var(name) {
@@ -118,7 +118,7 @@ fn bool_with_file_fallback(
     default
 }
 
-/// 透传 [IMClient::init]；`sdkConfig` / `dataUrl` 由前端与 core-sdk 约定。
+/// 透传 [IMClient::init]；`sdk_config` / `data_url` 由前端与 core-sdk 约定。
 #[tauri::command]
 pub async fn sdk_init(
     state: State<'_, SdkState>,
@@ -182,6 +182,19 @@ async fn forward_event_rx_to_webview(app: tauri::AppHandle, mut rx: broadcast::R
 #[tauri::command]
 pub async fn sdk_logout(state: State<'_, SdkState>) -> std::result::Result<(), String> {
     state.logout().await.map_err(super::map_sdk_err)
+}
+
+#[tauri::command]
+pub async fn sdk_update_access_token(
+    state: State<'_, SdkState>,
+    access_token: String,
+    tenant_id: Option<String>,
+) -> std::result::Result<(), String> {
+    state
+        .client()
+        .update_access_token(access_token, tenant_id.as_deref())
+        .await
+        .map_err(super::map_sdk_err)
 }
 
 #[tauri::command]

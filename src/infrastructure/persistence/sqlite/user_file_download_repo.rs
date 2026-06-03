@@ -6,7 +6,7 @@ use async_trait::async_trait;
 use sqlx::SqlitePool;
 
 use crate::domain::UserFileDownloadStore;
-use crate::error::{ErrorCode, FlareError, Result};
+use crate::shared::error::{ErrorCode, FlareError, Result};
 
 const DEFAULT_SUBFOLDER: &str = "flare";
 

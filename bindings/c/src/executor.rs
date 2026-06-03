@@ -56,7 +56,7 @@ impl CallbackContext {
 pub fn execute_async<T, F, G>(instance: Arc<SdkInstance>, ctx: CallbackContext, op: F, to_json: G)
 where
     T: Send + 'static,
-    F: std::future::Future<Output = Result<T, flare_im_core_sdk::error::FlareError>>
+    F: std::future::Future<Output = Result<T, flare_im_core_sdk::shared::error::FlareError>>
         + Send
         + 'static,
     G: FnOnce(T) -> Result<String, i32> + Send + 'static,
@@ -96,7 +96,7 @@ where
 /// * `op` - 异步操作,返回 Result<(), SdkError>
 pub fn execute_async_unit<F>(instance: Arc<SdkInstance>, ctx: CallbackContext, op: F)
 where
-    F: std::future::Future<Output = Result<(), flare_im_core_sdk::error::FlareError>>
+    F: std::future::Future<Output = Result<(), flare_im_core_sdk::shared::error::FlareError>>
         + Send
         + 'static,
 {

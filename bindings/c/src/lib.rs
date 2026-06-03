@@ -44,10 +44,9 @@ pub use types::{
 // 重新导出生命周期 API
 pub use lifecycle::{
     flare_sdk_create, flare_sdk_current_user_id, flare_sdk_data_root,
-    flare_sdk_ffi_contract_version,
-    flare_sdk_generate_test_token, flare_sdk_hard_reset, flare_sdk_init, flare_sdk_is_connected,
-    flare_sdk_login, flare_sdk_logout, flare_sdk_release, flare_sdk_session_active,
-    flare_sdk_uninit, flare_sdk_version,
+    flare_sdk_ffi_contract_version, flare_sdk_generate_test_token, flare_sdk_hard_reset,
+    flare_sdk_init, flare_sdk_is_connected, flare_sdk_login, flare_sdk_logout, flare_sdk_release,
+    flare_sdk_session_active, flare_sdk_uninit, flare_sdk_update_access_token, flare_sdk_version,
 };
 
 // 与 IMClient 直接方法对齐（状态、断开、同步、输入态等）
@@ -68,17 +67,24 @@ pub use dispatch::{flare_message_build_json, flare_message_dispatch_json};
 
 // 重新导出会话 API
 pub use conversation::{
-    flare_conversation_delete, flare_conversation_get, flare_conversation_get_one,
-    flare_conversation_list, flare_conversation_list_by_query_json,
-    flare_conversation_mark_all_read, flare_conversation_mark_read, flare_conversation_set_pinned,
-    flare_conversation_update_draft,
+    flare_conversation_clear_local_chat_history, flare_conversation_delete, flare_conversation_get,
+    flare_conversation_get_group_by_user_ids, flare_conversation_get_multiple,
+    flare_conversation_get_one, flare_conversation_list, flare_conversation_list_by_query_json,
+    flare_conversation_list_including_archived, flare_conversation_list_paginated,
+    flare_conversation_list_raw, flare_conversation_mark_all_read, flare_conversation_mark_read,
+    flare_conversation_mark_unread, flare_conversation_set_archived, flare_conversation_set_muted,
+    flare_conversation_set_pinned, flare_conversation_update_draft,
 };
 
 // 重新导出媒体 API
 pub use media::{
-    flare_media_cache_remote, flare_media_cache_stats, flare_media_clear_cache,
+    flare_media_cache_remote, flare_media_cache_stats, flare_media_cancel_user_file_download,
+    flare_media_clear_cache, flare_media_delete_file, flare_media_download_file_to_downloads,
     flare_media_get_url, flare_media_resolve_access, flare_media_set_cache_max_bytes,
-    flare_media_set_cache_root,
+    flare_media_set_cache_root, flare_media_temp_download_url, flare_media_upload_bytes,
+    flare_media_upload_file, flare_media_upload_image, flare_media_upload_video,
+    flare_media_user_download_delete_record, flare_media_user_download_get_saved_path,
+    flare_media_user_download_get_subfolder, flare_media_user_download_set_subfolder,
 };
 
 // 重新导出事件 API

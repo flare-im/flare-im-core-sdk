@@ -7,7 +7,7 @@ use async_trait::async_trait;
 use tokio::sync::RwLock;
 
 use crate::domain::{PendingSendReader, PendingSendVo, PendingSendWriter};
-use crate::error::Result;
+use crate::shared::error::Result;
 
 /// 待发送队列：内存缓存 + 后端（读/写均使用 domain trait）
 pub struct LayeredPendingSendStore {

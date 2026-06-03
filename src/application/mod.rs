@@ -1,43 +1,41 @@
-//! 应用层
+//! Application layer.
 //!
-//! `usecases` 负责复杂业务编排；`handlers` 仅保留协议适配器/基础服务；`sync_task` 负责同步任务注册。
+//! `commands` and `queries` express the CQRS boundary; `usecases` orchestrate
+//! core IM flows; `projections` maintain local read models; `services` contains
+//! application-level dedupe, convergence, and message construction helpers.
 
 mod adapters;
+pub mod callbacks;
 pub mod commands;
-pub mod conversation_display_projection;
-pub mod conversation_local_lifecycle;
-pub(crate) mod conversation_projection_applier;
-pub(crate) mod event_deduper;
-pub(crate) mod incoming_message_converger;
-pub mod message_builder;
-pub(crate) mod message_deduper;
+pub mod lifecycle;
+pub mod notification;
+pub mod projections;
 pub mod queries;
-pub mod sdk_callbacks;
+pub mod services;
 pub mod sync_task;
 pub(crate) mod usecases;
-pub mod user_profile_projection;
 
-pub use adapters::{MediaService, SyncProtocolAdapter};
-pub use commands::{RecallMessageCommand, SendMessageCommand};
-pub use conversation_display_projection::{
-    ConversationDisplayProjectionApplier, ConversationDisplaySnapshot, resolve_display_name,
+pub use adapters::SyncProtocolAdapter;
+pub use callbacks::{
+    FileDownloadProgress, FileDownloadProgressCallback, UploadPhase, UploadProgress,
+    UploadProgressCallback, UserFileDownloadRequest,
 };
-pub use conversation_local_lifecycle::{
+pub use commands::{RecallMessageCommand, SendMessageCommand};
+pub use lifecycle::{
     ConversationLocalLifecycle, LocalConversationClearResult, LocalConversationVisibility,
 };
-pub use message_builder::{
-    BuildCardRequest, BuildLinkCardRequest, BuildLocationRequest, BuildMiniProgramRequest,
-    BuildRichDocRequest, BuildScheduleRequest, BuildStickerRequest, MessageBuilderService,
+pub use projections::{
+    ConversationDisplayProjectionApplier, ConversationDisplaySnapshot,
+    UserProfileProjectionApplier, resolve_display_name,
 };
 pub use queries::{
     GetConversationQuery, GetConversationsQuery, GetMessagesQuery, SearchMessagesQuery,
 };
-pub use sdk_callbacks::{
-    FileDownloadProgress, FileDownloadProgressCallback, UploadPhase, UploadProgress,
-    UploadProgressCallback, UserFileDownloadRequest,
+pub use services::{
+    BuildCardRequest, BuildLinkCardRequest, BuildLocationRequest, BuildMiniProgramRequest,
+    BuildRichDocRequest, BuildScheduleRequest, BuildStickerRequest, MessageBuilderService,
 };
 pub use sync_task::{
     ConversationSettingsSyncTask, ConversationsSyncTask, KeyEventsSyncTask, MessagesSyncTask,
     ReadStatesSyncTask,
 };
-pub use user_profile_projection::UserProfileProjectionApplier;

@@ -277,91 +277,80 @@ pub struct PresenceChangedPayload {
 /// [`commands::call_signal::sdk_send_call_invite`]
 #[derive(Debug, Clone, Deserialize)]
 pub struct CallPluginInviteRequest {
-    #[serde(alias = "conversationId")]
     pub conversation_id: String,
-    #[serde(alias = "callId")]
     pub call_id: String,
-    #[serde(alias = "toUserId")]
     pub to_user_id: String,
     /// 非单聊会话下的额外被叫（与 `to_user_id` 合并去重）。若两者在去主叫后 **均为空**，则上行 **`broadcast` 全员响铃**。
-    #[serde(default, alias = "participantUserIds")]
+    #[serde(default)]
     pub participant_user_ids: Vec<String>,
     pub video: bool,
-    #[serde(default, alias = "sfuRoomId")]
+    #[serde(default)]
     pub sfu_room_id: Option<String>,
-    #[serde(default, alias = "sfuPeerId")]
+    #[serde(default)]
     pub sfu_peer_id: Option<String>,
-    #[serde(default, alias = "sfuSignalingWsBase")]
+    #[serde(default)]
     pub sfu_signaling_ws_base: Option<String>,
-    #[serde(default, alias = "sfuJoinToken")]
+    #[serde(default)]
     pub sfu_join_token: Option<String>,
 }
 
 /// [`commands::call_signal::sdk_send_call_accept`]
 #[derive(Debug, Clone, Deserialize)]
 pub struct CallPluginAcceptRequest {
-    #[serde(alias = "conversationId")]
     pub conversation_id: String,
-    #[serde(alias = "callId")]
     pub call_id: String,
     pub video: bool,
-    #[serde(default, alias = "toUserId")]
+    #[serde(default)]
     pub to_user_id: Option<String>,
-    #[serde(default, alias = "sfuRoomId")]
+    #[serde(default)]
     pub sfu_room_id: Option<String>,
-    #[serde(default, alias = "sfuPeerId")]
+    #[serde(default)]
     pub sfu_peer_id: Option<String>,
-    #[serde(default, alias = "sfuSignalingWsBase")]
+    #[serde(default)]
     pub sfu_signaling_ws_base: Option<String>,
-    #[serde(default, alias = "sfuJoinToken")]
+    #[serde(default)]
     pub sfu_join_token: Option<String>,
 }
 
 /// [`commands::call_signal::sdk_send_call_hangup`]
 #[derive(Debug, Clone, Deserialize)]
 pub struct CallPluginHangupRequest {
-    #[serde(alias = "conversationId")]
     pub conversation_id: String,
-    #[serde(alias = "callId")]
     pub call_id: String,
     #[serde(default)]
     pub mode: Option<String>,
     pub reason: String,
-    #[serde(default, alias = "durationSeconds")]
+    #[serde(default)]
     pub duration_seconds: Option<i32>,
-    #[serde(default, alias = "reasonCode")]
+    #[serde(default)]
     pub reason_code: Option<String>,
-    #[serde(default, alias = "visibilityScope")]
+    #[serde(default)]
     pub visibility_scope: Option<String>,
-    #[serde(default, alias = "timeoutSeconds")]
+    #[serde(default)]
     pub timeout_seconds: Option<u32>,
-    #[serde(default, alias = "toUserId")]
+    #[serde(default)]
     pub to_user_id: Option<String>,
-    #[serde(default, alias = "closeRoomIfVacant")]
+    #[serde(default)]
     pub close_room_if_vacant: Option<bool>,
 }
 
 /// [`commands::call_signal::sdk_send_call_reject`]
 #[derive(Debug, Clone, Deserialize)]
 pub struct CallPluginRejectRequest {
-    #[serde(alias = "conversationId")]
     pub conversation_id: String,
-    #[serde(alias = "callId")]
     pub call_id: String,
     pub reason: String,
     pub code: i32,
-    #[serde(default, alias = "toUserId")]
+    #[serde(default)]
     pub to_user_id: Option<String>,
 }
 
 /// [`commands::call_signal::sdk_send_call_ice_candidate`]
 #[derive(Debug, Clone, Deserialize)]
 pub struct CallPluginIceCandidateRequest {
-    #[serde(alias = "conversationId")]
     pub conversation_id: String,
-    #[serde(alias = "callId")]
     pub call_id: String,
-    #[serde(default, alias = "toUserId")]
+    #[serde(default)]
     pub to_user_id: Option<String>,
     pub candidate: String,
     pub sdp_mid: String,

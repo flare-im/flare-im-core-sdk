@@ -1,5 +1,5 @@
-use crate::error::{FlareError, Result};
 use crate::infrastructure::protocol::DownlinkPayload;
+use crate::shared::error::{FlareError, Result};
 use flare_proto::common::data_packet::Payload as DataPacketPayload;
 use flare_proto::common::{
     CustomData, DataKind, DataPacket, Event, EventEnvelope, MessagePush, SyncRes,

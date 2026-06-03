@@ -9,9 +9,9 @@ use tokio::sync::RwLock;
 use crate::domain::{
     ConversationReader, ConversationWriter, MessageReader, MessageStore, MessageWriter,
 };
-use crate::error::Result;
 use crate::model::Conversation;
 use crate::model::IMMessage;
+use crate::shared::error::Result;
 
 pub struct EmptyMessageStore;
 

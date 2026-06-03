@@ -1,9 +1,9 @@
 //! 消息内容解码与预览 — 直接使用 message_content.proto 的 Content，仅做薄包装与预览
 
-use crate::error::Result;
 use crate::model::message::Message;
 use crate::model::message_elem::{decoded_content_to_elem, elem_plain_summary};
 use crate::model::preview_storage;
+use crate::shared::error::Result;
 use flare_proto::MessageContentExt;
 use flare_proto::common::MessageType;
 use flare_proto::common::message_content::Content as ProtoContent;
@@ -90,7 +90,10 @@ pub fn decode_content_bytes(bytes: &[u8]) -> Result<DecodedContent> {
         return Ok(DecodedContent::Unknown);
     }
     let mc = flare_proto::common::MessageContent::decode_from_bytes(bytes).map_err(|e| {
-        crate::error::FlareError::deserialization_error(format!("decode MessageContent: {}", e))
+        crate::shared::error::FlareError::deserialization_error(format!(
+            "decode MessageContent: {}",
+            e
+        ))
     })?;
     Ok(match mc.content {
         Some(c) => DecodedContent::Content(Box::new(c)),

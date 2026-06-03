@@ -8,7 +8,7 @@ use flare_proto::common::{
 };
 
 use flare_im_core_sdk::core::SyncRunContext;
-use flare_im_core_sdk::event::{
+use flare_im_core_sdk::core::event::{
     ConnectionEvent, ConversationEvent, MessageEvent, NotificationEvent, SdkEvent, SyncNotify,
     SyncPhase,
 };
@@ -72,7 +72,7 @@ pub fn sdk_event_to_tauri(e: &SdkEvent) -> Option<(String, EventPayload)> {
         SdkEvent::Connection(ConnectionEvent::SyncStateChanged { state }) => Some((
             "im://sync_state_changed".into(),
             EventPayload::SyncStateChanged(SyncStateChangedPayload {
-                run: legacy_sync_run_payload(),
+                run: connection_sync_run_payload(),
                 state: format!("{state:?}"),
             }),
         )),
@@ -297,7 +297,7 @@ pub fn sdk_event_to_tauri(e: &SdkEvent) -> Option<(String, EventPayload)> {
         )),
 
         SdkEvent::Notification(NotificationEvent::Received { message }) => Some((
-            "im://message".into(),
+            "im://notification".into(),
             EventPayload::Message(Box::new(message.as_ref().clone())),
         )),
 
@@ -413,9 +413,9 @@ fn sync_run_payload(run: &SyncRunContext) -> SyncRunPayload {
     }
 }
 
-fn legacy_sync_run_payload() -> SyncRunPayload {
+fn connection_sync_run_payload() -> SyncRunPayload {
     SyncRunPayload {
-        run_id: "legacy-sync-state".to_string(),
+        run_id: "connection-sync-state".to_string(),
         trigger: "BackgroundMaintenance".to_string(),
         scope: "Global".to_string(),
         visibility: "Silent".to_string(),

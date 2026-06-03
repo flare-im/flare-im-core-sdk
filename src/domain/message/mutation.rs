@@ -1,6 +1,6 @@
 use crate::domain::{MessageActor, MessageTransportAction, ResolvedMessage};
-use crate::error::{ErrorCode, FlareError, Result};
 use crate::model::message::{MarkType, ReactionAction};
+use crate::shared::error::{ErrorCode, FlareError, Result};
 
 const DELETE_TYPE_SOFT: i32 = 1;
 const DELETE_SCOPE_USER_PRIVATE: i32 = 1;

@@ -2,8 +2,8 @@ use async_trait::async_trait;
 use sqlx::{Row, SqlitePool};
 
 use crate::domain::ConversationParticipantStore;
-use crate::error::{ErrorCode, FlareError, Result};
 use crate::model::ConversationParticipant;
+use crate::shared::error::{ErrorCode, FlareError, Result};
 
 fn sqlx_err(e: sqlx::Error) -> FlareError {
     FlareError::localized(ErrorCode::DatabaseError, e.to_string())
@@ -72,7 +72,7 @@ impl ConversationParticipantStore for SqliteConversationParticipantRepo {
             .bind(p.joined_at as i64)
             .bind(&p.nickname)
             .bind(participant_version as i64)
-            .bind(crate::util::id::now_millis() as i64)
+            .bind(crate::shared::util::id::now_millis() as i64)
             .execute(&mut *tx)
             .await
             .map_err(sqlx_err)?;
@@ -151,7 +151,7 @@ impl ConversationParticipantStore for SqliteConversationParticipantRepo {
         .await
         .map_err(sqlx_err)?;
 
-        let now = crate::util::id::now_millis() as i64;
+        let now = crate::shared::util::id::now_millis() as i64;
         for row in rows {
             let conversation_id: String = row.try_get("conversation_id").map_err(sqlx_err)?;
             let attributes_raw: String = row.try_get("attributes").map_err(sqlx_err)?;

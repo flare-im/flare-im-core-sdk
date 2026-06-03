@@ -1,9 +1,9 @@
 use async_trait::async_trait;
 use std::collections::HashMap;
 
-use crate::error::Result;
 use crate::model::message::ReactionEntry;
 use crate::model::{IMMessage, MessageSearchQuery};
+use crate::shared::error::Result;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EditApplyResult {

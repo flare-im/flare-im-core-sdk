@@ -4,7 +4,7 @@ pub struct MediaAccessUrl {
     pub cdn_url: Option<String>,
 }
 
-/// [`crate::application::MediaService::resolve_media_access`] 结果：优先本地缓存，否则返回短时远程地址。
+/// [`crate::platform::ports::media::MediaServicePort::resolve_media_access`] 结果：优先本地缓存，否则返回短时远程地址。
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct MediaResolvedAccess {
     /// `"local"` 或 `"remote"`

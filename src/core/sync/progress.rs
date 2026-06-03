@@ -1,11 +1,11 @@
 //! 同步进度模型与进度上报
 //!
 //! [SyncProgress] 供 UI 展示总体进度（权重、当前任务）；[SyncProgressReporter] 由引擎注入到 [super::SyncContext]，
-//! 任务通过它上报权重完成与当前描述，引擎汇总后通过 EventBus 发出 [crate::event::SdkEvent::SyncProgress].
+//! 任务通过它上报权重完成与当前描述，引擎汇总后通过 EventBus 发出 [crate::core::event::SdkEvent::SyncProgress].
 
 use std::sync::{Arc, Mutex};
 
-use crate::event::{EventBus, SdkEvent, SyncNotify};
+use crate::core::event::{EventBus, SdkEvent, SyncNotify};
 
 use super::task::SyncRunContext;
 

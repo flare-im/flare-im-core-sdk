@@ -1,9 +1,11 @@
 use std::collections::HashMap;
 use std::sync::Arc;
+#[cfg(not(target_arch = "wasm32"))]
 use std::time::Duration;
 
+#[cfg(not(target_arch = "wasm32"))]
 use super::http_error_from_response_status;
-use crate::error::{FlareError, Result};
+use crate::shared::error::{FlareError, Result};
 use base64::Engine as _;
 use tokio::sync::RwLock;
 use uuid::Uuid;
@@ -86,7 +88,7 @@ impl HttpRequestContext {
         }
         let tid = tenant_id.trim();
         if !tid.is_empty() {
-            *self.tenant_id.write().await = crate::util::normalize_tenant_id(tid);
+            *self.tenant_id.write().await = crate::shared::util::normalize_tenant_id(tid);
         }
     }
 
@@ -116,7 +118,8 @@ impl HttpRequestContext {
         } else {
             im_token
         };
-        let mut tenant_id = crate::util::normalize_tenant_id(self.tenant_id.read().await.trim());
+        let mut tenant_id =
+            crate::shared::util::normalize_tenant_id(self.tenant_id.read().await.trim());
         let mut user_id = self.user_id.read().await.trim().to_string();
         if user_id.is_empty()
             && !token.trim().is_empty()
@@ -493,6 +496,7 @@ impl HttpClient {
         ))
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     fn build_url(&self, path: &str) -> String {
         if path.starts_with("http://") || path.starts_with("https://") {
             return path.to_string();

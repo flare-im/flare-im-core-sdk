@@ -2,9 +2,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::domain::MessageStore;
-use crate::error::Result;
+use crate::infrastructure::protocol::PacketSender;
 use crate::model::event::{Event, EventType};
-use crate::protocol::PacketSender;
+use crate::shared::error::Result;
 use flare_proto::common::MessageRecallEvent;
 use flare_proto::common::event::Payload as EventPayload;
 

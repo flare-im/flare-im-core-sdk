@@ -9,11 +9,17 @@ pub mod connected_apis;
 pub mod events;
 pub mod im_client;
 pub mod lifecycle;
+pub mod profile_center;
 
+pub use crate::extension::{ExtensionRegistry, SdkExtension};
 pub use crate::model::{
     MediaAccessUrl, MediaCacheEntryVo, MediaCacheStatsVo, MediaResolvedAccess, UploadOptions,
     UploadedMedia,
 };
+pub use crate::platform::ports::media::{
+    MediaMetadata, MediaServicePort, MediaSourceDescriptor, MediaSourceKind,
+};
+pub use crate::platform::runtime::{NativeRuntimeAssembler, RuntimeAssembler, RuntimeComponents};
 pub use api::{
     CapabilityApi, CapabilityDescriptorDto, CapabilityDispatchResult, ConversationApi,
     CreateLocationRequest, CreateRichDocRequest, CreateStickerRequest, EditRichDocRequest,

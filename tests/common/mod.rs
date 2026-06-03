@@ -15,6 +15,7 @@ use async_trait::async_trait;
 use once_cell::sync::Lazy;
 use tokio::sync::RwLock;
 
+use flare_im_core_sdk::adapter_prelude::StoreProvider;
 use flare_im_core_sdk::domain::{
     ConversationReader, ConversationWriter, MessageReader, MessageStore, MessageWriter,
     SyncCursorReader, SyncCursorWriter,
@@ -509,6 +510,7 @@ pub async fn create_test_client_no_connect() -> IMClient {
         .config(config)
         .stores(make_stores())
         .build()
+        .expect("test IMClient build")
 }
 
 /// 创建 IMClient（用于集成测试，需服务端运行）
@@ -600,7 +602,7 @@ pub fn build_single_text(
 /// 与 flare-im-core/examples/chatroom_client.rs 保持一致：
 /// secret = "insecure-secret"，issuer = "flare-im-core"，tenant_id = "0"
 fn generate_test_token(user_id: &str) -> String {
-    flare_im_core_sdk::util::generate_test_token(
+    flare_im_core_sdk::shared::util::generate_test_token(
         "insecure-secret",
         "flare-im-core",
         user_id,

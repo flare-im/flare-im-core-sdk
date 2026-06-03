@@ -24,7 +24,7 @@ use crate::model::message_elem::{
     elem_to_message_content,
 };
 use crate::model::preview_storage::is_redundant_content_text_extra;
-use crate::util::date::{ms_to_prost_timestamp, prost_timestamp_to_ms};
+use crate::shared::util::date::{ms_to_prost_timestamp, prost_timestamp_to_ms};
 use prost::Message as ProstMessage;
 
 /// 从下行 `Message.extra` 推断是否已编辑（与 storage writer 写入的 `messageFsmState`、`currentEditVersion` 对齐）。
@@ -46,7 +46,6 @@ const REACTIONS_JSON_KEY: &str = "reactionsJson";
 pub struct ReactionEntry {
     pub emoji: String,
     #[serde(default)]
-    #[serde(alias = "userIds")]
     pub user_ids: Vec<String>,
     pub count: u32,
 }
@@ -56,18 +55,7 @@ pub(crate) fn parse_reactions_from_extra(extra: &HashMap<String, String>) -> Vec
         Some(v) if !v.trim().is_empty() => v,
         _ => return Vec::new(),
     };
-    // 兼容两种形态：
-    // 1) 直接数组 JSON：`[{"emoji":"👍","user_ids":["u1"],"count":1}]`
-    // 2) 二次编码字符串：`"[{\"emoji\":\"👍\",\"user_ids\":[\"u1\"],\"count\":1]"`
-    if let Ok(list) = serde_json::from_str::<Vec<ReactionEntry>>(raw) {
-        return list;
-    }
-    match serde_json::from_str::<serde_json::Value>(raw) {
-        Ok(serde_json::Value::String(inner)) => {
-            serde_json::from_str::<Vec<ReactionEntry>>(&inner).unwrap_or_default()
-        }
-        _ => Vec::new(),
-    }
+    serde_json::from_str::<Vec<ReactionEntry>>(raw).unwrap_or_default()
 }
 
 #[cfg(feature = "storage-sqlite")]
@@ -222,7 +210,7 @@ pub struct IMMessage {
     // ==============================
     pub extra: HashMap<String, String>,
 
-    /// 扩展数据；反序列化时若前端未传或格式不兼容则用 default
+    /// 扩展数据；未提供时为空。
     #[serde(default)]
     pub extensions: HashMap<String, Vec<u8>>,
 

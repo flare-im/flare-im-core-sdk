@@ -1,7 +1,7 @@
-use crate::error::{ErrorCode, FlareError, Result};
 use crate::model::decoder::decode_content_bytes;
 use crate::model::message::IMMessage;
 use crate::model::message_elem::Elem;
+use crate::shared::error::{ErrorCode, FlareError, Result};
 
 pub struct MessageContentPolicy;
 

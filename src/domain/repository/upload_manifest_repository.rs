@@ -1,5 +1,5 @@
 use crate::domain::models::{MediaUploadManifestVo, MediaUploadPartVo};
-use crate::error::Result;
+use crate::shared::error::Result;
 use async_trait::async_trait;
 
 #[async_trait]

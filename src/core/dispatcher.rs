@@ -10,18 +10,20 @@ use prost::Message;
 use tokio::sync::{Mutex as AsyncMutex, RwLock};
 use tracing::warn;
 
-use crate::application::conversation_projection_applier::ConversationProjectionApplier;
-use crate::application::event_deduper::EventDeduper;
-use crate::application::incoming_message_converger::IncomingMessageConverger;
-use crate::application::message_deduper::MessageDeduper;
+use crate::application::notification::{
+    NotificationInboundPipeline, partition_notification_durability,
+};
+use crate::application::projections::ConversationProjectionApplier;
+use crate::application::services::EventDeduper;
+use crate::application::services::IncomingMessageConverger;
+use crate::application::services::MessageDeduper;
+use crate::core::ReliableSendQueue;
+use crate::core::event::{ConversationEvent, EventBus, ExtensionEvent, MessageEvent, SdkEvent};
 use crate::core::{SessionSyncRunner, SyncResponseHandler};
 use crate::domain::{DEFAULT_SYNC_LIMIT, SyncCursorVo};
-use crate::event::{ConversationEvent, EventBus, ExtensionEvent, MessageEvent, SdkEvent};
+use crate::infrastructure::persistence::StoreProvider;
 use crate::infrastructure::protocol::DownlinkPayload;
 use crate::model::IMMessage;
-use crate::notification::{NotificationInboundPipeline, partition_notification_durability};
-use crate::reliable_queue::ReliableSendQueue;
-use crate::store::StoreProvider;
 
 const SEQ_REPAIR_BASE_BACKOFF_MS: u64 = 1_000;
 const SEQ_REPAIR_MAX_BACKOFF_MS: u64 = 60_000;
@@ -1034,23 +1036,25 @@ mod tests {
         max_contiguous_seq,
     };
     use super::{SEQ_REPAIR_MAX_BACKOFF_MS, seq_repair_backoff_ms};
-    use crate::Result;
-    use crate::application::event_deduper::EventDeduper;
-    use crate::application::message_deduper::MessageDeduper;
+    use crate::application::notification::{
+        NotificationHandlerRegistry, NotificationInboundPipeline,
+    };
+    use crate::application::services::EventDeduper;
+    use crate::application::services::MessageDeduper;
     use crate::application::usecases::SyncApplyUseCase;
     use crate::core::CurrentUserIdStore;
+    use crate::core::event::{EventBus, MessageEvent, SdkEvent};
+    use crate::core::{ReliableSendQueue, ReliableSendQueueConfig};
     use crate::domain::{
         ConversationReader, ConversationWriter, MessageReader, MessageStore, MessageWriter,
         PendingSendReader, PendingSendVo, PendingSendWriter, SyncCursorReader, SyncCursorVo,
         SyncCursorWriter,
     };
-    use crate::event::{EventBus, MessageEvent, SdkEvent};
+    use crate::infrastructure::persistence::StoreProvider;
     use crate::infrastructure::protocol::DownlinkPayload;
+    use crate::infrastructure::protocol::{Codec, PacketSender, ProtobufCodec};
     use crate::model::IMMessage;
-    use crate::notification::{NotificationHandlerRegistry, NotificationInboundPipeline};
-    use crate::protocol::{Codec, PacketSender, ProtobufCodec};
-    use crate::reliable_queue::{ReliableSendQueue, ReliableSendQueueConfig};
-    use crate::store::StoreProvider;
+    use crate::shared::error::Result;
     use async_trait::async_trait;
     use flare_proto::common::{MessageDeleteEvent, SendAck};
     use std::collections::HashMap;

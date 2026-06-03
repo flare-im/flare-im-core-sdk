@@ -1,11 +1,11 @@
 use flare_proto::common::{MessageStatus, event::Payload as DomainEventPayload};
 use prost::Message;
 
-use crate::application::event_deduper::EventDeduper;
+use crate::application::services::EventDeduper;
+use crate::core::event::{ConversationEvent, EventBus, ExtensionEvent, MessageEvent, SdkEvent};
 use crate::domain::{EditApplyResult, OperationApplyResult, SyncPolicy, local_cleared_through_seq};
-use crate::error::Result;
-use crate::event::{ConversationEvent, EventBus, ExtensionEvent, MessageEvent, SdkEvent};
-use crate::store::StoreProvider;
+use crate::infrastructure::persistence::StoreProvider;
+use crate::shared::error::Result;
 
 use super::models::ReplayMode;
 
@@ -134,7 +134,7 @@ impl SyncEventApplier {
                 Ok(OperationApplyResult::NotFound) => {
                     return self.missing_target_is_already_covered(user_id, event).await;
                 }
-                Ok(OperationApplyResult::IgnoredStale) => unreachable!(),
+                Ok(OperationApplyResult::IgnoredStale) => return Ok(true),
                 Err(error) => return Err(error),
             }
             self.bus
@@ -223,7 +223,7 @@ impl SyncEventApplier {
                 Ok(OperationApplyResult::NotFound) => {
                     return self.missing_target_is_already_covered(user_id, event).await;
                 }
-                Ok(OperationApplyResult::IgnoredStale) => unreachable!(),
+                Ok(OperationApplyResult::IgnoredStale) => return Ok(true),
                 Err(error) => return Err(error),
             }
             self.bus
@@ -253,7 +253,7 @@ impl SyncEventApplier {
                 Ok(OperationApplyResult::NotFound) => {
                     return self.missing_target_is_already_covered(user_id, event).await;
                 }
-                Ok(OperationApplyResult::IgnoredStale) => unreachable!(),
+                Ok(OperationApplyResult::IgnoredStale) => return Ok(true),
                 Err(error) => return Err(error),
             }
             self.bus.publish(SdkEvent::Message(MessageEvent::Burned {
@@ -283,7 +283,7 @@ impl SyncEventApplier {
                 Ok(OperationApplyResult::NotFound) => {
                     return self.missing_target_is_already_covered(user_id, event).await;
                 }
-                Ok(OperationApplyResult::IgnoredStale) => unreachable!(),
+                Ok(OperationApplyResult::IgnoredStale) => return Ok(true),
                 Err(error) => return Err(error),
             }
             self.bus
@@ -308,7 +308,7 @@ impl SyncEventApplier {
                 Ok(OperationApplyResult::NotFound) => {
                     return self.missing_target_is_already_covered(user_id, event).await;
                 }
-                Ok(OperationApplyResult::IgnoredStale) => unreachable!(),
+                Ok(OperationApplyResult::IgnoredStale) => return Ok(true),
                 Err(error) => return Err(error),
             }
             self.bus.publish(SdkEvent::Message(MessageEvent::Pinned {
@@ -332,7 +332,7 @@ impl SyncEventApplier {
                 Ok(OperationApplyResult::NotFound) => {
                     return self.missing_target_is_already_covered(user_id, event).await;
                 }
-                Ok(OperationApplyResult::IgnoredStale) => unreachable!(),
+                Ok(OperationApplyResult::IgnoredStale) => return Ok(true),
                 Err(error) => return Err(error),
             }
             self.bus.publish(SdkEvent::Message(MessageEvent::Unpinned {
@@ -366,7 +366,7 @@ impl SyncEventApplier {
                 Ok(OperationApplyResult::NotFound) => {
                     return self.missing_target_is_already_covered(user_id, event).await;
                 }
-                Ok(OperationApplyResult::IgnoredStale) => unreachable!(),
+                Ok(OperationApplyResult::IgnoredStale) => return Ok(true),
                 Err(error) => return Err(error),
             }
             self.bus.publish(SdkEvent::Message(MessageEvent::Marked {
@@ -396,7 +396,7 @@ impl SyncEventApplier {
                 Ok(OperationApplyResult::NotFound) => {
                     return self.missing_target_is_already_covered(user_id, event).await;
                 }
-                Ok(OperationApplyResult::IgnoredStale) => unreachable!(),
+                Ok(OperationApplyResult::IgnoredStale) => return Ok(true),
                 Err(error) => return Err(error),
             }
             self.bus.publish(SdkEvent::Message(MessageEvent::Unmarked {
@@ -547,15 +547,15 @@ impl SyncEventApplier {
 #[cfg(all(test, feature = "storage-sqlite"))]
 mod tests {
     use super::{ReplayMode, SyncEventApplier};
-    use crate::Result;
-    use crate::application::event_deduper::EventDeduper;
+    use crate::application::services::EventDeduper;
+    use crate::core::event::{EventBus, MessageEvent, SdkEvent};
     use crate::domain::{
         ConversationReader, ConversationWriter, MessageReader, MessageWriter, SyncCursorReader,
         SyncCursorVo, SyncCursorWriter,
     };
-    use crate::event::{EventBus, MessageEvent, SdkEvent};
-    use crate::store::StoreProvider;
-    use crate::store::{SqliteMessageRepo, sqlite_init_schema};
+    use crate::infrastructure::persistence::StoreProvider;
+    use crate::infrastructure::persistence::{SqliteMessageRepo, sqlite_init_schema};
+    use crate::shared::error::Result;
     use async_trait::async_trait;
     use flare_proto::common::BurnStatus;
     use sqlx::SqlitePool;

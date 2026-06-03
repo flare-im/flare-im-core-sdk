@@ -9,12 +9,12 @@ use crate::application::{
     BuildCardRequest, BuildLinkCardRequest, BuildLocationRequest, BuildMiniProgramRequest,
     BuildRichDocRequest, BuildScheduleRequest, BuildStickerRequest, MessageBuilderService,
 };
-use crate::conversation;
 use crate::core::CurrentUserIdStore;
+use crate::domain::conversation::id as conversation_id;
 use crate::domain::{ConversationIdentityService, ConversationStore};
-use crate::error::{ErrorCode, FlareError, Result};
 use crate::model::content_builder::BuiltContent;
 use crate::model::message::IMMessage;
+use crate::shared::error::{ErrorCode, FlareError, Result};
 use flare_proto::common::ImageInfo;
 
 #[derive(Clone, Debug)]
@@ -86,7 +86,7 @@ impl MessageBuildApi {
         mut msg: IMMessage,
     ) -> Result<IMMessage> {
         let Some(mut conv) = self.conversations.get(conversation_id).await? else {
-            if conversation::is_single_chat_conversation(conversation_id) {
+            if conversation_id::is_single_chat_conversation(conversation_id) {
                 return Err(FlareError::localized(
                     ErrorCode::InvalidParameter,
                     "单聊会话未在本地落库，请先调用 conversation.get_one(对端 user_id, Single)",
@@ -138,7 +138,9 @@ impl MessageBuildApi {
             }
         }
 
-        if conversation::is_single_chat_conversation(conversation_id) && msg.channel_id.is_empty() {
+        if conversation_id::is_single_chat_conversation(conversation_id)
+            && msg.channel_id.is_empty()
+        {
             return Err(FlareError::localized(
                 ErrorCode::InvalidParameter,
                 "单聊缺少对方 user_id（channel_id）。请先调用 conversation.get_one(对端, Single) 以补全会话行",

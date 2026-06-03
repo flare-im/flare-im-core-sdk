@@ -8,11 +8,19 @@
 
 mod dispatcher;
 mod engine;
+pub mod event;
+mod fsm;
+mod reliable_queue;
 mod sync;
 
 pub use dispatcher::Dispatcher;
 pub(crate) use engine::SdkEngineConfig;
 pub use engine::{SdkEngine, SdkState};
+pub use fsm::{
+    ConnectionEvent, ConnectionFsm, ConnectionState, MessageState, MessageStateEvent,
+    MessageStateFsm, SyncFsm, SyncState, SyncTransition,
+};
+pub(crate) use reliable_queue::{ReliableSendQueue, ReliableSendQueueConfig};
 pub use sync::{
     ConversationSummarySync, SessionSyncRunner, SyncContext, SyncFailurePolicy, SyncManager,
     SyncMode, SyncPhase, SyncProgress, SyncReason, SyncResponseHandler, SyncResult, SyncRunContext,

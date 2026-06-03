@@ -1,7 +1,7 @@
 //! 消息内容构建器 — 与 message_content.proto 对应，构建 MessageContent
 
-use crate::rich_doc_v2::pipeline::CONTENT_SCHEMA_RICH_DOC;
-use crate::rich_doc_v2::{RichDocV2Error, validate_doc_json};
+use crate::model::rich_doc_v2::pipeline::CONTENT_SCHEMA_RICH_DOC;
+use crate::model::rich_doc_v2::{RichDocV2Error, validate_doc_json};
 use flare_proto::common::{
     AnnouncementContent, AudioContent, AudioInfo, CardContent, CustomContent, EmojiContent,
     FileContent, ForwardContent, ForwardItem, ForwardMode, ImageContent, ImageFormat,
@@ -815,7 +815,7 @@ impl ContentBuilder {
         self
     }
 
-    /// 构建富文本：`doc_json` 在 `content_schema == rich_doc` 时走 [`crate::rich_doc_v2::validate_doc_json`]。
+    /// 构建富文本：`doc_json` 在 `content_schema == rich_doc` 时走 [`crate::model::rich_doc_v2::validate_doc_json`]。
     pub fn try_rich_doc(
         doc_json: impl Into<String>,
         content_schema: impl Into<String>,

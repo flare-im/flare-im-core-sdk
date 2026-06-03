@@ -1,0 +1,115 @@
+{
+  "schemaVersion": 1,
+  "errorContractVersion": "flare-im-errors/v1",
+  "rules": [
+    "C ABI synchronous return codes describe submit/argument failure only.",
+    "Asynchronous failures are delivered through FlareResultCallback(error, result_json).",
+    "FlareError.code is stable. FlareError.message is human-readable and must not be parsed.",
+    "details_json is reserved for future structured diagnostics and may be empty.",
+    "Platform SDKs must map codes to typed errors instead of string matching messages."
+  ],
+  "cAbi": {
+    "success": 0,
+    "errorStruct": "FlareError { code: i32, message: FlareString, details_json: FlareString }",
+    "callback": "extern C fn(context, error: *const FlareError, result_json: FlareString)",
+    "codes": [
+      {
+        "name": "FLARE_OK",
+        "code": 0,
+        "meaning": "success"
+      },
+      {
+        "name": "FLARE_ERR_INVALID_HANDLE",
+        "code": 1,
+        "meaning": "invalid or released SDK handle"
+      },
+      {
+        "name": "FLARE_ERR_INVALID_PARAM",
+        "code": 2,
+        "coreCodes": ["InvalidParameter"],
+        "meaning": "invalid pointer, missing field, invalid enum, or invalid argument"
+      },
+      {
+        "name": "FLARE_ERR_NOT_CONNECTED",
+        "code": 3,
+        "coreCodes": ["NotConnected"],
+        "meaning": "operation requires a logged-in/connected SDK session"
+      },
+      {
+        "name": "FLARE_ERR_OPERATION_TIMEOUT",
+        "code": 4,
+        "coreCodes": ["OperationTimeout"],
+        "meaning": "operation timed out"
+      },
+      {
+        "name": "FLARE_ERR_NETWORK_ERROR",
+        "code": 5,
+        "coreCodes": ["NetworkError"],
+        "meaning": "transport or network failure"
+      },
+      {
+        "name": "FLARE_ERR_AUTH_FAILED",
+        "code": 6,
+        "coreCodes": ["AuthenticationFailed"],
+        "meaning": "login/authentication failed"
+      },
+      {
+        "name": "FLARE_ERR_TOKEN_EXPIRED",
+        "code": 7,
+        "coreCodes": ["TokenExpired"],
+        "meaning": "access token expired; caller should refresh token or relogin"
+      },
+      {
+        "name": "FLARE_ERR_INTERNAL",
+        "code": 8,
+        "coreCodes": ["InternalError", "GeneralError", "DatabaseError", "PermissionDenied", "ServiceUnavailable", "OperationNotSupported", "ConfigurationError", "MessageNotFound"],
+        "meaning": "internal or currently unmapped core error"
+      },
+      {
+        "name": "FLARE_ERR_JSON_PARSE",
+        "code": 9,
+        "meaning": "invalid JSON input or failed JSON serialization"
+      },
+      {
+        "name": "FLARE_ERR_NULL_POINTER",
+        "code": 10,
+        "meaning": "required pointer argument is null"
+      },
+      {
+        "name": "FLARE_ERR_FFI_PANIC",
+        "code": 11,
+        "meaning": "panic was caught at the FFI boundary"
+      }
+    ]
+  },
+  "platformMapping": {
+    "typescript": {
+      "base": "FlareSdkError",
+      "typed": [
+        "InvalidHandleError",
+        "InvalidParamError",
+        "NotConnectedError",
+        "OperationTimeoutError",
+        "NetworkError",
+        "AuthFailedError",
+        "TokenExpiredError",
+        "InternalSdkError",
+        "JsonParseError",
+        "NullPointerError",
+        "FfiPanicError"
+      ]
+    },
+    "kotlin": {
+      "base": "FlareSdkException",
+      "typed": "sealed subclasses by cAbi.codes.name"
+    },
+    "swift": {
+      "base": "FlareSdkError",
+      "typed": "enum cases by cAbi.codes.name"
+    },
+    "dart": {
+      "base": "FlareSdkException",
+      "typed": "factory by cAbi.codes.name"
+    }
+  }
+}

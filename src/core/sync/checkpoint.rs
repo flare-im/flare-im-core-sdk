@@ -4,7 +4,7 @@
 //! 任务完成后可保存新 cursor。使用 [crate::domain::SyncCursorStore]，key 格式：`sync:checkpoint:{task_id}`.
 
 use crate::domain::SyncCursorStore;
-use crate::error::Result;
+use crate::shared::error::Result;
 
 const PREFIX: &str = "sync:checkpoint:";
 

@@ -46,6 +46,7 @@ use commands::{
         sdk_current_user_id, sdk_engine_state, sdk_generate_test_token, sdk_init, sdk_is_connected,
         sdk_login, sdk_logout, sdk_mark_session_read, sdk_rtc_ice_config_snapshot,
         sdk_set_conversation_input_state, sdk_sync_conversation, sdk_sync_messages,
+        sdk_update_access_token,
     },
     media::{
         sdk_cache_remote_media, sdk_cancel_user_file_download, sdk_clear_media_cache,
@@ -87,6 +88,7 @@ pub fn im_invoke_handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + 'stat
         sdk_init,
         sdk_login,
         sdk_logout,
+        sdk_update_access_token,
         sdk_is_connected,
         sdk_current_user_id,
         sdk_generate_test_token,

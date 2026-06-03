@@ -1,4 +1,4 @@
-//! 同步引擎：任务抽象 + 编排（Init/Background）；飞书级 IM 基线 — 连接就绪后自动执行，状态与阶段仅通过 [crate::event] 回调获取。
+//! 同步引擎：任务抽象 + 编排（Init/Background）；飞书级 IM 基线 — 连接就绪后自动执行，状态与阶段仅通过 [crate::core::event] 回调获取。
 //!
 //! **流程**：SyncStarted → Init 任务并行 → SyncFinished(Init) → Background 任务并行 → SyncFinished(Background)。
 //! 应用层可监听 [SyncStateChanged]、[SyncFinished]（Background 结束后可认为全量同步完成，如打印会话数）。

@@ -12,7 +12,6 @@ use crate::domain::{
     EditApplyResult, MessageDeliveryService, MessageReader, MessageStore, MessageWriter,
     OperationApplyResult, local_cleared_through_seq, message_visible_after_clear,
 };
-use crate::error::{ErrorCode, FlareError, Result};
 use crate::model::conversation::ConversationType;
 use crate::model::message::{
     MessageLocalState, ReactionEntry, has_reaction_snapshot_in_extra, parse_reactions_from_extra,
@@ -22,6 +21,7 @@ use crate::model::{
     Elem, IMMessage, MessageSearchKind, MessageSearchQuery, decode_content_bytes,
     decoded_content_to_elem, message_elem::TextElem,
 };
+use crate::shared::error::{ErrorCode, FlareError, Result};
 use flare_proto::common::{BurnStatus, MessageStatus, MessageType};
 
 fn parse_extra(s: Option<&str>) -> HashMap<String, String> {
@@ -2200,10 +2200,10 @@ mod tests {
         OperationApplyResult,
     };
     use crate::infrastructure::persistence::sqlite::conversation_repo::SqliteConversationRepo;
+    use crate::infrastructure::persistence::sqlite_init_schema;
     use crate::model::message::{MessageStatus, ReactionAction};
     use crate::model::message_elem::{Elem, TextElem};
     use crate::model::{IMMessage, MessageSearchKind, MessageSearchQuery, MessageType};
-    use crate::store::sqlite_init_schema;
     use flare_proto::common::BurnStatus;
     use sqlx::SqlitePool;
 

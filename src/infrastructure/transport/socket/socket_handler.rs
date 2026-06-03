@@ -4,7 +4,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use crate::error::Result;
+use crate::shared::error::Result;
 use async_trait::async_trait;
 use flare_core::client::builder::flare::MessageListener;
 use flare_core::common::compression::CompressionUtil;
@@ -19,7 +19,7 @@ use tokio::sync::Notify;
 use tracing::{debug, warn};
 
 use crate::core::Dispatcher;
-use crate::event::{ConnectionEvent, SdkEvent};
+use crate::core::event::{ConnectionEvent, SdkEvent};
 use crate::infrastructure::protocol::Codec;
 use crate::infrastructure::protocol::downlink::DownlinkPayload;
 
@@ -153,7 +153,7 @@ impl MessageListener for SocketHandler {
 
     async fn on_connect(&self) -> Result<()> {
         self.dispatcher.bus().publish(SdkEvent::Connection(
-            crate::event::ConnectionEvent::Connected,
+            crate::core::event::ConnectionEvent::Connected,
         ));
         Ok(())
     }

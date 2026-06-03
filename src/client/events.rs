@@ -1,17 +1,17 @@
-//! [`IMClient`] 事件订阅：一律委托 [`crate::event::EventBus`]，与消息/会话领域对齐。
+//! [`IMClient`] 事件订阅：一律委托 [`crate::core::event::EventBus`]，与消息/会话领域对齐。
 //!
 //! 专业 SDK 常见形态是「单入口 + 类型化 on_*」；实现保持薄转发即可，不必按域拆多个源文件。
 //!
-//! **注意**：若在 [`super::IMClient::login`] 的 `before_connect` 之前尚未挂上引擎，应优先在回调里用传入的 [`crate::event::EventBus`] 注册；连接后再用本文件的 `on_*` 亦可（见示例 `two_clients_chat`）。
+//! **注意**：若在 [`super::IMClient::login`] 的 `before_connect` 之前尚未挂上引擎，应优先在回调里用传入的 [`crate::core::event::EventBus`] 注册；连接后再用本文件的 `on_*` 亦可（见示例 `two_clients_chat`）。
 
 use flare_proto::common::{CallSignalEvent, MessageRecallEvent, SendAck, TypingEvent};
 
-use crate::Result;
 use crate::client::IMClient;
 use crate::core::SdkState;
-use crate::event::{SharedEvent, Subscription, SyncPhase};
-use crate::fsm::SyncState;
+use crate::core::SyncState;
+use crate::core::event::{SharedEvent, Subscription, SyncPhase};
 use crate::model::IMMessage;
+use crate::shared::error::Result;
 
 impl IMClient {
     // ========== 连接 / 会话状态机（[`SdkState`]）==========

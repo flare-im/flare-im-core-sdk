@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 
-use crate::error::Result;
 use crate::model::{Conversation, ConversationListQuery};
+use crate::shared::error::Result;
 
 /// 会话查询（只读）
 /// 列表顺序：先置顶（is_pinned DESC），再按 last_message_at 倒序

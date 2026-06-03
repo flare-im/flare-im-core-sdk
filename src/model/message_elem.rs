@@ -9,7 +9,7 @@ use crate::model::preview_storage::{
     PreviewStoragePayload, decode_or_user_text, keys, localizable_notification_preview,
     localizable_system_preview,
 };
-use crate::util::date::{ms_to_prost_timestamp, prost_timestamp_to_ms};
+use crate::shared::util::date::{ms_to_prost_timestamp, prost_timestamp_to_ms};
 use flare_proto::common::ImageFormat;
 use flare_proto::common::message_content::Content as ProtoContent;
 

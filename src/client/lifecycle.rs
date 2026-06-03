@@ -1,15 +1,15 @@
-//! 配置合并、连接 token、登录存储选型；路径类工具在 [`crate::util::paths`]，此处 `pub use` 保持 `crate::lifecycle::*` 路径稳定。
+//! 配置合并、连接 token、登录存储选型；路径类工具在 [`crate::shared::util::paths`]。
 //!
-//! - **SQLite 仓储构建**：[`crate::util::sqlite_store`]（`feature = "lifecycle-sqlite"`），由 [`super::IMClient::login`] 在 `LoginDbKind::Sqlite` 时调用。
-//! - **IndexedDB（Web）**：宿主实现 [`crate::store`] 后 [`LoginDbKind::IndexedDb`] 传入 [`super::IMClient::login`]。
+//! - **SQLite 仓储构建**：[`crate::shared::util::sqlite_store`]（`feature = "lifecycle-sqlite"`），由 [`super::IMClient::login`] 在 `LoginDbKind::Sqlite` 时调用。
+//! - **IndexedDB（Web）**：宿主实现 [`crate::infrastructure::persistence`] 后 [`LoginDbKind::IndexedDb`] 传入 [`super::IMClient::login`]。
 
-pub use crate::util::paths::{
+pub use crate::shared::util::paths::{
     default_sdk_data_root, dev_data_dir_relative_to_cwd, parse_data_url_to_path,
     resolve_sdk_data_root, resolve_user_db_path, sanitize_user_id_for_dir,
 };
 
-use crate::Result;
-use crate::client::SdkConfig;
+use crate::client::{SdkConfig, TransportPolicy};
+use crate::shared::error::Result;
 
 /// 上层可选覆盖项（JSON 字段 snake_case，与 Rust 字段一致）。
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
@@ -24,9 +24,9 @@ pub struct SdkConfigOverlay {
     pub connect_timeout_secs: Option<u64>,
     pub reconnect_interval_secs: Option<u64>,
     pub max_reconnect_attempts: Option<u32>,
+    pub transport_policy: Option<TransportPolicy>,
     pub sync_batch_size: Option<u32>,
     /// Init/重连后会话消息补拉并发数（默认 4）。
-    #[serde(alias = "initMessageSyncConcurrency")]
     pub init_message_sync_concurrency: Option<u32>,
     pub ack_timeout_secs: Option<u64>,
     pub ack_max_retries: Option<u32>,
@@ -80,6 +80,9 @@ pub fn merge_sdk_config(ws_url: &str, overlay: Option<&SdkConfigOverlay>) -> Sdk
         if o.max_reconnect_attempts.is_some() {
             config.max_reconnect_attempts = o.max_reconnect_attempts;
         }
+        if let Some(policy) = o.transport_policy {
+            config.transport_policy = policy;
+        }
         if o.sync_batch_size.is_some() {
             config.sync_batch_size = o.sync_batch_size;
         }
@@ -125,7 +128,7 @@ pub fn resolve_connect_token(user_id: &str, explicit_token: Option<&str>) -> Res
             return Ok(t.to_string());
         }
     }
-    crate::util::generate_test_token(
+    crate::shared::util::generate_test_token(
         "insecure-secret",
         "flare-im-core",
         user_id,
@@ -139,5 +142,5 @@ pub fn resolve_connect_token(user_id: &str, explicit_token: Option<&str>) -> Res
 pub enum LoginDbKind {
     #[cfg(feature = "lifecycle-sqlite")]
     Sqlite,
-    IndexedDb(crate::store::StoreProvider),
+    IndexedDb(crate::infrastructure::persistence::StoreProvider),
 }

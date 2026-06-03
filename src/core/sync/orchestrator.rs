@@ -3,8 +3,8 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use crate::event::{EventBus, SdkEvent, SyncNotify, SyncPhase};
-use crate::store::StoreProvider;
+use crate::core::event::{EventBus, SdkEvent, SyncNotify, SyncPhase};
+use crate::infrastructure::persistence::StoreProvider;
 use tokio::task::{JoinHandle, JoinSet};
 use tracing::{debug, warn};
 

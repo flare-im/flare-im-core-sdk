@@ -6,6 +6,11 @@ rust-version = "1.94.0"
 authors = ["Flare Team"]
 license = "Apache-2.0"
 description = "Flare IM Core SDK - UniFFI Bindings (Kotlin/Swift/Python)"
+publish = false
+
+# Archived placeholder. Keep this crate outside the main SDK workspace until a
+# deliberate UniFFI redesign is approved.
+[workspace]
 
 [lib]
 crate-type = ["cdylib", "staticlib"]

@@ -10,7 +10,7 @@ use flare_im_core_sdk::client::api::{
     CapabilityApi, ConversationApi, MediaApi, MessageApi, MessageBuildApi, PresenceApi,
 };
 use flare_im_core_sdk::client::{ConnectedApis, IMClient, SdkConfigOverlay};
-use flare_im_core_sdk::store::StoreProvider;
+use flare_im_core_sdk::infrastructure::persistence::StoreProvider;
 use tokio::sync::RwLock;
 
 #[derive(Clone)]

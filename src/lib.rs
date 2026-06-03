@@ -1,121 +1,37 @@
 //! # Flare IM Core SDK
 //!
-//! 生产级事件流驱动的跨平台 IM 客户端 SDK。
+//! Production-grade, event-driven, cross-platform IM core SDK.
 //!
-//! ## 设计原则
+//! This crate owns only the business-neutral IM core:
+//! messages, conversations, connection lifecycle, reliable sending, local
+//! storage coordination, and offline/incremental sync. Media, storage,
+//! transport, crypto, and runtime differences are injected through
+//! `platform`; product capabilities are installed through `extension`.
 //!
-//! **核心只做消息和会话**，其他能力通过扩展机制注入：
-//! - `SyncTask` — 自定义同步任务（由业务 SDK 注册，如社交域好友/群目录）
-//! - `MessageInterceptor` — 消息拦截（端到端加密、内容过滤等）
-//! - `EventInterceptor` — 事件拦截（日志、审计等）
-//! - `Extension` 事件 — 非核心领域推送（在线状态、通话信令、自定义业务等）
-//! - `CustomPush` — 服务端自定义推送透传
+//! ## Public surfaces
 //!
-//! ## 消息内容类型
-//!
-//! 支持 `message_content.proto` 定义的全部 26 种消息类型：
-//! - 基础 (1-15): Text / Image（含动图 GIF） / Video / Audio / File / Location / Card / Sticker / Emoji / Quote / LinkCard / Forward / Thread / MiniProgram
-//! - 富媒体 (30-32): RichText（Rich Doc 主存储）/ ImageGroup
-//! - 系统 (60-61): System / Notification
-//! - 业务 (80-83): Vote / Task / Schedule / Announcement
-//! - 自定义 (100): Custom
-//! - 平台 (111-115): Placeholder (E2E / DecryptFailed / External / Imported / Migration)
-//!
-//! 各接入层（Tauri / FFI / 其他）可将 `content` 字节通过 `decode_content_bytes` + `decoded_content_to_elem`
-//! 转为可序列化的 `Elem`（snake_case JSON、`content_type` 标签）；前端可自行转 camelCase。
-//!
-//! ## 消息操作
-//!
-//! 覆盖 `event.proto` 定义的全部事件操作 SDK 全流程：
-//! - 发送 → 拦截器 → 网络发送 → 本地存储 → SendAck
-//! - 撤回 → 网络发送 → 本地状态更新 → Recalled 事件
-//! - 编辑 → 网络发送 → 本地内容更新 → Edited 事件
-//! - 删除 → 网络发送 → 本地删除 → Deleted 事件
-//! - 已读 → 网络发送 → ReadReceipt 事件
-//! - 正在输入 → 网络发送 → Typing 事件
-//! - 表情反应 → 网络发送 → ReactionUpdated 事件
-//! - 置顶/取消 → 网络发送 → Pinned/Unpinned 事件
-//! - 标记/取消 → 网络发送 → Marked/Unmarked 事件
-//!
-//! ## 架构概览
-//!
-//! ```text
-//!                    API (MessageApi / ConversationApi)
-//!                                 │
-//!                        Command / Query
-//!                                 │
-//!                             EventBus
-//!                    ┌────────────┼────────────┐
-//!                    │            │            │
-//!              Connection      Sync        Message
-//!                (FSM)       Engine       Engine
-//!                    │            │            │
-//!                    └────────────┼────────────┘
-//!                                 │
-//!                          Repository
-//!                                 │
-//!                            Storage
-//!                                 │
-//!              Network Pipeline (Decode → Router → EventBus)
-//! ```
-//!
-//! ## 快速上手
-//!
-//! ```ignore
-//! use flare_im_core_sdk::prelude::*;
-//!
-//! let client = IMClient::builder()
-//!     .config(SdkConfig::new("wss://im.example.com"))
-//!     .stores(stores)
-//!     .build();
-//!
-//! client.connect("user_123", "jwt_token").await?;
-//!
-//! // 构建并发送文本消息
-//! let content = ContentBuilder::text("Hello @All!")
-//!     .mention_all(6, 4)
-//!     .build();
-//! let msg = MessageBuilder::new("conv_id", "user_123")
-//!     .content(content)
-//!     .build()?;
-//! client.message().send(msg).await?;
-//!
-//! // 监听推送 + 解码内容
-//! let _sub = client.on_message(|msg| {
-//!     if let Ok(decoded) = decode_content(msg) {
-//!         println!("{}", decoded.text_preview()); // JSON：`k` + `a`，见 `model::preview_storage`
-//!     }
-//! });
-//!
-//! // 消息操作
-//! client.message().typing("conv_id", "user_123", true).await?;
-//! client.message().mark("conv_id", "msg_id", "user_123", MarkType::Important).await?;
-//! client.message().pin("conv_id", "msg_id", "user_123").await?;
-//! client.message().add_reaction("msg_id", "👍").await?;
-//! ```
+//! - `client`: application-facing SDK handle, lifecycle, builder, and APIs.
+//! - `prelude`: app-facing API imports for normal SDK usage.
+//! - `adapter_prelude`: storage/protocol/platform contracts for host adapters.
+//! - `extension_prelude`: plugin and business-extension contracts.
+//! - `domain`, `application`, and `core`: IM core layers.
+//! - `platform` and `infrastructure`: runtime boundary and concrete IO.
+//! - `extension`: business extension, capability plugin, and middleware contracts.
 
+// Public API layer.
 pub mod client;
-pub mod conversation;
+
+// Core business layers.
+pub mod application;
 pub mod core;
 pub mod domain;
-pub mod error;
-pub mod event;
-pub mod fsm;
-pub mod middleware;
+pub mod extension;
 pub mod model;
-pub mod reliable_queue;
-/// RichDoc v2：归一化 / 校验 / `plain_text`·`search_text`·`render_hints` 派生。
-pub mod rich_doc_v2;
-pub mod types;
-pub mod util;
 
-// 与 flare-orchestrator 对齐的分层入口
-pub mod application;
-pub mod capability;
-pub mod config;
+// Runtime boundaries and shared primitives.
 pub mod infrastructure;
-pub mod notification;
-pub mod profile_center;
+pub mod platform;
+pub mod shared;
 
 /// 通话 / RTC 插件 crate 再导出（需启用 **`plugin-call`** feature）。
 #[cfg(feature = "plugin-call")]
@@ -124,32 +40,13 @@ pub use flare_sdk_plugin_call;
 #[cfg(feature = "plugin-call")]
 pub use flare_sdk_plugin_call::production as call_plugin;
 
-/// 与旧路径 `crate::lifecycle::*` 对齐：配置在 [`client::lifecycle`]；路径工具源实现在 [`util::paths`]（经 lifecycle 再导出）；SQLite 仓储在 [`util::sqlite_store`]（`lifecycle-sqlite`）。
-pub mod lifecycle {
-    pub use crate::client::lifecycle::*;
-}
-
-// 基础设施层对外别名，保持现有 crate::store / transport / protocol 路径可用
-pub use crate::infrastructure::persistence as store;
-pub use crate::infrastructure::protocol;
-pub use crate::infrastructure::transport;
-
 /// 错误类型与 Result 根级导出（与 flare-core 一致，便于 bindings 等使用）
-pub use error::{ErrorCode, FlareError, Result, from_rpc_status};
+pub use shared::error::{ErrorCode, FlareError, Result, from_rpc_status};
 /// 强类型 ID（防止 user_id / conversation_id 混用）
-pub use types::{ConversationId, UserId};
+pub use shared::types::{ConversationId, UserId};
 
-/// 常用类型预导出
+/// App-facing imports for normal SDK consumers.
 pub mod prelude {
-    // client（含 Facade：MessageApi / ConversationApi / MessageBuildApi）
-    #[cfg(feature = "plugin-call")]
-    pub use crate::capability::AvCapabilityPlugin;
-    #[cfg(feature = "plugin-call")]
-    pub use crate::capability::{
-        AvExperienceSpec, CallControlSet, CallLayoutMode, ExperienceEdition,
-        default_call_experience_spec, sanitize_experience_spec_for_edition,
-    };
-    pub use crate::capability::{SdkCapabilityPlugin, SdkCapabilityRegistry};
     pub use crate::client::{
         CapabilityApi, CapabilityDescriptorDto, CapabilityDispatchResult, ConversationApi,
         FileDownloadProgress, FileDownloadProgressCallback, IMClient, IMClientBuilder,
@@ -158,57 +55,81 @@ pub mod prelude {
         UploadProgress, UploadProgressCallback, UploadedMedia, UserCapabilityGrantDto,
     };
     pub use crate::core::SdkState;
-    pub use crate::error::{ErrorCode, FlareError, Result, from_rpc_status};
-    pub use crate::types::{ConversationId, UserId};
+    #[cfg(feature = "plugin-call")]
+    pub use crate::extension::capability::{
+        AvExperienceSpec, CallControlSet, CallLayoutMode, ExperienceEdition,
+        default_call_experience_spec, sanitize_experience_spec_for_edition,
+    };
+    pub use crate::shared::error::{ErrorCode, FlareError, Result, from_rpc_status};
+    pub use crate::shared::types::{ConversationId, UserId};
 
-    // event
-    pub use crate::event::{ConversationEvent, MessageEvent, NotificationEvent};
-    pub use crate::event::{EventBus, EventReceiver, SdkEvent, Subscription};
+    pub use crate::core::event::{ConversationEvent, MessageEvent, NotificationEvent};
+    pub use crate::core::event::{EventBus, EventReceiver, SdkEvent, Subscription};
 
-    // notification
-    pub use crate::notification::{
+    pub use crate::application::notification::{
         InboundNotificationView, NotificationHandleResult, NotificationHandler,
         NotificationHandlerRegistry,
     };
-    pub use crate::profile_center::{
+    pub use crate::client::profile_center::{
         ProfileCenterAction, ProfileCenterActionKind, ProfileCenterContract, ProfileCenterSummary,
         default_profile_center_actions,
     };
 
-    // store
-    pub use crate::domain::{ConversationStore, MessageStore, SyncCursorStore};
-    pub use crate::store::StoreProvider;
-
-    // sync（任务抽象与 SyncManager 位于 core::sync）
+    pub use crate::core::SyncState;
     pub use crate::core::{
-        SyncContext, SyncFailurePolicy, SyncMode, SyncPhase, SyncProgress, SyncReason,
-        SyncRunContext, SyncScope, SyncTask, SyncTaskResult, SyncTrigger, SyncVisibility,
+        SyncFailurePolicy, SyncMode, SyncPhase, SyncProgress, SyncReason, SyncRunContext,
+        SyncScope, SyncTrigger, SyncVisibility,
     };
-    pub use crate::fsm::SyncState;
 
-    // middleware
-    pub use crate::middleware::{EventInterceptor, MessageInterceptor};
+    pub use crate::domain::conversation::id::generate_single_chat_conversation_id;
 
-    // 会话 ID 生成（与 flare-core 一致，供上层创建会话使用）
-    pub use crate::conversation::generate_single_chat_conversation_id;
-
-    // protocol
-    pub use crate::protocol::{Codec, ProtobufCodec};
-
-    // content builder / decoder / message_elem / message builder
     pub use crate::model::{BuiltContent, ContentBuilder, MessageBuilder};
     pub use crate::model::{DecodedContent, decode_content, decode_content_bytes};
     pub use crate::model::{Elem, decoded_content_to_elem};
 
-    // frequently used proto types
     pub use crate::model::message::{
         ConversationType, DeleteScope, DeleteType, MarkType, Message, MessageSource, MessageStatus,
         MessageType, ReactionAction,
     };
 
-    // 领域视图（含昵称、头像）
     pub use crate::domain::UserProfile;
     pub use crate::model::{
         Conversation, ConversationListQuery, IMMessage, MessageSearchKind, MessageSearchQuery,
     };
+}
+
+/// Host-adapter imports for platform SDKs and bindings.
+pub mod adapter_prelude {
+    pub use crate::domain::{ConversationStore, MessageStore, SyncCursorStore};
+    pub use crate::infrastructure::persistence::StoreProvider;
+    pub use crate::infrastructure::protocol::{Codec, ProtobufCodec};
+    pub use crate::platform::adapters::{
+        AdapterPlatform, AdapterProvisioning, MediaAdapterProfile, MediaSourceSupport,
+        PlatformAdapterProfile, StorageAdapterProfile, UploadOnlyMediaService,
+    };
+    pub use crate::platform::ports::media::{
+        MediaMetadata, MediaServicePort, MediaSourceDescriptor, MediaSourceKind, MediaUploaderPort,
+        ProcessedMedia, UploadProgressSink,
+    };
+    pub use crate::platform::runtime::{
+        MediaRuntimeConfig, MediaRuntimeKind, NativeRuntimeAssembler, PlatformKind,
+        RuntimeAssembler, RuntimeComponents, RuntimeConfig, StorageConfig, StorageKind,
+    };
+}
+
+/// Extension-author imports for business SDKs such as `flare-social-sdk`.
+pub mod extension_prelude {
+    pub use crate::core::{
+        SyncContext, SyncFailurePolicy, SyncMode, SyncPhase, SyncProgress, SyncReason,
+        SyncRunContext, SyncScope, SyncTask, SyncTaskResult, SyncTrigger, SyncVisibility,
+    };
+    #[cfg(feature = "plugin-call")]
+    pub use crate::extension::capability::AvCapabilityPlugin;
+    pub use crate::extension::capability::{SdkCapabilityPlugin, SdkCapabilityRegistry};
+    pub use crate::extension::middleware::{
+        EventInterceptor, EventMiddlewareAction, MessageInterceptor, MessageMiddlewareContext,
+        MessageOperation,
+    };
+    pub use crate::extension::{ExtensionRegistry, SdkExtension};
+    pub use crate::shared::error::{ErrorCode, FlareError, Result};
 }

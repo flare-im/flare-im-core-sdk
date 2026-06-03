@@ -13,7 +13,7 @@ use crate::registry::require_instance;
 use crate::types::{FlareHandle, FlareResultCallback};
 
 use flare_im_core_sdk::client::{
-    CreateLocationRequest, CreateRichDocRequest, CreateStickerRequest,
+    CreateLocationRequest, CreateRichDocRequest, CreateStickerRequest, EditRichDocRequest,
 };
 use flare_im_core_sdk::model::MessageSearchQuery;
 use flare_im_core_sdk::model::content_builder::BuiltContent;
@@ -91,6 +91,37 @@ fn json_vec_message(v: &serde_json::Value, key: &str) -> Result<Vec<IMMessage>, 
 struct BuiltContentJsonShell {
     message_type: i32,
     content: Elem,
+}
+
+#[derive(Deserialize)]
+struct EditRichDocJson {
+    message_id: String,
+    doc_json: String,
+    content_schema: String,
+    plain_text: String,
+    input_format: Option<String>,
+    input_format_version: Option<i32>,
+    source_payload: Option<std::collections::HashMap<String, String>>,
+    title: Option<String>,
+    search_text: Option<String>,
+    render_hints_json: Option<String>,
+}
+
+impl From<EditRichDocJson> for EditRichDocRequest {
+    fn from(v: EditRichDocJson) -> Self {
+        Self {
+            message_id: v.message_id,
+            doc_json: v.doc_json,
+            content_schema: v.content_schema,
+            plain_text: v.plain_text,
+            input_format: v.input_format,
+            input_format_version: v.input_format_version,
+            source_payload: v.source_payload,
+            title: v.title,
+            search_text: v.search_text,
+            render_hints_json: v.render_hints_json,
+        }
+    }
 }
 
 fn built_content_from_value(v: &serde_json::Value) -> Result<BuiltContent, i32> {
@@ -214,6 +245,27 @@ pub extern "C" fn flare_message_dispatch_json(
                     |list| to_json_string(&list),
                 );
             }
+            "search_in_conversation" => {
+                let conversation_id = match json_str(&params, "conversation_id") {
+                    Ok(s) => s.to_string(),
+                    Err(()) => bad_param!(),
+                };
+                let keyword = match json_str(&params, "keyword") {
+                    Ok(s) => s.to_string(),
+                    Err(()) => bad_param!(),
+                };
+                let limit = json_i32(&params, "limit").unwrap_or(50).max(1) as u32;
+                execute_async(
+                    instance,
+                    ctx,
+                    async move {
+                        let api = inst.message_api().await?;
+                        api.search_in_conversation(&conversation_id, &keyword, limit)
+                            .await
+                    },
+                    |list| to_json_string(&list),
+                );
+            }
             "send" => {
                 let msg: IMMessage = match serde_json::from_value(params.clone()) {
                     Ok(m) => m,
@@ -318,6 +370,17 @@ pub extern "C" fn flare_message_dispatch_json(
                     api.edit_text_by_message_id(&id, &text).await
                 });
             }
+            "edit_rich_doc_by_message_id" => {
+                let request: EditRichDocRequest =
+                    match serde_json::from_value::<EditRichDocJson>(params.clone()) {
+                        Ok(v) => v.into(),
+                        Err(_) => bad_param!(),
+                    };
+                execute_async_unit(instance, ctx, async move {
+                    let api = inst.message_api().await?;
+                    api.edit_rich_doc_by_message_id(request).await
+                });
+            }
             "mark_read" => {
                 let cid = match json_str(&params, "conversation_id") {
                     Ok(s) => s.to_string(),
@@ -348,6 +411,16 @@ pub extern "C" fn flare_message_dispatch_json(
                 execute_async_unit(instance, ctx, async move {
                     let api = inst.message_api().await?;
                     api.mark_read_with_ids(&cid, ids, seq).await
+                });
+            }
+            "mark_read_and_burn" => {
+                let id = match json_str(&params, "message_id") {
+                    Ok(s) => s.to_string(),
+                    Err(()) => bad_param!(),
+                };
+                execute_async_unit(instance, ctx, async move {
+                    let api = inst.message_api().await?;
+                    api.mark_read_and_burn(&id).await
                 });
             }
             "typing" => {
@@ -392,6 +465,34 @@ pub extern "C" fn flare_message_dispatch_json(
                     api.remove_reaction(&id, &emoji).await
                 });
             }
+            "pin" => {
+                let conversation_id = match json_str(&params, "conversation_id") {
+                    Ok(s) => s.to_string(),
+                    Err(()) => bad_param!(),
+                };
+                let message_id = match json_str(&params, "message_id") {
+                    Ok(s) => s.to_string(),
+                    Err(()) => bad_param!(),
+                };
+                execute_async_unit(instance, ctx, async move {
+                    let api = inst.message_api().await?;
+                    api.pin(&conversation_id, &message_id).await
+                });
+            }
+            "unpin" => {
+                let conversation_id = match json_str(&params, "conversation_id") {
+                    Ok(s) => s.to_string(),
+                    Err(()) => bad_param!(),
+                };
+                let message_id = match json_str(&params, "message_id") {
+                    Ok(s) => s.to_string(),
+                    Err(()) => bad_param!(),
+                };
+                execute_async_unit(instance, ctx, async move {
+                    let api = inst.message_api().await?;
+                    api.unpin(&conversation_id, &message_id).await
+                });
+            }
             "pin_by_message_id" => {
                 let id = match json_str(&params, "message_id") {
                     Ok(s) => s.to_string(),
@@ -410,6 +511,65 @@ pub extern "C" fn flare_message_dispatch_json(
                 execute_async_unit(instance, ctx, async move {
                     let api = inst.message_api().await?;
                     api.unpin_by_message_id(&id).await
+                });
+            }
+            "mark" => {
+                let conversation_id = match json_str(&params, "conversation_id") {
+                    Ok(s) => s.to_string(),
+                    Err(()) => bad_param!(),
+                };
+                let message_id = match json_str(&params, "message_id") {
+                    Ok(s) => s.to_string(),
+                    Err(()) => bad_param!(),
+                };
+                let mt = match json_i32(&params, "mark_type") {
+                    Ok(t) => parse_mark_type(t),
+                    Err(()) => bad_param!(),
+                };
+                execute_async_unit(instance, ctx, async move {
+                    let api = inst.message_api().await?;
+                    api.mark(&conversation_id, &message_id, mt).await
+                });
+            }
+            "mark_with_color" => {
+                let conversation_id = match json_str(&params, "conversation_id") {
+                    Ok(s) => s.to_string(),
+                    Err(()) => bad_param!(),
+                };
+                let message_id = match json_str(&params, "message_id") {
+                    Ok(s) => s.to_string(),
+                    Err(()) => bad_param!(),
+                };
+                let mt = match json_i32(&params, "mark_type") {
+                    Ok(t) => parse_mark_type(t),
+                    Err(()) => bad_param!(),
+                };
+                let color = match json_str(&params, "color") {
+                    Ok(s) => s.to_string(),
+                    Err(()) => bad_param!(),
+                };
+                execute_async_unit(instance, ctx, async move {
+                    let api = inst.message_api().await?;
+                    api.mark_with_color(&conversation_id, &message_id, mt, &color)
+                        .await
+                });
+            }
+            "unmark" => {
+                let conversation_id = match json_str(&params, "conversation_id") {
+                    Ok(s) => s.to_string(),
+                    Err(()) => bad_param!(),
+                };
+                let message_id = match json_str(&params, "message_id") {
+                    Ok(s) => s.to_string(),
+                    Err(()) => bad_param!(),
+                };
+                let mt = match json_i32(&params, "mark_type") {
+                    Ok(t) => parse_mark_type(t),
+                    Err(()) => bad_param!(),
+                };
+                execute_async_unit(instance, ctx, async move {
+                    let api = inst.message_api().await?;
+                    api.unmark(&conversation_id, &message_id, mt).await
                 });
             }
             "mark_by_message_id" => {
@@ -566,7 +726,7 @@ pub extern "C" fn flare_message_dispatch_json(
                         .trim()
                         .to_string();
                     if from.is_empty() {
-                        return Err(flare_im_core_sdk::error::FlareError::general_error(
+                        return Err(flare_im_core_sdk::shared::error::FlareError::general_error(
                             "not logged in",
                         ));
                     }
@@ -577,7 +737,7 @@ pub extern "C" fn flare_message_dispatch_json(
                     };
                     let mut ev = match kind.as_str() {
                         "invite" => {
-                            flare_im_core_sdk::capability::call_event::call_invite_for_conversation(
+                            flare_im_core_sdk::extension::capability::call_event::call_invite_for_conversation(
                                 conversation_id.clone(),
                                 call_id.clone(),
                                 from,
@@ -586,16 +746,18 @@ pub extern "C" fn flare_message_dispatch_json(
                                 media_types.as_slice(),
                             )
                             .map_err(|e| {
-                                flare_im_core_sdk::error::FlareError::general_error(e.to_string())
+                                flare_im_core_sdk::shared::error::FlareError::general_error(
+                                    e.to_string(),
+                                )
                             })?
                         }
-                        "accept" => flare_im_core_sdk::capability::call_event::call_accept(
+                        "accept" => flare_im_core_sdk::extension::capability::call_event::call_accept(
                             conversation_id.clone(),
                             call_id.clone(),
                             from,
                             media_types.as_slice(),
                         ),
-                        "reject" => flare_im_core_sdk::capability::call_event::call_reject(
+                        "reject" => flare_im_core_sdk::extension::capability::call_event::call_reject(
                             conversation_id.clone(),
                             call_id.clone(),
                             from,
@@ -603,7 +765,7 @@ pub extern "C" fn flare_message_dispatch_json(
                             code,
                         ),
                         "hangup" => {
-                            flare_im_core_sdk::capability::call_event::call_hangup_with_room_policy(
+                            flare_im_core_sdk::extension::capability::call_event::call_hangup_with_room_policy(
                                 conversation_id.clone(),
                                 call_id.clone(),
                                 from,
@@ -613,9 +775,11 @@ pub extern "C" fn flare_message_dispatch_json(
                             )
                         }
                         _ => {
-                            return Err(flare_im_core_sdk::error::FlareError::general_error(
-                                "invalid call signal kind",
-                            ));
+                            return Err(
+                                flare_im_core_sdk::shared::error::FlareError::general_error(
+                                    "invalid call signal kind",
+                                ),
+                            );
                         }
                     };
                     if kind != "invite" {

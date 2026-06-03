@@ -7,11 +7,11 @@ use crate::core::CurrentUserIdStore;
 use crate::domain::{
     ConversationIdentityService, ConversationReadService, ConversationStore, SyncCursorStore,
 };
-use crate::error::{ErrorCode, FlareError, Result};
 use crate::model::conversation::ConversationType;
 use crate::model::{
     Conversation, ConversationParticipant, mark_settings_dirty, user_settings_version,
 };
+use crate::shared::error::{ErrorCode, FlareError, Result};
 
 pub struct ConversationCommandUseCase {
     store: Arc<dyn ConversationStore>,

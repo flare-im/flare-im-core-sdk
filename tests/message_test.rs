@@ -741,8 +741,7 @@ async fn test_event_bus_drop_subscription() {
         message: Box::new(IMMessage::new(Message::default())),
     }));
     tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
-    // 当前实现：Subscription 仅持有一个 handle，drop 不会从总线移除回调，回调仍会触发
-    assert_eq!(count.load(Ordering::Relaxed), 1);
+    assert_eq!(count.load(Ordering::Relaxed), 0);
 }
 
 // =============================================================================

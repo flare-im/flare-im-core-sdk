@@ -1,11 +1,11 @@
-//! RichDoc v2：归一化 + 富文本消息创建/编辑（校验与派生均在 `flare_im_core_sdk::rich_doc_v2`）。
+//! RichDoc v2：归一化 + 富文本消息创建/编辑（校验与派生均在 `flare_im_core_sdk::model::rich_doc_v2`）。
 //! 返回体使用 **camelCase** 顶层字段；`source_payload` / `render_hints` 内层键名不递归转换。
 
 use std::collections::HashMap;
 
 use flare_im_core_sdk::client::{CreateRichDocRequest, EditRichDocRequest};
 use flare_im_core_sdk::model::IMMessage;
-use flare_im_core_sdk::rich_doc_v2::{
+use flare_im_core_sdk::model::rich_doc_v2::{
     NormalizeOutput, normalize_from_doc_json, normalize_from_html, normalize_from_markdown,
 };
 use serde::{Deserialize, Serialize};

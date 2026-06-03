@@ -10,11 +10,11 @@ use crate::domain::{
     ConversationReader, ConversationWriter, ReadPosition, local_cleared_through_seq,
     preserve_local_remark, preserve_local_single_chat_channel, set_local_cleared_through_seq,
 };
-use crate::error::{ErrorCode, FlareError, Result};
 use crate::model::conversation::{ConversationLocalState, ConversationType};
 use crate::model::message_elem::MessagePreviewElem;
 use crate::model::search::escaped_like_contains;
 use crate::model::{Conversation, ConversationListQuery};
+use crate::shared::error::{ErrorCode, FlareError, Result};
 
 /// 与 schema 中 conversations 表列顺序一致的 i32 枚举（与 model prefix 一致：1=单聊 2=群聊 3=AI 4=系统 5=客服 6=临时）
 fn conversation_type_to_i32(t: &ConversationType) -> i32 {
@@ -1037,7 +1037,7 @@ impl ConversationWriter for SqliteConversationRepo {
         .map_err(sqlx_err)?;
 
         let mut affected = Vec::with_capacity(rows.len());
-        let now = crate::util::id::now_millis() as i64;
+        let now = crate::shared::util::id::now_millis() as i64;
         for row in rows {
             let conversation_id: String = row.try_get("conversation_id").map_err(sqlx_err)?;
             affected.push(conversation_id.clone());

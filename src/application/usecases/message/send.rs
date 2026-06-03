@@ -1,18 +1,19 @@
-use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use crate::application::MediaService;
 use crate::application::UploadProgressCallback;
 use crate::application::commands::SendMessageCommand;
 use crate::core::CurrentUserIdStore;
+use crate::core::ReliableSendQueue;
 use crate::domain::{MessageActor, MessageDraftService, MessageStore};
-use crate::error::{ErrorCode, FlareError, Result};
-use crate::middleware::MiddlewareChain;
+use crate::extension::middleware::MiddlewareChain;
+use crate::infrastructure::protocol::PacketSender;
 use crate::model::UploadedMedia;
 use crate::model::message::{IMMessage, SendAck};
 use crate::model::message_elem::{AudioInfoElem, Elem, ImageInfoElem, VideoInfoElem};
-use crate::protocol::PacketSender;
-use crate::reliable_queue::ReliableSendQueue;
+use crate::platform::ports::media::{
+    MediaServicePort, MediaSourceDescriptor, ProcessedMedia, UploadProgressSink,
+};
+use crate::shared::error::{ErrorCode, FlareError, Result};
 use flare_proto::common::ImageFormat;
 
 pub struct MessageSendUseCase {
@@ -21,7 +22,7 @@ pub struct MessageSendUseCase {
     chain: Arc<MiddlewareChain>,
     current_user_id: CurrentUserIdStore,
     reliable_queue: Option<Arc<ReliableSendQueue>>,
-    media_service: Arc<MediaService>,
+    media_service: Arc<dyn MediaServicePort>,
     draft_service: MessageDraftService,
 }
 
@@ -33,7 +34,7 @@ impl MessageSendUseCase {
         chain: Arc<MiddlewareChain>,
         current_user_id: CurrentUserIdStore,
         reliable_queue: Option<Arc<ReliableSendQueue>>,
-        media_service: Arc<MediaService>,
+        media_service: Arc<dyn MediaServicePort>,
     ) -> Self {
         Self {
             sender,
@@ -65,7 +66,7 @@ impl MessageSendUseCase {
             .prepare_outbound_message(&actor, message)?;
         if let Some(queue) = &self.reliable_queue {
             SendMessageCommand::new(message.clone())
-                .execute_via_queue(queue.as_ref())
+                .execute_via_queue(queue.as_ref(), &self.chain)
                 .await?;
             Ok(SendAck {
                 client_msg_id: message.client_msg_id,
@@ -102,12 +103,11 @@ impl MessageSendUseCase {
         if let Some(ref mut content) = message.content {
             match content {
                 Elem::File(file) => {
-                    if let Some(path) =
-                        extract_local_path(&file.file_id).or_else(|| extract_local_path(&file.url))
+                    if let Some(source) = extract_media_source(&file.file_id)
+                        .or_else(|| extract_media_source(&file.url))
                     {
                         let uploaded = self
-                            .media_service
-                            .upload_file_from_path_with_progress(path, None, on_progress.clone())
+                            .upload_media_source(source, on_progress.clone())
                             .await?;
                         file.file_id = uploaded.file_id;
                         if !uploaded.file_name.is_empty() {
@@ -124,37 +124,20 @@ impl MessageSendUseCase {
                     }
                 }
                 Elem::Image(image) => {
-                    let source_path: Option<PathBuf> = image
-                        .source
-                        .as_ref()
-                        .and_then(image_info_local_path)
-                        .map(|p| p.to_path_buf());
-                    let thumb_path: Option<PathBuf> = image
-                        .thumbnail
-                        .as_ref()
-                        .and_then(image_info_local_path)
-                        .map(|p| p.to_path_buf());
-                    if let Some(ref path) = source_path {
+                    let source_media: Option<MediaSourceDescriptor> =
+                        image.source.as_ref().and_then(image_info_media_source);
+                    let thumb_media: Option<MediaSourceDescriptor> =
+                        image.thumbnail.as_ref().and_then(image_info_media_source);
+                    if let Some(source) = source_media {
                         let uploaded = self
-                            .media_service
-                            .upload_file_from_path_with_progress(
-                                path.as_path(),
-                                None,
-                                on_progress.clone(),
-                            )
+                            .upload_media_source(source.clone(), on_progress.clone())
                             .await?;
                         let desc = uploaded_media_to_image_descriptor(&uploaded);
                         image.source = desc.clone();
-                        match thumb_path.as_ref() {
-                            Some(tp) if tp != path => {
-                                let uploaded_thumb = self
-                                    .media_service
-                                    .upload_file_from_path_with_progress(
-                                        tp.as_path(),
-                                        None,
-                                        on_progress.clone(),
-                                    )
-                                    .await?;
+                        match thumb_media {
+                            Some(thumb) if !same_media_source(&thumb, &source) => {
+                                let uploaded_thumb =
+                                    self.upload_media_source(thumb, on_progress.clone()).await?;
                                 image.thumbnail =
                                     uploaded_media_to_image_descriptor(&uploaded_thumb);
                             }
@@ -163,15 +146,8 @@ impl MessageSendUseCase {
                             }
                         }
                         touched = true;
-                    } else if let Some(ref path) = thumb_path {
-                        let uploaded = self
-                            .media_service
-                            .upload_file_from_path_with_progress(
-                                path.as_path(),
-                                None,
-                                on_progress.clone(),
-                            )
-                            .await?;
+                    } else if let Some(thumb) = thumb_media {
+                        let uploaded = self.upload_media_source(thumb, on_progress.clone()).await?;
                         let desc = uploaded_media_to_image_descriptor(&uploaded);
                         image.source = desc.clone();
                         image.thumbnail = desc;
@@ -179,10 +155,14 @@ impl MessageSendUseCase {
                     }
                 }
                 Elem::Video(video) => {
-                    if let Some(path) = extract_local_path(&video.video_id) {
+                    if let Some(source) = extract_media_source(&video.video_id).or_else(|| {
+                        video
+                            .source
+                            .as_ref()
+                            .and_then(|info| extract_media_source(&info.url))
+                    }) {
                         let uploaded = self
-                            .media_service
-                            .upload_file_from_path_with_progress(path, None, on_progress.clone())
+                            .upload_media_source(source, on_progress.clone())
                             .await?;
                         video.video_id = uploaded.file_id.clone();
                         video.source = uploaded_media_to_video_descriptor(&uploaded);
@@ -190,10 +170,14 @@ impl MessageSendUseCase {
                     }
                 }
                 Elem::Audio(audio) => {
-                    if let Some(path) = extract_local_path(&audio.audio_id) {
+                    if let Some(source) = extract_media_source(&audio.audio_id).or_else(|| {
+                        audio
+                            .source
+                            .as_ref()
+                            .and_then(|info| extract_media_source(&info.url))
+                    }) {
                         let uploaded = self
-                            .media_service
-                            .upload_file_from_path_with_progress(path, None, on_progress.clone())
+                            .upload_media_source(source, on_progress.clone())
                             .await?;
                         audio.audio_id = uploaded.file_id.clone();
                         audio.source = uploaded_media_to_audio_descriptor(&uploaded);
@@ -208,35 +192,71 @@ impl MessageSendUseCase {
         }
         Ok(message)
     }
+
+    async fn upload_media_source(
+        &self,
+        source: MediaSourceDescriptor,
+        on_progress: Option<UploadProgressCallback>,
+    ) -> Result<UploadedMedia> {
+        let media = ProcessedMedia {
+            source,
+            metadata: Default::default(),
+            payload: None,
+        };
+        let progress: Option<UploadProgressSink> =
+            on_progress.map(|callback| Box::new(move |progress| callback(progress)) as _);
+        self.media_service.upload(media, None, progress).await
+    }
 }
 
-/// 识别「可上传的本地路径」：Unix、`./`、`file://`、`file:///C:/...`（Windows）、`C:\`、UNC `\\`。
-fn extract_local_path(input: &str) -> Option<&Path> {
+/// 识别「可上传媒体源」：Unix/Windows path、`file://`、Android `content://`、
+/// iOS `ph://`/`assets-library://`、RN/uni-app 临时 URI、Web `blob:`/`data:`。
+fn extract_media_source(input: &str) -> Option<MediaSourceDescriptor> {
     let input = input.trim();
     if input.is_empty() {
         return None;
     }
     if input.starts_with('/') || input.starts_with("./") || input.starts_with("../") {
-        return Some(Path::new(input));
+        return Some(MediaSourceDescriptor::path(input));
     }
     // Windows: C:\path 或 C:/path
     let b = input.as_bytes();
     if input.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b':' {
-        return Some(Path::new(input));
+        return Some(MediaSourceDescriptor::path(input));
     }
     // UNC \\server\share
     if input.starts_with("\\\\") {
-        return Some(Path::new(input));
+        return Some(MediaSourceDescriptor::path(input));
     }
     if let Some(rest) = input.strip_prefix("file://") {
-        let path_str = file_url_to_path_str(rest)?;
-        return Some(Path::new(path_str));
+        let path_str = file_url_to_path_string(rest)?;
+        return Some(MediaSourceDescriptor::path(path_str));
+    }
+    if input.starts_with("content://")
+        || input.starts_with("rnfs://")
+        || input.starts_with("wxfile://")
+        || input.starts_with("uni://")
+    {
+        return Some(MediaSourceDescriptor::uri(input));
+    }
+    if input.starts_with("ph://")
+        || input.starts_with("assets-library://")
+        || input.starts_with("asset://")
+        || input.starts_with("assets://")
+    {
+        return Some(MediaSourceDescriptor::asset(input));
+    }
+    if input.starts_with("blob:") {
+        return Some(MediaSourceDescriptor::blob(input));
+    }
+    if input.starts_with("data:") {
+        return Some(MediaSourceDescriptor::bytes(input, Default::default()));
     }
     None
 }
 
 /// `file://` 之后的路径段：`/Users/...` 保留；`/C:/...` 去掉前导 `/` 得到 `C:/...`。
-fn file_url_to_path_str(after_scheme: &str) -> Option<&str> {
+fn file_url_to_path_string(after_scheme: &str) -> Option<String> {
     if after_scheme.is_empty() {
         return None;
     }
@@ -245,23 +265,29 @@ fn file_url_to_path_str(after_scheme: &str) -> Option<&str> {
         && after_scheme.as_bytes()[2] == b':'
         && after_scheme.as_bytes()[1].is_ascii_alphabetic()
     {
-        return Some(&after_scheme[1..]);
+        return Some(after_scheme[1..].to_string());
     }
-    Some(after_scheme)
+    Some(after_scheme.to_string())
 }
 
-fn image_info_local_path(info: &ImageInfoElem) -> Option<&Path> {
+fn image_info_media_source(info: &ImageInfoElem) -> Option<MediaSourceDescriptor> {
     let id = info.image_id.trim();
     if !id.is_empty()
-        && let Some(p) = extract_local_path(id)
+        && let Some(source) = extract_media_source(id)
     {
-        return Some(p);
+        return Some(source);
     }
     let u = info.uuid.trim();
-    if u.is_empty() {
-        return None;
+    if !u.is_empty()
+        && let Some(source) = extract_media_source(u)
+    {
+        return Some(source);
     }
-    extract_local_path(u)
+    extract_media_source(&info.url)
+}
+
+fn same_media_source(a: &MediaSourceDescriptor, b: &MediaSourceDescriptor) -> bool {
+    std::mem::discriminant(&a.kind) == std::mem::discriminant(&b.kind) && a.locator == b.locator
 }
 
 fn uploaded_media_to_image_descriptor(uploaded: &UploadedMedia) -> Option<ImageInfoElem> {
@@ -331,40 +357,59 @@ fn uploaded_media_to_audio_descriptor(uploaded: &UploadedMedia) -> Option<AudioI
 
 #[cfg(test)]
 mod tests {
-    use super::{ImageFormat, extract_local_path, uploaded_media_to_image_descriptor};
+    use super::{ImageFormat, extract_media_source, uploaded_media_to_image_descriptor};
     use crate::model::UploadedMedia;
+    use crate::platform::ports::media::MediaSourceKind;
 
     #[test]
-    fn extract_local_path_accepts_filesystem_inputs() {
+    fn extract_media_source_accepts_filesystem_inputs() {
         assert_eq!(
-            extract_local_path("/tmp/demo.png").map(|path| path.to_string_lossy().to_string()),
+            extract_media_source("/tmp/demo.png").map(|source| source.locator),
             Some("/tmp/demo.png".to_string())
         );
         assert_eq!(
-            extract_local_path("./demo.png").map(|path| path.to_string_lossy().to_string()),
+            extract_media_source("./demo.png").map(|source| source.locator),
             Some("./demo.png".to_string())
         );
         assert_eq!(
-            extract_local_path("file:///tmp/demo.png")
-                .map(|path| path.to_string_lossy().to_string()),
+            extract_media_source("file:///tmp/demo.png").map(|source| source.locator),
             Some("/tmp/demo.png".to_string())
         );
         assert_eq!(
-            extract_local_path(r"C:\data\demo.png").map(|path| path.to_string_lossy().to_string()),
+            extract_media_source(r"C:\data\demo.png").map(|source| source.locator),
             Some(r"C:\data\demo.png".to_string())
         );
         assert_eq!(
-            extract_local_path("file:///C:/data/demo.png")
-                .map(|path| path.to_string_lossy().to_string()),
+            extract_media_source("file:///C:/data/demo.png").map(|source| source.locator),
             Some("C:/data/demo.png".to_string())
         );
     }
 
     #[test]
-    fn extract_local_path_rejects_remote_and_empty_inputs() {
-        assert!(extract_local_path("").is_none());
-        assert!(extract_local_path("https://example.com/demo.png").is_none());
-        assert!(extract_local_path("media-file-id").is_none());
+    fn extract_media_source_accepts_host_platform_inputs() {
+        assert!(matches!(
+            extract_media_source("content://media/external/images/1").map(|source| source.kind),
+            Some(MediaSourceKind::Uri)
+        ));
+        assert!(matches!(
+            extract_media_source("ph://asset-id").map(|source| source.kind),
+            Some(MediaSourceKind::Asset)
+        ));
+        assert!(matches!(
+            extract_media_source("blob:https://example.com/id").map(|source| source.kind),
+            Some(MediaSourceKind::Blob)
+        ));
+        assert!(matches!(
+            extract_media_source("data:image/png;base64,AAA").map(|source| source.kind),
+            Some(MediaSourceKind::Bytes)
+        ));
+    }
+
+    #[test]
+    fn extract_media_source_rejects_remote_and_empty_inputs() {
+        assert!(extract_media_source("").is_none());
+        assert!(extract_media_source("https://example.com/demo.png").is_none());
+        assert!(extract_media_source("media-file-id").is_none());
     }
 
     #[test]

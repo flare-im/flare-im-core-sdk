@@ -3,6 +3,7 @@ members = [
     ".",
     "storage/sqlite",
     "bindings/c",
+    "bindings/wasm",
     "bindings/tauri",
 ]
 exclude = [
@@ -82,6 +83,7 @@ sha2 = "0.10"
 rand = "0.8"
 hex = "0.4"
 futures = "0.3"
+uuid = { version = "1", features = ["v4", "js"] }
 
 sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "chrono"], optional = true }
 base64 = { version = "0.22" }
@@ -97,7 +99,6 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 flare-grpc-proto = { workspace = true }
 tonic = { workspace = true }
 jsonwebtoken = "9"
-uuid = { version = "1", features = ["v4"] }
 dirs = "5.0"
 futures-util = "0.3"
 bytes = "1"

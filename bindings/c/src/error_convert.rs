@@ -3,7 +3,7 @@
 //! 所有错误转换为 FlareError 结构
 
 use crate::types::{FlareError, FlareString};
-use flare_im_core_sdk::error::{ErrorCode, FlareError as SdkError};
+use flare_im_core_sdk::shared::error::{ErrorCode, FlareError as SdkError};
 
 /// 错误码定义
 #[allow(dead_code)]

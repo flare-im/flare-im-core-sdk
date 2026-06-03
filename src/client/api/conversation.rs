@@ -6,10 +6,10 @@
 use std::sync::Arc;
 
 use crate::application::usecases::{ConversationCommandUseCase, ConversationViewAssembler};
-use crate::error::Result;
-use crate::event::{ConversationEvent, EventBus, SdkEvent};
+use crate::core::event::{ConversationEvent, EventBus, SdkEvent};
 use crate::model::conversation::ConversationType;
 use crate::model::{Conversation, ConversationListQuery};
+use crate::shared::error::Result;
 
 /// 会话命令与查询入口（直接委托 application usecases；部分写操作经 `EventBus` 推事件）。
 #[derive(Clone)]

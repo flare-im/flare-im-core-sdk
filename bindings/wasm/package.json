@@ -1,0 +1,13 @@
+{
+  "name": "@flare-im/core-sdk-wasm-binding",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "wasm-pack build --target web --out-dir pkg --out-name flare_im_core_sdk",
+    "check": "cargo check --target wasm32-unknown-unknown -p flare-im-core-sdk-wasm"
+  },
+  "devDependencies": {
+    "wasm-pack": "^0.13.1"
+  }
+}

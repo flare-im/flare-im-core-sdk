@@ -344,3 +344,299 @@ pub extern "C" fn flare_conversation_mark_all_read(
         0
     })
 }
+
+#[unsafe(no_mangle)]
+pub extern "C" fn flare_conversation_get_group_by_user_ids(
+    handle: FlareHandle,
+    user_ids_json: *const c_char,
+    display_name: *const c_char,
+    context: *mut c_void,
+    callback: FlareResultCallback,
+) -> i32 {
+    abi::catch_ffi_i32(|| {
+        let instance = match require_instance(handle) {
+            Ok(i) => i,
+            Err(e) => return e,
+        };
+        let user_ids: Vec<String> = match parse_json(user_ids_json) {
+            Ok(v) => v,
+            Err(code) => {
+                let ctx = CallbackContext::new(context, callback);
+                return_error(&ctx, code, "Invalid user_ids JSON");
+                return code;
+            }
+        };
+        let display_name = match abi::read_c_str_opt(display_name) {
+            Ok(v) => v,
+            Err(code) => {
+                let ctx = CallbackContext::new(context, callback);
+                return_error(&ctx, code, "Invalid display_name");
+                return code;
+            }
+        };
+        let ctx = CallbackContext::new(context, callback);
+        let inst = instance.clone();
+        execute_async(
+            instance,
+            ctx,
+            async move {
+                let api = inst.conversation_api().await?;
+                api.get_group_by_user_ids(&user_ids, display_name.as_deref())
+                    .await
+            },
+            |c| to_json_string(&c),
+        );
+        0
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn flare_conversation_list_including_archived(
+    handle: FlareHandle,
+    context: *mut c_void,
+    callback: FlareResultCallback,
+) -> i32 {
+    abi::catch_ffi_i32(|| {
+        let instance = match require_instance(handle) {
+            Ok(i) => i,
+            Err(e) => return e,
+        };
+        let ctx = CallbackContext::new(context, callback);
+        let inst = instance.clone();
+        execute_async(
+            instance,
+            ctx,
+            async move {
+                let api = inst.conversation_api().await?;
+                api.list_including_archived().await
+            },
+            |conversations| to_json_string(&conversations),
+        );
+        0
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn flare_conversation_get_multiple(
+    handle: FlareHandle,
+    conversation_ids_json: *const c_char,
+    context: *mut c_void,
+    callback: FlareResultCallback,
+) -> i32 {
+    abi::catch_ffi_i32(|| {
+        let instance = match require_instance(handle) {
+            Ok(i) => i,
+            Err(e) => return e,
+        };
+        let conversation_ids: Vec<String> = match parse_json(conversation_ids_json) {
+            Ok(v) => v,
+            Err(code) => {
+                let ctx = CallbackContext::new(context, callback);
+                return_error(&ctx, code, "Invalid conversation_ids JSON");
+                return code;
+            }
+        };
+        let ctx = CallbackContext::new(context, callback);
+        let inst = instance.clone();
+        execute_async(
+            instance,
+            ctx,
+            async move {
+                let api = inst.conversation_api().await?;
+                api.get_multiple(&conversation_ids).await
+            },
+            |conversations| to_json_string(&conversations),
+        );
+        0
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn flare_conversation_list_paginated(
+    handle: FlareHandle,
+    cursor: *const c_char,
+    limit: u32,
+    context: *mut c_void,
+    callback: FlareResultCallback,
+) -> i32 {
+    abi::catch_ffi_i32(|| {
+        let instance = match require_instance(handle) {
+            Ok(i) => i,
+            Err(e) => return e,
+        };
+        let cursor = match abi::read_c_str_opt(cursor) {
+            Ok(v) => v,
+            Err(code) => {
+                let ctx = CallbackContext::new(context, callback);
+                return_error(&ctx, code, "Invalid cursor");
+                return code;
+            }
+        };
+        let limit = (limit > 0).then_some(limit);
+        let ctx = CallbackContext::new(context, callback);
+        let inst = instance.clone();
+        execute_async(
+            instance,
+            ctx,
+            async move {
+                let api = inst.conversation_api().await?;
+                api.list_paginated(cursor.as_deref(), limit).await
+            },
+            |conversations| to_json_string(&conversations),
+        );
+        0
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn flare_conversation_list_raw(
+    handle: FlareHandle,
+    context: *mut c_void,
+    callback: FlareResultCallback,
+) -> i32 {
+    abi::catch_ffi_i32(|| {
+        let instance = match require_instance(handle) {
+            Ok(i) => i,
+            Err(e) => return e,
+        };
+        let ctx = CallbackContext::new(context, callback);
+        let inst = instance.clone();
+        execute_async(
+            instance,
+            ctx,
+            async move {
+                let api = inst.conversation_api().await?;
+                api.list_raw().await
+            },
+            |conversations| to_json_string(&conversations),
+        );
+        0
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn flare_conversation_set_muted(
+    handle: FlareHandle,
+    conversation_id: *const c_char,
+    muted: bool,
+    context: *mut c_void,
+    callback: FlareResultCallback,
+) -> i32 {
+    abi::catch_ffi_i32(|| {
+        let instance = match require_instance(handle) {
+            Ok(i) => i,
+            Err(e) => return e,
+        };
+        let conversation_id = match c_str_to_string(conversation_id) {
+            Ok(s) => s,
+            Err(code) => {
+                let ctx = CallbackContext::new(context, callback);
+                return_error(&ctx, code, "Invalid conversation_id");
+                return code;
+            }
+        };
+        let ctx = CallbackContext::new(context, callback);
+        let inst = instance.clone();
+        execute_async_unit(instance, ctx, async move {
+            let api = inst.conversation_api().await?;
+            api.set_muted(&conversation_id, muted).await
+        });
+        0
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn flare_conversation_set_archived(
+    handle: FlareHandle,
+    conversation_id: *const c_char,
+    archived: bool,
+    context: *mut c_void,
+    callback: FlareResultCallback,
+) -> i32 {
+    abi::catch_ffi_i32(|| {
+        let instance = match require_instance(handle) {
+            Ok(i) => i,
+            Err(e) => return e,
+        };
+        let conversation_id = match c_str_to_string(conversation_id) {
+            Ok(s) => s,
+            Err(code) => {
+                let ctx = CallbackContext::new(context, callback);
+                return_error(&ctx, code, "Invalid conversation_id");
+                return code;
+            }
+        };
+        let ctx = CallbackContext::new(context, callback);
+        let inst = instance.clone();
+        execute_async_unit(instance, ctx, async move {
+            let api = inst.conversation_api().await?;
+            api.set_archived(&conversation_id, archived).await
+        });
+        0
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn flare_conversation_mark_unread(
+    handle: FlareHandle,
+    conversation_id: *const c_char,
+    context: *mut c_void,
+    callback: FlareResultCallback,
+) -> i32 {
+    abi::catch_ffi_i32(|| {
+        let instance = match require_instance(handle) {
+            Ok(i) => i,
+            Err(e) => return e,
+        };
+        let conversation_id = match c_str_to_string(conversation_id) {
+            Ok(s) => s,
+            Err(code) => {
+                let ctx = CallbackContext::new(context, callback);
+                return_error(&ctx, code, "Invalid conversation_id");
+                return code;
+            }
+        };
+        let ctx = CallbackContext::new(context, callback);
+        let inst = instance.clone();
+        execute_async(
+            instance,
+            ctx,
+            async move {
+                let api = inst.conversation_api().await?;
+                api.mark_unread(&conversation_id).await
+            },
+            |unread_count| to_json_string(&serde_json::json!({ "unread_count": unread_count })),
+        );
+        0
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn flare_conversation_clear_local_chat_history(
+    handle: FlareHandle,
+    conversation_id: *const c_char,
+    context: *mut c_void,
+    callback: FlareResultCallback,
+) -> i32 {
+    abi::catch_ffi_i32(|| {
+        let instance = match require_instance(handle) {
+            Ok(i) => i,
+            Err(e) => return e,
+        };
+        let conversation_id = match c_str_to_string(conversation_id) {
+            Ok(s) => s,
+            Err(code) => {
+                let ctx = CallbackContext::new(context, callback);
+                return_error(&ctx, code, "Invalid conversation_id");
+                return code;
+            }
+        };
+        let ctx = CallbackContext::new(context, callback);
+        let inst = instance.clone();
+        execute_async_unit(instance, ctx, async move {
+            let api = inst.conversation_api().await?;
+            api.clear_local_chat_history(&conversation_id).await
+        });
+        0
+    })
+}

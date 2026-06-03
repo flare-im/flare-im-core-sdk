@@ -7,7 +7,7 @@ use sqlx::{Row, SqlitePool};
 use tokio::sync::RwLock;
 
 use crate::domain::{MediaCacheAdmin, MediaCacheEntryVo, MediaCacheStatsVo, MediaCacheStore};
-use crate::error::{ErrorCode, FlareError, Result};
+use crate::shared::error::{ErrorCode, FlareError, Result};
 
 #[derive(Debug, Clone)]
 struct MediaCacheState {

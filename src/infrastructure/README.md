@@ -16,7 +16,7 @@
 
 | 概念 | 说明 | 实现位置 |
 |------|------|----------|
-| **MessageState** | Pending → Sending → Sent → Delivered → Read；及 Failed / Recalled / Deleted | `src/fsm/message_state.rs` |
+| **MessageState** | Pending → Sending → Sent → Delivered → Read；及 Failed / Recalled / Deleted | `src/core/fsm/message_state.rs` |
 | **MessageStateEvent** | Enqueued / SendStarted / SendAckReceived / SendFailed / Delivered / Read / Recalled / Deleted | 同上 |
 | **MessageStateFsm::transition** | 根据当前状态 + 事件得到下一状态 | 同上 |
 | **MessageStateFsm::from_local_state** | 由持久化字段 (sending, failed, is_local) 推断展示用 MessageState | 同上 |
@@ -34,7 +34,7 @@
 
 [可靠队列路径]
     入队:
-        → reliable_queue::actor  Enqueue
+        → core::reliable_queue::actor  Enqueue
         → 构造乐观消息 (server_id=client_msg_id, sending=true, is_local=true)
         → MessageStore.save_batch([乐观消息])     ← persistence/message_store.rs (trait)
         → 实现: persistence/sqlite/message_repo.rs (SqliteMessageRepo.save_batch)
@@ -43,14 +43,14 @@
         → PacketSender.send_message (协议层)
     收 ACK:
         → Dispatcher 收到 SendAck → ReliableSendQueue.on_ack
-        → reliable_queue::actor  AckReceived
+        → core::reliable_queue::actor  AckReceived
         → MessageStateFsm::transition(Sending, SendAckReceived) → Sent
         → MessageStateFsm::to_local_state_flags(Sent) 写回 local_state
         → MessageStore.update_after_ack(client_msg_id, &msg)   ← 原子：删旧行 + 插新行
         → 实现: persistence/sqlite/message_repo.rs (SqliteMessageRepo.update_after_ack)
         → EventBus MessageEvent::SendAck
     发送失败(超时/重试耗尽):
-        → reliable_queue::actor check_timeout / try_send_next
+        → core::reliable_queue::actor check_timeout / try_send_next
         → local_state = { sending: false, failed: true, is_local: true }
         → MessageStore.save_batch([failed_msg])   ← 覆盖原乐观行 (server_id=client_msg_id)
         → EventBus MessageEvent::SendFailed
@@ -86,12 +86,12 @@ SQLite 表结构（消息本地状态列）：
 
 | 职责 | 文件路径（相对 crate 根） |
 |------|----------------------------|
-| 消息 FSM 与状态映射 | `src/fsm/message_state.rs` |
+| 消息 FSM 与状态映射 | `src/core/fsm/message_state.rs` |
 | 消息模型与 MessageLocalState | `src/model/message.rs` |
 | 消息存储 trait | `src/infrastructure/persistence/message_store.rs` |
 | 消息 SQLite 实现 + update_after_ack | `src/infrastructure/persistence/sqlite/message_repo.rs` |
 | 消息表结构 | `src/infrastructure/persistence/sqlite/schema.rs` |
-| 可靠队列入队/ACK/失败写库 | `src/reliable_queue/actor.rs` |
+| 可靠队列入队/ACK/失败写库 | `src/core/reliable_queue/actor.rs` |
 | 领域仓储 trait（MessageReader/Writer） | `src/domain/repository/message_repository.rs` |
 
 ---

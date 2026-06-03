@@ -1,6 +1,6 @@
 use crate::domain::MessageStore;
-use crate::error::{ErrorCode, FlareError, Result};
 use crate::model::message::IMMessage;
+use crate::shared::error::{ErrorCode, FlareError, Result};
 
 pub struct MessageLocatorService;
 

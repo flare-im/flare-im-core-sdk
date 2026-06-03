@@ -2,8 +2,10 @@ use std::sync::Arc;
 
 use tokio::sync::RwLock;
 
-use crate::application::event_deduper::EventDeduper;
-use crate::application::message_deduper::MessageDeduper;
+use crate::application::SyncProtocolAdapter;
+use crate::application::notification::{NotificationHandlerRegistry, NotificationInboundPipeline};
+use crate::application::services::EventDeduper;
+use crate::application::services::MessageDeduper;
 use crate::application::sync_task::{
     ConversationSettingsSyncTask, ConversationsSyncTask, KeyEventsSyncTask, MessagesSyncTask,
     ReadStatesSyncTask,
@@ -12,26 +14,29 @@ use crate::application::usecases::{
     ConversationCommandUseCase, ConversationViewAssembler, MessageMutationUseCase,
     MessageSendUseCase, MessageViewAssembler,
 };
-use crate::application::{MediaService, SyncProtocolAdapter};
-use crate::capability::AvCapabilityPlugin;
-use crate::capability::{
-    SdkCapabilityPlugin, SdkCapabilityRegistry, reserved_namespaces_of_plugin,
-};
 use crate::client::api::{
     CapabilityApi, ConversationApi, MediaApi, MessageApi, MessageBuildApi, PresenceApi,
 };
 use crate::client::config::SdkConfig;
 use crate::client::im_client::{IMClient, IMClientInner};
+use crate::core::event::EventBus;
 use crate::core::{
     ConversationSummarySync, CurrentUserIdStore, SdkEngine, SessionSyncRunner, SyncResponseHandler,
     SyncTask,
 };
-use crate::event::EventBus;
-use crate::middleware::{EventInterceptor, MessageInterceptor, MiddlewareChain};
-use crate::notification::{NotificationHandlerRegistry, NotificationInboundPipeline};
-use crate::protocol::{Codec, ProtobufCodec};
-use crate::store::StoreProvider;
-use crate::transport::{HttpClient, HttpRequestContext, SocketTransport};
+use crate::extension::capability::AvCapabilityPlugin;
+use crate::extension::capability::{
+    SdkCapabilityPlugin, SdkCapabilityRegistry, reserved_namespaces_of_plugin,
+};
+use crate::extension::middleware::{EventInterceptor, MessageInterceptor, MiddlewareChain};
+use crate::extension::{ExtensionRegistry, SdkExtension};
+use crate::infrastructure::persistence::StoreProvider;
+use crate::infrastructure::protocol::{Codec, ProtobufCodec};
+use crate::infrastructure::transport::{HttpClient, HttpRequestContext, SocketTransport};
+use crate::platform::adapters::media::{MediaService, UploadOnlyMediaService};
+use crate::platform::ports::media::MediaServicePort;
+use crate::platform::runtime::RuntimeComponents;
+use crate::shared::error::{ErrorCode, FlareError, Result};
 use flare_proto::common::CallSignalEvent;
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -109,11 +114,12 @@ fn derive_online_url(config: &SdkConfig) -> String {
 ///     .stores(stores)
 ///     .add_sync_task(MyBusinessSync::new())    // 扩展：业务同步任务
 ///     .add_message_interceptor(E2EEncryption::new()) // 扩展：端到端加密
-///     .build();
+///     .build()?;
 /// ```
 pub struct IMClientBuilder {
     config: SdkConfig,
     stores: Option<StoreProvider>,
+    runtime: Option<RuntimeComponents>,
     http_request_context: Option<Arc<HttpRequestContext>>,
     codec: Option<Arc<dyn Codec>>,
     sync_tasks: Vec<Arc<dyn SyncTask>>,
@@ -121,6 +127,7 @@ pub struct IMClientBuilder {
     event_interceptors: Vec<Arc<dyn EventInterceptor>>,
     capability_plugins: Vec<Arc<dyn SdkCapabilityPlugin>>,
     allow_reserved_capability_namespace_override: bool,
+    builder_errors: Vec<FlareError>,
 }
 
 impl IMClientBuilder {
@@ -129,6 +136,7 @@ impl IMClientBuilder {
         Self {
             config: SdkConfig::default(),
             stores: None,
+            runtime: None,
             http_request_context: None,
             codec: None,
             sync_tasks: Vec::new(),
@@ -136,6 +144,7 @@ impl IMClientBuilder {
             event_interceptors: Vec::new(),
             capability_plugins: Vec::new(),
             allow_reserved_capability_namespace_override: false,
+            builder_errors: Vec::new(),
         }
     }
 
@@ -150,6 +159,15 @@ impl IMClientBuilder {
     /// 未设置时 [`Self::build`] 会 panic。
     pub fn stores(mut self, stores: StoreProvider) -> Self {
         self.stores = Some(stores);
+        self
+    }
+
+    /// 注入已装配好的运行时组件。
+    ///
+    /// 这是 Web/RN/uni-app/Electron/Android/iOS/鸿蒙等平台 adapter 的主接入点。
+    /// 原生测试和服务端内嵌场景可直接使用 `.stores(...)` 注入内存或 SQLite 存储。
+    pub fn runtime(mut self, runtime: RuntimeComponents) -> Self {
+        self.runtime = Some(runtime);
         self
     }
 
@@ -208,6 +226,31 @@ impl IMClientBuilder {
         self
     }
 
+    /// 安装业务扩展（如 flare-social-sdk）。
+    ///
+    /// 扩展只能注册任务、拦截器和能力插件；核心 IM API 不因业务扩展而变化。
+    pub fn add_extension(mut self, extension: impl SdkExtension + 'static) -> Self {
+        let mut registry = ExtensionRegistry::default();
+        match extension.install(&mut registry) {
+            Ok(()) => {
+                self.sync_tasks.extend(registry.sync_tasks);
+                self.message_interceptors
+                    .extend(registry.message_interceptors);
+                self.event_interceptors.extend(registry.event_interceptors);
+                self.capability_plugins.extend(registry.capability_plugins);
+            }
+            Err(err) => {
+                tracing::error!(
+                    namespace = extension.namespace(),
+                    error = %err,
+                    "SDK extension installation failed"
+                );
+                self.builder_errors.push(err);
+            }
+        }
+        self
+    }
+
     /// 私有发行开关：允许外部插件覆盖核心保留命名空间。
     ///
     /// 开源默认应保持关闭，避免核心路由被意外替换。
@@ -222,13 +265,47 @@ impl IMClientBuilder {
     /// 构建 [`IMClient`] 并装配引擎、API 门面和默认同步任务。
     ///
     /// 该方法只完成组装，不会自动登录或建连。
-    pub fn build(self) -> IMClient {
-        let stores = self.stores.expect("StoreProvider is required");
-
+    pub fn build(self) -> Result<IMClient> {
+        if let Some(err) = self.builder_errors.first().cloned() {
+            return Err(err);
+        }
         let codec: Arc<dyn Codec> = self.codec.unwrap_or_else(|| Arc::new(ProtobufCodec));
-        let transport = SocketTransport::with_codec(self.config.clone(), codec.clone());
+        let (stores, transport, runtime_media_service) = match self.runtime {
+            Some(RuntimeComponents {
+                stores,
+                transport,
+                media_service,
+                media_uploader,
+                ..
+            }) => {
+                let media_service = media_service.or_else(|| {
+                    media_uploader.map(|uploader| {
+                        Arc::new(UploadOnlyMediaService::new(uploader)) as Arc<dyn MediaServicePort>
+                    })
+                });
+                (stores, transport, media_service)
+            }
+            None => {
+                let stores = self.stores.ok_or_else(|| {
+                    FlareError::localized(
+                        ErrorCode::ConfigurationError,
+                        "StoreProvider is required",
+                    )
+                })?;
+                let transport = SocketTransport::with_codec(self.config.clone(), codec.clone());
+                (stores, transport, None)
+            }
+        };
         let sender = transport.sender();
-        let bus = EventBus::new();
+        let mut chain = MiddlewareChain::new();
+        for i in self.message_interceptors {
+            chain.add_message_interceptor(i);
+        }
+        for i in self.event_interceptors {
+            chain.add_event_interceptor(i);
+        }
+        let chain = Arc::new(chain);
+        let bus = EventBus::with_middleware(chain.clone());
         let event_deduper = EventDeduper::new(None);
         let message_deduper = MessageDeduper::new(None);
         let notification_registry = Arc::new(NotificationHandlerRegistry::new());
@@ -247,18 +324,10 @@ impl IMClientBuilder {
             init_msg_concurrency,
         ));
 
-        let mut chain = MiddlewareChain::new();
-        for i in self.message_interceptors {
-            chain.add_message_interceptor(i);
-        }
-        for i in self.event_interceptors {
-            chain.add_event_interceptor(i);
-        }
-
         let current_user_id: CurrentUserIdStore = Arc::new(RwLock::new(String::new()));
         let engine = SdkEngine::new(crate::core::SdkEngineConfig {
             stores,
-            chain,
+            chain: chain.clone(),
             transport,
             current_user_id: current_user_id.clone(),
             codec,
@@ -297,7 +366,7 @@ impl IMClientBuilder {
 
         let sender = engine.sender().clone();
         let store_ref = engine.stores().clone();
-        let chain_ref = Arc::new(MiddlewareChain::new());
+        let chain_ref = engine.middleware_chain();
         let profile_reader = store_ref.user_profiles_or_memory();
         let reliable_queue = engine.reliable_queue();
         sync_handler.set_reliable_queue(reliable_queue.clone());
@@ -319,12 +388,12 @@ impl IMClientBuilder {
             .tenant_id
             .clone()
             .or_else(|| std::env::var("FLARE_IM_TENANT_ID").ok())
-            .map(crate::util::normalize_tenant_id)
+            .map(crate::shared::util::normalize_tenant_id)
             .unwrap_or_else(|| "0".to_string());
         let http_request_context = self
             .http_request_context
             .unwrap_or_else(|| Arc::new(HttpRequestContext::new()));
-        let media_service = Arc::new(MediaService::new(
+        let default_media_service: Arc<dyn MediaServicePort> = Arc::new(MediaService::new(
             HttpClient::with_context(media_base_url, http_request_context.clone()),
             current_user_id.clone(),
             store_ref.upload_manifest_store.clone(),
@@ -332,6 +401,7 @@ impl IMClientBuilder {
             store_ref.media_cache_admin.clone(),
             store_ref.user_file_download_store.clone(),
         ));
+        let media_service = runtime_media_service.unwrap_or(default_media_service);
         let message_send_use_case = Arc::new(MessageSendUseCase::new(
             sender.clone(),
             store_ref.messages.clone(),
@@ -427,7 +497,7 @@ impl IMClientBuilder {
             bus.clone(),
         ));
 
-        IMClient::from_inner(IMClientInner {
+        Ok(IMClient::from_inner(IMClientInner {
             engine: Some(engine),
             message_api: Some(MessageApi::new(
                 message_send_use_case,
@@ -443,7 +513,7 @@ impl IMClientBuilder {
             http_request_context: Some(http_request_context),
             notification_registry: Some(notification_registry),
             ..Default::default()
-        })
+        }))
     }
 }
 
