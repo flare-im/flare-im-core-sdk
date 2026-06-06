@@ -79,14 +79,9 @@ pub fn ms_to_rfc3339(ms: u64) -> String {
 /// 当前系统时间 → `prost_types::Timestamp`（用于同步等需要“当前时间”的场景）。
 #[inline]
 pub fn system_time_to_prost_timestamp() -> Timestamp {
-    let t = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_else(|error| {
-            tracing::warn!(%error, "system clock is before UNIX_EPOCH; using zero timestamp");
-            std::time::Duration::ZERO
-        });
+    let ms = crate::shared::util::now_millis();
     Timestamp {
-        seconds: t.as_secs() as i64,
-        nanos: t.subsec_nanos() as i32,
+        seconds: (ms / 1000) as i64,
+        nanos: ((ms % 1000) * 1_000_000) as i32,
     }
 }

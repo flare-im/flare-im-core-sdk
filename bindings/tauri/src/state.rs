@@ -3,6 +3,7 @@
 //! 热路径优先读 `session` 缓存；未安装或代际变化时回退 `IMClient::connected_apis()` 并自动刷新，
 //! 避免 `sdk_login` 返回前同步事件触发 IPC 时报「未登录或会话未就绪」。
 
+use std::future::Future;
 use std::sync::Arc;
 
 use flare_im_core_sdk::Result;
@@ -11,25 +12,19 @@ use flare_im_core_sdk::client::api::{
 };
 use flare_im_core_sdk::client::{ConnectedApis, IMClient, SdkConfigOverlay};
 use flare_im_core_sdk::infrastructure::persistence::StoreProvider;
-use tokio::sync::RwLock;
-
-#[derive(Clone)]
-struct SessionCache {
-    generation: u64,
-    apis: ConnectedApis,
-}
+use flare_im_core_sdk_bindings_runtime::{InvokeSession, SessionSlot};
 
 /// 由 `tauri::Builder::manage(SdkState::new())` 注入。
 pub struct SdkState {
     client: IMClient,
-    session: RwLock<Option<SessionCache>>,
+    session: SessionSlot,
 }
 
 impl SdkState {
     pub fn new() -> Self {
         Self {
             client: IMClient::new(),
-            session: RwLock::new(None),
+            session: SessionSlot::default(),
         }
     }
 
@@ -52,12 +47,11 @@ impl SdkState {
     }
 
     pub async fn install_session(&self, apis: ConnectedApis) {
-        let generation = self.client.session_generation().await;
-        *self.session.write().await = Some(SessionCache { generation, apis });
+        self.session.install(&self.client, apis).await;
     }
 
     pub async fn clear_session(&self) {
-        *self.session.write().await = None;
+        self.session.clear().await;
     }
 
     pub async fn logout(&self) -> Result<()> {
@@ -65,48 +59,64 @@ impl SdkState {
         self.client.logout().await
     }
 
-    /// 已缓存且代际一致则直接返回；否则从 `IMClient` 拉取并写回缓存。
-    async fn session_or_live(&self) -> Result<ConnectedApis> {
-        let generation = self.client.session_generation().await;
-        if let Some(cache) = self.session.read().await.as_ref()
-            && cache.generation == generation
-        {
-            return Ok(cache.apis.clone());
-        }
-        let apis = self.client.connected_apis().await?;
-        *self.session.write().await = Some(SessionCache {
-            generation,
-            apis: apis.clone(),
-        });
-        Ok(apis)
-    }
-
     pub async fn message_api(&self) -> Result<MessageApi> {
-        Ok(self.session_or_live().await?.message_api)
+        self.session.message_api(&self.client).await
     }
 
     pub async fn conversation_api(&self) -> Result<ConversationApi> {
-        Ok(self.session_or_live().await?.conversation_api)
+        self.session.conversation_api(&self.client).await
     }
 
     pub async fn media_api(&self) -> Result<Arc<MediaApi>> {
-        Ok(self.session_or_live().await?.media_api)
+        self.session.media_api(&self.client).await
     }
 
     pub async fn capability_api(&self) -> Result<Arc<CapabilityApi>> {
-        Ok(self.session_or_live().await?.capability_api)
+        self.session.capability_api(&self.client).await
     }
 
     pub async fn presence_api(&self) -> Result<Arc<PresenceApi>> {
-        Ok(self.session_or_live().await?.presence_api)
+        self.session.presence_api(&self.client).await
     }
 
     pub async fn message_build_api(&self) -> Result<Arc<MessageBuildApi>> {
-        Ok(self.session_or_live().await?.message_build_api)
+        self.session.message_build_api(&self.client).await
     }
 
     pub async fn stores(&self) -> Result<StoreProvider> {
         self.client.stores_async().await
+    }
+}
+
+impl InvokeSession for SdkState {
+    fn client(&self) -> IMClient {
+        self.client.clone()
+    }
+
+    fn message_api(&self) -> impl Future<Output = Result<MessageApi>> + Send {
+        async move { SdkState::message_api(self).await }
+    }
+
+    fn message_build_api(&self) -> impl Future<Output = Result<Arc<MessageBuildApi>>> + Send {
+        async move { SdkState::message_build_api(self).await }
+    }
+
+    fn conversation_api(&self) -> impl Future<Output = Result<ConversationApi>> + Send {
+        async move { SdkState::conversation_api(self).await }
+    }
+
+    fn media_api(&self) -> impl Future<Output = Result<Arc<MediaApi>>> + Send {
+        async move { SdkState::media_api(self).await }
+    }
+
+    fn capability_api(&self) -> impl Future<Output = Result<Arc<CapabilityApi>>> + Send {
+        async move { SdkState::capability_api(self).await }
+    }
+
+    fn after_disconnect(&self) -> impl Future<Output = ()> + Send {
+        async move {
+            SdkState::clear_session(self).await;
+        }
     }
 }
 

@@ -8,7 +8,7 @@ pub use crate::shared::util::paths::{
     resolve_sdk_data_root, resolve_user_db_path, sanitize_user_id_for_dir,
 };
 
-use crate::client::{SdkConfig, TransportPolicy};
+use crate::client::{SdkConfig, TransportKind, TransportPolicy};
 use crate::shared::error::Result;
 
 /// 上层可选覆盖项（JSON 字段 snake_case，与 Rust 字段一致）。
@@ -25,6 +25,10 @@ pub struct SdkConfigOverlay {
     pub reconnect_interval_secs: Option<u64>,
     pub max_reconnect_attempts: Option<u32>,
     pub transport_policy: Option<TransportPolicy>,
+    /// 非竞速模式下的默认传输（`websocket` / `quic`）。
+    pub default_transport: Option<TransportKind>,
+    /// 协议竞速优先级（从高到低），如 `["quic", "websocket"]`。
+    pub protocol_race_order: Option<Vec<TransportKind>>,
     pub sync_batch_size: Option<u32>,
     /// Init/重连后会话消息补拉并发数（默认 4）。
     pub init_message_sync_concurrency: Option<u32>,
@@ -82,6 +86,12 @@ pub fn merge_sdk_config(ws_url: &str, overlay: Option<&SdkConfigOverlay>) -> Sdk
         }
         if let Some(policy) = o.transport_policy {
             config.transport_policy = policy;
+        }
+        if o.default_transport.is_some() {
+            config.default_transport = o.default_transport;
+        }
+        if o.protocol_race_order.is_some() {
+            config.protocol_race_order = o.protocol_race_order.clone();
         }
         if o.sync_batch_size.is_some() {
             config.sync_batch_size = o.sync_batch_size;

@@ -460,10 +460,10 @@ fn audience_to_json(a: Option<&CallAudience>) -> serde_json::Value {
     };
     match &a.shape {
         Some(call_audience::Shape::Direct(d)) => serde_json::json!({
-            "direct": { "peerUserId": d.peer_user_id }
+            "direct": { "peer_user_id": d.peer_user_id }
         }),
         Some(call_audience::Shape::Explicit(e)) => serde_json::json!({
-            "explicit": { "userIds": e.user_ids }
+            "explicit": { "user_ids": e.user_ids }
         }),
         Some(call_audience::Shape::Broadcast(_)) => serde_json::json!({ "broadcast": {} }),
         None => serde_json::Value::Null,
@@ -476,9 +476,9 @@ fn media_session_to_json(m: Option<&CallMediaSessionInfo>) -> serde_json::Value 
     };
     serde_json::json!({
         "kind": m.kind,
-        "organizerUserId": m.organizer_user_id,
+        "organizer_user_id": m.organizer_user_id,
         "title": m.title,
-        "scheduledStart": m.scheduled_start.as_ref().map(|t| t.seconds),
+        "scheduled_start": m.scheduled_start.as_ref().map(|t| t.seconds),
     })
 }
 
@@ -487,12 +487,12 @@ fn transport_to_json(t: Option<&SfuTransportContext>) -> serde_json::Value {
         return serde_json::Value::Null;
     };
     serde_json::json!({
-        "roomId": t.room_id,
-        "peerId": t.peer_id,
-        "mediaSessionId": t.media_session_id,
-        "trackId": t.track_id,
-        "signalingWsBase": t.signaling_ws_base,
-        "instanceId": t.instance_id,
+        "room_id": t.room_id,
+        "peer_id": t.peer_id,
+        "media_session_id": t.media_session_id,
+        "track_id": t.track_id,
+        "signaling_ws_base": t.signaling_ws_base,
+        "instance_id": t.instance_id,
     })
 }
 
@@ -529,15 +529,15 @@ fn offered_media_json(m: Option<&CallOfferedMedia>) -> serde_json::Value {
     };
     serde_json::json!({
         "types": m.types,
-        "primarySource": m.primary_source,
-        "codecHint": m.codec_hint,
+        "primary_source": m.primary_source,
+        "codec_hint": m.codec_hint,
     })
 }
 
 fn track_state_json(t: &SfuTrackSnapshot) -> serde_json::Value {
     serde_json::json!({
-        "trackId": t.track_id,
-        "mediaType": t.media_type,
+        "track_id": t.track_id,
+        "media_type": t.media_type,
         "source": t.source,
         "codec": t.codec,
     })
@@ -545,9 +545,9 @@ fn track_state_json(t: &SfuTrackSnapshot) -> serde_json::Value {
 
 fn room_snapshot_json(s: &SfuRoomSnapshot) -> serde_json::Value {
     serde_json::json!({
-        "roomId": s.room_id,
-        "peerCount": s.peer_count,
-        "trackCount": s.track_count,
+        "room_id": s.room_id,
+        "peer_count": s.peer_count,
+        "track_count": s.track_count,
         "exists": s.exists,
         "draining": s.draining,
     })
@@ -555,13 +555,13 @@ fn room_snapshot_json(s: &SfuRoomSnapshot) -> serde_json::Value {
 
 fn peer_snapshot_json(p: &SfuPeerSnapshot) -> serde_json::Value {
     serde_json::json!({
-        "peerId": p.peer_id,
-        "userId": p.user_id,
-        "publishedTrackIds": p.published_track_ids,
-        "subscribedTrackIds": p.subscribed_track_ids,
-        "mediaSessionId": p.media_session_id,
-        "sfuRole": p.sfu_role,
-        "rosterRole": p.roster_role,
+        "peer_id": p.peer_id,
+        "user_id": p.user_id,
+        "published_track_ids": p.published_track_ids,
+        "subscribed_track_ids": p.subscribed_track_ids,
+        "media_session_id": p.media_session_id,
+        "sfu_role": p.sfu_role,
+        "roster_role": p.roster_role,
     })
 }
 
@@ -589,10 +589,10 @@ fn call_signal_body_json(signal: &Option<Signal>) -> serde_json::Value {
     match signal {
         None => serde_json::Value::Null,
         Some(Signal::Invite(i)) => serde_json::json!({
-            "invite": { "offeredMedia": offered_media_json(i.offered_media.as_ref()) }
+            "invite": { "offered_media": offered_media_json(i.offered_media.as_ref()) }
         }),
         Some(Signal::Accept(a)) => serde_json::json!({
-            "accept": { "acceptedMedia": offered_media_json(a.accepted_media.as_ref()) }
+            "accept": { "accepted_media": offered_media_json(a.accepted_media.as_ref()) }
         }),
         Some(Signal::Reject(r)) => {
             serde_json::json!({ "reject": { "reason": r.reason, "code": r.code } })
@@ -600,92 +600,92 @@ fn call_signal_body_json(signal: &Option<Signal>) -> serde_json::Value {
         Some(Signal::Hangup(h)) => serde_json::json!({
             "hangup": {
                 "reason": h.reason,
-                "durationSeconds": h.duration_seconds,
-                "closeRoomIfVacant": h.close_room_if_vacant,
-                "reasonCode": call_end_reason_code_label(h.reason_code),
-                "visibilityScope": call_visibility_scope_label(h.visibility_scope),
-                "timeoutSeconds": h.timeout_seconds,
+                "duration_seconds": h.duration_seconds,
+                "close_room_if_vacant": h.close_room_if_vacant,
+                "reason_code": call_end_reason_code_label(h.reason_code),
+                "visibility_scope": call_visibility_scope_label(h.visibility_scope),
+                "timeout_seconds": h.timeout_seconds,
             }
         }),
         Some(Signal::IceCandidate(c)) => serde_json::json!({
-            "iceCandidate": {
+            "ice_candidate": {
                 "candidate": c.candidate,
-                "sdpMid": c.sdp_mid,
-                "sdpMLineIndex": c.sdp_mline_index,
-                "candidateJson": c.candidate_json,
+                "sdp_mid": c.sdp_mid,
+                "sdp_mline_index": c.sdp_mline_index,
+                "candidate_json": c.candidate_json,
             }
         }),
         Some(Signal::Ringing(_)) => serde_json::json!({ "ringing": {} }),
         Some(Signal::Busy(b)) => serde_json::json!({ "busy": { "reason": b.reason } }),
         Some(Signal::Renegotiate(r)) => {
-            serde_json::json!({ "renegotiate": { "wantMedia": r.want_media } })
+            serde_json::json!({ "renegotiate": { "want_media": r.want_media } })
         }
-        Some(Signal::SfuRoom(s)) => serde_json::json!({ "sfuRoom": room_snapshot_json(s) }),
+        Some(Signal::SfuRoom(s)) => serde_json::json!({ "sfu_room": room_snapshot_json(s) }),
         Some(Signal::SfuPeerJoined(p)) => {
-            serde_json::json!({ "sfuPeerJoined": peer_snapshot_json(p) })
+            serde_json::json!({ "sfu_peer_joined": peer_snapshot_json(p) })
         }
         Some(Signal::SfuPeerLeft(p)) => serde_json::json!({
-            "sfuPeerLeft": { "peerId": p.peer_id, "userId": p.user_id }
+            "sfu_peer_left": { "peer_id": p.peer_id, "user_id": p.user_id }
         }),
         Some(Signal::SfuTrackPublished(t)) => {
-            serde_json::json!({ "sfuTrackPublished": track_state_json(t) })
+            serde_json::json!({ "sfu_track_published": track_state_json(t) })
         }
         Some(Signal::SfuTrackUnpublished(t)) => {
-            serde_json::json!({ "sfuTrackUnpublished": track_state_json(t) })
+            serde_json::json!({ "sfu_track_unpublished": track_state_json(t) })
         }
         Some(Signal::SfuSubscribed(r)) => {
-            serde_json::json!({ "sfuSubscribed": { "trackId": r.track_id } })
+            serde_json::json!({ "sfu_subscribed": { "track_id": r.track_id } })
         }
         Some(Signal::SfuUnsubscribed(r)) => {
-            serde_json::json!({ "sfuUnsubscribed": { "trackId": r.track_id } })
+            serde_json::json!({ "sfu_unsubscribed": { "track_id": r.track_id } })
         }
         Some(Signal::SfuJoinHints(h)) => serde_json::json!({
-            "sfuJoinHints": {
+            "sfu_join_hints": {
                 "token": h.token,
-                "ttlSeconds": h.ttl_seconds,
-                "roomId": h.room_id,
-                "peerId": h.peer_id,
-                "mediaSessionId": h.media_session_id,
-                "signalingWsBase": h.signaling_ws_base,
-                "instanceId": h.instance_id,
+                "ttl_seconds": h.ttl_seconds,
+                "room_id": h.room_id,
+                "peer_id": h.peer_id,
+                "media_session_id": h.media_session_id,
+                "signaling_ws_base": h.signaling_ws_base,
+                "instance_id": h.instance_id,
             }
         }),
         Some(Signal::SfuSubscription(s)) => serde_json::json!({
-            "sfuSubscription": {
-                "subscriberPeerId": s.subscriber_peer_id,
-                "trackId": s.track_id,
+            "sfu_subscription": {
+                "subscriber_peer_id": s.subscriber_peer_id,
+                "track_id": s.track_id,
                 "enabled": s.enabled,
                 "media": s.media,
-                "preferredLayer": s.preferred_layer,
+                "preferred_layer": s.preferred_layer,
                 "priority": s.priority,
             }
         }),
         Some(Signal::SfuAudioLevel(a)) => serde_json::json!({
-            "sfuAudioLevel": {
-                "peerId": a.peer_id,
-                "userId": a.user_id,
-                "linearLevel": a.linear_level,
-                "voiceActive": a.voice_active,
+            "sfu_audio_level": {
+                "peer_id": a.peer_id,
+                "user_id": a.user_id,
+                "linear_level": a.linear_level,
+                "voice_active": a.voice_active,
             }
         }),
         Some(Signal::SfuNetworkQuality(n)) => serde_json::json!({
-            "sfuNetworkQuality": {
-                "peerId": n.peer_id,
-                "upstreamScore": n.upstream_score,
-                "downstreamScore": n.downstream_score,
-                "rttMs": n.rtt_ms,
-                "packetLossRatio": n.packet_loss_ratio,
+            "sfu_network_quality": {
+                "peer_id": n.peer_id,
+                "upstream_score": n.upstream_score,
+                "downstream_score": n.downstream_score,
+                "rtt_ms": n.rtt_ms,
+                "packet_loss_ratio": n.packet_loss_ratio,
             }
         }),
         Some(Signal::SfuBweHint(h)) => serde_json::json!({
-            "sfuBweHint": {
-                "peerId": h.peer_id,
+            "sfu_bwe_hint": {
+                "peer_id": h.peer_id,
                 "congested": h.congested,
-                "suggestedCapKbps": h.suggested_cap_kbps,
+                "suggested_cap_kbps": h.suggested_cap_kbps,
             }
         }),
         Some(Signal::InviteeUpdate(u)) => serde_json::json!({
-            "inviteeUpdate": { "addedUserIds": u.added_user_ids, "removedUserIds": u.removed_user_ids }
+            "invitee_update": { "added_user_ids": u.added_user_ids, "removed_user_ids": u.removed_user_ids }
         }),
     }
 }

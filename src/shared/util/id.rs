@@ -1,15 +1,14 @@
 use rand::Rng;
 use sha2::{Digest, Sha256};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
+
+use super::time;
+
 static SEQ: AtomicU64 = AtomicU64::new(0);
 
 pub fn generate_client_msg_id() -> String {
     // 1. 高熵源组合
-    let ts = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis();
+    let ts = time::now_millis();
 
     let seq = SEQ.fetch_add(1, Ordering::Relaxed);
     let random = rand::thread_rng().r#gen::<u128>();
@@ -27,8 +26,5 @@ pub fn generate_client_msg_id() -> String {
 }
 
 pub fn now_millis() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64
+    time::now_millis()
 }

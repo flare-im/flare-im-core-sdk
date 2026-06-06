@@ -10,8 +10,13 @@ use flare_proto::common::{ErrorDetail as ProtoErrorDetail, SendAck as ProtoSendA
 use serde::{Deserialize, Serialize};
 
 // ---------- 上层可传入的 SDK 配置（snake_case JSON，与 [flare_im_core_sdk::client::SdkConfigOverlay] 一致） ----------
+//
+// 传输：`transport_policy`（`auto` | `websocket_only` | `protocol_race`）、
+// `default_transport`（`websocket` | `quic`）、`protocol_race_order`（如 `["quic","websocket"]`）。
+// 契约全文见 `bindings/contract/client_config.json`（`make -C bindings codegen`）。
 
 pub use flare_im_core_sdk::client::SdkConfigOverlay as SdkConfigOptions;
+pub use flare_im_core_sdk::client::{TransportKind, TransportPolicy};
 
 /// 供前端 WebRTC 使用的 ICE 公共配置快照。
 #[derive(Debug, Clone, Serialize)]
@@ -396,7 +401,7 @@ pub struct CallSignalPayload {
     pub ext: HashMap<String, String>,
     /// `signal` oneof 分支名（与 `flare_sdk_plugin_call::signaling::variant_name` 一致）
     pub variant: String,
-    /// 与 `variant` 对应的结构化体（camelCase）
+    /// 与 `variant` 对应的结构化体（snake_case JSON）
     pub body: serde_json::Value,
 }
 

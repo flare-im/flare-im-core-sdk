@@ -1,6 +1,6 @@
 use crate::model::IMMessage;
 
-#[derive(Clone)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct PendingSendVo {
     pub client_msg_id: String,
     pub conversation_id: String,

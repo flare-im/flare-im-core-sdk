@@ -2,14 +2,37 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use flare_core::client::builder::flare::{FlareClient, FlareClientBuilder, MessageListener};
+#[cfg(not(target_arch = "wasm32"))]
 use flare_core::common::config_types::TransportProtocol as CoreTransport;
 use flare_core::common::device::{DeviceInfo, DevicePlatform};
+use flare_core::common::protocol::SerializationFormat;
 use tokio::sync::{Mutex, Notify};
 use tracing::{info, warn};
 
-use crate::client::config::{SdkConfig, TransportPolicy};
+use crate::client::config::SdkConfig;
 use crate::infrastructure::protocol::{Codec, PacketSender, ProtobufCodec};
 use crate::shared::error::{ErrorCode, FlareError, Result};
+use crate::shared::util::timeout;
+
+fn sdk_device_info(user_id: &str) -> DeviceInfo {
+    #[cfg(not(target_arch = "wasm32"))]
+    let device_id = format!("sdk-{}-{}", user_id, std::process::id());
+    #[cfg(target_arch = "wasm32")]
+    let device_id = format!("sdk-{}-web-{}", user_id, uuid::Uuid::new_v4());
+
+    #[cfg(not(target_arch = "wasm32"))]
+    let platform = DevicePlatform::PC;
+    #[cfg(not(target_arch = "wasm32"))]
+    let model = "FlareSDK".to_string();
+    #[cfg(target_arch = "wasm32")]
+    let platform = DevicePlatform::Web;
+    #[cfg(target_arch = "wasm32")]
+    let model = "FlareSDK-Web".to_string();
+
+    DeviceInfo::new(device_id, platform)
+        .with_model(model)
+        .with_app_version("1.0.0".to_string())
+}
 
 /// Socket 传输层 — 基于 flare-core 的多协议长连接封装
 pub struct SocketTransport {
@@ -44,22 +67,22 @@ impl SocketTransport {
         listener: Arc<dyn MessageListener>,
         ready_notify: Arc<Notify>,
     ) -> Result<()> {
-        let device = DeviceInfo::new(
-            format!("sdk-{}-{}", user_id, std::process::id()),
-            DevicePlatform::PC,
-        )
-        .with_model("FlareSDK".to_string())
-        .with_app_version("1.0.0".to_string());
+        let device = sdk_device_info(user_id);
 
         let ws_url = self.config.ws_url.as_deref().ok_or_else(|| {
             FlareError::localized(ErrorCode::ConfigurationError, "ws_url not configured")
         })?;
+        let primary_url = self
+            .config
+            .primary_connect_url()
+            .unwrap_or_else(|| ws_url.to_string());
 
-        let mut builder = FlareClientBuilder::new(ws_url)
+        let mut builder = FlareClientBuilder::new(&primary_url)
             .with_user_id(user_id.to_string())
             .with_token(token.to_string())
             .with_listener(listener)
-            .with_device_info(device.clone())
+            .with_device_info(device)
+            .with_format(SerializationFormat::Protobuf)
             .with_connect_timeout(Duration::from_secs(self.config.connect_timeout_secs()));
 
         if let Some(secs) = self.config.reconnect_interval_secs {
@@ -70,19 +93,44 @@ impl SocketTransport {
         }
 
         let policy = self.config.effective_transport_policy();
-        if matches!(
-            policy,
-            TransportPolicy::Auto | TransportPolicy::ProtocolRace
-        ) && let Some(ref quic_url) = self.config.quic_url
-        {
-            builder = builder
-                .with_protocol_url(CoreTransport::QUIC, quic_url.clone())
-                .with_protocol_url(CoreTransport::WebSocket, ws_url.to_string())
-                .with_protocol_race(vec![CoreTransport::QUIC, CoreTransport::WebSocket]);
-
-            info!(ws = ws_url, quic = %quic_url, "protocol race enabled (WebSocket + QUIC)");
+        #[cfg(not(target_arch = "wasm32"))]
+        if let (Some(race_order), Some(quic_url)) = (
+            self.config.effective_protocol_race_order(),
+            self.config.quic_url.as_ref(),
+        ) {
+            for protocol in &race_order {
+                let url = match protocol {
+                    CoreTransport::WebSocket => ws_url.to_string(),
+                    CoreTransport::QUIC => quic_url.clone(),
+                    _ => continue,
+                };
+                builder = builder.with_protocol_url(*protocol, url);
+            }
+            builder = builder.with_protocol_race(race_order.clone());
+            info!(
+                ws = ws_url,
+                quic = %quic_url,
+                race_order = ?race_order,
+                policy = ?policy,
+                "protocol race enabled"
+            );
         } else {
-            info!(ws = ws_url, policy = ?policy, "WebSocket transport selected");
+            info!(
+                ws = ws_url,
+                primary = %primary_url,
+                policy = ?policy,
+                default_transport = ?self.config.default_transport,
+                "single transport (WebSocket entry)"
+            );
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            info!(
+                ws = ws_url,
+                primary = %primary_url,
+                policy = ?policy,
+                "wasm websocket transport (flare-core FlareClientBuilder)"
+            );
         }
 
         let flare_client = builder
@@ -99,10 +147,7 @@ impl SocketTransport {
         *self.client.lock().await = Some(flare_client);
 
         let wait = Duration::from_secs(self.config.connect_timeout_secs().max(1));
-        if tokio::time::timeout(wait, ready_notify.notified())
-            .await
-            .is_err()
-        {
+        if timeout(wait, ready_notify.notified()).await.is_err() {
             let timed_out_client = self.client.lock().await.take();
             if let Some(client) = timed_out_client
                 && let Err(error) = client.disconnect().await
@@ -129,11 +174,12 @@ impl SocketTransport {
     }
 
     pub async fn is_connected(&self) -> bool {
-        self.client
-            .lock()
-            .await
-            .as_ref()
-            .map(|c| c.is_connected())
-            .unwrap_or(false)
+        match self.client.lock().await.as_ref() {
+            None => false,
+            #[cfg(not(target_arch = "wasm32"))]
+            Some(client) => client.is_connected(),
+            #[cfg(target_arch = "wasm32")]
+            Some(client) => client.is_connected_async().await,
+        }
     }
 }

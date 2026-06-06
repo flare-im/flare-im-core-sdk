@@ -78,18 +78,21 @@ void flare_error_free(FlareError e);
 
 ### API 覆盖
 
-热路径和稳定形状使用 direct C ABI，例如：
+平台边界和稳定形状使用 direct C ABI，例如：
 
 - lifecycle: `flare_sdk_*`
 - events: `flare_event_*`
-- conversation: `flare_conversation_*`
-- media: `flare_media_*`
+- media transfer/progress/cancel: `flare_media_upload_*`,
+  `flare_media_delete_file`, `flare_media_cancel_user_file_download`,
+  `flare_media_download_file_to_downloads`
 - simple message paths: `flare_message_create_text`, `flare_message_send`,
   `flare_message_list`, `flare_message_recall`, `flare_message_delete`
 
-大型或快速演进的消息构建/消息 mutation 使用 JSON dispatch：
+大型或快速演进的会话、媒体控制、消息构建、消息 mutation 使用 JSON dispatch：
 
 ```c
+int32_t flare_conversation_dispatch_json(FlareHandle handle, const char* op, const char* params_json, void* context, FlareResultCallback callback);
+int32_t flare_media_dispatch_json(FlareHandle handle, const char* op, const char* params_json, void* context, FlareResultCallback callback);
 int32_t flare_message_build_json(FlareHandle handle, const char* request_json, void* context, FlareResultCallback callback);
 int32_t flare_message_dispatch_json(FlareHandle handle, const char* op, const char* params_json, void* context, FlareResultCallback callback);
 ```

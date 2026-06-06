@@ -1,120 +1,101 @@
 # Flare IM Bindings Contract
 
-This directory defines the L1 binding contract consumed by
-`flare-im-core-client-sdk`.
+**唯一配置目录**：日常扩展 bindings 只改本目录下的 JSON，然后执行：
 
-## Layering
-
-```text
-L3 typed platform SDK
-  packages/flare-core-*-sdk
-L2 runtime adapter
-  native artifact loading, thread dispatch, platform bridge
-L1 binding contract
-  flare-im-core-sdk/bindings
-L0 Rust core
-  flare-im-core-sdk/src
+```bash
+make -C bindings codegen
+make -C bindings codegen-check
 ```
 
-## Current Decision
+`contract/tools/*.py` 是 **codegen 执行器**（类似 protoc），不是业务配置源。新增 API / 事件时 **不要改 Python**。
 
-`bindings/c` is the only universal native L1 boundary.
+## 配置文件
 
-`bindings/tauri` is active, but it is a desktop shell adapter for Tauri command
-IPC. It should not be treated as the native SDK source of truth.
+| 文件 | 用途 |
+|------|------|
+| `manifest.json` | 契约版本、平台映射、产物路径 |
+| `apis.json` |  canonical API id、C 符号、Tauri 命令名、core 方法 |
+| `dispatch.json` | JSON dispatch 操作表（message / conversation / media / capability / message_build） |
+| `direct_invoke.json` | `IMClient` 直调路由（sync / presence / connection / diagnostics） |
+| `c_typed_abi.json` | 保留稳定 C 符号的 typed shim（参数解析 → `invoke_api_id`） |
+| `client_config.json` | init / `SdkConfigOverlay` 字段说明与示例（含传输与协议竞速） |
+| `events.json` | 事件 id、C code、`im://*` 名称、C JSON 形状说明 |
+| `errors.json` | 稳定错误码 |
 
-`bindings/uniffi` is archived. It remains in the tree as historical context and
-does not participate in the current multi-platform SDK contract.
+## 初始化与传输配置
 
-`bindings/wasm` is planned but not active. The core crate can compile for
-`wasm32-unknown-unknown`, but browser IM runtime support is still blocked by Web
-transport, HTTP, media, presence, and storage adapters.
+所有平台的 init 使用同一 JSON 形状（`snake_case`）：
 
-## Client SDK Consumption
+- 裸 [`SdkConfigOverlay`](../../src/client/lifecycle.rs)（C `flare_sdk_init` 传统用法）
+- 或 `{ "environment": "...", "sdk_config": { ... } }`（推荐，与 `client.init` / `sdk.init` 一致）
 
-`flare-im-core-client-sdk` should read `manifest.json` as the binding source of
-truth for:
+关键字段：
 
-- the active FFI contract version
-- which L1 binding each platform should use
-- canonical API ids and their C/Tauri entrypoints
-- canonical SDK events and their C/Tauri event names
-- stable C ABI error codes
-- whether a binding is active, shell-only, or archived
-- callback, event, memory, and error rules
-- where native artifacts should be loaded from
+| 字段 | 说明 |
+|------|------|
+| `transport_policy` | `auto` / `websocket_only` / `protocol_race`（WASM 运行时强制 `websocket_only`） |
+| `default_transport` | `websocket` / `quic`，非竞速时首选 |
+| `protocol_race_order` | 如 `["quic","websocket"]`，竞速优先级（前项优先） |
+| `ws_url` / `quic_url` | 竞速需同时配置 |
 
-Machine-readable contract files:
+示例见 `client_config.json`；codegen 产出 `CLIENT_INIT_REQUEST_EXAMPLE_JSON` 与各平台 `flare_client_*` / `FLARE_SDK_CONFIG_EXAMPLE_JSON`。
 
-```text
-manifest.json   binding selection, platform map, ownership rules
-apis.json       canonical API surface and entrypoint mapping
-events.json     canonical event ids, C event codes, Tauri event names
-errors.json     stable error codes and typed-error mapping rules
-```
+统一 invoke：`client.init` → `sdk.init`（`direct_invoke.json`），Tauri 仍保留 `sdk_init` 命令透传同一结构。
 
-Platform packages may expose idiomatic APIs, but their behavior must stay thin:
-validate input, call L1, map output, emit typed events, and dispose resources.
+## 新增能力 checklist
 
-## C ABI Rules
+### JSON 类 API（`sdk_invoke` / `flare_*_dispatch_json`）
 
-- Handles are opaque `u64` values.
-- Complex inputs and outputs use UTF-8 JSON.
-- JSON field names stay aligned with core-sdk snake_case serialization.
-- Async functions return immediate submit status and invoke callback exactly
-  once.
-- Callback thread is unspecified.
-- Rust-allocated `FlareString`, `FlareBytes`, and `FlareError` values must be
-  released with the paired `flare_*_free` function.
-- Event subscription returns a subscription handle that must be explicitly
-  unsubscribed.
+1. 在 `apis.json` 增加 method（`id`、`core`、`c`、`tauri` 等）
+2. 若走 dispatch：在 `dispatch.json` 对应 `group.operations` 增加 `op` 定义
+3. `make -C bindings codegen`
 
-## Platform Map
+### IMClient 直调（sync / presence / 连接态等）
 
-Use `manifest.json.platformMap`.
+1. 在 `apis.json` 增加 method
+2. 在 `direct_invoke.json` 的 `routes` 增加一条（`route` 与 `operation.normalize` 后的名字一致）
+3. `make -C bindings codegen`
 
-Native mobile, Flutter, Harmony, React Native native modules, Node native, and
-Unity should use `bindings/c`.
+### 媒体上传/下载（`flare_media_*`）
 
-Tauri should use `bindings/tauri`.
+1. 在 `apis.json` 增加 method
+2. 路径类上传 / 删文件：在 `dispatch.json` → `media.operations` 增加 `op`（可用 `optional_upload_options`、`bytes_vec`）
+3. 下载到用户目录 / 同步取消：在 `direct_invoke.json` 增加 `route`（native 用 `cfg: not(target_arch = "wasm32")`）
+4. 稳定 C 符号：在 `c_typed_abi.json` 增加 export（`upload_options` / `bytes_view` / `request_json` / `sync_bool_invoke`）
+5. `make -C bindings codegen`
 
-Browser Web and pure uni-app Web targets do not load the C ABI. They should use
-the TypeScript runtime adapter today. A wasm binding may become active only
-after the Web runtime ports listed in `../wasm/README.md` are implemented.
+其余媒体控制（URL、缓存、子目录等）继续走 `flare_media_dispatch_json`。
 
-## API Shape
+### 稳定 C 符号（`flare_sdk_sync_*` / `flare_message_*` 等）
 
-Every platform SDK should preserve the same conceptual modules from
-`apis.json`:
+1. 在 `apis.json` 增加 method（含 `c` 符号名）
+2. 在 `c_typed_abi.json` 的 `exports` 增加一条：`symbol`、`api_id`（与 apis id 一致）、`kind`（`invoke_unit` / `invoke_json` / `invoke_send_ack`）、`args`
+3. 若 `api_id` 尚未在 `direct_invoke.json` 或 `dispatch.json` 中实现，先补对应路由
+4. `make -C bindings codegen` → 生成 `c/src/generated/typed_abi.rs`
 
-```text
-client.init
-client.login
-client.logout
-client.connection
-client.events
-client.conversations
-client.messages
-client.media
-client.presence
-client.capabilities
-client.dispose
-```
+### 事件
 
-The C ABI function names may be lower-level, but L3 SDK packages should expose
-canonical platform-friendly names such as `sendMessage`, `listConversations`,
-`subscribeEvents`, and `dispose`.
+1. 在 `events.json` 的 `events` 数组增加一条（`id`、`cCode`、`cCodeName`、`tauri`、`cJson`）
+2. 在 core 增加对应 `SdkEvent` 变体（Rust 侧仍是真相源）
+3. `make -C bindings codegen` — 自动生成：
+   - `runtime/.../event_registry.rs`
+   - `tauri/.../event_emit.rs`（转发入口）
+   - `wasm/.../events.rs`、`uniffi/.../events.rs`（契约表）
+4. 若 payload 形状全新：在 `runtime/src/event_bridge.rs` 补 **一次** C JSON 序列化；Tauri 侧在 `convert.rs` 补强类型 payload（可选）。`c/src/event.rs` 仅保留订阅/转发
 
-## Event Shape
+## 平台 crate 职责（保持瘦）
 
-Every platform SDK should preserve the event ids from `events.json`.
+| 平台 | 手写保留 | 自动生成 |
+|------|----------|----------|
+| **c** | 句柄、回调、内存、上传二进制、事件订阅 | `typed_abi`、`json_dispatch`、`invoke`、`events` |
+| **tauri** | `lifecycle`（AppHandle）、`convert`（SdkEvent→payload） | `handler`、`invoke`、`event_emit` |
+| **wasm** | smoke runtime、宿主 port | `contract`、`bindings`、`events` |
+| **uniffi** | 后续 session adapter | `contract`、`types`、`events`、`invoke` 占位 |
 
-Native SDKs should use `event_type` for fast dispatch and parse `event_json` for
-payload. Tauri/Web adapters should use the `im://*` event names listed in
-`events.json`.
+## 统一调用入口
 
-## Error Shape
+- **C**：`flare_sdk_invoke_json(api_id, params_json, …)` + 生成的 legacy dispatch 符号
+- **Tauri**：`sdk_invoke(api_id, request)` + `sdk_init` / `sdk_login` / `sdk_logout`
+- **Wasm（smoke）**：`flareInvoke(runtime, api_id, request_json)`
 
-Every platform SDK should preserve the typed error mapping from `errors.json`.
-
-Do not parse `FlareError.message`; it is for display and logs only.
+契约 `api_id` 与 `apis.json` 中 `id` 字段一致（如 `messages.list`、`sync.conversation`）。

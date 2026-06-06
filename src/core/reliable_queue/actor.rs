@@ -6,7 +6,6 @@ use std::time::Duration;
 
 use flare_proto::common::SendAck;
 use tokio::sync::{mpsc, oneshot};
-use tokio::time::{Instant, interval_at};
 use tracing::{debug, warn};
 
 use crate::core::event::{EventBus, MessageEvent, SdkEvent};
@@ -20,6 +19,8 @@ use crate::model::IMMessage;
 use crate::model::message::MessageLocalState;
 use crate::shared::error::{ErrorCode, FlareError, Result};
 use crate::shared::util::id;
+use crate::shared::util::spawn_background_task;
+use crate::shared::util::time::{deadline_after, delay, is_deadline_elapsed};
 use crate::shared::util::{RELIABLE_QUEUE_MAX_RETRIES, RELIABLE_QUEUE_TIMEOUT_SECS};
 
 /// 队列命令（仅通过此与队列通信）
@@ -45,7 +46,7 @@ enum QueueCommand {
 /// 可靠发送队列句柄（发命令 + 持有 actor 所需依赖）
 pub struct ReliableSendQueue {
     tx: mpsc::Sender<QueueCommand>,
-    worker: tokio::task::JoinHandle<()>,
+    worker: crate::shared::util::BackgroundTask,
 }
 
 pub struct ReliableSendQueueConfig {
@@ -70,8 +71,8 @@ struct QueueState {
     bus: EventBus,
     timeout_duration: Duration,
     max_retries: u32,
-    /// 当前在途消息（仅一条，严格顺序）
-    in_flight: Option<(PendingSendVo, Instant)>,
+    /// 当前在途消息（仅一条，严格顺序）；值为超时截止 epoch millis。
+    in_flight: Option<(PendingSendVo, u64)>,
     /// client_msg_id -> 已重试次数
     retry_count: HashMap<String, u32>,
     /// 提前/乱序到达的 ACK，等待对应 pending 成为当前处理项后再收敛
@@ -114,8 +115,7 @@ impl ReliableSendQueue {
         }));
 
         let state_clone = state.clone();
-        let worker = tokio::spawn(async move {
-            let mut ticker = interval_at(Instant::now(), Duration::from_secs(1));
+        let worker = spawn_background_task(async move {
             loop {
                 tokio::select! {
                     Some(cmd) = rx.recv() => {
@@ -123,7 +123,7 @@ impl ReliableSendQueue {
                             warn!(%e, "reliable queue command error");
                         }
                     }
-                    _ = ticker.tick() => {
+                    _ = delay(Duration::from_secs(1)) => {
                         if let Err(e) = check_timeout(state_clone.clone()).await {
                             warn!(%e, "reliable queue timeout check error");
                         }
@@ -375,9 +375,8 @@ async fn check_timeout(state: Arc<tokio::sync::Mutex<QueueState>>) -> Result<()>
         try_send_next(&mut st).await?;
         return Ok(());
     }
-    let now = Instant::now();
-    if let Some((entry, deadline)) = st.in_flight.take() {
-        if now >= deadline {
+    if let Some((entry, deadline_ms)) = st.in_flight.take() {
+        if is_deadline_elapsed(deadline_ms) {
             let retries = st
                 .retry_count
                 .get(&entry.client_msg_id)
@@ -402,12 +401,12 @@ async fn check_timeout(state: Arc<tokio::sync::Mutex<QueueState>>) -> Result<()>
                     if let Err(e) = do_send_one(&st.sender, &entry).await {
                         warn!(%e, "retry send failed");
                     }
-                    st.in_flight = Some((entry, now + st.timeout_duration));
+                    st.in_flight = Some((entry, deadline_after(st.timeout_duration)));
                     return Ok(());
                 }
             }
         } else {
-            st.in_flight = Some((entry, deadline));
+            st.in_flight = Some((entry, deadline_ms));
         }
     }
     try_send_next(&mut st).await?;
@@ -553,7 +552,7 @@ async fn try_send_next(st: &mut QueueState) -> Result<()> {
                         retries = next_retry_count,
                         "send attempt failed, keep entry in pending queue for retry"
                     );
-                    st.in_flight = Some((entry, Instant::now() + st.timeout_duration));
+                    st.in_flight = Some((entry, deadline_after(st.timeout_duration)));
                     return Ok(());
                 }
                 RetryDecision::Fail { reason } => {
@@ -571,7 +570,7 @@ async fn try_send_next(st: &mut QueueState) -> Result<()> {
                 }
             }
         }
-        st.in_flight = Some((entry, Instant::now() + st.timeout_duration));
+        st.in_flight = Some((entry, deadline_after(st.timeout_duration)));
         return Ok(());
     }
 }

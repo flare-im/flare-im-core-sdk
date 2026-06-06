@@ -11,65 +11,115 @@ ownership, and native artifact contracts.
 
 ```text
 bindings/
-  contract/         machine-readable L1 contract for client SDKs
-  c/                active universal C ABI boundary
-  tauri/            active Tauri desktop command adapter
-  uniffi/           archived placeholder; not a current SDK boundary
-  wasm/             planned placeholder; blocked by Web runtime ports
+  contract/         machine-readable L1 contract and codegen input (source of truth)
+  runtime/          shared contract metadata, JSON dispatch, and session cache
+  c/                universal C ABI boundary (platform glue only)
+  tauri/            Tauri desktop command adapter
+  uniffi/           UniFFI contract skeleton + generated types
+  wasm/             wasm binding with generated contract/runtime catalog
 ```
 
-## Recommended Boundary
+## Contract-First Boundary
 
-`bindings/c` is the only universal native L1 boundary.
+`bindings/contract` is the **only** source of truth. New SDK APIs, events, error
+codes, or binding entrypoints are added to `contract/*.json`, then regenerated:
 
-Use it for:
+```bash
+make -C bindings codegen
+make -C bindings verify
+```
 
-- Android
-- iOS
-- Flutter
-- HarmonyOS ArkTS native bridge
-- HarmonyOS Cangjie
-- React Native native module bridge
-- Node native
-- Unity
-- native desktop wrappers
-
-Use `bindings/tauri` only for Tauri desktop shells.
-
-Browser Web and pure uni-app Web targets should use the TypeScript runtime
-adapter today. They do not load the C ABI directly. `bindings/wasm` is only a
-planned placeholder until Web transport, HTTP, media, presence, and storage
-runtime ports are implemented.
-
-## Contract Source
-
-`contract/` is the binding source of truth for client SDK tooling.
-
-It defines:
-
-- `contractVersion`
-- active/archived bindings
-- platform-to-binding mapping
-- canonical APIs and entrypoints
-- canonical events and event codes/names
-- stable error codes
-- callback, event, error, and memory ownership rules
-- L0/L1/L2/L3 ownership boundaries
+Generated outputs (`make -C bindings codegen`):
 
 ```text
-contract/manifest.json
-contract/apis.json
-contract/events.json
-contract/errors.json
+runtime/src/generated/{contract.rs,dispatch/,direct_invoke.rs}
+c/src/generated/{contract.rs,events.rs,errors.rs,json_dispatch.rs,invoke.rs}
+tauri/src/generated/{contract.rs,handler.rs,invoke.rs}
+wasm/src/generated/{contract.rs,bindings.rs}
+uniffi/src/generated/{contract.rs,types.rs,invoke.rs}
 ```
+
+**Adding a JSON-dispatch API** (message / conversation / media / capability / message_build):
+
+1. Edit `contract/dispatch.json`
+2. Run `make -C bindings codegen`
+
+**Adding a direct `IMClient` route** (sync / presence / connection / diagnostics):
+
+1. Edit `contract/direct_invoke.json`
+2. Run `make -C bindings codegen`
+
+Platform crates (`c/`, `tauri/`, `wasm/`, `uniffi/`) do **not** need new hand-written dispatch or invoke match arms.
+
+**Canonical cross-platform invoke** (preferred for new callers):
+
+| Platform | Entry |
+|----------|--------|
+| C | `flare_sdk_invoke_json(handle, api_id, params_json, …)` |
+| Tauri | `sdk_invoke(api_id, request)` + lifecycle `sdk_init` / `sdk_login` / `sdk_logout` |
+| Wasm (smoke) | `flareInvoke(runtime, api_id, request_json)` |
+
+Contract `api_id` values live in `contract/apis.json`. Routing is `runtime/src/invoke.rs` + generated dispatch.
+
+Manual glue only:
+
+```text
+contract/dispatch.json                   dispatch ops → runtime match
+contract/direct_invoke.json              IMClient/sync/presence routes → direct_invoke.rs
+contract/tools/platform_codegen.py       C json_dispatch / invoke, Tauri handler, wasm exports
+runtime/src/dispatch_support.rs          shared JSON helpers
+runtime/src/invoke.rs                    normalize_operation + invoke_api_id
+runtime/src/session.rs                   generation-aware ConnectedApis cache
+c/src/dispatch_common.rs             C async JSON entry helpers
+c/src/{lifecycle,media,message,...}  non-JSON ABI (upload bytes, login, send_ack, …)
+tauri/src/commands/lifecycle.rs      AppHandle / event forward (not JSON invoke)
+wasm/src/smoke/                      in-memory wasm smoke runtime
+```
+
+Do not edit generated files by hand.
+
+## Layering
+
+```text
+L3 typed platform SDK
+  -> L2 runtime adapter
+  -> L1 bindings/{c|tauri|wasm|uniffi}
+  -> bindings/runtime (shared dispatch + contract)
+  -> L0 flare-im-core-sdk/src
+```
+
+Legacy channel symbols (`flare_message_dispatch_json`, `flare_conversation_dispatch_json`, …)
+are **codegen’d** from `contract/apis.json` into `c/src/generated/json_dispatch.rs`.
+Tauri no longer registers per-domain `sdk_*_dispatch_json` commands; use `sdk_invoke` instead.
 
 ## Build
 
+Root orchestration (all platforms):
+
 ```bash
-cargo check -p flare-im-core-sdk-ffi
-cargo check -p flare-im-core-sdk-tauri
-cargo build -p flare-im-core-sdk-ffi --release
-cargo check --target wasm32-unknown-unknown --lib --no-default-features
+make -C bindings codegen
+make -C bindings codegen-check
+make -C bindings verify
+make -C bindings check
+make -C bindings subdirs-help   # print per-package targets
+```
+
+Each binding crate has its own `Makefile` — run from that directory or via `-C`:
+
+| Directory | Typical commands |
+|-----------|------------------|
+| `bindings/runtime` | `make check` `make test` `make codegen` |
+| `bindings/wasm` | `make check` `make check-thin` `make test` `make build` |
+| `bindings/c` | `make check` `make host` `make codegen` |
+| `bindings/tauri` | `make check` |
+| `bindings/uniffi` | `make check` (standalone workspace manifest) |
+
+Examples:
+
+```bash
+make -C bindings/wasm check
+make -C bindings/wasm build      # wasm-pack → pkg/
+make -C bindings/c host
 ```
 
 The C header is generated by `bindings/c/build.rs` into:
@@ -82,26 +132,8 @@ target/flare_im_core_sdk_ffi.h
 
 - Do not duplicate message, conversation, sync, delivery, presence, media, call,
   or plugin business rules in bindings.
+- Do not duplicate SDK operation lists in platform crates; generate from contract.
 - Keep complex C ABI payloads as core-sdk snake_case JSON.
-- Keep callback thread unspecified; L2/L3 SDKs own UI-thread dispatch.
 - Keep errors typed: stable code plus message, never string matching.
 - Keep lifecycle explicit: create/init/login/logout/uninit/release.
 - Keep subscriptions explicit: returned handles must be unsubscribed or released.
-
-## Client SDK Usage
-
-`flare-im-core-client-sdk` should treat this directory as L1:
-
-```text
-L3 typed platform SDK
-  -> L2 runtime adapter
-  -> L1 bindings/c or bindings/tauri
-  -> L0 flare-im-core-sdk/src
-```
-
-Platform SDK packages should expose idiomatic APIs, but they should remain thin:
-validate input, call L1, map outputs, emit typed events, and dispose resources.
-
-The client SDK should sync against `contract/apis.json`,
-`contract/events.json`, and `contract/errors.json` during development. Binding
-changes are incomplete unless those files are updated in the same change.

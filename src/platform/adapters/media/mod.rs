@@ -9,7 +9,7 @@ mod native_file_service;
 mod profile;
 mod upload_only;
 #[cfg(target_arch = "wasm32")]
-mod web_stub_service;
+mod web_http_service;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub use native_file_service::MediaService;
@@ -18,6 +18,6 @@ pub use native_file_service::MediaService as NativeFileMediaService;
 pub use profile::{MediaAdapterProfile, MediaSourceSupport};
 pub use upload_only::UploadOnlyMediaService;
 #[cfg(target_arch = "wasm32")]
-pub use web_stub_service::MediaService;
+pub use web_http_service::MediaService;
 #[cfg(target_arch = "wasm32")]
-pub use web_stub_service::MediaService as WebMediaService;
+pub use web_http_service::MediaService as WebMediaService;

@@ -1,0 +1,133 @@
+{
+  "schemaVersion": 1,
+  "routes": [
+    {
+      "route": "sdk.init",
+      "result": "unit",
+      "skip_client": true,
+      "body": "\n            let environment = dispatch_support::optional_string(request, \"environment\");\n            let sdk_config = dispatch_support::optional_value::<flare_im_core_sdk::client::lifecycle::SdkConfigOverlay>(request, \"sdk_config\")?;\n            session.client().init(environment, sdk_config).await?;\n        "
+    },
+    {
+      "route": "sdk.uninit",
+      "result": "unit",
+      "skip_client": true,
+      "body": "\n            session.after_disconnect().await;\n            session.client().uninit().await?;\n        "
+    },
+    {
+      "route": "sync.conversation",
+      "result": "unit",
+      "body": "\n            let conversation_id = dispatch_support::json_string(request, \"conversation_id\")?;\n            client.sync_conversation(&conversation_id).await?;\n        "
+    },
+    {
+      "route": "sync.messages",
+      "result": "unit",
+      "body": "\n            let conversation_id = dispatch_support::json_string(request, \"conversation_id\")?;\n            let last_seq = dispatch_support::json_u64(request, \"last_seq\")?;\n            let limit = dispatch_support::optional_i32(request, \"limit\").unwrap_or(50);\n            client.sync_messages(&conversation_id, last_seq, limit).await?;\n        "
+    },
+    {
+      "route": "sync.mark_session_read",
+      "result": "unit",
+      "body": "\n            let conversation_id = dispatch_support::json_string(request, \"conversation_id\")?;\n            let read_seq = dispatch_support::json_u64(request, \"read_seq\")?;\n            client.mark_session_read(&conversation_id, read_seq).await?;\n        "
+    },
+    {
+      "route": "presence.get",
+      "result": "json",
+      "body": "\n            let user_id = dispatch_support::json_string(request, \"user_id\")?;\n            let dto = client.get_user_presence(&user_id).await?;\n        ",
+      "json_expr": "dto"
+    },
+    {
+      "route": "presence.batch_get",
+      "result": "json",
+      "body": "\n            let user_ids = dispatch_support::json_vec_string(request, \"user_ids\")?;\n            let items = client.batch_get_user_presence(&user_ids).await?;\n        ",
+      "json_expr": "items"
+    },
+    {
+      "route": "presence.subscribe",
+      "result": "unit",
+      "body": "\n            let user_ids = dispatch_support::json_vec_string(request, \"user_ids\")?;\n            client.subscribe_user_presence(user_ids).await?;\n        "
+    },
+    {
+      "route": "connection.get_state",
+      "result": "json",
+      "body": "\n            let state = client.state();\n            let (name, code) = sdk_state_json(state);\n        ",
+      "json_expr": "serde_json::json!({ \"state\": name, \"code\": code })"
+    },
+    {
+      "route": "connection.disconnect",
+      "result": "unit",
+      "body": "\n            session.after_disconnect().await;\n            client.disconnect().await?;\n        "
+    },
+    {
+      "route": "sdk.is_connected",
+      "result": "json",
+      "body": "\n            let connected = client.is_connected().await;\n        ",
+      "json_expr": "serde_json::json!({ \"connected\": connected })"
+    },
+    {
+      "route": "sdk.session_active",
+      "result": "json",
+      "body": "\n            let active = client.session_active_sync();\n        ",
+      "json_expr": "serde_json::json!({ \"active\": active })"
+    },
+    {
+      "route": "sdk.current_user_id",
+      "result": "json",
+      "body": "\n            let user_id = client.current_user_id().await;\n        ",
+      "json_expr": "serde_json::json!({ \"user_id\": user_id })"
+    },
+    {
+      "route": "sdk.update_access_token",
+      "result": "unit",
+      "body": "\n            let access_token = dispatch_support::json_string(request, \"access_token\")?;\n            let tenant_id = dispatch_support::optional_string(request, \"tenant_id\");\n            client\n                .update_access_token(access_token, tenant_id.as_deref())\n                .await?;\n        "
+    },
+    {
+      "route": "sdk.generate_test_token",
+      "result": "json",
+      "body": "\n            let secret = dispatch_support::optional_string(request, \"secret\").unwrap_or_default();\n            let issuer = dispatch_support::optional_string(request, \"issuer\").unwrap_or_default();\n            let user_id = dispatch_support::json_string(request, \"user_id\")?;\n            let tenant_id = dispatch_support::optional_string(request, \"tenant_id\");\n            let token = flare_im_core_sdk::client::IMClient::generate_test_token(\n                &secret,\n                &issuer,\n                &user_id,\n                tenant_id.as_deref(),\n            )?;\n        ",
+      "json_expr": "serde_json::json!({ \"token\": token })",
+      "skip_client": true
+    },
+    {
+      "route": "message_builder.list_catalog",
+      "result": "json",
+      "body": "",
+      "json_expr": "serde_json::json!({ \"entries\": crate::operation::message_build_catalog() })",
+      "skip_client": true
+    },
+    {
+      "route": "diagnostics.sdk_version",
+      "result": "json",
+      "body": "",
+      "json_expr": "serde_json::json!({ \"version\": env!(\"CARGO_PKG_VERSION\") })",
+      "skip_client": true
+    },
+    {
+      "route": "diagnostics.ffi_contract_version",
+      "result": "json",
+      "body": "",
+      "json_expr": "serde_json::json!({ \"version\": crate::contract::BINDING_CONTRACT_VERSION })",
+      "skip_client": true
+    },
+    {
+      "route": "diagnostics.data_root",
+      "result": "json",
+      "body": "\n            let data_root = client.data_root().await;\n        ",
+      "json_expr": "\n            serde_json::json!({\n                \"data_root\": data_root.as_ref().map(|p| p.display().to_string())\n            })\n        "
+    },
+    {
+      "route": "media.cancel_user_file_download",
+      "result": "json",
+      "cfg": "not(target_arch = \"wasm32\")",
+      "skip_client": true,
+      "body": "\n            let api = session.media_api().await?;\n            let download_key = dispatch_support::json_string(request, \"download_key\")?;\n            let cancelled = api.cancel_user_file_download(&download_key);\n        ",
+      "json_expr": "serde_json::json!({ \"cancelled\": cancelled })"
+    },
+    {
+      "route": "media.download_file_to_downloads",
+      "result": "json",
+      "cfg": "not(target_arch = \"wasm32\")",
+      "skip_client": true,
+      "body": "\n            let api = session.media_api().await?;\n            let download_key = dispatch_support::json_string(request, \"download_key\")?;\n            let display_file_name = dispatch_support::json_string(request, \"display_file_name\")?;\n            let source_path = dispatch_support::optional_string(request, \"source_path\");\n            let source_http_url = dispatch_support::optional_string_any(request, &[\"source_http_url\", \"source_url\"]);\n            let remote_file_id = dispatch_support::optional_string(request, \"remote_file_id\");\n            let expires_in = dispatch_support::optional_i32(request, \"expires_in\").unwrap_or(3600);\n            let path = api.download_file_to_user_downloads_folder(flare_im_core_sdk::application::UserFileDownloadRequest {\n                download_key,\n                display_file_name,\n                source_path,\n                source_http_url,\n                remote_file_id,\n                expires_in,\n                on_progress: None,\n            }).await?;\n        ",
+      "json_expr": "serde_json::json!({ \"path\": path })"
+    }
+  ]
+}

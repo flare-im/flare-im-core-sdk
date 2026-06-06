@@ -1,0 +1,170 @@
+{
+  "schemaVersion": 1,
+  "exports": [
+    {
+      "symbol": "flare_sdk_state",
+      "kind": "sync_i32",
+      "body": "map_sdk_state(instance.client.state())"
+    },
+    {
+      "symbol": "flare_sdk_disconnect",
+      "api_id": "connection.disconnect",
+      "kind": "invoke_unit",
+      "args": []
+    },
+    {
+      "symbol": "flare_sdk_sync_conversation",
+      "api_id": "sync.conversation",
+      "kind": "invoke_unit",
+      "args": [{ "name": "conversation_id", "type": "c_str" }]
+    },
+    {
+      "symbol": "flare_sdk_sync_messages",
+      "api_id": "sync.messages",
+      "kind": "invoke_unit",
+      "args": [
+        { "name": "conversation_id", "type": "c_str" },
+        { "name": "last_seq", "type": "u64" },
+        { "name": "limit", "type": "i32" }
+      ]
+    },
+    {
+      "symbol": "flare_sdk_mark_session_read",
+      "api_id": "sync.mark_session_read",
+      "kind": "invoke_unit",
+      "args": [
+        { "name": "conversation_id", "type": "c_str" },
+        { "name": "read_seq", "type": "u64" }
+      ]
+    },
+    {
+      "symbol": "flare_sdk_set_conversation_input_state",
+      "api_id": "sync.set_conversation_input_state",
+      "kind": "invoke_unit",
+      "args": [
+        { "name": "conversation_id", "type": "c_str" },
+        { "name": "is_typing", "type": "bool" }
+      ]
+    },
+    {
+      "symbol": "flare_sdk_get_user_presence",
+      "api_id": "presence.get",
+      "kind": "invoke_json",
+      "args": [{ "name": "user_id", "type": "c_str" }]
+    },
+    {
+      "symbol": "flare_sdk_batch_get_user_presence",
+      "api_id": "presence.batch_get",
+      "kind": "invoke_json",
+      "args": [{ "name": "user_ids_json", "type": "json_vec", "json_key": "user_ids" }]
+    },
+    {
+      "symbol": "flare_sdk_subscribe_user_presence",
+      "api_id": "presence.subscribe",
+      "kind": "invoke_unit",
+      "args": [{ "name": "user_ids_json", "type": "json_vec", "json_key": "user_ids" }]
+    },
+    {
+      "symbol": "flare_message_create_text",
+      "api_id": "messages.create_text_direct",
+      "kind": "invoke_json",
+      "args": [
+        { "name": "conversation_id", "type": "c_str" },
+        { "name": "text", "type": "c_str" }
+      ]
+    },
+    {
+      "symbol": "flare_message_send",
+      "api_id": "messages.send",
+      "kind": "invoke_send_ack",
+      "args": [{ "name": "message_json", "type": "json_message" }]
+    },
+    {
+      "symbol": "flare_message_list",
+      "api_id": "messages.list",
+      "kind": "invoke_json",
+      "args": [
+        { "name": "conversation_id", "type": "c_str" },
+        { "name": "before_seq", "type": "u64" },
+        { "name": "limit", "type": "i32" }
+      ]
+    },
+    {
+      "symbol": "flare_message_recall",
+      "api_id": "messages.recall",
+      "kind": "invoke_unit",
+      "args": [
+        { "name": "conversation_id", "type": "c_str" },
+        { "name": "message_id", "type": "c_str" }
+      ]
+    },
+    {
+      "symbol": "flare_message_delete",
+      "api_id": "messages.delete",
+      "kind": "invoke_unit",
+      "args": [
+        { "name": "conversation_id", "type": "c_str" },
+        { "name": "message_id", "type": "c_str" }
+      ]
+    },
+    {
+      "symbol": "flare_media_upload_file",
+      "api_id": "media.upload_file",
+      "kind": "invoke_json",
+      "args": [
+        { "name": "path", "type": "c_str" },
+        { "name": "options_json", "type": "upload_options", "json_key": "options" }
+      ]
+    },
+    {
+      "symbol": "flare_media_upload_image",
+      "api_id": "media.upload_image",
+      "kind": "invoke_json",
+      "args": [
+        { "name": "path", "type": "c_str" },
+        { "name": "options_json", "type": "upload_options", "json_key": "options" }
+      ]
+    },
+    {
+      "symbol": "flare_media_upload_video",
+      "api_id": "media.upload_video",
+      "kind": "invoke_json",
+      "args": [
+        { "name": "path", "type": "c_str" },
+        { "name": "options_json", "type": "upload_options", "json_key": "options" }
+      ]
+    },
+    {
+      "symbol": "flare_media_upload_bytes",
+      "api_id": "media.upload_bytes",
+      "kind": "invoke_json",
+      "args": [
+        { "name": "bytes", "type": "bytes_view" },
+        { "name": "file_name", "type": "c_str" },
+        { "name": "mime_type", "type": "c_str" },
+        { "name": "options_json", "type": "upload_options", "json_key": "options" }
+      ]
+    },
+    {
+      "symbol": "flare_media_delete_file",
+      "api_id": "media.delete_file",
+      "kind": "invoke_json",
+      "args": [
+        { "name": "file_id", "type": "c_str" },
+        { "name": "hard_delete", "type": "bool" }
+      ]
+    },
+    {
+      "symbol": "flare_media_cancel_user_file_download",
+      "api_id": "media.cancel_user_file_download",
+      "kind": "sync_bool_invoke",
+      "args": [{ "name": "download_key", "type": "c_str" }]
+    },
+    {
+      "symbol": "flare_media_download_file_to_downloads",
+      "api_id": "media.download_file_to_downloads",
+      "kind": "invoke_json",
+      "args": [{ "name": "request_json", "type": "request_json" }]
+    }
+  ]
+}

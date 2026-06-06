@@ -5,9 +5,9 @@
   "type": "module",
   "scripts": {
     "build": "wasm-pack build --target web --out-dir pkg --out-name flare_im_core_sdk",
-    "check": "cargo check --target wasm32-unknown-unknown -p flare-im-core-sdk-wasm"
+    "check": "make check"
   },
   "devDependencies": {
-    "wasm-pack": "^0.13.1"
+    "wasm-pack": "^0.15.0"
   }
 }

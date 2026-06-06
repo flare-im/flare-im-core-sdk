@@ -24,6 +24,7 @@ use crate::domain::{DEFAULT_SYNC_LIMIT, SyncCursorVo};
 use crate::infrastructure::persistence::StoreProvider;
 use crate::infrastructure::protocol::DownlinkPayload;
 use crate::model::IMMessage;
+use crate::shared::util::spawn_background;
 
 const SEQ_REPAIR_BASE_BACKOFF_MS: u64 = 1_000;
 const SEQ_REPAIR_MAX_BACKOFF_MS: u64 = 60_000;
@@ -254,7 +255,7 @@ impl Dispatcher {
                     drop(guard);
 
                     let repair_state = self.seq_repair_state.clone();
-                    tokio::spawn(async move {
+                    spawn_background(async move {
                         if let Err(error) = sync
                             .request_message_sync_from_seq(
                                 &conversation_id,
@@ -1023,10 +1024,7 @@ fn seq_repair_backoff_ms(attempt: u32) -> u64 {
 }
 
 fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_millis() as u64)
-        .unwrap_or(0)
+    crate::shared::util::now_millis()
 }
 
 #[cfg(test)]

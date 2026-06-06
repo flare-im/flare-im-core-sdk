@@ -1,11 +1,11 @@
 //! 同步编排：按 Init / Background 分类，**并行**执行同阶段任务，发 SyncFinished。
 
 use std::sync::Arc;
-use std::time::Instant;
 
 use crate::core::event::{EventBus, SdkEvent, SyncNotify, SyncPhase};
 use crate::infrastructure::persistence::StoreProvider;
-use tokio::task::{JoinHandle, JoinSet};
+use crate::shared::util::{BackgroundTask, now_millis, spawn_background, spawn_background_task};
+use tokio::task::JoinSet;
 use tracing::{debug, warn};
 
 use super::checkpoint::CheckpointStore;
@@ -34,7 +34,7 @@ impl Orchestrator {
         user_id: &str,
         run: SyncRunContext,
         tasks: Vec<Arc<dyn SyncTask>>,
-    ) -> JoinHandle<()> {
+    ) -> BackgroundTask {
         let (init_tasks, bg_tasks): (Vec<_>, Vec<_>) =
             tasks.into_iter().partition(|t| t.mode() == SyncMode::Init);
         let init_weight: u32 = init_tasks.iter().map(|t| t.weight()).sum();
@@ -52,7 +52,7 @@ impl Orchestrator {
         let checkpoint_store = self.checkpoint_store.clone();
         let user_id = user_id.to_string();
 
-        tokio::spawn(async move {
+        spawn_background_task(async move {
             bus.publish(SdkEvent::Sync(SyncNotify::Started { run: run.clone() }));
 
             let init_outcome = run_phase(
@@ -123,7 +123,7 @@ impl Orchestrator {
         let bus = self.bus.clone();
         let checkpoint_store = self.checkpoint_store.clone();
         let weight: u32 = tasks.iter().map(|task| task.weight()).sum();
-        tokio::spawn(async move {
+        spawn_background(async move {
             let progress_reporter: Arc<dyn SyncProgressReporter> = Arc::new(
                 EventBusProgressReporter::new(bus.clone(), run.clone(), weight),
             );
@@ -169,7 +169,7 @@ async fn run_phase(
         let bus = bus.clone();
         let run = run.clone();
         join_set.spawn(async move {
-            let started = Instant::now();
+            let started_ms = now_millis();
             debug!(task = %task_id, mode = ?mode, weight = weight, "sync task started");
             match task.execute(ctx.clone()).await {
                 Ok(res) => {
@@ -180,7 +180,7 @@ async fn run_phase(
                     debug!(
                         task = %task_id,
                         mode = ?mode,
-                        elapsed_ms = started.elapsed().as_millis(),
+                        elapsed_ms = now_millis().saturating_sub(started_ms),
                         "sync task completed"
                     );
                     bus.publish(SdkEvent::Sync(SyncNotify::TaskCompleted {
@@ -192,7 +192,7 @@ async fn run_phase(
                     warn!(
                         task = %task_id,
                         mode = ?mode,
-                        elapsed_ms = started.elapsed().as_millis(),
+                        elapsed_ms = now_millis().saturating_sub(started_ms),
                         error = %e,
                         "sync task failed"
                     );

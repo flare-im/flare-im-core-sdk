@@ -47,20 +47,19 @@
 
 1. 本地更新会话读位与未读数。
 2. 更新消息已读状态。
-3. 发送 `ConversationAck`，并在 metadata 中携带 `ack_kind=read`、`read_seq=<seq>`。
+3. 发送 typed `ReadAck { conversation_id, read_seq, device_id, ack_id }`。
 
-服务端 route 层只接受显式 read ack 写入 `ConversationManageService::MarkConversationAsRead`。没有 `ack_kind=read` 的 `ConversationAck` 按 delivery ack 跳过。
+服务端 route 层只接受 `AckPayload::Read` 写入 `ConversationManageService::MarkConversationAsRead`。`ConversationAck` 表示送达/会话处理位点，不推进 `last_read_seq`。
 
 ## 取舍
 
 - 不用 `max_seq - last_read_seq` 直接作为未读数，是为了支持稀疏 seq、历史消息未完全落库、撤回消息、自发消息不计未读等真实 IM 场景。
 - 冷启动相信服务端摘要，是为了保证多设备、离线期间和跨端已读后的最终一致。
 - 在线用客户端增量，是为了低延迟更新会话列表，不等待下一轮摘要同步。
-- read ack 复用 `ConversationAck` metadata，是兼容当前协议的最小改造；后续协议可以新增显式 `ReadAck` 字段替代 metadata。
+- read ack 使用独立 `ReadAck` payload，是为了避免稳定已读语义藏在 `metadata` 中，被普通送达 ACK 污染。
 
 ## 扩展建议
 
-- 协议层新增独立 `ReadAck { conversation_id, read_seq, device_id }`，彻底分离 delivery/read。
 - 服务端为 read ack 增加幂等键与设备维度审计，便于排查多端读位回退。
 - 会话摘要增加 `unread_version` 或 `participant_version`，客户端可用于冲突检测。
 - 指标中增加：read ack apply count、delivery ack skipped count、unread delta count、summary unread overwrite count。

@@ -12,7 +12,8 @@ name = "flare_im_core_sdk_ffi"
 crate-type = ["cdylib", "staticlib"]
 
 [dependencies]
-flare-im-core-sdk = { path = "../..", features = ["lifecycle-sqlite", "plugin-call"] }
+flare-im-core-sdk-bindings-runtime = { path = "../runtime" }
+flare-im-core-sdk = { path = "../..", features = ["lifecycle-sqlite"] }
 flare-im-core-sdk-storage-sqlite = { path = "../../storage/sqlite" }
 flare-proto = { path = "../../../flare-proto" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync"] }

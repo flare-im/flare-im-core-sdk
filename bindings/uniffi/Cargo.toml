@@ -16,6 +16,7 @@ publish = false
 crate-type = ["cdylib", "staticlib"]
 
 [dependencies]
+flare-im-core-sdk-bindings-runtime = { path = "../runtime" }
 flare-im-core-sdk = { path = "../.." }
 flare-im-core-sdk-storage-sqlite = { path = "../../storage/sqlite" }
 flare-proto = { path = "../../../flare-proto" }

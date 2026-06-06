@@ -162,8 +162,6 @@ pub async fn sdk_login(
 
 /// EventBus → `im://*`，独立任务避免阻塞登录路径。
 async fn forward_event_rx_to_webview(app: tauri::AppHandle, mut rx: broadcast::Receiver<SdkEvent>) {
-    use crate::convert::sdk_event_to_tauri;
-    use tauri::Emitter;
     loop {
         let ev = match rx.recv().await {
             Ok(e) => e,
@@ -173,9 +171,7 @@ async fn forward_event_rx_to_webview(app: tauri::AppHandle, mut rx: broadcast::R
             }
             Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
         };
-        if let Some((name, payload)) = sdk_event_to_tauri(&ev) {
-            let _ = app.emit(&name, payload);
-        }
+        let _ = crate::generated::event_emit::emit_sdk_event(&app, &ev);
     }
 }
 

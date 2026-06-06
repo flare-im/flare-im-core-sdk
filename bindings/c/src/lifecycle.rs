@@ -11,14 +11,17 @@ use flare_im_core_sdk::shared::util::generate_test_token as util_generate_test_t
 
 use crate::abi;
 use crate::executor::{CallbackContext, execute_async, execute_async_unit, return_error};
-use crate::helpers::{c_str_to_string, parse_json, string_to_flare, to_json_string};
+use crate::helpers::{
+    c_str_to_string, parse_init_request, parse_json, string_to_flare, to_json_string,
+};
 use crate::registry::{
     SdkInstance, register_instance, release_all_instances, release_instance, require_instance,
     retain_instance,
 };
 use crate::types::{FlareHandle, FlareResultCallback, FlareString};
 
-pub const FLARE_FFI_CONTRACT_VERSION: &str = "flare-im-ffi/v1";
+pub const FLARE_FFI_CONTRACT_VERSION: &str =
+    flare_im_core_sdk_bindings_runtime::BINDING_CONTRACT_VERSION;
 
 #[unsafe(no_mangle)]
 pub extern "C" fn flare_sdk_create() -> FlareHandle {
@@ -70,7 +73,7 @@ pub extern "C" fn flare_sdk_init(
             Err(e) => return e,
         };
 
-        let config: SdkConfigOverlay = match parse_json(config_json) {
+        let (environment, config) = match parse_init_request(config_json) {
             Ok(c) => c,
             Err(code) => {
                 let ctx = CallbackContext::new(context, callback);
@@ -83,7 +86,7 @@ pub extern "C" fn flare_sdk_init(
         let client = instance.client.clone();
 
         execute_async_unit(instance, ctx, async move {
-            client.init(None, Some(config)).await
+            client.init(environment, Some(config)).await
         });
 
         0

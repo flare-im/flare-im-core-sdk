@@ -3,8 +3,12 @@
 use serde::de::DeserializeOwned;
 use std::ffi::{CString, c_char};
 
+use flare_im_core_sdk::client::lifecycle::SdkConfigOverlay;
+use flare_im_core_sdk::model::UploadOptions;
+use serde_json::Value;
+
 use crate::abi;
-use crate::error_convert::FLARE_ERR_JSON_PARSE;
+use crate::error_convert::{FLARE_ERR_INVALID_PARAM, FLARE_ERR_JSON_PARSE};
 use crate::types::{FlareBytes, FlareError, FlareString};
 
 // ===== 字符串辅助 =====
@@ -33,6 +37,50 @@ pub fn parse_json<T: DeserializeOwned>(ptr: *const c_char) -> Result<T, i32> {
 #[inline]
 pub fn to_json_string<T: serde::Serialize>(value: &T) -> Result<String, i32> {
     serde_json::to_string(value).map_err(|_| FLARE_ERR_JSON_PARSE)
+}
+
+/// 解析 init 配置：支持裸 [`SdkConfigOverlay`] 或 `{ environment?, sdk_config? }`。
+#[inline]
+pub fn parse_init_request(ptr: *const c_char) -> Result<(Option<String>, SdkConfigOverlay), i32> {
+    let value: Value = parse_json(ptr)?;
+    if value.get("sdk_config").is_some() || value.get("environment").is_some() {
+        let environment = value
+            .get("environment")
+            .and_then(|v| v.as_str())
+            .map(String::from);
+        let sdk_config = value
+            .get("sdk_config")
+            .cloned()
+            .map(serde_json::from_value::<SdkConfigOverlay>)
+            .transpose()
+            .map_err(|_| FLARE_ERR_JSON_PARSE)?
+            .unwrap_or_default();
+        return Ok((environment, sdk_config));
+    }
+    let overlay: SdkConfigOverlay =
+        serde_json::from_value(value).map_err(|_| FLARE_ERR_JSON_PARSE)?;
+    Ok((None, overlay))
+}
+
+/// 解析可选上传分片配置（`options_json` 为 null/空时返回 `None`）。
+#[inline]
+pub fn parse_upload_options(options_json: *const c_char) -> Result<Option<UploadOptions>, i32> {
+    let Some(raw) = abi::read_c_str_opt(options_json)? else {
+        return Ok(None);
+    };
+    if raw.trim().is_empty() || raw.trim() == "null" {
+        return Ok(None);
+    }
+    let value: serde_json::Value =
+        serde_json::from_str(&raw).map_err(|_| FLARE_ERR_INVALID_PARAM)?;
+    let Some(chunk_size) = value.get("chunk_size").and_then(|v| v.as_u64()) else {
+        return Ok(None);
+    };
+    let chunk_size = usize::try_from(chunk_size).map_err(|_| FLARE_ERR_INVALID_PARAM)?;
+    if chunk_size == 0 {
+        return Err(FLARE_ERR_INVALID_PARAM);
+    }
+    Ok(Some(UploadOptions { chunk_size }))
 }
 
 // ===== 内存释放函数（C 调用；内部 panic 隔离） =====

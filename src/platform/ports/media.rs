@@ -105,7 +105,8 @@ pub struct ProcessedMedia {
     pub payload: Option<Vec<u8>>,
 }
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 pub trait MediaProcessorPort: Send + Sync {
     async fn inspect(&self, source: &MediaSourceDescriptor) -> Result<MediaMetadata>;
 
@@ -118,7 +119,8 @@ pub trait MediaProcessorPort: Send + Sync {
 
 pub type UploadProgressSink = Box<dyn Fn(UploadProgress) + Send + Sync>;
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 pub trait MediaUploaderPort: Send + Sync {
     async fn upload(
         &self,
@@ -135,7 +137,8 @@ pub trait MediaUploaderPort: Send + Sync {
 /// unsupported errors for cache/download management, but the core never needs
 /// to know whether the implementation is native files, Web Blob, RN URI,
 /// uni-app temp file, Android content URI, iOS asset, or Flutter plugin IO.
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 pub trait MediaServicePort: Send + Sync {
     async fn upload(
         &self,

@@ -1,5 +1,37 @@
 use serde::{Deserialize, Serialize};
 
+use flare_core::common::config_types::TransportProtocol as CoreTransport;
+
+/// Wire transport kind for init overlay and protocol race ordering.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TransportKind {
+    WebSocket,
+    Quic,
+}
+
+impl TransportKind {
+    pub fn to_core(self) -> CoreTransport {
+        match self {
+            Self::WebSocket => CoreTransport::WebSocket,
+            Self::Quic => CoreTransport::QUIC,
+        }
+    }
+
+    pub fn parse_list(values: &[String]) -> Option<Vec<Self>> {
+        let mut out = Vec::with_capacity(values.len());
+        for raw in values {
+            let kind = match raw.trim().to_ascii_lowercase().as_str() {
+                "websocket" | "ws" => Self::WebSocket,
+                "quic" => Self::Quic,
+                _ => return None,
+            };
+            out.push(kind);
+        }
+        if out.is_empty() { None } else { Some(out) }
+    }
+}
+
 /// Transport selection policy.
 ///
 /// Browser/WASM must use WebSocket because QUIC/native protocol racing is not
@@ -38,6 +70,12 @@ pub struct SdkConfig {
     pub reconnect_interval_secs: Option<u64>,
     pub max_reconnect_attempts: Option<u32>,
     pub transport_policy: TransportPolicy,
+    /// 非竞速时的首选传输；未设置时以 WebSocket 为主入口。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_transport: Option<TransportKind>,
+    /// 协议竞速顺序（前项优先），如 `["quic", "websocket"]`。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub protocol_race_order: Option<Vec<TransportKind>>,
     pub sync_batch_size: Option<u32>,
     pub init_message_sync_concurrency: Option<u32>,
     pub ack_timeout_secs: Option<u64>,
@@ -81,6 +119,55 @@ impl SdkConfig {
             self.transport_policy
         }
     }
+
+    /// 协议竞速列表；需同时配置 `ws_url` 与 `quic_url`，且策略为 Auto / ProtocolRace。
+    pub fn effective_protocol_race_order(&self) -> Option<Vec<CoreTransport>> {
+        if cfg!(target_arch = "wasm32") {
+            return None;
+        }
+        let policy = self.effective_transport_policy();
+        if !matches!(
+            policy,
+            TransportPolicy::Auto | TransportPolicy::ProtocolRace
+        ) {
+            return None;
+        }
+        self.ws_url.as_ref()?;
+        self.quic_url.as_ref()?;
+        let order = self
+            .protocol_race_order
+            .clone()
+            .unwrap_or_else(|| vec![TransportKind::Quic, TransportKind::WebSocket]);
+        Some(order.into_iter().map(TransportKind::to_core).collect())
+    }
+
+    /// 建立长连接时的主 URL（竞速时仍作为 builder 入口，具体协议由 flare-core 选择）。
+    pub fn primary_connect_url(&self) -> Option<String> {
+        let ws = self.ws_url.clone()?;
+        match self.default_transport {
+            Some(TransportKind::Quic) => self.quic_url.clone().or(Some(ws)),
+            _ => Some(ws),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn protocol_race_order_respects_overlay() {
+        let config = SdkConfig {
+            ws_url: Some("ws://a".into()),
+            quic_url: Some("quic://b".into()),
+            transport_policy: TransportPolicy::ProtocolRace,
+            protocol_race_order: Some(vec![TransportKind::WebSocket, TransportKind::Quic]),
+            ..SdkConfig::default()
+        };
+        let order = config.effective_protocol_race_order().expect("race");
+        assert_eq!(order[0], CoreTransport::WebSocket);
+        assert_eq!(order[1], CoreTransport::QUIC);
+    }
 }
 
 impl Default for SdkConfig {
@@ -96,6 +183,8 @@ impl Default for SdkConfig {
             reconnect_interval_secs: Some(5),
             max_reconnect_attempts: None,
             transport_policy: TransportPolicy::Auto,
+            default_transport: None,
+            protocol_race_order: None,
             sync_batch_size: Some(200),
             init_message_sync_concurrency: None,
             ack_timeout_secs: Some(10),

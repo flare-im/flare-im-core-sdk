@@ -22,34 +22,28 @@ use super::types::{
 use crate::core::SdkState;
 use crate::core::SyncState;
 use crate::extension::middleware::MiddlewareChain;
+#[cfg(target_arch = "wasm32")]
+use crate::shared::util::delay;
+use crate::shared::util::spawn_background;
+#[cfg(target_arch = "wasm32")]
+use std::time::Duration;
 
 /// 事件通道容量。保持有界，避免宿主侧消费慢时无限占用内存；同步高峰下也要尽量减少 Lagged。
 const BUS_CAPACITY: usize = 2048;
 const REPLAY_DELAY_MS: u64 = 10;
 
 /// 启动 EventBus 分发循环：在已有 Tokio runtime 内 `spawn`；否则在独立线程上创建 runtime（Tauri/FFI 同步初始化）。
+#[cfg(not(target_arch = "wasm32"))]
 fn spawn_event_dispatch_loop(fut: impl Future<Output = ()> + Send + 'static) {
-    if tokio::runtime::Handle::try_current().is_ok() {
-        tokio::spawn(fut);
-        return;
-    }
-    if let Err(error) = std::thread::Builder::new()
-        .name("flare-sdk-event-bus".into())
-        .spawn(move || {
-            let Ok(rt) = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-            else {
-                warn!("failed to create flare-sdk EventBus runtime");
-                return;
-            };
-            rt.block_on(fut);
-        })
-    {
-        warn!(%error, "failed to spawn flare-sdk-event-bus thread");
-    }
+    spawn_background(fut);
 }
 
+#[cfg(target_arch = "wasm32")]
+fn spawn_event_dispatch_loop(fut: impl Future<Output = ()> + 'static) {
+    spawn_background(fut);
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 fn spawn_callback(f: impl FnOnce() + Send + 'static) {
     let f = move || {
         if catch_unwind(AssertUnwindSafe(f)).is_err() {
@@ -69,10 +63,30 @@ fn spawn_callback(f: impl FnOnce() + Send + 'static) {
     }
 }
 
+#[cfg(target_arch = "wasm32")]
+fn spawn_callback(f: impl FnOnce() + 'static) {
+    spawn_background(async move {
+        if catch_unwind(AssertUnwindSafe(f)).is_err() {
+            warn!("EventBus callback panicked; continuing");
+        }
+    });
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 fn replay_after_dispatch_window(f: impl FnOnce() + Send + 'static) {
     spawn_callback(move || {
         std::thread::sleep(std::time::Duration::from_millis(REPLAY_DELAY_MS));
         f();
+    });
+}
+
+#[cfg(target_arch = "wasm32")]
+fn replay_after_dispatch_window(f: impl FnOnce() + 'static) {
+    spawn_background(async move {
+        delay(Duration::from_millis(REPLAY_DELAY_MS)).await;
+        if catch_unwind(AssertUnwindSafe(f)).is_err() {
+            warn!("EventBus callback panicked; continuing");
+        }
     });
 }
 

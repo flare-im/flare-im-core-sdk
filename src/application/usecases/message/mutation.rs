@@ -66,7 +66,7 @@ impl MessageMutationUseCase {
         if message.server_id.is_empty() {
             let mut waited_ms = 0;
             while waited_ms < RESOLVE_WAIT_TOTAL_MS {
-                tokio::time::sleep(Duration::from_millis(RESOLVE_WAIT_STEP_MS)).await;
+                crate::shared::util::delay(Duration::from_millis(RESOLVE_WAIT_STEP_MS)).await;
                 waited_ms += RESOLVE_WAIT_STEP_MS;
                 if let Some(updated) = self
                     .locator_service

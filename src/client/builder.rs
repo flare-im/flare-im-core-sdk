@@ -381,8 +381,13 @@ impl IMClientBuilder {
             .http_url
             .clone()
             .unwrap_or_else(|| "http://localhost:50050".to_string());
+        #[cfg(target_arch = "wasm32")]
+        let media_http_base = media_base_url.clone();
         let capability_base_url = derive_capability_url(&self.config);
+        #[cfg(not(target_arch = "wasm32"))]
         let online_base_url = derive_online_url(&self.config);
+        #[cfg(target_arch = "wasm32")]
+        let _online_base_url = derive_online_url(&self.config);
         let tenant_id = self
             .config
             .tenant_id
@@ -428,7 +433,16 @@ impl IMClientBuilder {
             http_request_context.clone(),
         ));
         let presence_api = Arc::new(PresenceApi::new(
-            online_base_url,
+            {
+                #[cfg(target_arch = "wasm32")]
+                {
+                    media_http_base
+                }
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    online_base_url
+                }
+            },
             current_user_id.clone(),
             tenant_id,
             http_request_context.clone(),

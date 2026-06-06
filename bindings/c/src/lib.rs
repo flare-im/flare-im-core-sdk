@@ -1,104 +1,147 @@
-//! Flare IM SDK - C ABI Bindings
+//! C ABI for Flare IM Core SDK vNext.
 //!
-//! 跨平台 C ABI SDK,支持 iOS、Android、Flutter、鸿蒙、C/C++、Node、Unity
-//!
-//! # 架构原则
-//!
-//! - Rust 内部复杂,C ABI 外部简单
-//! - 所有对象通过 handle 管理
-//! - 异步 API 使用 callback
-//! - 统一 error code 错误模型
-//! - 显式内存管理
-//!
-//! # 线程安全
-//!
-//! - callback 可能来自任意线程
-//! - 禁止在 callback 中阻塞或持锁
-//! - 所有 API 线程安全
+//! The ABI is deliberately small: platform SDKs hold an opaque handle and use
+//! JSON contract routes. All IM behavior stays inside `flare-im-core-sdk`.
 
-// 核心模块
-mod abi;
-mod error_convert;
-mod executor;
-mod ffi_runtime;
-mod helpers;
-mod registry;
-mod session;
-mod types;
+use std::collections::HashMap;
+use std::ffi::{CStr, CString};
+use std::os::raw::c_char;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, OnceLock};
 
-// API 模块
-mod client_sync;
-mod conversation;
-mod dispatch;
-mod event;
-mod lifecycle;
-mod media;
-mod message;
+use flare_im_core_sdk::IMClient;
 
-// 重新导出公开类型
-pub use types::{
-    FlareBytes, FlareBytesView, FlareError, FlareHandle, FlareProgressCallback,
-    FlareResultCallback, FlareString, FlareStringView, FlareSubscriptionHandle, FlareTaskHandle,
-};
+static NEXT_HANDLE: AtomicU64 = AtomicU64::new(1);
+static CLIENTS: OnceLock<Mutex<HashMap<u64, IMClient>>> = OnceLock::new();
+static RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
 
-// 重新导出生命周期 API
-pub use lifecycle::{
-    flare_sdk_create, flare_sdk_current_user_id, flare_sdk_data_root,
-    flare_sdk_ffi_contract_version, flare_sdk_generate_test_token, flare_sdk_hard_reset,
-    flare_sdk_init, flare_sdk_is_connected, flare_sdk_login, flare_sdk_logout, flare_sdk_release,
-    flare_sdk_session_active, flare_sdk_uninit, flare_sdk_update_access_token, flare_sdk_version,
-};
+fn clients() -> &'static Mutex<HashMap<u64, IMClient>> {
+    CLIENTS.get_or_init(|| Mutex::new(HashMap::new()))
+}
 
-// 与 IMClient 直接方法对齐（状态、断开、同步、输入态等）
-pub use client_sync::{
-    flare_sdk_batch_get_user_presence, flare_sdk_disconnect, flare_sdk_get_user_presence,
-    flare_sdk_mark_session_read, flare_sdk_set_conversation_input_state, flare_sdk_state,
-    flare_sdk_subscribe_user_presence, flare_sdk_sync_conversation, flare_sdk_sync_messages,
-};
+fn runtime() -> &'static tokio::runtime::Runtime {
+    RUNTIME.get_or_init(|| {
+        tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .thread_name("flare-im-c-ffi")
+            .build()
+            .expect("create flare im ffi runtime")
+    })
+}
 
-// 重新导出消息 API
-pub use message::{
-    flare_message_create_text, flare_message_delete, flare_message_list, flare_message_recall,
-    flare_message_send,
-};
+fn c_str(ptr: *const c_char) -> Result<String, String> {
+    if ptr.is_null() {
+        return Err("null string pointer".to_string());
+    }
+    let s = unsafe { CStr::from_ptr(ptr) }
+        .to_str()
+        .map_err(|e| e.to_string())?;
+    Ok(s.to_string())
+}
 
-// MessageApi / MessageBuildApi 其余能力：JSON 分发（op + params）
-pub use dispatch::{flare_message_build_json, flare_message_dispatch_json};
+fn into_c_string(value: impl Into<String>) -> *mut c_char {
+    let sanitized = value.into().replace('\0', "\\u0000");
+    CString::new(sanitized)
+        .expect("sanitized string has no interior nul")
+        .into_raw()
+}
 
-// 重新导出会话 API
-pub use conversation::{
-    flare_conversation_clear_local_chat_history, flare_conversation_delete, flare_conversation_get,
-    flare_conversation_get_group_by_user_ids, flare_conversation_get_multiple,
-    flare_conversation_get_one, flare_conversation_list, flare_conversation_list_by_query_json,
-    flare_conversation_list_including_archived, flare_conversation_list_paginated,
-    flare_conversation_list_raw, flare_conversation_mark_all_read, flare_conversation_mark_read,
-    flare_conversation_mark_unread, flare_conversation_set_archived, flare_conversation_set_muted,
-    flare_conversation_set_pinned, flare_conversation_update_draft,
-};
+fn error_json(message: impl Into<String>) -> *mut c_char {
+    into_c_string(
+        serde_json::json!({
+            "ok": false,
+            "data": null,
+            "error": {
+                "code": "FfiError",
+                "message": message.into()
+            }
+        })
+        .to_string(),
+    )
+}
 
-// 重新导出媒体 API
-pub use media::{
-    flare_media_cache_remote, flare_media_cache_stats, flare_media_cancel_user_file_download,
-    flare_media_clear_cache, flare_media_delete_file, flare_media_download_file_to_downloads,
-    flare_media_get_url, flare_media_resolve_access, flare_media_set_cache_max_bytes,
-    flare_media_set_cache_root, flare_media_temp_download_url, flare_media_upload_bytes,
-    flare_media_upload_file, flare_media_upload_image, flare_media_upload_video,
-    flare_media_user_download_delete_record, flare_media_user_download_get_saved_path,
-    flare_media_user_download_get_subfolder, flare_media_user_download_set_subfolder,
-};
+#[unsafe(no_mangle)]
+pub extern "C" fn flare_sdk_version() -> *mut c_char {
+    into_c_string(env!("CARGO_PKG_VERSION"))
+}
 
-// 重新导出事件 API
-pub use event::{flare_event_subscribe, flare_event_unsubscribe, flare_event_unsubscribe_all};
+#[unsafe(no_mangle)]
+pub extern "C" fn flare_sdk_binding_contract_version() -> *mut c_char {
+    into_c_string(flare_im_core_sdk_bindings_runtime::BINDING_CONTRACT_VERSION)
+}
 
-// 重新导出内存管理 API
-pub use helpers::{flare_bytes_free, flare_error_free, flare_error_heap_free, flare_string_free};
+#[unsafe(no_mangle)]
+pub extern "C" fn flare_sdk_binding_contract_json() -> *mut c_char {
+    into_c_string(flare_im_core_sdk_bindings_runtime::contract_json())
+}
 
-/// 初始化日志系统
-///
-/// 应在首次使用 SDK 前调用
+#[unsafe(no_mangle)]
+pub extern "C" fn flare_sdk_client_init_example_json() -> *mut c_char {
+    into_c_string(flare_im_core_sdk_bindings_runtime::client_init_request_example_json())
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn flare_sdk_generate_test_token(user_id: *const c_char) -> *mut c_char {
+    match c_str(user_id) {
+        Ok(user_id) => into_c_string(flare_im_core_sdk::generate_test_token(&user_id)),
+        Err(error) => error_json(error),
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn flare_sdk_create(config_json: *const c_char) -> u64 {
+    let Ok(config_json) = c_str(config_json) else {
+        return 0;
+    };
+    let Ok(client) = IMClient::from_config_json(&config_json) else {
+        return 0;
+    };
+    let handle = NEXT_HANDLE.fetch_add(1, Ordering::Relaxed);
+    if let Ok(mut guard) = clients().lock() {
+        guard.insert(handle, client);
+        handle
+    } else {
+        0
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn flare_sdk_release(handle: u64) {
+    if let Ok(mut guard) = clients().lock() {
+        guard.remove(&handle);
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn flare_sdk_invoke_json(handle: u64, request_json: *const c_char) -> *mut c_char {
+    let request_json = match c_str(request_json) {
+        Ok(value) => value,
+        Err(error) => return error_json(error),
+    };
+    let client = match clients().lock() {
+        Ok(guard) => guard.get(&handle).cloned(),
+        Err(_) => return error_json("client registry lock poisoned"),
+    };
+    let Some(client) = client else {
+        return error_json(format!("invalid sdk handle: {handle}"));
+    };
+    let response = runtime().block_on(async {
+        flare_im_core_sdk_bindings_runtime::invoke_json(&client, &request_json).await
+    });
+    into_c_string(response)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn flare_sdk_string_free(ptr: *mut c_char) {
+    if ptr.is_null() {
+        return;
+    }
+    unsafe {
+        let _ = CString::from_raw(ptr);
+    }
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn flare_sdk_init_logging() {
-    abi::catch_ffi_void(|| {
-        let _ = tracing_subscriber::fmt::try_init();
-    });
+    let _ = tracing_subscriber::fmt::try_init();
 }

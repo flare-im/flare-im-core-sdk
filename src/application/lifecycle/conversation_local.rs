@@ -3,11 +3,10 @@
 //! 该能力只处理 IM core 通用语义：本地历史清理水位、单会话同步游标、会话可见性。
 //! 好友删除、重新加好友、业务重置等上层动作只负责选择目标会话 ID。
 
-use std::time::{SystemTime, UNIX_EPOCH};
-
 use crate::domain::{ConversationStore, SyncCursorStore, SyncCursorVo, local_cleared_through_seq};
 use crate::infrastructure::persistence::StoreProvider;
 use crate::shared::error::Result;
+use crate::shared::util::now_millis;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LocalConversationVisibility {
@@ -89,7 +88,7 @@ impl ConversationLocalLifecycle {
                     user_id: user_id.to_string(),
                     conversation_id: conversation_id.to_string(),
                     last_seq: watermark,
-                    synced_at: now_ms(),
+                    synced_at: now_millis(),
                 })
                 .await?;
         }
@@ -99,11 +98,4 @@ impl ConversationLocalLifecycle {
             cleared_through_seq: watermark,
         }))
     }
-}
-
-fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
 }

@@ -1,4 +1,6 @@
 pub mod http_client;
+#[cfg(target_arch = "wasm32")]
+pub mod http_client_wasm;
 pub mod media_dto;
 pub use http_client::{HttpClient, HttpRequestContext};
 pub use media_dto::{

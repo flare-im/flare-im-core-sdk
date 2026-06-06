@@ -3,6 +3,8 @@ use std::sync::Arc;
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::Duration;
 
+#[cfg(target_arch = "wasm32")]
+use super::http_client_wasm as wasm_http;
 #[cfg(not(target_arch = "wasm32"))]
 use super::http_error_from_response_status;
 use crate::shared::error::{FlareError, Result};
@@ -214,6 +216,15 @@ impl HttpClient {
         if let Some(ctx) = &self.context {
             ctx.ensure_identity(user_id, tenant_id).await;
             ctx.sync_user_id_from_token().await;
+        }
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    async fn context_headers(&self) -> HashMap<String, String> {
+        if let Some(ctx) = &self.context {
+            ctx.build_headers().await
+        } else {
+            HashMap::new()
         }
     }
 
@@ -490,13 +501,267 @@ impl HttpClient {
     }
 
     #[cfg(target_arch = "wasm32")]
-    pub async fn send_bytes(&self, _path: &str, _data: &[u8]) -> Result<Vec<u8>> {
-        Err(FlareError::system(
-            "HTTP transport not supported in wasm build",
-        ))
+    pub async fn send_bytes(&self, path: &str, data: &[u8]) -> Result<Vec<u8>> {
+        let headers = self.context_headers().await;
+        wasm_http::fetch_bytes(
+            "POST",
+            self.build_url(path),
+            None,
+            Some(data.to_vec()),
+            Some("application/octet-stream"),
+            headers,
+            None,
+        )
+        .await
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(target_arch = "wasm32")]
+    pub async fn get<T>(&self, path: &str, query: Option<&HashMap<String, String>>) -> Result<T>
+    where
+        T: serde::de::DeserializeOwned,
+    {
+        let headers = self.context_headers().await;
+        wasm_http::fetch_json("GET", self.build_url(path), query, None, headers, None).await
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    pub async fn get_with_headers<T>(
+        &self,
+        path: &str,
+        query: Option<&HashMap<String, String>>,
+        extra_headers: &HashMap<String, String>,
+    ) -> Result<T>
+    where
+        T: serde::de::DeserializeOwned,
+    {
+        let headers = self.context_headers().await;
+        wasm_http::fetch_json(
+            "GET",
+            self.build_url(path),
+            query,
+            None,
+            headers,
+            Some(extra_headers),
+        )
+        .await
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    pub async fn get_full_url<T>(
+        &self,
+        url: &str,
+        query: Option<&HashMap<String, String>>,
+    ) -> Result<T>
+    where
+        T: serde::de::DeserializeOwned,
+    {
+        wasm_http::fetch_json("GET", url.to_string(), query, None, HashMap::new(), None).await
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    pub async fn post<B, T>(&self, path: &str, body: &B) -> Result<T>
+    where
+        B: serde::Serialize + ?Sized,
+        T: serde::de::DeserializeOwned,
+    {
+        let headers = self.context_headers().await;
+        let body_json = serde_json::to_string(body)
+            .map_err(|e| FlareError::system(format!("encode http json body failed: {e}")))?;
+        wasm_http::fetch_json(
+            "POST",
+            self.build_url(path),
+            None,
+            Some(&body_json),
+            headers,
+            None,
+        )
+        .await
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    pub async fn post_with_headers<B, T>(
+        &self,
+        path: &str,
+        body: &B,
+        extra_headers: &HashMap<String, String>,
+    ) -> Result<T>
+    where
+        B: serde::Serialize + ?Sized,
+        T: serde::de::DeserializeOwned,
+    {
+        let headers = self.context_headers().await;
+        let body_json = serde_json::to_string(body)
+            .map_err(|e| FlareError::system(format!("encode http json body failed: {e}")))?;
+        wasm_http::fetch_json(
+            "POST",
+            self.build_url(path),
+            None,
+            Some(&body_json),
+            headers,
+            Some(extra_headers),
+        )
+        .await
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    pub async fn post_full_url<B, T>(&self, url: &str, body: &B) -> Result<T>
+    where
+        B: serde::Serialize + ?Sized,
+        T: serde::de::DeserializeOwned,
+    {
+        let body_json = serde_json::to_string(body)
+            .map_err(|e| FlareError::system(format!("encode http json body failed: {e}")))?;
+        wasm_http::fetch_json(
+            "POST",
+            url.to_string(),
+            None,
+            Some(&body_json),
+            HashMap::new(),
+            None,
+        )
+        .await
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    pub async fn put<B, T>(&self, path: &str, body: &B) -> Result<T>
+    where
+        B: serde::Serialize + ?Sized,
+        T: serde::de::DeserializeOwned,
+    {
+        let headers = self.context_headers().await;
+        let body_json = serde_json::to_string(body)
+            .map_err(|e| FlareError::system(format!("encode http json body failed: {e}")))?;
+        wasm_http::fetch_json(
+            "PUT",
+            self.build_url(path),
+            None,
+            Some(&body_json),
+            headers,
+            None,
+        )
+        .await
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    pub async fn put_full_url<B, T>(&self, url: &str, body: &B) -> Result<T>
+    where
+        B: serde::Serialize + ?Sized,
+        T: serde::de::DeserializeOwned,
+    {
+        let body_json = serde_json::to_string(body)
+            .map_err(|e| FlareError::system(format!("encode http json body failed: {e}")))?;
+        wasm_http::fetch_json(
+            "PUT",
+            url.to_string(),
+            None,
+            Some(&body_json),
+            HashMap::new(),
+            None,
+        )
+        .await
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    pub async fn put_bytes_full_url(
+        &self,
+        url: &str,
+        data: &[u8],
+        extra_headers: &HashMap<String, String>,
+    ) -> Result<HashMap<String, String>> {
+        let headers = self.context_headers().await;
+        let _ = wasm_http::fetch_bytes(
+            "PUT",
+            url.to_string(),
+            None,
+            Some(data.to_vec()),
+            None,
+            headers,
+            Some(extra_headers),
+        )
+        .await?;
+        Ok(HashMap::new())
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    pub async fn delete<T>(&self, path: &str, query: Option<&HashMap<String, String>>) -> Result<T>
+    where
+        T: serde::de::DeserializeOwned,
+    {
+        let headers = self.context_headers().await;
+        wasm_http::fetch_json("DELETE", self.build_url(path), query, None, headers, None).await
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    pub async fn delete_full_url<T>(
+        &self,
+        url: &str,
+        query: Option<&HashMap<String, String>>,
+    ) -> Result<T>
+    where
+        T: serde::de::DeserializeOwned,
+    {
+        wasm_http::fetch_json("DELETE", url.to_string(), query, None, HashMap::new(), None).await
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    pub async fn delete_with_body<B, T>(&self, path: &str, body: &B) -> Result<T>
+    where
+        B: serde::Serialize + ?Sized,
+        T: serde::de::DeserializeOwned,
+    {
+        let headers = self.context_headers().await;
+        let body_json = serde_json::to_string(body)
+            .map_err(|e| FlareError::system(format!("encode http json body failed: {e}")))?;
+        wasm_http::fetch_json(
+            "DELETE",
+            self.build_url(path),
+            None,
+            Some(&body_json),
+            headers,
+            None,
+        )
+        .await
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    pub async fn delete_with_body_headers<B, T>(
+        &self,
+        path: &str,
+        body: &B,
+        extra_headers: &HashMap<String, String>,
+    ) -> Result<T>
+    where
+        B: serde::Serialize + ?Sized,
+        T: serde::de::DeserializeOwned,
+    {
+        let headers = self.context_headers().await;
+        let body_json = serde_json::to_string(body)
+            .map_err(|e| FlareError::system(format!("encode http json body failed: {e}")))?;
+        wasm_http::fetch_json(
+            "DELETE",
+            self.build_url(path),
+            None,
+            Some(&body_json),
+            headers,
+            Some(extra_headers),
+        )
+        .await
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    pub async fn get_bytes_direct_url(&self, url: &str) -> Result<Vec<u8>> {
+        wasm_http::fetch_bytes(
+            "GET",
+            url.to_string(),
+            None,
+            None,
+            None,
+            HashMap::new(),
+            None,
+        )
+        .await
+    }
+
     fn build_url(&self, path: &str) -> String {
         if path.starts_with("http://") || path.starts_with("https://") {
             return path.to_string();

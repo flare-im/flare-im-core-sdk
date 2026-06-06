@@ -382,10 +382,7 @@ fn is_hidden_internal_conversation(conversation_id: &str) -> bool {
 }
 
 fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_millis() as u64)
-        .unwrap_or(0)
+    crate::shared::util::now_millis()
 }
 
 #[cfg(test)]

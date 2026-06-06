@@ -1,17 +1,17 @@
 //! 同步引擎：仅任务注册与编排；协议由应用层任务在构造时注入处理器并自行调用。
 
 use std::sync::{Arc, Mutex};
-use tokio::task::JoinHandle;
 
 use crate::core::event::EventBus;
 use crate::infrastructure::persistence::StoreProvider;
+use crate::shared::util::BackgroundTask;
 
 use super::orchestrator::Orchestrator;
 use super::{SyncMode, SyncRunContext, SyncTask};
 
 pub struct SyncManager {
     tasks: Mutex<Vec<Arc<dyn SyncTask>>>,
-    running: Mutex<Option<JoinHandle<()>>>,
+    running: Mutex<Option<BackgroundTask>>,
 }
 
 impl SyncManager {

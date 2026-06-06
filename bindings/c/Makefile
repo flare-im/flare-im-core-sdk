@@ -41,15 +41,24 @@ OHOS_TARGET := aarch64-unknown-linux-ohos
 OHOS_NDK_HOME ?=
 HARMONY_LIBS_DIR ?= $(abspath $(WORKSPACE_ROOT)/../flare-im-core-client-sdk/packages/harmony/arkts/flare-im-harmony-arkts/libs/arm64-v8a)
 
-.PHONY: all help help-flutter host host-flutter flutter-sync flutter-sync-ios \
+.PHONY: all help help-flutter codegen codegen-check host host-flutter flutter-sync flutter-sync-ios \
 	flutter-sync-ios-universal flutter-sync-ios-device flutter-sync-android \
 	flutter-sync-harmony setup-targets ios-device ios-sim ios-sim-x86 ios-all android ohos \
 	all-mobile dist dist-ios dist-android clean check
 
 all: host
 
+BINDINGS_ROOT := $(abspath $(MAKEFILE_DIR)/..)
+
+codegen:
+	@$(MAKE) -C "$(BINDINGS_ROOT)" codegen
+
+codegen-check:
+	@$(MAKE) -C "$(BINDINGS_ROOT)" codegen-check
+
 help:
 	@echo "FFI $(PACKAGE)  workspace=$(WORKSPACE_ROOT)"
+	@echo "  make codegen / codegen-check  contract pipeline (parent bindings/)"
 	@echo "  make host / make              本机 release（产物在 target/$(PROFILE)/）"
 	@echo "  make flutter-sync           host-flutter +（macOS）iOS 模拟器 .a +（可选）Android .so"
 	@echo "  make flutter-sync-ios-device  真机 .a → Flutter ios/FFI/build/"

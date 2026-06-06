@@ -1,0 +1,243 @@
+//! Production browser runtime backed by real [`IMClient`] + WebSocket transport.
+
+use std::sync::Arc;
+
+use flare_im_core_sdk::client::IMClient;
+use flare_im_core_sdk::client::lifecycle::LoginDbKind;
+use flare_im_core_sdk_bindings_runtime::{
+    binding_response_to_value, invoke_api_id, normalize_operation,
+};
+use js_sys::Function;
+use serde_json::{Value, json};
+use wasm_bindgen::prelude::*;
+use wasm_bindgen_futures::future_to_promise;
+
+use super::events::{clear_event_callback, forward_event_rx_to_js, set_event_callback};
+use super::session::WasmSdkState;
+use super::storage::{
+    build_web_store_provider, clear_storage_host, set_storage_host, storage_host_configured,
+};
+use crate::tokio_runtime;
+
+fn js_error(code: &str, operation: &str, error: impl ToString) -> JsValue {
+    JsValue::from_str(
+        &json!({
+            "code": code,
+            "operation": operation,
+            "message": error.to_string(),
+        })
+        .to_string(),
+    )
+}
+
+fn map_sdk_err(operation: &str, error: flare_im_core_sdk::shared::error::FlareError) -> JsValue {
+    js_error("sdk.error", operation, error)
+}
+
+fn parse_request(request_json: &str) -> Result<Value, JsValue> {
+    if request_json.trim().is_empty() {
+        return Ok(Value::Null);
+    }
+    serde_json::from_str(request_json).map_err(|error| js_error("invalidParameter", "parse", error))
+}
+
+#[wasm_bindgen]
+pub struct FlareImWasmRuntime {
+    state: Arc<WasmSdkState>,
+}
+
+#[wasm_bindgen(js_name = createWasmRuntime)]
+pub fn create_wasm_runtime() -> FlareImWasmRuntime {
+    FlareImWasmRuntime::new()
+}
+
+#[wasm_bindgen]
+impl FlareImWasmRuntime {
+    #[wasm_bindgen(constructor)]
+    pub fn new() -> Self {
+        Self {
+            state: Arc::new(WasmSdkState::new()),
+        }
+    }
+
+    #[wasm_bindgen(js_name = setEventCallback)]
+    pub fn set_event_callback(&self, callback: Option<Function>) {
+        let _ = self;
+        set_event_callback(callback);
+    }
+
+    /// Register JS IndexedDB persistence host callbacks before `sdk.login`.
+    #[wasm_bindgen(js_name = setStorageHost)]
+    pub fn set_storage_host(
+        &self,
+        load_snapshot: Function,
+        save_message: Function,
+        save_conversation: Function,
+        save_cursor: Function,
+        save_pending_send: Function,
+        delete_message: Function,
+        delete_conversation: Function,
+        delete_pending_send: Function,
+    ) {
+        let _ = self;
+        set_storage_host(
+            load_snapshot,
+            save_message,
+            save_conversation,
+            save_cursor,
+            save_pending_send,
+            delete_message,
+            delete_conversation,
+            delete_pending_send,
+        );
+    }
+
+    #[wasm_bindgen(js_name = clearStorageHost)]
+    pub fn clear_storage_host(&self) {
+        let _ = self;
+        clear_storage_host();
+    }
+
+    #[wasm_bindgen(js_name = storageHostConfigured)]
+    pub fn storage_host_configured(&self) -> bool {
+        let _ = self;
+        storage_host_configured()
+    }
+
+    /// Sync export returning a JS Promise — avoids nested `block_on` inside wasm-bindgen `async fn`.
+    #[wasm_bindgen]
+    pub fn invoke(&self, operation: &str, request_json: &str) -> js_sys::Promise {
+        let operation = operation.to_string();
+        let request_json = request_json.to_string();
+        let state = self.state.clone();
+        future_to_promise(async move {
+            tokio_runtime::run_sdk(
+                async move { invoke_impl(state, &operation, &request_json).await },
+            )
+            .await
+        })
+    }
+
+    pub fn dispose(&self) {
+        clear_event_callback();
+    }
+}
+
+async fn invoke_impl(
+    state: Arc<WasmSdkState>,
+    operation: &str,
+    request_json: &str,
+) -> Result<JsValue, JsValue> {
+    let request = parse_request(request_json)?;
+    let normalized = normalize_operation(operation, request);
+    let route = normalized.name.as_str();
+    let request = normalized.request;
+
+    let result = match route {
+        "sdk.create" => Ok(json!({ "handle": 1 })),
+        "sdk.init" => {
+            let environment = request
+                .get("environment")
+                .and_then(|v| v.as_str())
+                .map(str::to_string);
+            let sdk_config = if request.get("sdk_config").is_some() {
+                Some(
+                    serde_json::from_value(
+                        request.get("sdk_config").cloned().unwrap_or(Value::Null),
+                    )
+                    .map_err(|e| js_error("invalidParameter", route, e))?,
+                )
+            } else {
+                serde_json::from_value(request.clone()).ok()
+            };
+            state
+                .set_config(environment, sdk_config)
+                .await
+                .map_err(|e| map_sdk_err(route, e))?;
+            Ok(Value::Null)
+        }
+        "sdk.login" => {
+            let user_id = request
+                .get("user_id")
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .ok_or_else(|| js_error("invalidParameter", route, "user_id is required"))?
+                .to_string();
+            let token = request
+                .get("token")
+                .and_then(|v| v.as_str())
+                .map(str::to_string)
+                .unwrap_or_default();
+            let token = if token.trim().is_empty() {
+                None
+            } else {
+                Some(token.as_str())
+            };
+            let client = state.client();
+            let session_state = state.clone();
+            let store_provider = build_web_store_provider(&user_id).await;
+            let apis = client
+                .login(
+                    &user_id,
+                    token,
+                    LoginDbKind::IndexedDb(store_provider),
+                    move |bus, _| {
+                        let rx = bus.subscribe();
+                        tokio_runtime::spawn_detached(forward_event_rx_to_js(rx));
+                    },
+                )
+                .await
+                .map_err(|e| map_sdk_err(route, e))?;
+            session_state.install_session(apis).await;
+            Ok(Value::Null)
+        }
+        "sdk.logout" => {
+            state.logout().await.map_err(|e| map_sdk_err(route, e))?;
+            clear_event_callback();
+            Ok(Value::Null)
+        }
+        "sdk.uninit" => {
+            state.clear_session().await;
+            state
+                .client()
+                .uninit()
+                .await
+                .map_err(|e| map_sdk_err(route, e))?;
+            Ok(Value::Null)
+        }
+        "sdk.dispose" | "sdk.hard_reset" => {
+            clear_event_callback();
+            state.clear_session().await;
+            let _ = state.client().logout().await;
+            Ok(Value::Null)
+        }
+        "event.subscribe" => Ok(json!({ "id": 1 })),
+        "event.unsubscribe" | "event.unsubscribe_all" => Ok(Value::Null),
+        "sdk.generate_test_token" => {
+            let user_id = request
+                .get("user_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("web-user");
+            let secret = request
+                .get("secret")
+                .and_then(|v| v.as_str())
+                .unwrap_or("insecure-secret");
+            let issuer = request
+                .get("issuer")
+                .and_then(|v| v.as_str())
+                .unwrap_or("flare-im-core");
+            let tenant_id = request.get("tenant_id").and_then(|v| v.as_str());
+            let token = IMClient::generate_test_token(secret, issuer, user_id, tenant_id)
+                .map_err(|e| map_sdk_err(route, e))?;
+            Ok(json!({ "token": token }))
+        }
+        _ => invoke_api_id(&*state, route, request)
+            .await
+            .map(binding_response_to_value)
+            .map_err(|e| map_sdk_err(route, e)),
+    }?;
+
+    serde_wasm_bindgen::to_value(&result)
+        .map_err(|error| js_error("wasm.serialize_failed", route, error))
+}

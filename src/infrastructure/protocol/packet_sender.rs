@@ -1,46 +1,35 @@
 //! 上行发送：与 flare-proto 对齐 — 消息=Message，事件=Event，回执=Ack；DATA 载荷=`DataPacket`（`common/data.proto`）。
 
-#[cfg(not(target_arch = "wasm32"))]
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-#[cfg(not(target_arch = "wasm32"))]
 use flare_core::client::builder::flare::FlareClient;
-#[cfg(not(target_arch = "wasm32"))]
 use flare_core::common::protocol::{
-    PayloadCommand, Reliability, builder, flare::core::commands::command::Type as CommandType,
+    Frame, PayloadCommand, Reliability, builder,
+    flare::core::commands::command::Type as CommandType,
     flare::core::commands::payload_command::Type as PayloadType,
 };
-#[cfg(not(target_arch = "wasm32"))]
 use flare_proto::common::data_packet::Payload as DataPacketPayload;
-#[cfg(not(target_arch = "wasm32"))]
 use flare_proto::common::{
     Ack, CustomData, DataKind, DataPacket, Event, Message as ProtoMessage, SyncRes,
 };
-#[cfg(target_arch = "wasm32")]
-use flare_proto::common::{Ack, CustomData, Event, Message as ProtoMessage, SyncRes};
-#[cfg(not(target_arch = "wasm32"))]
 use prost::Message;
 use tokio::sync::Mutex;
 
 use crate::infrastructure::protocol::Codec;
 use crate::shared::error::{FlareError, Result};
-#[cfg(not(target_arch = "wasm32"))]
-use crate::shared::util::system_time_to_prost_timestamp;
+use crate::shared::util::{system_time_to_prost_timestamp, timeout};
 
-#[cfg(not(target_arch = "wasm32"))]
 const CONTROL_SEND_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// 上行包发送器 — Message / Event / Ack / DataPacket（同步与用户扩展）
-#[cfg(not(target_arch = "wasm32"))]
 pub struct PacketSender {
     client: Arc<Mutex<Option<FlareClient>>>,
     /// 串行化 `send_frame_and_wait`：`HybridClient` 按 message_id 匹配响应，不宜并发等待。
     rpc_wait: Arc<Mutex<()>>,
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 impl PacketSender {
     pub fn new(client: Arc<Mutex<Option<FlareClient>>>, _codec: Arc<dyn Codec>) -> Self {
         Self {
@@ -74,7 +63,7 @@ impl PacketSender {
         })?;
         let cmd = builder::event_message(message_id, payload, None, None);
         let frame = builder::frame_with_payload_command(cmd, Reliability::AtLeastOnce);
-        tokio::time::timeout(timeout_duration, client.send_frame(&frame))
+        timeout(timeout_duration, client.send_frame(&frame))
             .await
             .map_err(|_| {
                 FlareError::localized(
@@ -109,7 +98,7 @@ impl PacketSender {
         let msg_cmd =
             builder::send_message(message_id, message.encode_to_vec(), Some(metadata), None);
         let frame = builder::frame_with_payload_command(msg_cmd, Reliability::AtLeastOnce);
-        tokio::time::timeout(timeout_duration, client.send_frame(&frame))
+        timeout(timeout_duration, client.send_frame(&frame))
             .await
             .map_err(|_| {
                 FlareError::localized(
@@ -137,7 +126,7 @@ impl PacketSender {
         let client = guard.as_mut().ok_or_else(|| {
             FlareError::localized(flare_core::common::ErrorCode::NotConnected, "未连接")
         })?;
-        tokio::time::timeout(CONTROL_SEND_TIMEOUT, client.send_frame(&frame))
+        timeout(CONTROL_SEND_TIMEOUT, client.send_frame(&frame))
             .await
             .map_err(|_| {
                 FlareError::localized(
@@ -162,7 +151,7 @@ impl PacketSender {
         })?;
         let cmd = builder::data_message(builder::generate_message_id(), payload, None, None);
         let frame = builder::frame_with_payload_command(cmd, Reliability::AtLeastOnce);
-        tokio::time::timeout(CONTROL_SEND_TIMEOUT, client.send_frame(&frame))
+        timeout(CONTROL_SEND_TIMEOUT, client.send_frame(&frame))
             .await
             .map_err(|_| {
                 FlareError::localized(
@@ -214,7 +203,7 @@ impl PacketSender {
         })?;
         let cmd = builder::data_message(builder::generate_message_id(), payload, None, None);
         let frame = builder::frame_with_payload_command(cmd, Reliability::AtLeastOnce);
-        tokio::time::timeout(CONTROL_SEND_TIMEOUT, client.send_frame(&frame))
+        timeout(CONTROL_SEND_TIMEOUT, client.send_frame(&frame))
             .await
             .map_err(|_| {
                 FlareError::localized(
@@ -227,64 +216,7 @@ impl PacketSender {
     }
 }
 
-#[cfg(target_arch = "wasm32")]
-pub struct PacketSender {
-    _codec: Arc<dyn Codec>,
-    _rpc_wait: Arc<Mutex<()>>,
-}
-
-#[cfg(target_arch = "wasm32")]
-impl PacketSender {
-    pub fn new(_client: Arc<Mutex<Option<()>>>, codec: Arc<dyn Codec>) -> Self {
-        Self {
-            _codec: codec,
-            _rpc_wait: Arc::new(Mutex::new(())),
-        }
-    }
-
-    pub async fn send_event(&self, _event: &Event, _timeout_duration: Duration) -> Result<()> {
-        Err(wasm_transport_unavailable("send_event"))
-    }
-
-    pub async fn send_message(
-        &self,
-        _message: &ProtoMessage,
-        _timeout_duration: Duration,
-    ) -> Result<()> {
-        Err(wasm_transport_unavailable("send_message"))
-    }
-
-    pub async fn send_ack(&self, _ack: &Ack) -> Result<()> {
-        Err(wasm_transport_unavailable("send_ack"))
-    }
-
-    pub async fn send_custom_data(&self, _data: &CustomData) -> Result<()> {
-        Err(wasm_transport_unavailable("send_custom_data"))
-    }
-
-    pub async fn send_sync_and_wait(
-        &self,
-        _sync: &flare_proto::common::Sync,
-        _timeout: Duration,
-    ) -> Result<SyncRes> {
-        Err(wasm_transport_unavailable("send_sync_and_wait"))
-    }
-
-    pub async fn send_sync(&self, _sync: &flare_proto::common::Sync) -> Result<()> {
-        Err(wasm_transport_unavailable("send_sync"))
-    }
-}
-
-#[cfg(target_arch = "wasm32")]
-fn wasm_transport_unavailable(operation: &str) -> FlareError {
-    FlareError::localized(
-        flare_core::common::ErrorCode::OperationNotSupported,
-        format!("{operation} requires a Web runtime transport adapter"),
-    )
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn decode_sync_response_frame(frame: &flare_core::common::protocol::Frame) -> Result<SyncRes> {
+fn decode_sync_response_frame(frame: &Frame) -> Result<SyncRes> {
     let payload = frame
         .command
         .as_ref()

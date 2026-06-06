@@ -1,0 +1,1512 @@
+{
+  "schemaVersion": 1,
+  "groups": [
+    {
+      "id": "message",
+      "receiver": {
+        "type": "MessageApi",
+        "binding": "&MessageApi"
+      },
+      "dispatch_fn": "dispatch_message",
+      "is_fn": "is_message_operation",
+      "ops_const": "MESSAGE_DISPATCH_OPERATIONS",
+      "operations": [
+        {
+          "op": "get",
+          "method": "get",
+          "args": [
+            [
+              "message_id",
+              "str_ref"
+            ]
+          ],
+          "result": "json"
+        },
+        {
+          "op": "get_raw",
+          "method": "get_raw",
+          "args": [
+            [
+              "message_id",
+              "str_ref"
+            ]
+          ],
+          "result": "json"
+        },
+        {
+          "op": "search",
+          "method": "search",
+          "args": [
+            [
+              "keyword",
+              "str_ref"
+            ],
+            [
+              "limit",
+              "i32_u32",
+              {
+                "default": 50,
+                "min": 1
+              }
+            ]
+          ],
+          "result": "json"
+        },
+        {
+          "op": "search_by_query",
+          "aliases": [
+            "search_advanced"
+          ],
+          "method": "search_by_query",
+          "args": [
+            [
+              "@value",
+              "deserialize:MessageSearchQuery"
+            ]
+          ],
+          "result": "json"
+        },
+        {
+          "op": "search_in_conversation",
+          "method": "search_in_conversation",
+          "args": [
+            [
+              "conversation_id",
+              "str_ref"
+            ],
+            [
+              "keyword",
+              "str_ref"
+            ],
+            [
+              "limit",
+              "i32_u32",
+              {
+                "default": 50,
+                "min": 1
+              }
+            ]
+          ],
+          "result": "json"
+        },
+        {
+          "op": "list",
+          "method": "list",
+          "args": [
+            [
+              "conversation_id",
+              "str_ref"
+            ],
+            [
+              "before_seq",
+              "u64"
+            ],
+            [
+              "limit",
+              "i32_u32",
+              {
+                "default": 50,
+                "min": 1
+              }
+            ]
+          ],
+          "result": "json"
+        },
+        {
+          "op": "send",
+          "method": "send",
+          "args": [
+            [
+              "message",
+              "im_message"
+            ]
+          ],
+          "result": "send_ack"
+        },
+        {
+          "op": "send_no_oss",
+          "method": "send_no_oss",
+          "args": [
+            [
+              "message",
+              "im_message"
+            ]
+          ],
+          "result": "send_ack"
+        },
+        {
+          "op": "recall",
+          "method": "recall",
+          "args": [
+            [
+              "message_id",
+              "str_ref"
+            ]
+          ],
+          "result": "unit"
+        },
+        {
+          "op": "delete",
+          "method": "delete",
+          "args": [
+            [
+              "message_id",
+              "str_ref"
+            ]
+          ],
+          "result": "unit"
+        },
+        {
+          "op": "delete_for_self",
+          "method": "delete_for_self",
+          "args": [
+            [
+              "message_id",
+              "str_ref"
+            ],
+            [
+              "reason",
+              "optional_string"
+            ]
+          ],
+          "result": "unit"
+        },
+        {
+          "op": "delete_for_everyone",
+          "method": "delete_for_everyone",
+          "args": [
+            [
+              "message_id",
+              "str_ref"
+            ],
+            [
+              "reason",
+              "optional_string"
+            ]
+          ],
+          "result": "unit"
+        },
+        {
+          "op": "edit_text_by_message_id",
+          "method": "edit_text_by_message_id",
+          "args": [
+            [
+              "message_id",
+              "str_ref"
+            ],
+            [
+              "text",
+              "str_ref"
+            ]
+          ],
+          "result": "unit"
+        },
+        {
+          "op": "edit_rich_doc_by_message_id",
+          "method": "edit_rich_doc_by_message_id",
+          "args": [
+            [
+              "@value",
+              "rich_doc_edit_request"
+            ]
+          ],
+          "result": "unit"
+        },
+        {
+          "op": "mark_read",
+          "method": "mark_read",
+          "args": [
+            [
+              "conversation_id",
+              "str_ref"
+            ],
+            [
+              "read_seq",
+              "u64"
+            ]
+          ],
+          "result": "unit"
+        },
+        {
+          "op": "mark_read_with_ids",
+          "method": "mark_read_with_ids",
+          "args": [
+            [
+              "conversation_id",
+              "str_ref"
+            ],
+            [
+              "message_ids",
+              "vec_string"
+            ],
+            [
+              "read_seq",
+              "u64"
+            ]
+          ],
+          "result": "unit"
+        },
+        {
+          "op": "mark_read_and_burn",
+          "method": "mark_read_and_burn",
+          "args": [
+            [
+              "message_id",
+              "str_ref"
+            ]
+          ],
+          "result": "unit"
+        },
+        {
+          "op": "typing",
+          "method": "typing",
+          "args": [
+            [
+              "conversation_id",
+              "str_ref"
+            ],
+            [
+              "typing",
+              "bool"
+            ]
+          ],
+          "result": "unit"
+        },
+        {
+          "op": "add_reaction",
+          "method": "add_reaction",
+          "args": [
+            [
+              "message_id",
+              "str_ref"
+            ],
+            [
+              "emoji",
+              "str_ref"
+            ]
+          ],
+          "result": "unit"
+        },
+        {
+          "op": "remove_reaction",
+          "method": "remove_reaction",
+          "args": [
+            [
+              "message_id",
+              "str_ref"
+            ],
+            [
+              "emoji",
+              "str_ref"
+            ]
+          ],
+          "result": "unit"
+        },
+        {
+          "op": "pin",
+          "method": "pin",
+          "args": [
+            [
+              "conversation_id",
+              "str_ref"
+            ],
+            [
+              "message_id",
+              "str_ref"
+            ]
+          ],
+          "result": "unit"
+        },
+        {
+          "op": "unpin",
+          "method": "unpin",
+          "args": [
+            [
+              "conversation_id",
+              "str_ref"
+            ],
+            [
+              "message_id",
+              "str_ref"
+            ]
+          ],
+          "result": "unit"
+        },
+        {
+          "op": "pin_by_message_id",
+          "method": "pin_by_message_id",
+          "args": [
+            [
+              "message_id",
+              "str_ref"
+            ]
+          ],
+          "result": "unit"
+        },
+        {
+          "op": "unpin_by_message_id",
+          "method": "unpin_by_message_id",
+          "args": [
+            [
+              "message_id",
+              "str_ref"
+            ]
+          ],
+          "result": "unit"
+        },
+        {
+          "op": "mark",
+          "method": "mark",
+          "args": [
+            [
+              "conversation_id",
+              "str_ref"
+            ],
+            [
+              "message_id",
+              "str_ref"
+            ],
+            [
+              "mark_type",
+              "mark_type"
+            ]
+          ],
+          "result": "unit"
+        },
+        {
+          "op": "mark_with_color",
+          "method": "mark_with_color",
+          "args": [
+            [
+              "conversation_id",
+              "str_ref"
+            ],
+            [
+              "message_id",
+              "str_ref"
+            ],
+            [
+              "mark_type",
+              "mark_type"
+            ],
+            [
+              "color",
+              "str_ref"
+            ]
+          ],
+          "result": "unit"
+        },
+        {
+          "op": "unmark",
+          "method": "unmark",
+          "args": [
+            [
+              "conversation_id",
+              "str_ref"
+            ],
+            [
+              "message_id",
+              "str_ref"
+            ],
+            [
+              "mark_type",
+              "mark_type"
+            ]
+          ],
+          "result": "unit"
+        },
+        {
+          "op": "mark_by_message_id",
+          "method": "mark_by_message_id",
+          "args": [
+            [
+              "message_id",
+              "str_ref"
+            ],
+            [
+              "mark_type",
+              "mark_type"
+            ],
+            [
+              "color",
+              "str_ref"
+            ]
+          ],
+          "result": "unit"
+        },
+        {
+          "op": "unmark_by_message_id",
+          "method": "unmark_by_message_id",
+          "args": [
+            [
+              "message_id",
+              "str_ref"
+            ],
+            [
+              "mark_type",
+              "mark_type"
+            ]
+          ],
+          "result": "unit"
+        }
+      ]
+    },
+    {
+      "id": "message_build",
+      "receiver": {
+        "type": "MessageBuildApi",
+        "binding": "&Arc<MessageBuildApi>"
+      },
+      "dispatch_fn": "dispatch_message_build",
+      "is_fn": "is_message_build_operation",
+      "ops_const": "MESSAGE_BUILD_OPERATIONS",
+      "op_from_request": true,
+      "operations": [
+        {
+          "op": "create_text",
+          "method": "create_text",
+          "args": [
+            [
+              "conversation_id",
+              "conversation_id"
+            ],
+            [
+              "text",
+              "str_ref"
+            ],
+            [
+              "literal",
+              "bool",
+              false
+            ]
+          ],
+          "result": "json"
+        },
+        {
+          "op": "create_quote",
+          "method": "create_quote",
+          "args": [
+            [
+              "conversation_id",
+              "conversation_id"
+            ],
+            [
+              "quoted_message_id",
+              "str_ref"
+            ],
+            [
+              "text",
+              "str_ref"
+            ],
+            [
+              "quoted_sender_id",
+              "optional_str_ref"
+            ],
+            [
+              "quoted_text_preview",
+              "optional_str_ref"
+            ],
+            [
+              "quoted_content",
+              "optional_built_content"
+            ]
+          ],
+          "result": "json"
+        },
+        {
+          "op": "create_thread_reply",
+          "method": "create_thread_reply",
+          "args": [
+            [
+              "conversation_id",
+              "conversation_id"
+            ],
+            [
+              "thread_id",
+              "str_ref"
+            ],
+            [
+              "text",
+              "str_ref"
+            ]
+          ],
+          "result": "json"
+        },
+        {
+          "op": "create_forward",
+          "method": "create_forward",
+          "args": [
+            [
+              "conversation_id",
+              "conversation_id"
+            ],
+            [
+              "merge",
+              "bool_default_false"
+            ],
+            [
+              "forward_title",
+              "str_ref_alt:forward_title,title"
+            ],
+            [
+              "source_messages",
+              "vec_im_message"
+            ]
+          ],
+          "result": "json"
+        },
+        {
+          "op": "create_image",
+          "method": "create_image",
+          "args": [
+            [
+              "conversation_id",
+              "conversation_id"
+            ],
+            [
+              "image_id",
+              "str_ref"
+            ]
+          ],
+          "result": "json"
+        },
+        {
+          "op": "create_video",
+          "method": "create_video",
+          "args": [
+            [
+              "conversation_id",
+              "conversation_id"
+            ],
+            [
+              "video_id",
+              "str_ref"
+            ]
+          ],
+          "result": "json"
+        },
+        {
+          "op": "create_audio",
+          "method": "create_audio",
+          "args": [
+            [
+              "conversation_id",
+              "conversation_id"
+            ],
+            [
+              "audio_id",
+              "str_ref"
+            ]
+          ],
+          "result": "json"
+        },
+        {
+          "op": "create_file",
+          "method": "create_file",
+          "args": [
+            [
+              "conversation_id",
+              "conversation_id"
+            ],
+            [
+              "file_id",
+              "str_ref"
+            ]
+          ],
+          "result": "json"
+        },
+        {
+          "op": "create_emoji",
+          "method": "create_emoji",
+          "args": [
+            [
+              "conversation_id",
+              "conversation_id"
+            ],
+            [
+              "emoji",
+              "str_ref"
+            ]
+          ],
+          "result": "json"
+        },
+        {
+          "op": "create_location",
+          "method": "create_location",
+          "args": [
+            [
+              "@value",
+              "create_location_request"
+            ]
+          ],
+          "result": "json"
+        },
+        {
+          "op": "create_sticker",
+          "method": "create_sticker",
+          "args": [
+            [
+              "@value",
+              "create_sticker_request"
+            ]
+          ],
+          "result": "json"
+        },
+        {
+          "op": "create_link_card",
+          "method": "create_link_card",
+          "args": [
+            [
+              "conversation_id",
+              "conversation_id"
+            ],
+            [
+              "url",
+              "str_ref"
+            ],
+            [
+              "title",
+              "optional_str_ref"
+            ],
+            [
+              "description",
+              "optional_str_ref"
+            ],
+            [
+              "thumbnail_url",
+              "optional_str_ref"
+            ],
+            [
+              "site_name",
+              "optional_str_ref"
+            ]
+          ],
+          "result": "json"
+        },
+        {
+          "op": "create_card",
+          "method": "create_card",
+          "args": [
+            [
+              "conversation_id",
+              "conversation_id"
+            ],
+            [
+              "id",
+              "str_ref"
+            ],
+            [
+              "card_type",
+              "optional_str_ref"
+            ],
+            [
+              "title",
+              "optional_str_ref"
+            ],
+            [
+              "subtitle",
+              "optional_str_ref"
+            ],
+            [
+              "avatar",
+              "optional_str_ref"
+            ]
+          ],
+          "result": "json"
+        },
+        {
+          "op": "create_mini_program",
+          "method": "create_mini_program",
+          "args": [
+            [
+              "conversation_id",
+              "conversation_id"
+            ],
+            [
+              "app_id",
+              "str_ref"
+            ],
+            [
+              "title",
+              "optional_str_ref"
+            ],
+            [
+              "page_path",
+              "optional_str_ref"
+            ],
+            [
+              "thumbnail_url",
+              "optional_str_ref"
+            ],
+            [
+              "extra",
+              "optional_hashmap_string"
+            ]
+          ],
+          "result": "json"
+        },
+        {
+          "op": "create_rich_doc",
+          "method": "create_rich_doc",
+          "args": [
+            [
+              "@value",
+              "rich_doc_create_request"
+            ]
+          ],
+          "result": "json"
+        },
+        {
+          "op": "create_system",
+          "method": "create_system",
+          "args": [
+            [
+              "conversation_id",
+              "conversation_id"
+            ],
+            [
+              "event_kind",
+              "str_ref"
+            ],
+            [
+              "body",
+              "str_ref"
+            ]
+          ],
+          "result": "json"
+        },
+        {
+          "op": "create_notification",
+          "method": "create_notification",
+          "args": [
+            [
+              "conversation_id",
+              "conversation_id"
+            ],
+            [
+              "title",
+              "str_ref"
+            ],
+            [
+              "body",
+              "str_ref"
+            ]
+          ],
+          "result": "json"
+        },
+        {
+          "op": "create_vote",
+          "method": "create_vote",
+          "args": [
+            [
+              "conversation_id",
+              "conversation_id"
+            ],
+            [
+              "vote_id",
+              "str_ref"
+            ],
+            [
+              "title",
+              "str_ref"
+            ],
+            [
+              "options",
+              "vec_string"
+            ],
+            [
+              "participant_user_ids",
+              "optional_vec_string"
+            ]
+          ],
+          "result": "json"
+        },
+        {
+          "op": "create_task",
+          "method": "create_task",
+          "args": [
+            [
+              "conversation_id",
+              "conversation_id"
+            ],
+            [
+              "task_id",
+              "str_ref"
+            ],
+            [
+              "title",
+              "str_ref"
+            ],
+            [
+              "status",
+              "optional_str_ref"
+            ],
+            [
+              "participant_user_ids",
+              "optional_vec_string"
+            ]
+          ],
+          "result": "json"
+        },
+        {
+          "op": "create_schedule",
+          "method": "create_schedule",
+          "args": [
+            [
+              "conversation_id",
+              "conversation_id"
+            ],
+            [
+              "schedule_id",
+              "str_ref"
+            ],
+            [
+              "title",
+              "str_ref"
+            ],
+            [
+              "start_time_ms",
+              "i64"
+            ],
+            [
+              "end_time_ms",
+              "i64"
+            ],
+            [
+              "participant_user_ids",
+              "optional_vec_string"
+            ]
+          ],
+          "result": "json"
+        },
+        {
+          "op": "create_announcement",
+          "method": "create_announcement",
+          "args": [
+            [
+              "conversation_id",
+              "conversation_id"
+            ],
+            [
+              "title",
+              "str_ref"
+            ],
+            [
+              "body",
+              "str_ref"
+            ]
+          ],
+          "result": "json"
+        },
+        {
+          "op": "create_custom",
+          "method": "create_custom",
+          "args": [
+            [
+              "conversation_id",
+              "conversation_id"
+            ],
+            [
+              "type",
+              "str_ref"
+            ]
+          ],
+          "result": "json"
+        },
+        {
+          "op": "create_placeholder",
+          "method": "create_placeholder",
+          "args": [
+            [
+              "conversation_id",
+              "conversation_id"
+            ],
+            [
+              "reason",
+              "str_ref"
+            ]
+          ],
+          "result": "json"
+        },
+        {
+          "op": "create_with_content",
+          "method": "create_with_content",
+          "args": [
+            [
+              "conversation_id",
+              "conversation_id"
+            ],
+            [
+              "content",
+              "built_content_field"
+            ]
+          ],
+          "result": "json"
+        }
+      ]
+    },
+    {
+      "id": "conversation",
+      "receiver": {
+        "type": "ConversationApi",
+        "binding": "&ConversationApi"
+      },
+      "dispatch_fn": "dispatch_conversation",
+      "is_fn": "is_conversation_operation",
+      "ops_const": "CONVERSATION_DISPATCH_OPERATIONS",
+      "operations": [
+        {
+          "op": "list",
+          "method": "list",
+          "args": [],
+          "result": "json"
+        },
+        {
+          "op": "list_by_query",
+          "method": "list_by_query",
+          "args": [
+            [
+              "@value",
+              "deserialize:ConversationListQuery"
+            ]
+          ],
+          "result": "json"
+        },
+        {
+          "op": "list_including_archived",
+          "method": "list_including_archived",
+          "args": [],
+          "result": "json"
+        },
+        {
+          "op": "get",
+          "method": "get",
+          "args": [
+            [
+              "conversation_id",
+              "str_ref"
+            ]
+          ],
+          "result": "json"
+        },
+        {
+          "op": "get_one",
+          "method": "get_one",
+          "args": [
+            [
+              "source_id",
+              "str_ref"
+            ],
+            [
+              "conversation_type",
+              "conversation_type"
+            ]
+          ],
+          "result": "json"
+        },
+        {
+          "op": "get_group_by_user_ids",
+          "method": "get_group_by_user_ids",
+          "args": [
+            [
+              "user_ids",
+              "vec_string",
+              {
+                "pass": "ref"
+              }
+            ],
+            [
+              "display_name",
+              "optional_str_ref"
+            ]
+          ],
+          "result": "json"
+        },
+        {
+          "op": "get_multiple",
+          "method": "get_multiple",
+          "args": [
+            [
+              "conversation_ids",
+              "vec_string",
+              {
+                "pass": "ref"
+              }
+            ]
+          ],
+          "result": "json"
+        },
+        {
+          "op": "list_paginated",
+          "method": "list_paginated",
+          "args": [
+            [
+              "cursor",
+              "optional_str_ref"
+            ],
+            [
+              "limit",
+              "optional_u32"
+            ]
+          ],
+          "result": "json"
+        },
+        {
+          "op": "list_raw",
+          "method": "list_raw",
+          "args": [],
+          "result": "json"
+        },
+        {
+          "op": "mark_read",
+          "method": "mark_read",
+          "args": [
+            [
+              "conversation_id",
+              "str_ref"
+            ],
+            [
+              "read_seq",
+              "u64"
+            ]
+          ],
+          "result": "unit"
+        },
+        {
+          "op": "mark_all_read",
+          "method": "mark_all_read",
+          "args": [],
+          "result": "unit"
+        },
+        {
+          "op": "delete",
+          "method": "delete",
+          "args": [
+            [
+              "conversation_id",
+              "str_ref"
+            ]
+          ],
+          "result": "unit"
+        },
+        {
+          "op": "set_pinned",
+          "method": "set_pinned",
+          "args": [
+            [
+              "conversation_id",
+              "str_ref"
+            ],
+            [
+              "pinned",
+              "bool"
+            ]
+          ],
+          "result": "unit"
+        },
+        {
+          "op": "set_muted",
+          "method": "set_muted",
+          "args": [
+            [
+              "conversation_id",
+              "str_ref"
+            ],
+            [
+              "muted",
+              "bool"
+            ]
+          ],
+          "result": "unit"
+        },
+        {
+          "op": "set_archived",
+          "method": "set_archived",
+          "args": [
+            [
+              "conversation_id",
+              "str_ref"
+            ],
+            [
+              "archived",
+              "bool"
+            ]
+          ],
+          "result": "unit"
+        },
+        {
+          "op": "mark_unread",
+          "method": "mark_unread",
+          "args": [
+            [
+              "conversation_id",
+              "str_ref"
+            ]
+          ],
+          "result": "json"
+        },
+        {
+          "op": "update_draft",
+          "method": "update_draft",
+          "args": [
+            [
+              "conversation_id",
+              "str_ref"
+            ],
+            [
+              "draft",
+              "optional_str_ref"
+            ]
+          ],
+          "result": "unit"
+        },
+        {
+          "op": "clear_local_chat_history",
+          "method": "clear_local_chat_history",
+          "args": [
+            [
+              "conversation_id",
+              "str_ref"
+            ]
+          ],
+          "result": "unit"
+        }
+      ]
+    },
+    {
+      "id": "media",
+      "receiver": {
+        "type": "MediaApi",
+        "binding": "&MediaApi"
+      },
+      "dispatch_fn": "dispatch_media",
+      "is_fn": "is_media_operation",
+      "ops_const": "MEDIA_DISPATCH_OPERATIONS",
+      "operations": [
+        {
+          "op": "get_url",
+          "method": "get_file_url",
+          "args": [
+            [
+              "file_id",
+              "str_any:file_id,media_id"
+            ],
+            [
+              "expires_in",
+              "optional_i32_default",
+              3600
+            ]
+          ],
+          "result": "json"
+        },
+        {
+          "op": "temp_download_url",
+          "method": "get_temp_url_for_file_download",
+          "args": [
+            [
+              "file_id",
+              "str_ref"
+            ],
+            [
+              "expires_in",
+              "optional_i32_default",
+              3600
+            ]
+          ],
+          "result": "json",
+          "cfg": "not(target_arch = \"wasm32\")"
+        },
+        {
+          "op": "resolve_access",
+          "method": "resolve_media_access",
+          "args": [
+            [
+              "file_id",
+              "str_ref"
+            ],
+            [
+              "expires_in",
+              "optional_i32_default",
+              3600
+            ]
+          ],
+          "result": "json"
+        },
+        {
+          "op": "cache_remote",
+          "method": "cache_remote_media",
+          "args": [
+            [
+              "file_id",
+              "str_ref"
+            ],
+            [
+              "expires_in",
+              "optional_i32_default",
+              3600
+            ]
+          ],
+          "result": "json"
+        },
+        {
+          "op": "cache_stats",
+          "method": "media_cache_stats",
+          "args": [],
+          "result": "json"
+        },
+        {
+          "op": "set_cache_max_bytes",
+          "method": "set_media_cache_max_bytes",
+          "args": [
+            [
+              "max_bytes",
+              "u64"
+            ]
+          ],
+          "result": "unit"
+        },
+        {
+          "op": "set_cache_root",
+          "method": "set_media_cache_root",
+          "args": [
+            [
+              "absolute_path",
+              "optional_str_any:absolute_path,path"
+            ]
+          ],
+          "result": "unit"
+        },
+        {
+          "op": "clear_cache",
+          "method": "clear_media_cache",
+          "args": [],
+          "result": "unit"
+        },
+        {
+          "op": "upload_file",
+          "method": "upload_file_from_path",
+          "args": [
+            ["path", "str_ref"],
+            ["options", "optional_upload_options"]
+          ],
+          "result": "json"
+        },
+        {
+          "op": "upload_image",
+          "method": "upload_image_from_path_with_progress",
+          "args": [
+            ["path", "str_ref"],
+            ["options", "optional_upload_options"],
+            ["literal", "none"]
+          ],
+          "result": "json"
+        },
+        {
+          "op": "upload_video",
+          "method": "upload_video_from_path_with_progress",
+          "args": [
+            ["path", "str_ref"],
+            ["options", "optional_upload_options"],
+            ["literal", "none"]
+          ],
+          "result": "json"
+        },
+        {
+          "op": "upload_bytes",
+          "method": "upload_bytes",
+          "args": [
+            ["bytes", "bytes_vec"],
+            ["file_name", "str_ref"],
+            ["mime_type", "str_ref"],
+            ["options", "optional_upload_options"]
+          ],
+          "result": "json"
+        },
+        {
+          "op": "delete_file",
+          "method": "delete_file",
+          "args": [
+            ["file_id", "str_ref"],
+            ["hard_delete", "bool"]
+          ],
+          "result": "json_object",
+          "fields": {
+            "deleted": "deleted"
+          }
+        },
+        {
+          "op": "user_download_get_subfolder",
+          "method": "user_download_get_subfolder",
+          "args": [],
+          "result": "json_object",
+          "fields": {
+            "subfolder": "subfolder"
+          },
+          "cfg": "not(target_arch = \"wasm32\")"
+        },
+        {
+          "op": "user_download_set_subfolder",
+          "method": "user_download_set_subfolder",
+          "args": [
+            [
+              "name",
+              "str_any:name,subfolder"
+            ]
+          ],
+          "result": "unit",
+          "cfg": "not(target_arch = \"wasm32\")"
+        },
+        {
+          "op": "user_download_get_saved_path",
+          "method": "user_download_get_saved_path",
+          "args": [
+            [
+              "download_key",
+              "str_ref"
+            ]
+          ],
+          "result": "json_object",
+          "fields": {
+            "path": "path"
+          },
+          "cfg": "not(target_arch = \"wasm32\")"
+        },
+        {
+          "op": "user_download_delete_record",
+          "method": "user_download_delete_record",
+          "args": [
+            [
+              "download_key",
+              "str_ref"
+            ]
+          ],
+          "result": "unit",
+          "cfg": "not(target_arch = \"wasm32\")"
+        }
+      ]
+    },
+    {
+      "id": "capability",
+      "receiver": {
+        "type": "CapabilityApi",
+        "binding": "&Arc<CapabilityApi>"
+      },
+      "extra_receivers": [
+        {
+          "name": "client",
+          "type": "IMClient",
+          "binding": "&IMClient"
+        }
+      ],
+      "dispatch_fn": "dispatch_capability",
+      "is_fn": "is_capability_operation",
+      "ops_const": "CAPABILITY_DISPATCH_OPERATIONS",
+      "operations": [
+        {
+          "op": "capability_list",
+          "method": "list_capabilities",
+          "args": [],
+          "result": "json"
+        },
+        {
+          "op": "capability_list_user",
+          "method": "list_user_capabilities",
+          "args": [
+            [
+              "tenant_id",
+              "optional_str_ref"
+            ],
+            [
+              "user_id",
+              "optional_str_ref"
+            ]
+          ],
+          "result": "json"
+        },
+        {
+          "op": "capability_dispatch",
+          "method": "dispatch",
+          "args": [
+            [
+              "capability_id",
+              "str_ref"
+            ],
+            [
+              "payload",
+              "json_null_default"
+            ],
+            [
+              "conversation_id",
+              "optional_str_ref"
+            ],
+            [
+              "tenant_id",
+              "optional_str_ref"
+            ],
+            [
+              "user_id",
+              "optional_str_ref"
+            ]
+          ],
+          "result": "json"
+        },
+        {
+          "op": "capability_grant",
+          "method": "grant_user_capability",
+          "args": [
+            [
+              "tenant_id",
+              "str_ref"
+            ],
+            [
+              "user_id",
+              "str_ref"
+            ],
+            [
+              "capability_id",
+              "str_ref"
+            ],
+            [
+              "expires_at_rfc3339",
+              "optional_str_ref"
+            ],
+            [
+              "plan_code",
+              "optional_str_ref"
+            ],
+            [
+              "source",
+              "optional_str_ref"
+            ]
+          ],
+          "result": "unit"
+        },
+        {
+          "op": "capability_revoke",
+          "method": "revoke_user_capability",
+          "args": [
+            [
+              "tenant_id",
+              "str_ref"
+            ],
+            [
+              "user_id",
+              "str_ref"
+            ],
+            [
+              "capability_id",
+              "str_ref"
+            ]
+          ],
+          "result": "unit"
+        },
+        {
+          "op": "send_call_signal",
+          "handler": "custom_call_signal",
+          "args": [],
+          "result": "unit"
+        }
+      ]
+    }
+  ]
+}

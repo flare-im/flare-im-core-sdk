@@ -168,12 +168,15 @@ int32_t flare_message_recall(...);
 int32_t flare_message_delete(...);
 
 // 会话
-int32_t flare_conversation_update(...);
-int32_t flare_conversation_delete(...);
+int32_t flare_conversation_dispatch_json(...);
 
 // 媒体
-int32_t flare_media_upload(...);
-int32_t flare_media_download(...);
+int32_t flare_media_dispatch_json(...);
+int32_t flare_media_upload_file(...);
+int32_t flare_media_upload_image(...);
+int32_t flare_media_upload_video(...);
+int32_t flare_media_upload_bytes(...);
+int32_t flare_media_download_file_to_downloads(...);
 ```
 
 ### 3. 查询 API
@@ -185,8 +188,7 @@ int32_t flare_message_list(...);
 int32_t flare_message_search(...);
 
 // 会话
-int32_t flare_conversation_get(...);
-int32_t flare_conversation_list(...);
+int32_t flare_conversation_dispatch_json(...);
 ```
 
 ### 4. 监听 API

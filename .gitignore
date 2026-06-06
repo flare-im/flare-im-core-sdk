@@ -32,6 +32,8 @@ examples/target/
 examples/temp-data/
 examples/certs/
 dist/
+node_modules/
+bindings/wasm/pkg/
 
 examples/flare/
 examples/tauri/

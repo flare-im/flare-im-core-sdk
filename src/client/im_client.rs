@@ -28,10 +28,33 @@ use crate::model::message::MessageLocalState;
 use crate::shared::error::ErrorCode;
 use crate::shared::error::Result;
 use crate::shared::util::generate_test_token as util_generate_test_token;
+use crate::shared::util::{delay, timeout};
 use flare_proto::common::CallSignalEvent;
 use flare_proto::common::MessageStatus;
 use serde_json::Value;
+use std::future::Future;
 use std::time::Duration;
+
+use crate::shared::util::spawn_background;
+
+#[cfg(not(target_arch = "wasm32"))]
+fn spawn_im_background<F>(future: F)
+where
+    F: Future + Send + 'static,
+    F::Output: Send + 'static,
+{
+    spawn_background(async move {
+        let _ = future.await;
+    });
+}
+
+#[cfg(target_arch = "wasm32")]
+fn spawn_im_background<F>(future: F)
+where
+    F: Future<Output = ()> + 'static,
+{
+    spawn_background(future);
+}
 
 #[derive(Default)]
 pub(crate) struct IMClientInner {
@@ -173,6 +196,7 @@ impl IMClient {
         g.environment = environment;
         let data_root =
             resolve_sdk_data_root(sdk_config.as_ref().and_then(|cfg| cfg.data_url.as_deref()))?;
+        #[cfg(not(target_arch = "wasm32"))]
         std::fs::create_dir_all(&data_root).map_err(|e| {
             FlareError::localized(
                 ErrorCode::InvalidParameter,
@@ -344,7 +368,7 @@ impl IMClient {
         };
 
         if let Some(api) = presence_api.as_ref() {
-            match tokio::time::timeout(
+            match timeout(
                 PRESENCE_LOGOUT_TIMEOUT,
                 api.logout_current_device_presence(),
             )
@@ -361,7 +385,7 @@ impl IMClient {
             context.set_auth_context(String::new(), None).await;
         }
         if let Some(mut e) = engine {
-            match tokio::time::timeout(DISCONNECT_TIMEOUT, e.disconnect()).await {
+            match timeout(DISCONNECT_TIMEOUT, e.disconnect()).await {
                 Ok(Ok(())) => {}
                 Ok(Err(err)) => tracing::warn!(%err, "disconnect before login failed"),
                 Err(_) => tracing::warn!("disconnect before login timed out"),
@@ -408,6 +432,7 @@ impl IMClient {
             None => {
                 let path =
                     resolve_sdk_data_root(snap.1.as_ref().and_then(|cfg| cfg.data_url.as_deref()))?;
+                #[cfg(not(target_arch = "wasm32"))]
                 std::fs::create_dir_all(&path).map_err(|e| {
                     FlareError::localized(
                         ErrorCode::InvalidParameter,
@@ -738,7 +763,7 @@ impl IMClient {
     fn spawn_terminal_session_watcher(&self, generation: u64, bus: EventBus) {
         let client = self.clone();
         let mut rx = bus.subscribe_raw();
-        tokio::spawn(async move {
+        spawn_im_background(async move {
             loop {
                 let event = match rx.recv().await {
                     Ok(ev) => ev,
@@ -769,7 +794,7 @@ impl IMClient {
     fn spawn_reconnect_session_watcher(&self, generation: u64, bus: EventBus) {
         let client = self.clone();
         let mut rx = bus.subscribe_raw();
-        tokio::spawn(async move {
+        spawn_im_background(async move {
             loop {
                 let event = match rx.recv().await {
                     Ok(ev) => ev,
@@ -816,7 +841,7 @@ impl IMClient {
                         attempt,
                     }));
                     let delay_secs = reconnect_delay_secs(interval_secs, attempt);
-                    tokio::time::sleep(Duration::from_secs(delay_secs)).await;
+                    delay(Duration::from_secs(delay_secs)).await;
 
                     if client.is_current_transport_connected(generation).await {
                         tracing::debug!(

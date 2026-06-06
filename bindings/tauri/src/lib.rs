@@ -1,218 +1,96 @@
-//! Flare IM Core SDK — Tauri 命令薄封装：透传 [`flare_im_core_sdk::client::IMClient`] 与 Facade；
-//! SdkEvent → `im://*` 由 `sdk_login` 内 `spawn` 转发，无绑定层业务逻辑。
+//! Tauri binding for Flare IM Core SDK vNext.
 //!
-//! IPC JSON 字段为 **snake_case**（与 core-sdk 一致）。Web 宿主若希望业务层只用 camelCase，在宿主侧加薄封装即可，bindings 不维护第二套 serde 命名。
-//! **通话插件** `sdk_send_call_*` / `sdk_build_call_media_constraints` 使用 [`model`] 中 `CallPlugin*` 请求体，与 `flare-sdk-plugin-call::production` 对齐。
-//!
-//! ## 性能
-//! - [`SdkState`](state::SdkState) 仅持有一个 [`IMClient`]，命令热路径为 `Arc` 克隆，无绑定层异步锁。
-//! - `sdk_init` 仅需 `SdkInitArgs`；`sdk_login` 的 `AppHandle` 由 Tauri 注入，勿写入 invoke 参数。
+//! This plugin is an IPC adapter over the shared JSON binding runtime.
 
-pub mod commands;
-pub mod convert;
-pub mod model;
-pub mod state;
+use std::sync::Arc;
 
-pub use model::{
-    CallPluginAcceptRequest, CallPluginHangupRequest, CallPluginIceCandidateRequest,
-    CallPluginInviteRequest, CallPluginMediaConstraintsRequest, CallPluginRejectRequest,
-    CallPluginWebrtcSdpRequest, SdkConfigOptions, SendAckPayload,
-};
-pub use state::SdkState;
+use flare_im_core_sdk::{IMClient, SdkConfig};
+use tokio::sync::RwLock;
 
-use commands::{
-    call_signal::{
-        sdk_build_call_media_constraints, sdk_send_call_accept, sdk_send_call_hangup,
-        sdk_send_call_ice_candidate, sdk_send_call_invite, sdk_send_call_reject,
-        sdk_send_call_webrtc_sdp,
-    },
-    capability::{
-        sdk_rtc_accept_call, sdk_rtc_end_call, sdk_rtc_reject_call, sdk_rtc_sfu_add_ice_candidate,
-        sdk_rtc_sfu_get_room_state, sdk_rtc_sfu_handle_sdp_offer, sdk_rtc_sfu_join_room,
-        sdk_rtc_sfu_leave_room, sdk_rtc_sfu_set_subscription, sdk_rtc_start_audio,
-        sdk_rtc_start_video,
-    },
-    conversation::{
-        sdk_conversation_delete, sdk_conversation_get, sdk_conversation_get_group_by_user_ids,
-        sdk_conversation_get_multiple, sdk_conversation_get_one, sdk_conversation_list,
-        sdk_conversation_list_by_query, sdk_conversation_list_paginated,
-        sdk_conversation_list_participants, sdk_conversation_list_raw,
-        sdk_conversation_mark_all_read, sdk_conversation_mark_read, sdk_conversation_mark_unread,
-        sdk_conversation_set_archived, sdk_conversation_set_muted, sdk_conversation_set_pinned,
-        sdk_conversation_sync_participants, sdk_conversation_update_draft,
-    },
-    host_util::sdk_save_preview_jpeg_temp,
-    lifecycle::{
-        sdk_current_user_id, sdk_engine_state, sdk_generate_test_token, sdk_init, sdk_is_connected,
-        sdk_login, sdk_logout, sdk_mark_session_read, sdk_rtc_ice_config_snapshot,
-        sdk_set_conversation_input_state, sdk_sync_conversation, sdk_sync_messages,
-        sdk_update_access_token,
-    },
-    media::{
-        sdk_cache_remote_media, sdk_cancel_user_file_download, sdk_clear_media_cache,
-        sdk_download_file_to_downloads, sdk_get_file_download_subfolder, sdk_get_file_url,
-        sdk_media_cache_stats, sdk_media_delete_file, sdk_media_temp_download_url,
-        sdk_media_upload_file, sdk_media_upload_image, sdk_media_upload_video, sdk_path_exists,
-        sdk_resolve_media_access, sdk_send_with_media_progress, sdk_set_file_download_subfolder,
-        sdk_set_media_cache_max_bytes, sdk_set_media_cache_root,
-        sdk_user_file_download_delete_record, sdk_user_file_download_get_saved_path,
-    },
-    message::{
-        sdk_add_reaction, sdk_clear_conversation_messages, sdk_create_announcement,
-        sdk_create_audio, sdk_create_card, sdk_create_custom, sdk_create_emoji, sdk_create_file,
-        sdk_create_forward, sdk_create_image, sdk_create_image_group,
-        sdk_create_image_with_thumbnail, sdk_create_link_card, sdk_create_location,
-        sdk_create_mini_program, sdk_create_notification, sdk_create_placeholder, sdk_create_quote,
-        sdk_create_schedule, sdk_create_sticker, sdk_create_system, sdk_create_task,
-        sdk_create_text, sdk_create_thread_reply, sdk_create_video, sdk_create_vote,
-        sdk_delete_message, sdk_edit, sdk_edit_text_by_message_id, sdk_get_message,
-        sdk_get_message_raw, sdk_list_messages, sdk_mark, sdk_mark_by_message_id, sdk_mark_read,
-        sdk_mark_read_and_burn, sdk_mark_read_with_ids, sdk_mark_with_color, sdk_pin,
-        sdk_pin_by_message_id, sdk_recall, sdk_remove_reaction, sdk_search_messages,
-        sdk_search_messages_advanced, sdk_send, sdk_typing, sdk_unmark, sdk_unmark_by_message_id,
-        sdk_unpin, sdk_unpin_by_message_id,
-    },
-    presence::{sdk_batch_get_user_presence, sdk_get_user_presence, sdk_subscribe_user_presence},
-    rich_doc_v2::{
-        sdk_rich_doc_v2_create_message, sdk_rich_doc_v2_edit_message,
-        sdk_rich_doc_v2_normalize_from_doc_json, sdk_rich_doc_v2_normalize_from_html,
-        sdk_rich_doc_v2_normalize_from_markdown,
-    },
-};
+pub const BINDING_CONTRACT_VERSION: &str =
+    flare_im_core_sdk_bindings_runtime::BINDING_CONTRACT_VERSION;
 
-/// 返回 IM 命令的 invoke handler。应用内使用：`.invoke_handler(flare_im_core_sdk_tauri::im_invoke_handler())`
+pub type SdkConfigOptions = SdkConfig;
+
+#[derive(Clone, Default)]
+pub struct SdkState {
+    client: Arc<RwLock<Option<IMClient>>>,
+}
+
+impl SdkState {
+    pub async fn client(&self) -> Result<IMClient, String> {
+        self.client
+            .read()
+            .await
+            .clone()
+            .ok_or_else(|| "sdk is not initialized".to_string())
+    }
+}
+
+pub mod commands {
+    use flare_im_core_sdk::SdkConfig;
+    use serde::{Deserialize, Serialize};
+    use serde_json::Value;
+    use tauri::State;
+
+    use crate::{BINDING_CONTRACT_VERSION, SdkState};
+
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct SdkInitArgs {
+        pub config: SdkConfig,
+    }
+
+    #[tauri::command]
+    pub async fn sdk_contract_json() -> String {
+        flare_im_core_sdk_bindings_runtime::contract_json()
+    }
+
+    #[tauri::command]
+    pub async fn sdk_client_init_example_json() -> String {
+        flare_im_core_sdk_bindings_runtime::client_init_request_example_json()
+    }
+
+    #[tauri::command]
+    pub async fn sdk_init(state: State<'_, SdkState>, args: SdkInitArgs) -> Result<Value, String> {
+        let client = flare_im_core_sdk::IMClient::new(args.config).map_err(|e| e.to_string())?;
+        *state.client.write().await = Some(client);
+        Ok(serde_json::json!({
+            "binding_contract_version": BINDING_CONTRACT_VERSION
+        }))
+    }
+
+    #[tauri::command]
+    pub async fn sdk_release(state: State<'_, SdkState>) -> Result<Value, String> {
+        *state.client.write().await = None;
+        Ok(serde_json::json!({ "released": true }))
+    }
+
+    #[tauri::command]
+    pub async fn sdk_invoke(
+        state: State<'_, SdkState>,
+        request_json: String,
+    ) -> Result<String, String> {
+        let client = state.client().await?;
+        Ok(flare_im_core_sdk_bindings_runtime::invoke_json(&client, &request_json).await)
+    }
+
+    #[tauri::command]
+    pub async fn sdk_generate_test_token(user_id: String) -> String {
+        flare_im_core_sdk::generate_test_token(&user_id)
+    }
+}
+
+pub use commands::SdkInitArgs;
+
+/// Return the invoke handler for host apps:
+/// `.manage(SdkState::default()).invoke_handler(im_invoke_handler())`.
 pub fn im_invoke_handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + 'static {
     tauri::generate_handler![
-        sdk_save_preview_jpeg_temp,
-        // lifecycle
-        sdk_init,
-        sdk_login,
-        sdk_logout,
-        sdk_update_access_token,
-        sdk_is_connected,
-        sdk_current_user_id,
-        sdk_generate_test_token,
-        sdk_engine_state,
-        sdk_rtc_ice_config_snapshot,
-        sdk_sync_conversation,
-        sdk_sync_messages,
-        sdk_mark_session_read,
-        sdk_set_conversation_input_state,
-        sdk_get_user_presence,
-        sdk_batch_get_user_presence,
-        sdk_subscribe_user_presence,
-        sdk_rtc_start_audio,
-        sdk_rtc_start_video,
-        sdk_rtc_accept_call,
-        sdk_rtc_end_call,
-        sdk_rtc_reject_call,
-        sdk_rtc_sfu_join_room,
-        sdk_rtc_sfu_leave_room,
-        sdk_rtc_sfu_handle_sdp_offer,
-        sdk_rtc_sfu_add_ice_candidate,
-        sdk_rtc_sfu_get_room_state,
-        sdk_rtc_sfu_set_subscription,
-        sdk_send_call_invite,
-        sdk_send_call_accept,
-        sdk_send_call_hangup,
-        sdk_send_call_reject,
-        sdk_send_call_ice_candidate,
-        sdk_send_call_webrtc_sdp,
-        sdk_build_call_media_constraints,
-        // message build + send
-        sdk_create_text,
-        sdk_create_quote,
-        sdk_create_thread_reply,
-        sdk_create_forward,
-        sdk_create_image,
-        sdk_create_image_group,
-        sdk_create_image_with_thumbnail,
-        sdk_create_video,
-        sdk_create_audio,
-        sdk_create_file,
-        sdk_create_location,
-        sdk_create_card,
-        sdk_create_sticker,
-        sdk_create_emoji,
-        sdk_create_link_card,
-        sdk_create_mini_program,
-        sdk_rich_doc_v2_normalize_from_markdown,
-        sdk_rich_doc_v2_normalize_from_html,
-        sdk_rich_doc_v2_normalize_from_doc_json,
-        sdk_rich_doc_v2_create_message,
-        sdk_rich_doc_v2_edit_message,
-        sdk_create_system,
-        sdk_create_notification,
-        sdk_create_vote,
-        sdk_create_task,
-        sdk_create_schedule,
-        sdk_create_announcement,
-        sdk_create_custom,
-        sdk_create_placeholder,
-        sdk_send,
-        sdk_send_with_media_progress,
-        sdk_media_upload_file,
-        sdk_media_upload_image,
-        sdk_media_upload_video,
-        sdk_media_delete_file,
-        sdk_recall,
-        sdk_edit,
-        sdk_edit_text_by_message_id,
-        sdk_delete_message,
-        sdk_mark_read,
-        sdk_mark_read_and_burn,
-        sdk_mark_read_with_ids,
-        sdk_typing,
-        sdk_add_reaction,
-        sdk_remove_reaction,
-        sdk_pin,
-        sdk_unpin,
-        sdk_pin_by_message_id,
-        sdk_unpin_by_message_id,
-        sdk_mark,
-        sdk_mark_with_color,
-        sdk_unmark,
-        sdk_mark_by_message_id,
-        sdk_unmark_by_message_id,
-        sdk_get_file_url,
-        sdk_media_temp_download_url,
-        sdk_user_file_download_get_saved_path,
-        sdk_user_file_download_delete_record,
-        sdk_set_file_download_subfolder,
-        sdk_get_file_download_subfolder,
-        sdk_cancel_user_file_download,
-        sdk_download_file_to_downloads,
-        sdk_path_exists,
-        sdk_resolve_media_access,
-        sdk_cache_remote_media,
-        sdk_media_cache_stats,
-        sdk_set_media_cache_max_bytes,
-        sdk_set_media_cache_root,
-        sdk_clear_media_cache,
-        sdk_get_message,
-        sdk_get_message_raw,
-        sdk_list_messages,
-        sdk_search_messages,
-        sdk_search_messages_advanced,
-        sdk_clear_conversation_messages,
-        // conversation
-        sdk_conversation_list,
-        sdk_conversation_list_by_query,
-        sdk_conversation_get,
-        sdk_conversation_get_one,
-        sdk_conversation_get_group_by_user_ids,
-        sdk_conversation_sync_participants,
-        sdk_conversation_list_participants,
-        sdk_conversation_get_multiple,
-        sdk_conversation_list_paginated,
-        sdk_conversation_list_raw,
-        sdk_conversation_mark_read,
-        sdk_conversation_mark_all_read,
-        sdk_conversation_delete,
-        sdk_conversation_set_pinned,
-        sdk_conversation_set_muted,
-        sdk_conversation_set_archived,
-        sdk_conversation_mark_unread,
-        sdk_conversation_update_draft,
+        commands::sdk_contract_json,
+        commands::sdk_client_init_example_json,
+        commands::sdk_init,
+        commands::sdk_release,
+        commands::sdk_invoke,
+        commands::sdk_generate_test_token
     ]
 }

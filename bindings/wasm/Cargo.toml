@@ -11,13 +11,26 @@ description = "Flare IM Core SDK WebAssembly binding"
 name = "flare_im_core_sdk_wasm"
 crate-type = ["cdylib", "rlib"]
 
+[features]
+default = ["production-runtime"]
+local-smoke-runtime = []
+production-runtime = []
+
 [dependencies]
+console_error_panic_hook = "0.1"
+async-trait = "0.1"
+flare-core = { workspace = true }
+flare-im-core-sdk-bindings-runtime = { path = "../runtime" }
 flare-im-core-sdk = { path = "../.." }
 js-sys = "0.3"
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde-wasm-bindgen = "0.6"
 wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+tracing = "0.1"
+futures-channel = "0.3"
+tokio = { version = "1", default-features = false, features = ["sync", "macros", "rt", "time"] }
 
 [package.metadata.wasm-pack.profile.release]
 wasm-opt = false

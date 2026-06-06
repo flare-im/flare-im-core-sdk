@@ -1,15 +1,15 @@
 //! 同步协议处理：会话列表、单会话消息、已读上报及响应落库。
-//! 与 flare-proto 对齐：上行 Ack(ConversationAck)、Sync；下行 SyncRes。
+//! 与 flare-proto 对齐：上行 Ack(ReadAck)、Sync；下行 SyncRes。
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 
 use futures::stream::{self, StreamExt};
 
 use flare_proto::common::{
-    Ack, AckType, ConversationAck, ConversationParticipantsSync, GetSyncCursorSync,
-    MultiDeviceCursor, QueryEventsSync, SyncKind, SyncRes, UpdateConversationUserSettingsSync,
+    Ack, AckType, ConversationParticipantsSync, GetSyncCursorSync, MultiDeviceCursor,
+    QueryEventsSync, ReadAck, SyncKind, SyncRes, UpdateConversationUserSettingsSync,
     UpdateSyncCursorSync, ack::Payload as AckPayload, sync_res::Payload as SyncResPayload,
 };
 use tokio::sync::Mutex as AsyncMutex;
@@ -40,6 +40,21 @@ struct QueryEventsReqV1 {
     limit: i32,
     event_types: Vec<i32>,
     include_deleted: bool,
+}
+
+fn build_read_ack(conversation_id: &str, read_seq: u64) -> Ack {
+    let ack_id = format!("read:{}:{}", conversation_id, read_seq);
+    Ack {
+        r#type: AckType::Read as i32,
+        ack_id: Some(ack_id.clone()),
+        at: Some(system_time_to_prost_timestamp()),
+        payload: Some(AckPayload::Read(ReadAck {
+            conversation_id: conversation_id.to_string(),
+            read_seq,
+            device_id: None,
+            ack_id: Some(ack_id),
+        })),
+    }
 }
 
 pub struct SyncProtocolAdapter {
@@ -197,10 +212,7 @@ impl SyncProtocolAdapter {
         }
     }
 
-    /// 已读上报（ack.proto Ack.payload.conversation = ConversationAck）。
-    ///
-    /// `ConversationAck.last_delivered_seq` 在协议层同时承载会话位点，
-    /// 因此必须通过 metadata 显式声明这是 read ack，避免服务端把普通送达 ACK 误判为已读。
+    /// 已读上报（ack.proto Ack.payload.read = ReadAck）。
     pub async fn send_read_ack(&self, conversation_id: &str, read_seq: u64) -> Result<()> {
         self.send_read_ack_impl(conversation_id, read_seq).await
     }
@@ -234,21 +246,7 @@ impl SyncProtocolAdapter {
     }
 
     async fn send_read_ack_impl(&self, conversation_id: &str, read_seq: u64) -> Result<()> {
-        let mut metadata = HashMap::with_capacity(2);
-        metadata.insert("ack_kind".to_string(), "read".to_string());
-        metadata.insert("read_seq".to_string(), read_seq.to_string());
-
-        let ack = Ack {
-            r#type: AckType::Converstion as i32,
-            ack_id: None,
-            at: Some(system_time_to_prost_timestamp()),
-            payload: Some(AckPayload::Conversation(ConversationAck {
-                conversation_id: conversation_id.to_string(),
-                server_msg_ids: vec![],
-                last_delivered_seq: read_seq,
-                metadata,
-            })),
-        };
+        let ack = build_read_ack(conversation_id, read_seq);
         self.sender.send_ack(&ack).await
     }
 
@@ -1116,7 +1114,8 @@ impl SyncProtocolAdapter {
 
 #[cfg(test)]
 mod tests {
-    use super::max_applied_event_prefix_seq;
+    use super::{build_read_ack, max_applied_event_prefix_seq};
+    use flare_proto::common::{AckType, ack::Payload as AckPayload};
 
     fn make_event(seq: u64) -> flare_proto::common::Event {
         flare_proto::common::Event {
@@ -1143,5 +1142,21 @@ mod tests {
     fn event_prefix_keeps_known_seq_when_no_events() {
         let safe = max_applied_event_prefix_seq(77, &[], &[]);
         assert_eq!(safe, 77);
+    }
+
+    #[test]
+    fn build_read_ack_uses_typed_payload() {
+        let ack = build_read_ack("conv-1", 42);
+
+        assert_eq!(ack.r#type, AckType::Read as i32);
+        match ack.payload {
+            Some(AckPayload::Read(read)) => {
+                assert_eq!(read.conversation_id, "conv-1");
+                assert_eq!(read.read_seq, 42);
+                assert_eq!(read.device_id, None);
+                assert_eq!(read.ack_id, ack.ack_id);
+            }
+            other => panic!("expected AckPayload::Read, got {other:?}"),
+        }
     }
 }
