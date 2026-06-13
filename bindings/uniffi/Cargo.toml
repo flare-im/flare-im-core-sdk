@@ -16,13 +16,15 @@ publish = false
 crate-type = ["cdylib", "staticlib"]
 
 [dependencies]
-flare-im-core-sdk-bindings-runtime = { path = "../runtime" }
+flare-im-core-sdk-bindings-runtime = { path = "../shared" }
 flare-im-core-sdk = { path = "../.." }
 flare-im-core-sdk-storage-sqlite = { path = "../../storage/sqlite" }
 flare-proto = { path = "../../../flare-proto" }
 uniffi = "0.28"
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 prost = "0.14"
+serde_json = "1.0"
+thiserror = "2.0"
 
 [build-dependencies]
 uniffi = { version = "0.28", features = ["build"] }

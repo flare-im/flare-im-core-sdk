@@ -33,16 +33,16 @@ impl SyncEventApplier {
         let mut applied_seqs = Vec::new();
         for event in events {
             if !self.event_deduper.record_if_new(event).await {
-                applied_seqs.push(event.seq);
+                applied_seqs.push(event.conversation_seq);
                 continue;
             }
             match self.apply_event(user_id, event, mode).await {
-                Ok(true) => applied_seqs.push(event.seq),
+                Ok(true) => applied_seqs.push(event.conversation_seq),
                 Ok(false) => {
                     self.event_deduper.forget(event).await;
                     tracing::warn!(
                         conversation_id = %event.conversation_id,
-                        seq = event.seq,
+                        seq = event.conversation_seq,
                         event_type = event.r#type,
                         "关键事件目标状态暂不可用，保留后续重放机会"
                     );
@@ -51,7 +51,7 @@ impl SyncEventApplier {
                     self.event_deduper.forget(event).await;
                     tracing::warn!(
                         conversation_id = %event.conversation_id,
-                        seq = event.seq,
+                        seq = event.conversation_seq,
                         event_type = event.r#type,
                         error = %error,
                         "关键事件应用失败，保留后续重放机会"
@@ -86,12 +86,19 @@ impl SyncEventApplier {
             return Ok(true);
         }
         if let Some(DomainEventPayload::Edit(edit)) = &event.payload {
+            let Some(new_content) = edit.new_content.as_ref() else {
+                tracing::warn!(
+                    server_msg_id = %edit.server_msg_id,
+                    "sync edit event missing new_content; keeping event replayable"
+                );
+                return Ok(false);
+            };
             match self
                 .stores
                 .messages
                 .apply_edit_event(
                     &edit.server_msg_id,
-                    edit.new_content.clone(),
+                    new_content.encode_to_vec(),
                     edit.edit_version,
                 )
                 .await
@@ -204,14 +211,25 @@ impl SyncEventApplier {
             self.publish_extension_if_needed(event, mode, false);
             return Ok(true);
         }
-        if let Some(DomainEventPayload::BurnScheduled(burn_scheduled)) = &event.payload {
+        if let Some(DomainEventPayload::RetentionScheduled(retention_scheduled)) = &event.payload {
+            let (Some(policy), Some(state)) = (
+                retention_scheduled.policy.as_ref(),
+                retention_scheduled.state.as_ref(),
+            ) else {
+                tracing::warn!(
+                    server_msg_id = %retention_scheduled.server_msg_id,
+                    "sync retention scheduled event missing policy/state; keeping event replayable"
+                );
+                return Ok(false);
+            };
             let applied = self
                 .stores
                 .messages
-                .apply_burn_scheduled_event(
-                    &burn_scheduled.message_id,
-                    burn_scheduled.burn_at,
-                    burn_scheduled.event_time,
+                .apply_retention_scheduled_event(
+                    &retention_scheduled.server_msg_id,
+                    policy,
+                    state,
+                    retention_scheduled.scheduled_at,
                     operation_seq(event),
                 )
                 .await;
@@ -227,51 +245,28 @@ impl SyncEventApplier {
                 Err(error) => return Err(error),
             }
             self.bus
-                .publish(SdkEvent::Message(MessageEvent::BurnScheduled {
+                .publish(SdkEvent::Message(MessageEvent::RetentionScheduled {
                     conversation_id: event.conversation_id.clone(),
-                    event: burn_scheduled.clone(),
+                    event: retention_scheduled.clone(),
                 }));
             self.publish_extension_if_needed(event, mode, false);
             return Ok(true);
         }
-        if let Some(DomainEventPayload::Burned(burned)) = &event.payload {
+        if let Some(DomainEventPayload::RetentionExpired(retention_expired)) = &event.payload {
+            let Some(state) = retention_expired.state.as_ref() else {
+                tracing::warn!(
+                    server_msg_id = %retention_expired.server_msg_id,
+                    "sync retention expired event missing state; keeping event replayable"
+                );
+                return Ok(false);
+            };
             let applied = self
                 .stores
                 .messages
-                .apply_burned_event(
-                    &burned.message_id,
-                    burned.burn_at,
-                    burned.burned_at,
-                    operation_seq(event),
-                )
-                .await;
-            if matches!(applied, Ok(OperationApplyResult::IgnoredStale)) {
-                return Ok(true);
-            }
-            match applied {
-                Ok(OperationApplyResult::Applied) => {}
-                Ok(OperationApplyResult::NotFound) => {
-                    return self.missing_target_is_already_covered(user_id, event).await;
-                }
-                Ok(OperationApplyResult::IgnoredStale) => return Ok(true),
-                Err(error) => return Err(error),
-            }
-            self.bus.publish(SdkEvent::Message(MessageEvent::Burned {
-                conversation_id: event.conversation_id.clone(),
-                event: burned.clone(),
-            }));
-            self.publish_extension_if_needed(event, mode, false);
-            return Ok(true);
-        }
-        if let Some(DomainEventPayload::HardDeleted(hard_deleted)) = &event.payload {
-            let applied = self
-                .stores
-                .messages
-                .apply_hard_deleted_event(
-                    &hard_deleted.message_id,
-                    hard_deleted.burn_at,
-                    hard_deleted.burned_at,
-                    hard_deleted.event_time,
+                .apply_retention_expired_event(
+                    &retention_expired.server_msg_id,
+                    state,
+                    retention_expired.expired_at,
                     operation_seq(event),
                 )
                 .await;
@@ -287,9 +282,46 @@ impl SyncEventApplier {
                 Err(error) => return Err(error),
             }
             self.bus
-                .publish(SdkEvent::Message(MessageEvent::HardDeleted {
+                .publish(SdkEvent::Message(MessageEvent::RetentionExpired {
                     conversation_id: event.conversation_id.clone(),
-                    event: hard_deleted.clone(),
+                    event: retention_expired.clone(),
+                }));
+            self.publish_extension_if_needed(event, mode, false);
+            return Ok(true);
+        }
+        if let Some(DomainEventPayload::RetentionPurged(retention_purged)) = &event.payload {
+            let Some(state) = retention_purged.state.as_ref() else {
+                tracing::warn!(
+                    server_msg_id = %retention_purged.server_msg_id,
+                    "sync retention purged event missing state; keeping event replayable"
+                );
+                return Ok(false);
+            };
+            let applied = self
+                .stores
+                .messages
+                .apply_retention_purged_event(
+                    &retention_purged.server_msg_id,
+                    state,
+                    retention_purged.purged_at,
+                    operation_seq(event),
+                )
+                .await;
+            if matches!(applied, Ok(OperationApplyResult::IgnoredStale)) {
+                return Ok(true);
+            }
+            match applied {
+                Ok(OperationApplyResult::Applied) => {}
+                Ok(OperationApplyResult::NotFound) => {
+                    return self.missing_target_is_already_covered(user_id, event).await;
+                }
+                Ok(OperationApplyResult::IgnoredStale) => return Ok(true),
+                Err(error) => return Err(error),
+            }
+            self.bus
+                .publish(SdkEvent::Message(MessageEvent::RetentionPurged {
+                    conversation_id: event.conversation_id.clone(),
+                    event: retention_purged.clone(),
                 }));
             self.publish_extension_if_needed(event, mode, false);
             return Ok(true);
@@ -406,24 +438,6 @@ impl SyncEventApplier {
             self.publish_extension_if_needed(event, mode, false);
             return Ok(true);
         }
-        if let Some(DomainEventPayload::Presence(presence)) = &event.payload {
-            self.bus
-                .publish(SdkEvent::Message(MessageEvent::PresenceChanged {
-                    conversation_id: event.conversation_id.clone(),
-                    event: presence.clone(),
-                }));
-            self.publish_extension_if_needed(event, mode, false);
-            return Ok(true);
-        }
-        if let Some(DomainEventPayload::CallSignal(call)) = &event.payload {
-            self.bus
-                .publish(SdkEvent::Message(MessageEvent::CallSignal {
-                    conversation_id: event.conversation_id.clone(),
-                    event: Box::new(call.clone()),
-                }));
-            // EVENT_CALL_SIGNAL 已由 MessageEvent::CallSignal 承载，不再走 Extension 重复下发。
-            return Ok(true);
-        }
         if let Some(DomainEventPayload::Custom(custom)) = &event.payload {
             self.bus.publish(SdkEvent::Message(MessageEvent::Custom {
                 conversation_id: event.conversation_id.clone(),
@@ -469,10 +483,11 @@ impl SyncEventApplier {
         user_id: &str,
         event: &flare_proto::common::Event,
     ) -> Result<bool> {
-        let target_seq = event
-            .event_seq
-            .or(if event.seq > 0 { Some(event.seq) } else { None })
-            .unwrap_or_default();
+        let target_seq = if event.conversation_seq > 0 {
+            event.conversation_seq
+        } else {
+            0
+        };
         if user_id.is_empty() || event.conversation_id.trim().is_empty() || target_seq == 0 {
             return Ok(false);
         }
@@ -514,9 +529,6 @@ impl SyncEventApplier {
         mode: ReplayMode,
         is_delete: bool,
     ) {
-        if event.r#type == flare_proto::common::EventType::EventCallSignal as i32 {
-            return;
-        }
         match mode {
             ReplayMode::SingleConversation => {
                 if is_delete {
@@ -548,7 +560,7 @@ impl SyncEventApplier {
 mod tests {
     use super::{ReplayMode, SyncEventApplier};
     use crate::application::services::EventDeduper;
-    use crate::core::event::{EventBus, MessageEvent, SdkEvent};
+    use crate::core::event::EventBus;
     use crate::domain::{
         ConversationReader, ConversationWriter, MessageReader, MessageWriter, SyncCursorReader,
         SyncCursorVo, SyncCursorWriter,
@@ -557,10 +569,8 @@ mod tests {
     use crate::infrastructure::persistence::{SqliteMessageRepo, sqlite_init_schema};
     use crate::shared::error::Result;
     use async_trait::async_trait;
-    use flare_proto::common::BurnStatus;
     use sqlx::SqlitePool;
     use std::sync::Arc;
-    use tokio::time::{Duration, timeout};
 
     struct NoopConversationStore;
     struct NoopSyncCursorStore;
@@ -694,7 +704,7 @@ mod tests {
         message.client_msg_id = "client-outgoing-1".to_string();
         message.conversation_id = "conv-1".to_string();
         message.sender_id = "u1".to_string();
-        message.seq = 5;
+        message.conversation_seq = 5;
         message.status = flare_proto::common::MessageStatus::Sent as i32;
         message_repo.save_batch(&[message]).await.unwrap();
 
@@ -722,111 +732,12 @@ mod tests {
             .unwrap();
         assert_eq!(
             updated.status,
-            flare_proto::common::MessageStatus::Read as i32
+            flare_proto::common::MessageStatus::Sent as i32
         );
         assert!(updated.is_read);
-    }
-
-    #[tokio::test]
-    async fn replay_burned_event_is_idempotent_and_emits_once() {
-        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
-        sqlite_init_schema(&pool).await.unwrap();
-        let message_repo = Arc::new(SqliteMessageRepo::new(pool));
-        let bus = EventBus::new();
-        let mut receiver = bus.subscribe_raw();
-        let applier = SyncEventApplier::new(
-            StoreProvider {
-                messages: message_repo.clone(),
-                conversations: Arc::new(NoopConversationStore),
-                conversation_participants: None,
-                cursors: Arc::new(NoopSyncCursorStore),
-                pending_send_reader: None,
-                pending_send_writer: None,
-                upload_manifest_store: None,
-                media_cache_store: None,
-                media_cache_admin: None,
-                user_file_download_store: None,
-                user_profiles_reader: None,
-                user_profiles_writer: None,
-            },
-            bus,
-            EventDeduper::new(Some(32)),
-        );
-
-        let mut message = crate::model::IMMessage::new(flare_proto::common::Message::default());
-        message.server_id = "server-burn-sync-1".to_string();
-        message.client_msg_id = "client-burn-sync-1".to_string();
-        message.conversation_id = "conv-burn".to_string();
-        message.sender_id = "u1".to_string();
-        message.content_bytes = b"hello".to_vec();
-        message_repo.save_batch(&[message]).await.unwrap();
-
-        let newer = flare_proto::common::Event {
-            event_id: "evt-burned-1".to_string(),
-            event_seq: Some(100),
-            conversation_id: "conv-burn".to_string(),
-            payload: Some(flare_proto::common::event::Payload::Burned(
-                flare_proto::common::MessageBurnedEvent {
-                    conversation_id: "conv-burn".to_string(),
-                    message_id: "server-burn-sync-1".to_string(),
-                    server_id: "server-burn-sync-1".to_string(),
-                    burn_at: 2_000_000_001,
-                    burned_at: 2_000_000_005,
-                    event_time: 2_000_000_005,
-                    ..Default::default()
-                },
-            )),
-            ..Default::default()
-        };
-        let stale = flare_proto::common::Event {
-            event_id: "evt-burned-2".to_string(),
-            event_seq: Some(99),
-            conversation_id: "conv-burn".to_string(),
-            payload: Some(flare_proto::common::event::Payload::Burned(
-                flare_proto::common::MessageBurnedEvent {
-                    conversation_id: "conv-burn".to_string(),
-                    message_id: "server-burn-sync-1".to_string(),
-                    server_id: "server-burn-sync-1".to_string(),
-                    burn_at: 2_000_000_100,
-                    burned_at: 2_000_000_200,
-                    event_time: 2_000_000_200,
-                    ..Default::default()
-                },
-            )),
-            ..Default::default()
-        };
-
-        applier
-            .apply_events("u1", &[newer, stale], ReplayMode::CriticalEvents)
-            .await;
-
-        let updated = message_repo
-            .get("server-burn-sync-1")
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(updated.burn_status, BurnStatus::Burned as i32);
-        assert_eq!(updated.burn_at, Some(2_000_000_001));
-        assert_eq!(updated.burned_at, Some(2_000_000_005));
-        assert!(updated.content_bytes.is_empty());
-        assert_eq!(
-            updated.extra.get("burn_placeholder").map(String::as_str),
-            Some("该消息已销毁")
-        );
-
-        let mut burned_events = 0usize;
-        while let Ok(Ok(event)) = timeout(Duration::from_millis(25), receiver.recv()).await {
-            if let SdkEvent::Message(MessageEvent::Burned { event, .. }) = event {
-                burned_events += 1;
-                assert_eq!(event.message_id, "server-burn-sync-1");
-            }
-        }
-        assert_eq!(burned_events, 1);
     }
 }
 
 fn operation_seq(event: &flare_proto::common::Event) -> Option<u64> {
-    event
-        .event_seq
-        .or(if event.seq > 0 { Some(event.seq) } else { None })
+    (event.conversation_seq > 0).then_some(event.conversation_seq)
 }

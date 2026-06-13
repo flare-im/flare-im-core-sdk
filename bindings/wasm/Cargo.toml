@@ -13,6 +13,10 @@ crate-type = ["cdylib", "rlib"]
 
 [features]
 default = ["production-runtime"]
+dev-test-token = [
+    "flare-im-core-sdk/dev-test-token",
+    "flare-im-core-sdk-bindings-runtime/dev-test-token",
+]
 local-smoke-runtime = []
 production-runtime = []
 
@@ -20,8 +24,10 @@ production-runtime = []
 console_error_panic_hook = "0.1"
 async-trait = "0.1"
 flare-core = { workspace = true }
-flare-im-core-sdk-bindings-runtime = { path = "../runtime" }
+flare-im-core-sdk-bindings-runtime = { path = "../shared" }
+flare-im-core-sdk-storage-indexeddb = { path = "../../storage/indexeddb" }
 flare-im-core-sdk = { path = "../.." }
+flare-proto = { workspace = true }
 js-sys = "0.3"
 serde = { workspace = true }
 serde_json = { workspace = true }

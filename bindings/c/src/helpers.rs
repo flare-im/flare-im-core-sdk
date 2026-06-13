@@ -3,8 +3,8 @@
 use serde::de::DeserializeOwned;
 use std::ffi::{CString, c_char};
 
-use flare_im_core_sdk::client::lifecycle::SdkConfigOverlay;
 use flare_im_core_sdk::model::UploadOptions;
+use flare_im_core_sdk::prelude::SdkConfigOverlay;
 use serde_json::Value;
 
 use crate::abi;

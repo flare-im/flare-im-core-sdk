@@ -75,6 +75,7 @@ impl HttpRequestContext {
 
     pub async fn clear_gateway_context(&self) {
         *self.gateway_token.write().await = String::new();
+        *self.tenant_id.write().await = String::new();
         *self.user_id.write().await = String::new();
     }
 
@@ -159,6 +160,46 @@ impl HttpRequestContext {
             headers.insert("Accept-Language".to_string(), language);
         }
         headers
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::HttpRequestContext;
+
+    #[tokio::test]
+    async fn clear_gateway_context_falls_back_to_im_auth_without_stale_identity() {
+        let context = HttpRequestContext::new();
+        context.set_auth_context("im-token".to_string(), None).await;
+        context
+            .set_gateway_context(
+                "old-gateway-token".to_string(),
+                "tenant-a".to_string(),
+                "alice".to_string(),
+                None,
+            )
+            .await;
+
+        let headers = context.build_headers().await;
+        assert_eq!(
+            headers.get("Authorization").map(String::as_str),
+            Some("Bearer old-gateway-token")
+        );
+        assert_eq!(
+            headers.get("x-tenant-id").map(String::as_str),
+            Some("tenant-a")
+        );
+        assert_eq!(headers.get("x-user-id").map(String::as_str), Some("alice"));
+
+        context.clear_gateway_context().await;
+
+        let headers = context.build_headers().await;
+        assert_eq!(
+            headers.get("Authorization").map(String::as_str),
+            Some("Bearer im-token")
+        );
+        assert_eq!(headers.get("x-tenant-id").map(String::as_str), Some("0"));
+        assert_eq!(headers.get("x-user-id"), None);
     }
 }
 

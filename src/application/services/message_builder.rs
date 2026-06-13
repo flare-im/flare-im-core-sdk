@@ -5,7 +5,6 @@ use crate::model::message::IMMessage;
 use crate::model::message_builder::MessageBuilder;
 use crate::model::message_elem::{elem_plain_summary, elem_to_message_content};
 use crate::shared::error::{ErrorCode, FlareError, Result};
-use crate::shared::util::date::ms_to_prost_timestamp;
 use flare_proto::common::{ForwardItem, ForwardMode, ImageInfo};
 use std::collections::HashMap;
 
@@ -119,7 +118,7 @@ impl MessageBuilderService {
         let content = content_builder.build();
         let mut builder = MessageBuilder::new(conversation_id, sender_id).content(content);
         if mention_all {
-            builder = builder.extra("mention_all", "true");
+            builder = builder.attributes("mention_all", "true");
         }
         if let Some(channel_id) = channel_id {
             builder = builder.channel(channel_id).single_chat();
@@ -164,7 +163,7 @@ impl MessageBuilderService {
         let content = quote_builder.build();
         let message = MessageBuilder::new(conversation_id, sender_id)
             .content(content)
-            .extra("contentText", text.as_ref())
+            .attributes("contentText", text.as_ref())
             .build()?;
         Ok(IMMessage::new(message))
     }
@@ -178,7 +177,7 @@ impl MessageBuilderService {
         let content = ContentBuilder::thread(thread_id).build();
         let message = MessageBuilder::new(conversation_id, sender_id)
             .content(content)
-            .extra("contentText", text.as_ref())
+            .attributes("contentText", text.as_ref())
             .build()?;
         Ok(IMMessage::new(message))
     }
@@ -690,7 +689,7 @@ fn forward_item_from_source(source: &IMMessage) -> Result<ForwardItem> {
         } else {
             Some(source.sender_name.clone())
         },
-        source_message_time: ms_to_prost_timestamp(source.timestamp),
+        source_message_created_at: Some(i64::try_from(source.created_at).unwrap_or(i64::MAX)),
         message_type: source.message_type,
         plain_text: plain,
         content: Some(inner_mc),

@@ -1,6 +1,9 @@
 use std::sync::Arc;
 use std::sync::Arc as StdArc;
+use std::sync::atomic::{AtomicU8, Ordering};
+use std::time::Duration;
 
+use flare_core::common::{HeartbeatAppState, HeartbeatConfig};
 use tokio::sync::RwLock;
 
 use crate::application::notification::NotificationInboundPipeline;
@@ -18,13 +21,35 @@ use crate::infrastructure::transport::{SocketHandler, SocketTransport};
 use crate::shared::error::FlareError;
 
 /// 对外暴露的连接状态（与 core FSM ConnectionState 对齐，便于 UI 展示）
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SdkState {
     Disconnected,
     Connecting,
     Connected,
     Ready,
     Reconnecting,
+}
+
+impl SdkState {
+    pub(crate) fn as_u8(self) -> u8 {
+        match self {
+            SdkState::Disconnected => 0,
+            SdkState::Connecting => 1,
+            SdkState::Connected => 2,
+            SdkState::Ready => 3,
+            SdkState::Reconnecting => 4,
+        }
+    }
+
+    pub(crate) fn from_u8(value: u8) -> Self {
+        match value {
+            1 => SdkState::Connecting,
+            2 => SdkState::Connected,
+            3 => SdkState::Ready,
+            4 => SdkState::Reconnecting,
+            _ => SdkState::Disconnected,
+        }
+    }
 }
 
 impl From<ConnectionState> for SdkState {
@@ -54,6 +79,7 @@ pub struct SdkEngine {
     chain: Arc<MiddlewareChain>,
     reliable_queue: Option<Arc<ReliableSendQueue>>,
     connection_state: StdArc<RwLock<ConnectionState>>,
+    state_snapshot: AtomicU8,
     event_deduper: EventDeduper,
     message_deduper: MessageDeduper,
     notification_pipeline: NotificationInboundPipeline,
@@ -72,6 +98,9 @@ pub(crate) struct SdkEngineConfig {
     pub event_deduper: EventDeduper,
     pub message_deduper: MessageDeduper,
     pub notification_pipeline: NotificationInboundPipeline,
+    pub ack_timeout_secs: Option<u64>,
+    pub ack_max_retries: Option<u32>,
+    pub ack_max_in_flight: Option<usize>,
 }
 
 impl SdkEngine {
@@ -91,6 +120,9 @@ impl SdkEngine {
             event_deduper,
             message_deduper,
             notification_pipeline,
+            ack_timeout_secs,
+            ack_max_retries,
+            ack_max_in_flight,
         } = config;
         let sender = transport.sender().clone();
         let reliable_queue = stores.pending_sends().map(|(reader, writer)| {
@@ -102,8 +134,9 @@ impl SdkEngine {
                 conversation_store: stores.conversations.clone(),
                 current_user_id: current_user_id.clone(),
                 bus: bus.clone(),
-                timeout_secs: None,
-                max_retries: None,
+                timeout_secs: ack_timeout_secs,
+                max_retries: ack_max_retries,
+                max_in_flight: ack_max_in_flight,
             }))
         });
         Self {
@@ -120,6 +153,7 @@ impl SdkEngine {
             chain,
             reliable_queue,
             connection_state: StdArc::new(RwLock::new(ConnectionState::Disconnected)),
+            state_snapshot: AtomicU8::new(SdkState::Disconnected.as_u8()),
             event_deduper,
             message_deduper,
             notification_pipeline,
@@ -133,11 +167,17 @@ impl SdkEngine {
             }));
     }
 
+    fn store_state_snapshot(&self, state: ConnectionState) {
+        self.state_snapshot
+            .store(SdkState::from(state).as_u8(), Ordering::Release);
+    }
+
     async fn transition(&self, event: ConnectionEvent) {
         let mut guard = self.connection_state.write().await;
         match ConnectionFsm::transition(*guard, &event) {
             Ok(next) => {
                 *guard = next;
+                self.store_state_snapshot(next);
                 drop(guard);
                 self.publish_state(next);
                 // FSM `Connected` 与 EventBus `ConnectionEvent::Connected` 不同名域；
@@ -166,6 +206,7 @@ impl SdkEngine {
         {
             let mut guard = self.connection_state.write().await;
             *guard = ConnectionState::Disconnected;
+            self.store_state_snapshot(ConnectionState::Disconnected);
         }
         self.publish_state(ConnectionState::Disconnected);
         tracing::warn!(
@@ -286,14 +327,22 @@ impl SdkEngine {
             .await
     }
 
+    pub(crate) async fn deactivate_local_session(&self) {
+        self.sync_manager.stop_sync();
+        if let Some(queue) = &self.reliable_queue {
+            queue.shutdown();
+        }
+        *self.current_user_id.write().await = String::new();
+    }
+
     pub async fn disconnect(&mut self) -> crate::shared::error::Result<()> {
         self.transition(ConnectionEvent::DisconnectRequested).await;
-        self.sync_manager.stop_sync();
+        self.deactivate_local_session().await;
         self.transport.disconnect().await?;
-        *self.current_user_id.write().await = String::new();
         {
             let mut guard = self.connection_state.write().await;
             *guard = ConnectionState::Disconnected;
+            self.store_state_snapshot(ConnectionState::Disconnected);
             drop(guard);
         }
         self.publish_state(ConnectionState::Disconnected);
@@ -319,14 +368,27 @@ impl SdkEngine {
 
     /// 当前连接状态（由 FSM 驱动）
     pub fn state(&self) -> SdkState {
-        self.connection_state
-            .try_read()
-            .map(|g| (*g).into())
-            .unwrap_or(SdkState::Disconnected)
+        SdkState::from_u8(self.state_snapshot.load(Ordering::Acquire))
     }
 
     pub async fn transport_connected(&self) -> bool {
         self.transport.is_connected().await
+    }
+
+    pub async fn update_heartbeat_config(&self, config: HeartbeatConfig) -> crate::Result<()> {
+        self.transport.update_heartbeat_config(config).await
+    }
+
+    pub async fn set_heartbeat_app_state(&self, state: HeartbeatAppState) -> crate::Result<()> {
+        self.transport.set_heartbeat_app_state(state).await
+    }
+
+    pub async fn set_heartbeat_nat_timeout(&self, timeout: Option<Duration>) -> crate::Result<()> {
+        self.transport.set_heartbeat_nat_timeout(timeout).await
+    }
+
+    pub async fn heartbeat_effective_interval(&self) -> Option<Duration> {
+        self.transport.heartbeat_effective_interval().await
     }
 
     pub fn bus(&self) -> &EventBus {
@@ -369,3 +431,76 @@ impl SdkEngine {
 }
 
 use crate::core::Dispatcher;
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use tokio::sync::RwLock;
+    use tokio::time::{Duration, timeout};
+
+    use super::{SdkEngine, SdkEngineConfig};
+    use crate::application::notification::{
+        NotificationHandlerRegistry, NotificationInboundPipeline,
+    };
+    use crate::application::services::{EventDeduper, MessageDeduper};
+    use crate::client::config::SdkConfig;
+    use crate::core::event::EventBus;
+    use crate::extension::middleware::MiddlewareChain;
+    use crate::infrastructure::persistence::memory_im::in_memory_im_provider;
+    use crate::infrastructure::protocol::{Codec, ProtobufCodec};
+    use crate::infrastructure::transport::SocketTransport;
+    use crate::model::IMMessage;
+
+    fn test_engine(current_user_id: crate::core::CurrentUserIdStore) -> SdkEngine {
+        let stores = in_memory_im_provider();
+        let bus = EventBus::new();
+        let message_deduper = MessageDeduper::new(Some(8));
+        SdkEngine::new(SdkEngineConfig {
+            stores,
+            chain: Arc::new(MiddlewareChain::new()),
+            transport: SocketTransport::new(SdkConfig::default()),
+            current_user_id,
+            codec: Arc::new(ProtobufCodec) as Arc<dyn Codec>,
+            bus: bus.clone(),
+            sync_response_handler: None,
+            session_sync: None,
+            conversation_summary_sync: None,
+            event_deduper: EventDeduper::new(Some(8)),
+            message_deduper: message_deduper.clone(),
+            notification_pipeline: NotificationInboundPipeline::new(
+                Arc::new(NotificationHandlerRegistry::new()),
+                message_deduper,
+                bus,
+            ),
+            ack_timeout_secs: Some(60),
+            ack_max_retries: Some(3),
+            ack_max_in_flight: Some(4),
+        })
+    }
+
+    #[tokio::test]
+    async fn deactivate_local_session_clears_user_and_stops_reliable_queue() {
+        let current_user_id = Arc::new(RwLock::new("u1".to_string()));
+        let engine = test_engine(current_user_id.clone());
+        let queue = engine
+            .reliable_queue()
+            .expect("in-memory provider exposes pending send store");
+
+        engine.deactivate_local_session().await;
+
+        assert_eq!(engine.current_user_id().await, "");
+        assert_eq!(current_user_id.read().await.as_str(), "");
+
+        let mut message = IMMessage::new(flare_proto::common::Message::default());
+        message.client_msg_id = "client-after-logout".to_string();
+        message.conversation_id = "conv-after-logout".to_string();
+        message.sender_id = "u1".to_string();
+
+        let result = timeout(Duration::from_millis(200), queue.enqueue(message)).await;
+        assert!(
+            matches!(result, Ok(Err(_))),
+            "shutdown queue must reject stale enqueue attempts"
+        );
+    }
+}

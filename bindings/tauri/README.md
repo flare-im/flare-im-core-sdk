@@ -1,120 +1,57 @@
 # Flare IM Core SDK Tauri Binding
 
-`bindings/tauri` is the active desktop shell adapter for Tauri apps.
-
-It is not the universal native SDK boundary. Mobile, Flutter, React Native
-native modules, Harmony, Node native, Unity, and generic native desktop wrappers
-should use `bindings/c`.
+`bindings/tauri` is a thin IPC adapter over the shared binding runtime. It does
+not own IM behavior, event mapping, storage, sync, or transport semantics.
 
 ## Contract
 
 Canonical API, event, and error contracts live in:
 
 ```text
-../contract/manifest.json
 ../contract/apis.json
 ../contract/events.json
 ../contract/errors.json
+../contract/client_config.json
 ```
 
-Tauri command names and `im://*` event names must stay aligned with those files.
+Run `rtk make -C bindings codegen` after changing contract JSON.
 
 ## Shape
 
 ```text
 bindings/tauri/
   src/
-    commands/
-      lifecycle.rs
-      message.rs
-      conversation/
-      media.rs
-      presence.rs
-      capability.rs
-      call_signal.rs
-      rich_doc_v2.rs
-    convert.rs      SdkEvent -> im://* event mapping
-    model.rs        Tauri IPC payload models
-    state.rs        IMClient session holder
-    lib.rs          im_invoke_handler()
+    lib.rs          sdk_contract_json / sdk_init / sdk_invoke commands
+    generated/      generated contract metadata; not the behavior source
 ```
+
+The active Tauri surface creates an `IMClient::new()` shell with `sdk_init`,
+then forwards JSON `BindingRequest` values through
+`flare_im_core_sdk_bindings_runtime::invoke_json`.
 
 ## Usage
 
-Register the shared state and invoke handler:
-
 ```rust
 tauri::Builder::default()
-    .manage(flare_im_core_sdk_tauri::SdkState::new())
+    .manage(flare_im_core_sdk_tauri::SdkState::default())
     .invoke_handler(flare_im_core_sdk_tauri::im_invoke_handler())
     .run(tauri::generate_context!())?;
 ```
 
-Frontend calls use snake_case payload fields, matching core-sdk serialization:
-
 ```ts
 await invoke("sdk_init", {
-  args: {
-    environment: "development",
-    sdk_config: { ws_url: "ws://localhost:60051" }
-  }
+  args: { config: { ws_url: "ws://localhost:60051" } }
 });
 
-await invoke("sdk_login", {
-  user_id: "u1",
-  token: "..."
+const response = await invoke("sdk_invoke", {
+  requestJson: JSON.stringify({ route: "sdk.state", params: {} })
 });
-```
-
-## Events
-
-`sdk_login` installs an EventBus forwarder. Events are emitted with the
-`im://*` names listed in `../contract/events.json`, including:
-
-```text
-im://connected
-im://disconnected
-im://state
-im://sync_state_changed
-im://message
-im://message_batch
-im://send_ack
-im://send_failed
-im://message_recalled
-im://message_edited
-im://message_reaction_changed
-im://message_deleted
-im://message_read_receipt
-im://message_burn_scheduled
-im://message_burned
-im://message_hard_deleted
-im://message_pinned
-im://message_unpinned
-im://message_marked
-im://message_unmarked
-im://presence_changed
-im://typing
-im://call_signal
-im://message_custom_event
-im://notification
-im://conversation_created
-im://conversation_updated
-im://conversation_deleted
-im://unread_count_changed
-im://conversations_synced
-im://sync_started
-im://sync_finished
-im://sync_failed
-im://sync_progress
-im://sync_completed
-im://extension
 ```
 
 ## Rules
 
 - Do not implement IM business rules in this crate.
-- Keep command payloads snake_case at the Rust boundary.
-- Keep event mapping in `convert.rs` exhaustive for `SdkEvent`.
-- Add or rename commands only with matching updates to `../contract/apis.json`.
-- Add or rename events only with matching updates to `../contract/events.json`.
-- Keep callback/UI-thread decisions in the host app or client SDK, not here.
+- Do not restore the old command tree or `SdkEvent -> im://*` converter without
+  first wiring it to the current `SdkEvent` and `events.json` contract.
+- RTC/SFU signaling uses DATA capability packets and `rtc.*` IDs, not durable
+  `call_signal` events.

@@ -86,6 +86,34 @@ impl PendingSendReader for MemoryPendingSendStore {
         let data = self.data.read().await;
         Ok(data.values().min_by_key(|e| e.enqueued_at_ms).cloned())
     }
+
+    async fn list_oldest_excluding(
+        &self,
+        excluded_client_msg_ids: &[String],
+        limit: usize,
+    ) -> Result<Vec<PendingSendVo>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+
+        let excluded = excluded_client_msg_ids
+            .iter()
+            .map(String::as_str)
+            .collect::<std::collections::HashSet<_>>();
+        let data = self.data.read().await;
+        let mut out = data
+            .values()
+            .filter(|entry| !excluded.contains(entry.client_msg_id.as_str()))
+            .cloned()
+            .collect::<Vec<_>>();
+        out.sort_by(|a, b| {
+            a.enqueued_at_ms
+                .cmp(&b.enqueued_at_ms)
+                .then_with(|| a.client_msg_id.cmp(&b.client_msg_id))
+        });
+        out.truncate(limit);
+        Ok(out)
+    }
 }
 
 #[async_trait]

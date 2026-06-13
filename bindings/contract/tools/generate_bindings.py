@@ -12,7 +12,7 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[2]
 CONTRACT_DIR = ROOT / "contract"
-RUNTIME_CONTRACT = ROOT / "runtime" / "src" / "generated" / "contract.rs"
+RUNTIME_CONTRACT = ROOT / "shared" / "src" / "generated" / "contract.rs"
 PLATFORM_OUTS = {
     "c": ROOT / "c" / "src" / "generated" / "contract.rs",
     "wasm": ROOT / "wasm" / "src" / "generated" / "contract.rs",
@@ -56,10 +56,9 @@ def method_name_for_build_op(op: str) -> str:
 
 
 def build_op_from_api_id(api_id: str) -> str | None:
-    if not api_id.startswith("messages.build."):
+    if not api_id.startswith("message_builder.create_"):
         return None
-    suffix = api_id.split(".", 2)[2]
-    return f"create_{suffix}"
+    return api_id.split(".", 1)[1]
 
 
 def collect_api_operations(apis: dict[str, Any]) -> list[dict[str, Any]]:
@@ -76,6 +75,7 @@ def collect_api_operations(apis: dict[str, Any]) -> list[dict[str, Any]]:
                     "c_symbol": c_symbol,
                     "c_dispatch_op": dispatch_op,
                     "tauri": method.get("tauri"),
+                    "dev_only": bool(method.get("dev_only", False)),
                 }
             )
     return rows
@@ -182,6 +182,30 @@ def ensure_unique(label: str, values: list[str]) -> None:
         raise ValueError(f"{label} contains duplicate values: {joined}")
 
 
+def ensure_no_removed_api_aliases(api_ids: list[str]) -> None:
+    removed_prefixes = (
+        "events.",
+        "messages.",
+        "conversations.",
+        "capabilities.",
+    )
+    removed_ids = {
+        "media.get_file_url",
+        "sync.set_conversation_input_state",
+    }
+    offenders = [
+        api_id
+        for api_id in api_ids
+        if api_id in removed_ids or api_id.startswith(removed_prefixes)
+    ]
+    if offenders:
+        joined = ", ".join(sorted(offenders))
+        raise ValueError(
+            "apis.json contains removed compatibility API ids; use singular "
+            f"canonical contract ids instead: {joined}"
+        )
+
+
 def c_symbol_runtime_group(symbol: str) -> str:
     channel = symbol.removeprefix("flare_").removesuffix("_json")
     if channel == "message_build":
@@ -218,6 +242,7 @@ def validate_contracts() -> None:
         methods = require_list(f"apis.json module {module.get('id')} methods", module.get("methods"))
         api_ids.extend(method.get("id", "") for method in methods)
     ensure_unique("apis.json method ids", api_ids)
+    ensure_no_removed_api_aliases(api_ids)
 
     event_ids = [event.get("id", "") for event in events["events"]]
     event_codes = [str(event.get("cCode", "")) for event in events["events"]]
@@ -232,6 +257,12 @@ def validate_contracts() -> None:
     for group in dispatch["groups"]:
         group_id = group.get("id", "")
         operations = require_list(f"dispatch.json group {group_id} operations", group.get("operations"))
+        aliased = [operation.get("op", "") for operation in operations if operation.get("aliases")]
+        if aliased:
+            joined = ", ".join(sorted(aliased))
+            raise ValueError(
+                f"dispatch.json group {group_id} contains removed compatibility aliases: {joined}"
+            )
         names = [name for operation in operations for name in dispatch_operation_names(operation)]
         ensure_unique(f"dispatch.json group {group_id} operation names", names)
         dispatch_groups[group_id] = set(names)
@@ -278,6 +309,7 @@ def render_contract_module() -> str:
         "    pub c_symbol: Option<&'static str>,",
         "    pub c_dispatch_op: Option<&'static str>,",
         "    pub tauri: Option<&'static str>,",
+        "    pub dev_only: bool,",
         "}",
         "",
         "#[derive(Debug, Clone, Copy, PartialEq, Eq)]",
@@ -318,7 +350,8 @@ def render_contract_module() -> str:
             f"core: {rust_str(row['core'])}, "
             f"c_symbol: {rust_str(row['c_symbol'])}, "
             f"c_dispatch_op: {rust_str(row['c_dispatch_op'])}, "
-            f"tauri: {rust_str(row['tauri'])} "
+            f"tauri: {rust_str(row['tauri'])}, "
+            f"dev_only: {str(row['dev_only']).lower()} "
             "},"
         )
     lines.extend(["];", "", "pub const MESSAGE_BUILD_OPS: &[MessageBuildCatalogEntry] = &["])
@@ -375,6 +408,8 @@ def render_platform(platform: str) -> str:
         c_dispatch_ops: list[tuple[str, str]] = []
         for module in apis.get("modules", []):
             for method in module.get("methods", []):
+                if method.get("dev_only", False):
+                    continue
                 for symbol, dispatch in c_api_entries(method.get("c")):
                     if symbol not in c_symbols:
                         c_symbols.append(symbol)
@@ -400,7 +435,9 @@ def render_platform(platform: str) -> str:
             {
                 op["tauri"]
                 for op in api_operations
-                if isinstance(op["tauri"], str) and op["tauri"].startswith("sdk_")
+                if not op["dev_only"]
+                and isinstance(op["tauri"], str)
+                and op["tauri"].startswith("sdk_")
             }
         )
         lines.extend(
@@ -416,7 +453,7 @@ def render_platform(platform: str) -> str:
             [
                 "pub const WASM_ACCEPTS_OPERATION_INVOKE: bool = true;",
                 "pub const WASM_CANONICAL_OPERATIONS: &[&str] = &[",
-                *[f"    {rust_lit(op['id'])}," for op in api_operations],
+                *[f"    {rust_lit(op['id'])}," for op in api_operations if not op["dev_only"]],
                 "];",
             ]
         )
@@ -425,7 +462,7 @@ def render_platform(platform: str) -> str:
         lines.extend(
             [
                 "pub const UNIFFI_CANONICAL_OPERATIONS: &[&str] = &[",
-                *[f"    {rust_lit(op['id'])}," for op in api_operations],
+                *[f"    {rust_lit(op['id'])}," for op in api_operations if not op["dev_only"]],
                 "];",
             ]
         )
@@ -488,8 +525,8 @@ def render_c_errors() -> str:
     lines.extend(
         [
             "",
-            "pub fn error_code_to_c(code: flare_im_core_sdk::shared::error::ErrorCode) -> i32 {",
-            "    use flare_im_core_sdk::shared::error::ErrorCode;",
+            "pub fn error_code_to_c(code: flare_im_core_sdk::ErrorCode) -> i32 {",
+            "    use flare_im_core_sdk::ErrorCode;",
             "    match code {",
         ]
     )

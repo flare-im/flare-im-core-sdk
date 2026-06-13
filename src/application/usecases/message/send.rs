@@ -4,10 +4,13 @@ use crate::application::UploadProgressCallback;
 use crate::application::commands::SendMessageCommand;
 use crate::core::CurrentUserIdStore;
 use crate::core::ReliableSendQueue;
-use crate::domain::{MessageActor, MessageDraftService, MessageStore};
+use crate::domain::{
+    ConversationIdentityService, ConversationStore, MessageActor, MessageDraftService, MessageStore,
+};
 use crate::extension::middleware::MiddlewareChain;
 use crate::infrastructure::protocol::PacketSender;
 use crate::model::UploadedMedia;
+use crate::model::conversation::ConversationType;
 use crate::model::message::{IMMessage, SendAck};
 use crate::model::message_elem::{AudioInfoElem, Elem, ImageInfoElem, VideoInfoElem};
 use crate::platform::ports::media::{
@@ -19,11 +22,13 @@ use flare_proto::common::ImageFormat;
 pub struct MessageSendUseCase {
     sender: Arc<PacketSender>,
     store: Arc<dyn MessageStore>,
+    conversation_store: Arc<dyn ConversationStore>,
     chain: Arc<MiddlewareChain>,
     current_user_id: CurrentUserIdStore,
     reliable_queue: Option<Arc<ReliableSendQueue>>,
     media_service: Arc<dyn MediaServicePort>,
     draft_service: MessageDraftService,
+    conversation_identity: ConversationIdentityService,
 }
 
 impl MessageSendUseCase {
@@ -31,6 +36,7 @@ impl MessageSendUseCase {
     pub fn new(
         sender: Arc<PacketSender>,
         store: Arc<dyn MessageStore>,
+        conversation_store: Arc<dyn ConversationStore>,
         chain: Arc<MiddlewareChain>,
         current_user_id: CurrentUserIdStore,
         reliable_queue: Option<Arc<ReliableSendQueue>>,
@@ -39,11 +45,13 @@ impl MessageSendUseCase {
         Self {
             sender,
             store,
+            conversation_store,
             chain,
             current_user_id,
             reliable_queue,
             media_service,
             draft_service: MessageDraftService::default(),
+            conversation_identity: ConversationIdentityService,
         }
     }
 
@@ -64,23 +72,65 @@ impl MessageSendUseCase {
         let message = self
             .draft_service
             .prepare_outbound_message(&actor, message)?;
+        self.ensure_optimistic_conversation(&message).await?;
         if let Some(queue) = &self.reliable_queue {
             SendMessageCommand::new(message.clone())
                 .execute_via_queue(queue.as_ref(), &self.chain)
                 .await?;
             Ok(SendAck {
                 client_msg_id: message.client_msg_id,
-                server_msg_id: String::new(),
-                seq: 0,
                 conversation_id: message.conversation_id,
-                success: true,
-                ..Default::default()
+                ack_id: None,
+                result: None,
             })
         } else {
             SendMessageCommand::new(message)
                 .execute(&self.sender, self.store.as_ref(), &self.chain)
                 .await
         }
+    }
+
+    async fn ensure_optimistic_conversation(&self, message: &IMMessage) -> Result<()> {
+        let conversation_id = message.conversation_id.trim();
+        if conversation_id.is_empty() {
+            return Ok(());
+        }
+        if self
+            .conversation_store
+            .get(conversation_id)
+            .await?
+            .is_some()
+        {
+            return Ok(());
+        }
+
+        let conversation_type = ConversationType::from_proto_int(message.conversation_type);
+        if matches!(conversation_type, ConversationType::Unspecified) {
+            return Ok(());
+        }
+
+        let channel_id = message.channel_id.trim();
+        if channel_id.is_empty() {
+            return Ok(());
+        }
+
+        let business_type = message
+            .attributes
+            .get("business_type")
+            .map(String::as_str)
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| conversation_type.as_str());
+
+        let mut conversation = self.conversation_identity.build_local_conversation(
+            conversation_id,
+            Some(channel_id),
+            conversation_type,
+            business_type,
+            channel_id.to_string(),
+        );
+        conversation.updated_at = message.created_at.max(0) as u64;
+        conversation.created_at = conversation.updated_at;
+        self.conversation_store.save_batch(&[conversation]).await
     }
 
     pub async fn send_with_media(
@@ -188,7 +238,7 @@ impl MessageSendUseCase {
             }
         }
         if touched {
-            message.content_bytes.clear();
+            message.encoded_content.clear();
         }
         Ok(message)
     }

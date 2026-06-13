@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use prost::Message as ProstMessage;
-use sqlx::SqlitePool;
+use sqlx::{QueryBuilder, Sqlite, SqlitePool};
 
 use crate::domain::{PendingSendReader, PendingSendVo, PendingSendWriter};
 use crate::shared::error::{ErrorCode, FlareError, Result};
@@ -12,6 +12,51 @@ pub struct SqlitePendingSendRepo {
 impl SqlitePendingSendRepo {
     pub fn new(pool: SqlitePool) -> Self {
         Self { pool }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SqlitePendingSendRepo;
+    use crate::domain::{PendingSendReader, PendingSendVo, PendingSendWriter};
+    use crate::infrastructure::persistence::sqlite::init_schema;
+    use crate::model::IMMessage;
+    use sqlx::SqlitePool;
+
+    fn pending(client_msg_id: &str, enqueued_at_ms: u64) -> PendingSendVo {
+        let mut message = IMMessage::new(flare_proto::common::Message::default());
+        message.client_msg_id = client_msg_id.to_string();
+        message.conversation_id = "conv".to_string();
+        PendingSendVo {
+            client_msg_id: client_msg_id.to_string(),
+            conversation_id: "conv".to_string(),
+            message,
+            enqueued_at_ms,
+        }
+    }
+
+    #[tokio::test]
+    async fn list_oldest_excluding_filters_in_flight_and_limits() {
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        init_schema(&pool).await.unwrap();
+        let repo = SqlitePendingSendRepo::new(pool);
+        for entry in [
+            pending("client-1", 10),
+            pending("client-2", 20),
+            pending("client-3", 30),
+            pending("client-4", 40),
+        ] {
+            repo.push(entry).await.unwrap();
+        }
+
+        let excluded = vec!["client-1".to_string(), "client-3".to_string()];
+        let rows = repo.list_oldest_excluding(&excluded, 2).await.unwrap();
+
+        let ids = rows
+            .into_iter()
+            .map(|entry| entry.client_msg_id)
+            .collect::<Vec<_>>();
+        assert_eq!(ids, vec!["client-2".to_string(), "client-4".to_string()]);
     }
 }
 
@@ -80,6 +125,44 @@ impl PendingSendReader for SqlitePendingSendRepo {
         Ok(row
             .map(|(data, enqueued_at_ms)| decode_entry(&data, enqueued_at_ms as u64))
             .transpose()?)
+    }
+
+    async fn list_oldest_excluding(
+        &self,
+        excluded_client_msg_ids: &[String],
+        limit: usize,
+    ) -> Result<Vec<PendingSendVo>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+
+        let mut builder =
+            QueryBuilder::<Sqlite>::new("SELECT data, enqueued_at_ms FROM pending_sends");
+        let excluded = excluded_client_msg_ids
+            .iter()
+            .filter(|id| !id.is_empty())
+            .collect::<Vec<_>>();
+        if !excluded.is_empty() {
+            builder.push(" WHERE client_msg_id NOT IN (");
+            let mut separated = builder.separated(", ");
+            for id in excluded {
+                separated.push_bind(id);
+            }
+            separated.push_unseparated(")");
+        }
+        builder.push(" ORDER BY enqueued_at_ms ASC, client_msg_id ASC LIMIT ");
+        builder.push_bind(limit as i64);
+
+        let rows: Vec<(Vec<u8>, i64)> = builder
+            .build_query_as()
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| FlareError::localized(ErrorCode::DatabaseError, e.to_string()))?;
+        let mut out = Vec::with_capacity(rows.len());
+        for (data, enqueued_at_ms) in rows {
+            out.push(decode_entry(&data, enqueued_at_ms as u64)?);
+        }
+        Ok(out)
     }
 }
 

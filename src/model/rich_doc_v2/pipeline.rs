@@ -6,7 +6,7 @@ use super::RichDocV2Error;
 use super::extract::{RichDocDerived, derive_from_value};
 use super::from_html::html_fragment_to_doc_value;
 use super::from_markdown::markdown_to_doc_value;
-use super::validate::validate_doc_json;
+use super::validate::{validate_doc_json, validate_source_payload_bytes};
 
 pub const CONTENT_SCHEMA_RICH_DOC: &str = "rich_doc";
 pub const INPUT_FORMAT_MARKDOWN: &str = "markdown";
@@ -14,14 +14,30 @@ pub const INPUT_FORMAT_HTML: &str = "html";
 
 /// Markdown → RichDoc v2 → 校验 → 派生 `plain_text` / `search_text` / `render_hints`。
 pub fn normalize_from_markdown(md: &str) -> Result<NormalizeOutput, RichDocV2Error> {
+    normalize_from_markdown_with_options(md, NormalizeOptions::default())
+}
+
+pub fn normalize_from_markdown_with_options(
+    md: &str,
+    options: NormalizeOptions,
+) -> Result<NormalizeOutput, RichDocV2Error> {
+    validate_source_payload_bytes(md)?;
     let doc = markdown_to_doc_value(md)?;
-    finalize_doc_value(doc, Some(INPUT_FORMAT_MARKDOWN), md)
+    finalize_doc_value(doc, Some(INPUT_FORMAT_MARKDOWN), md, options)
 }
 
 /// HTML 片段 → RichDoc v2 → …（native only）。
 pub fn normalize_from_html(html: &str) -> Result<NormalizeOutput, RichDocV2Error> {
+    normalize_from_html_with_options(html, NormalizeOptions::default())
+}
+
+pub fn normalize_from_html_with_options(
+    html: &str,
+    options: NormalizeOptions,
+) -> Result<NormalizeOutput, RichDocV2Error> {
+    validate_source_payload_bytes(html)?;
     let doc = html_fragment_to_doc_value(html)?;
-    finalize_doc_value(doc, Some(INPUT_FORMAT_HTML), html)
+    finalize_doc_value(doc, Some(INPUT_FORMAT_HTML), html, options)
 }
 
 /// 客户端已持有权威 doc JSON（例如自研编辑器直出）时：仅校验 + 派生。
@@ -42,18 +58,29 @@ fn finalize_doc_value(
     doc: Value,
     input_format: Option<&str>,
     source_snapshot: &str,
+    options: NormalizeOptions,
 ) -> Result<NormalizeOutput, RichDocV2Error> {
     let doc_json = serde_json::to_string(&doc)
         .map_err(|e| RichDocV2Error::InvalidStructure(format!("serialize doc: {e}")))?;
     validate_doc_json(&doc_json)?;
     let derived = derive_from_value(&doc)?;
     let snap_key = input_format.unwrap_or("raw");
+    let source_payload = if options.include_source_payload {
+        Some((snap_key.to_string(), source_snapshot.to_string()))
+    } else {
+        None
+    };
     Ok(NormalizeOutput::from_parts(
         doc_json,
         derived,
         input_format.map(String::from),
-        Some((snap_key.to_string(), source_snapshot.to_string())),
+        source_payload,
     ))
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct NormalizeOptions {
+    pub include_source_payload: bool,
 }
 
 /// 与 `RichTextContent` 对齐的归一化结果（Rust / Tauri 侧 snake_case）。
@@ -92,5 +119,26 @@ impl NormalizeOutput {
 
     pub fn render_hints_json_string(&self) -> String {
         serde_json::to_string(&self.render_hints).unwrap_or_else(|_| "{}".into())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn markdown_normalization_omits_source_payload_by_default() {
+        let out = normalize_from_markdown("hello").expect("normalize markdown");
+
+        assert!(out.source_payload.is_none());
+    }
+
+    #[test]
+    fn markdown_normalization_rejects_oversized_source() {
+        let markdown = "a".repeat(256 * 1024 + 1);
+
+        let err = normalize_from_markdown(&markdown).expect_err("oversized source must fail");
+
+        assert!(err.to_string().contains("source"));
     }
 }

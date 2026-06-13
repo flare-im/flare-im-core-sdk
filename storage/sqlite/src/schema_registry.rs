@@ -2,7 +2,7 @@
 
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use anyhow::Result as AnyhowResult;
 use once_cell::sync::Lazy;
@@ -55,6 +55,20 @@ where
 
 static REGISTRY: Lazy<SchemaInitRegistry> = Lazy::new(|| Mutex::new(Vec::new()));
 
+fn lock_recovering_poison<T>(mutex: &'static Mutex<T>, label: &str) -> MutexGuard<'static, T> {
+    match mutex.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => {
+            log::error!("{label} mutex poisoned; recovering registered schema initializers");
+            poisoned.into_inner()
+        }
+    }
+}
+
+fn registry_guard() -> MutexGuard<'static, Vec<SchemaInitEntry>> {
+    lock_recovering_poison(&REGISTRY, "schema registry")
+}
+
 /// 注册在创建 pool 后统一调用的 schema 初始化逻辑（返回 `anyhow::Result<()>`）。
 pub fn register_schema_init<N, F, Fut>(name: N, f: F)
 where
@@ -62,10 +76,7 @@ where
     F: Fn(&SqlitePool) -> Fut + Send + Sync + 'static,
     Fut: Future<Output = AnyhowResult<()>> + Send + 'static,
 {
-    REGISTRY
-        .lock()
-        .expect("schema registry mutex")
-        .push((name.into(), Arc::new(ClosureSchemaInit(f))));
+    registry_guard().push((name.into(), Arc::new(ClosureSchemaInit(f))));
 }
 
 /// 注册返回 `Result<(), E>`（E: Into<anyhow::Error>）的 schema 初始化器，**可直接传入** core-sdk 的
@@ -75,7 +86,7 @@ where
 ///
 /// ```ignore
 /// use flare_im_core_sdk_storage_sqlite::register_schema_init_with;
-/// use flare_im_core_sdk::store::sqlite_init_schema;
+/// use flare_im_core_sdk::prelude::sqlite_init_schema;
 ///
 /// register_schema_init_with("core", |pool| sqlite_init_schema(pool));
 /// ```
@@ -86,19 +97,38 @@ where
     Fut: Future<Output = Result<(), E>> + Send + 'static,
     E: Into<anyhow::Error> + 'static,
 {
-    REGISTRY
-        .lock()
-        .expect("schema registry mutex")
-        .push((name.into(), Arc::new(MapErrSchemaInit(f))));
+    registry_guard().push((name.into(), Arc::new(MapErrSchemaInit(f))));
 }
 
 /// 执行所有已注册的 schema 初始化器（内部使用）
 pub async fn run_registered_schema_inits(pool: &SqlitePool) -> AnyhowResult<()> {
-    let inits: SchemaInitSnapshot = REGISTRY.lock().expect("schema registry mutex").clone();
+    let inits: SchemaInitSnapshot = registry_guard().clone();
     for (name, init) in inits {
         init.run(pool)
             .await
             .map_err(|e| anyhow::anyhow!("schema init {:?} failed: {}", name, e))?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    static POISON_TEST_MUTEX: Lazy<Mutex<Vec<&'static str>>> = Lazy::new(|| Mutex::new(Vec::new()));
+
+    #[test]
+    fn lock_recovering_poison_keeps_registered_values_available() {
+        let _ = std::thread::spawn(|| {
+            let mut guard = POISON_TEST_MUTEX.lock().expect("test mutex");
+            guard.push("before panic");
+            panic!("poison test mutex");
+        })
+        .join();
+
+        let mut guard = lock_recovering_poison(&POISON_TEST_MUTEX, "test schema registry");
+        guard.push("after poison");
+
+        assert_eq!(guard.as_slice(), ["before panic", "after poison"]);
+    }
 }

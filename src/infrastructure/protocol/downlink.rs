@@ -1,9 +1,13 @@
-//! 下行载荷：与 flare-proto 对齐；DATA 同步/扩展经 `data.proto` `DataPacket` 解码为 `SyncRes` 或 `CustomData`。
+//! 下行载荷：与 flare-proto 对齐；DATA 经 `data.proto` `DataPacket.payload` oneof 解码。
 
-use flare_proto::common::{CustomData, Event, EventEnvelope, MessagePush, SendAck, SyncRes};
+use flare_proto::common::{
+    CapabilityPacket, CustomData, Event, EventEnvelope, MessagePush, RealtimeControlPacket,
+    SendAck, SyncRes,
+};
 
 /// 服务端下行包载荷（与 proto 类型一一对应）
 #[derive(Clone)]
+#[allow(clippy::large_enum_variant)]
 pub enum DownlinkPayload {
     /// 消息推送（message.proto MessagePush）
     MessagePush(MessagePush),
@@ -15,6 +19,10 @@ pub enum DownlinkPayload {
     SendAck(SendAck),
     /// 自定义数据（data.proto CustomData）
     CustomData(CustomData),
+    /// 能力包（data.proto CapabilityPacket），不占用 conversation_seq
+    Capability(CapabilityPacket),
+    /// 实时控制包（typing/presence/custom），不占用 conversation_seq
+    RealtimeControl(RealtimeControlPacket),
     /// 单会话同步响应（sync.proto SyncRes）
     SyncResp(SyncRes),
 }

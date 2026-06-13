@@ -15,15 +15,15 @@ use async_trait::async_trait;
 use once_cell::sync::Lazy;
 use tokio::sync::RwLock;
 
-use flare_im_core_sdk::adapter_prelude::StoreProvider;
-use flare_im_core_sdk::domain::{
-    ConversationReader, ConversationWriter, MessageReader, MessageStore, MessageWriter,
-    SyncCursorReader, SyncCursorWriter,
-};
 use flare_im_core_sdk::model::Conversation;
 use flare_im_core_sdk::model::IMMessage;
 use flare_im_core_sdk::model::{decode_content_bytes, decoded_content_to_elem};
+use flare_im_core_sdk::prelude::StoreProvider;
 use flare_im_core_sdk::prelude::*;
+use flare_im_core_sdk::storage::{
+    ConversationReader, ConversationWriter, MessageReader, MessageStore, MessageWriter,
+    SyncCursorReader, SyncCursorWriter,
+};
 use flare_proto::common::MessageStatus;
 
 /// 串行化集成测试，同一用户仅允许一个连接在线
@@ -75,25 +75,23 @@ impl MessageReader for MemoryMessageStore {
         let is_latest = before_seq == 0 || before_seq >= i64::MAX as u64;
         let mut msgs: Vec<_> = if is_latest {
             data.values()
-                .filter(|m| m.conversation_id == conversation_id && m.seq < bound)
+                .filter(|m| m.conversation_id == conversation_id && m.conversation_seq < bound)
                 .cloned()
                 .collect()
         } else {
             data.values()
-                .filter(|m| m.conversation_id == conversation_id && m.seq > 0 && m.seq < bound)
+                .filter(|m| {
+                    m.conversation_id == conversation_id
+                        && m.conversation_seq > 0
+                        && m.conversation_seq < bound
+                })
                 .cloned()
                 .collect()
         };
         if is_latest {
-            let key = |m: &IMMessage| {
-                m.local_state
-                    .sort_ts
-                    .max(m.timestamp)
-                    .max(m.client_timestamp)
-            };
-            msgs.sort_by(|a, b| key(b).cmp(&key(a)).then_with(|| b.seq.cmp(&a.seq)));
+            msgs.sort_by(IMMessage::compare_for_latest_window_desc);
         } else {
-            msgs.sort_by(|a, b| b.seq.cmp(&a.seq));
+            msgs.sort_by(|a, b| b.conversation_seq.cmp(&a.conversation_seq));
         }
         msgs.truncate(limit as usize);
         Ok(msgs)
@@ -120,7 +118,7 @@ impl MessageReader for MemoryMessageStore {
                     return false;
                 }
                 let from_extra = m
-                    .extra
+                    .attributes
                     .get("contentText")
                     .is_some_and(|t| t.to_lowercase().contains(&kw));
                 let from_preview = m
@@ -130,7 +128,7 @@ impl MessageReader for MemoryMessageStore {
             })
             .cloned()
             .collect();
-        results.sort_by(|a, b| b.seq.cmp(&a.seq));
+        results.sort_by(|a, b| b.conversation_seq.cmp(&a.conversation_seq));
         results.truncate(limit as usize);
         Ok(results)
     }
@@ -181,9 +179,9 @@ impl MessageWriter for MemoryMessageStore {
         let mut data = self.data.write().await;
         let mut hit = false;
         if let Some(msg) = data.get_mut(message_id) {
-            msg.content_bytes = new_content.clone();
+            msg.encoded_content = new_content.clone();
             msg.is_edited = true;
-            msg.content = decode_content_bytes(&msg.content_bytes)
+            msg.content = decode_content_bytes(&msg.encoded_content)
                 .ok()
                 .and_then(|d| decoded_content_to_elem(&d));
             hit = true;
@@ -191,9 +189,9 @@ impl MessageWriter for MemoryMessageStore {
         if !hit {
             for msg in data.values_mut() {
                 if msg.server_id == message_id || msg.client_msg_id == message_id {
-                    msg.content_bytes = new_content.clone();
+                    msg.encoded_content = new_content.clone();
                     msg.is_edited = true;
-                    msg.content = decode_content_bytes(&msg.content_bytes)
+                    msg.content = decode_content_bytes(&msg.encoded_content)
                         .ok()
                         .and_then(|d| decoded_content_to_elem(&d));
                     hit = true;
@@ -366,7 +364,7 @@ impl ConversationWriter for MemoryConversationStore {
             conv.last_message_at = None;
             conv.unread_count = 0;
             if cleared_through_seq > 0 {
-                flare_im_core_sdk::domain::set_local_cleared_through_seq(
+                flare_im_core_sdk::storage::set_local_cleared_through_seq(
                     &mut conv.ext,
                     cleared_through_seq,
                 );
@@ -439,7 +437,7 @@ impl SyncCursorReader for MemoryCursorStore {
         &self,
         user_id: &str,
         conversation_id: &str,
-    ) -> Result<Option<flare_im_core_sdk::domain::SyncCursorVo>> {
+    ) -> Result<Option<flare_im_core_sdk::storage::SyncCursorVo>> {
         let key = format!("{user_id}:{conversation_id}");
         let data = self.data.read().await;
         if let Some(cursor_str) = data.get(&key)
@@ -447,7 +445,7 @@ impl SyncCursorReader for MemoryCursorStore {
             && let (Ok(last_seq), Ok(synced_at)) =
                 (seq_str.parse::<u64>(), synced_str.parse::<u64>())
         {
-            return Ok(Some(flare_im_core_sdk::domain::SyncCursorVo {
+            return Ok(Some(flare_im_core_sdk::storage::SyncCursorVo {
                 user_id: user_id.to_string(),
                 conversation_id: conversation_id.to_string(),
                 last_seq,
@@ -468,7 +466,7 @@ impl SyncCursorWriter for MemoryCursorStore {
 
     async fn save_conversation_cursor(
         &self,
-        cursor: &flare_im_core_sdk::domain::SyncCursorVo,
+        cursor: &flare_im_core_sdk::storage::SyncCursorVo,
     ) -> Result<()> {
         let key = format!("{}:{}", cursor.user_id, cursor.conversation_id);
         let cursor_str = format!("{}:{}", cursor.last_seq, cursor.synced_at);
@@ -530,13 +528,13 @@ pub async fn create_test_client_with_sync_tasks() -> IMClient {
 /// 内置重试机制：服务端可能因前次测试的设备冲突清理未完成而暂时拒绝连接，
 /// 最多重试 3 次（间隔 2s）以等待服务端清理旧连接状态。
 pub async fn establish_connection(client: &mut IMClient, user_id: &str) {
-    let token = generate_test_token(user_id);
+    let token = generate_core_token(user_id);
 
     let max_retries = 3;
     let mut last_err = String::new();
     for attempt in 1..=max_retries {
         match client.connect(user_id, Some(token.as_str())).await {
-            Ok(()) => {
+            Ok(_) => {
                 last_err.clear();
                 break;
             }
@@ -597,18 +595,18 @@ pub fn build_single_text(
     flare_im_core_sdk::model::IMMessage::new(msg)
 }
 
-/// 生成测试 JWT token（使用 SDK 内置的 generate_test_token）
+/// 生成 Core JWT token（使用 SDK 内置的 generate_core_token）
 ///
 /// 与 flare-im-core/examples/chatroom_client.rs 保持一致：
 /// secret = "insecure-secret"，issuer = "flare-im-core"，tenant_id = "0"
-fn generate_test_token(user_id: &str) -> String {
-    flare_im_core_sdk::shared::util::generate_test_token(
-        "insecure-secret",
-        "flare-im-core",
-        user_id,
-        3600,
-        None,
-        Some("0"),
-    )
-    .expect("generate_test_token should not fail")
+fn generate_core_token(user_id: &str) -> String {
+    flare_im_core_sdk::prelude::generate_core_token(&flare_im_core_sdk::prelude::CoreTokenConfig {
+        secret: "insecure-secret".to_string(),
+        issuer: "flare-im-core".to_string(),
+        user_id: user_id.to_string(),
+        ttl_secs: 3600,
+        device_id: None,
+        tenant_id: Some("0".to_string()),
+    })
+    .expect("generate_core_token should not fail")
 }

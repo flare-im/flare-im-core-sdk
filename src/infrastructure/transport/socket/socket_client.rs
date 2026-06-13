@@ -6,6 +6,7 @@ use flare_core::client::builder::flare::{FlareClient, FlareClientBuilder, Messag
 use flare_core::common::config_types::TransportProtocol as CoreTransport;
 use flare_core::common::device::{DeviceInfo, DevicePlatform};
 use flare_core::common::protocol::SerializationFormat;
+use flare_core::common::{HeartbeatAppState, HeartbeatConfig};
 use tokio::sync::{Mutex, Notify};
 use tracing::{info, warn};
 
@@ -171,6 +172,34 @@ impl SocketTransport {
         }
         info!("socket disconnected");
         Ok(())
+    }
+
+    pub async fn update_heartbeat_config(&self, config: HeartbeatConfig) -> Result<()> {
+        if let Some(client) = self.client.lock().await.as_ref() {
+            client.update_heartbeat_config(config).await;
+        }
+        Ok(())
+    }
+
+    pub async fn set_heartbeat_app_state(&self, state: HeartbeatAppState) -> Result<()> {
+        if let Some(client) = self.client.lock().await.as_ref() {
+            client.set_heartbeat_app_state(state).await;
+        }
+        Ok(())
+    }
+
+    pub async fn set_heartbeat_nat_timeout(&self, timeout: Option<Duration>) -> Result<()> {
+        if let Some(client) = self.client.lock().await.as_ref() {
+            client.set_heartbeat_nat_timeout(timeout).await;
+        }
+        Ok(())
+    }
+
+    pub async fn heartbeat_effective_interval(&self) -> Option<Duration> {
+        match self.client.lock().await.as_ref() {
+            Some(client) => Some(client.heartbeat_effective_interval().await),
+            None => None,
+        }
     }
 
     pub async fn is_connected(&self) -> bool {

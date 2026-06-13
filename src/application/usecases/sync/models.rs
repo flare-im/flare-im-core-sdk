@@ -11,7 +11,6 @@ pub(crate) struct AppliedSingleConversationPage {
 #[derive(Debug, Clone)]
 pub(crate) struct AppliedConversationIncremental {
     pub has_more: bool,
-    pub server_cursor_ms: u64,
     pub message_sync_conversation_ids: Vec<String>,
     pub synced_conversation_ids: Vec<String>,
 }

@@ -11,6 +11,10 @@ use crate::domain::{
 use crate::infrastructure::protocol::PacketSender;
 use crate::model::message::{MarkType, ReactionAction};
 use crate::shared::error::{ErrorCode, FlareError, Result};
+use flare_proto::common::{
+    RealtimeControlPacket, TypingStatePacket,
+    realtime_control_packet::Payload as RealtimeControlPayload,
+};
 
 const REQUEST_TIMEOUT_SECS: u64 = 15;
 const RESOLVE_WAIT_STEP_MS: u64 = 100;
@@ -92,6 +96,30 @@ impl MessageMutationUseCase {
         Ok(ResolvedMessage::new(message))
     }
 
+    fn require_resolved_conversation<'a>(
+        conversation_id: &str,
+        resolved: &'a ResolvedMessage,
+    ) -> Result<&'a str> {
+        let requested = conversation_id.trim();
+        if requested.is_empty() {
+            return Err(FlareError::localized(
+                ErrorCode::InvalidParameter,
+                "conversation_id must not be empty",
+            ));
+        }
+        let actual = resolved.conversation_id();
+        if requested != actual {
+            return Err(FlareError::localized(
+                ErrorCode::InvalidParameter,
+                format!(
+                    "conversation_id does not match message: requested={}, actual={}",
+                    requested, actual
+                ),
+            ));
+        }
+        Ok(actual)
+    }
+
     pub async fn resolve_message_id(&self, message_id: &str) -> Result<(String, String)> {
         let resolved = self.resolve_message(message_id).await?;
         Ok((
@@ -121,6 +149,7 @@ impl MessageMutationUseCase {
         new_content: Vec<u8>,
     ) -> Result<()> {
         let resolved = self.resolve_message(message_id).await?;
+        let conversation_id = Self::require_resolved_conversation(conversation_id, &resolved)?;
         let plan = self
             .mutation_service
             .plan_edit(conversation_id, &resolved, new_content.clone());
@@ -170,13 +199,9 @@ impl MessageMutationUseCase {
         read_seq: u64,
     ) -> Result<()> {
         let actor = self.actor().await?;
-        let plan = self.mutation_service.plan_read_receipt(
-            &actor,
-            conversation_id,
-            message_ids,
-            read_seq,
-            false,
-        );
+        let plan =
+            self.mutation_service
+                .plan_read_receipt(&actor, conversation_id, message_ids, read_seq);
         self.dispatch_transport_action(&plan.transport_action).await
     }
 
@@ -187,18 +212,28 @@ impl MessageMutationUseCase {
             &actor,
             resolved.conversation_id(),
             vec![resolved.server_id().to_string()],
-            resolved.message.seq(),
-            true,
+            resolved.message.conversation_seq(),
         );
         self.dispatch_transport_action(&plan.transport_action).await
     }
 
     pub async fn typing(&self, conversation_id: &str, typing: bool) -> Result<()> {
         let actor = self.actor().await?;
-        let plan = self
-            .mutation_service
-            .plan_typing(&actor, conversation_id, typing);
-        self.dispatch_transport_action(&plan.transport_action).await
+        self.sender
+            .send_realtime_control_best_effort(&RealtimeControlPacket {
+                control_type: "typing".to_string(),
+                conversation_id: Some(conversation_id.to_string()),
+                correlation_id: None,
+                attributes: Default::default(),
+                payload: Some(RealtimeControlPayload::Typing(TypingStatePacket {
+                    conversation_id: conversation_id.to_string(),
+                    user_id: actor.user_id,
+                    typing,
+                    device_id: None,
+                    occurred_at: Some(crate::shared::util::now_millis() as i64),
+                })),
+            })
+            .await
     }
 
     pub async fn add_reaction(&self, message_id: &str, emoji: &str) -> Result<()> {
@@ -245,6 +280,7 @@ impl MessageMutationUseCase {
     pub async fn pin(&self, conversation_id: &str, message_id: &str) -> Result<()> {
         let actor = self.actor().await?;
         let resolved = self.resolve_message(message_id).await?;
+        let conversation_id = Self::require_resolved_conversation(conversation_id, &resolved)?;
         let plan = self
             .mutation_service
             .plan_pin(&actor, conversation_id, resolved.server_id());
@@ -253,6 +289,7 @@ impl MessageMutationUseCase {
 
     pub async fn unpin(&self, conversation_id: &str, message_id: &str) -> Result<()> {
         let resolved = self.resolve_message(message_id).await?;
+        let conversation_id = Self::require_resolved_conversation(conversation_id, &resolved)?;
         let plan = self
             .mutation_service
             .plan_unpin(conversation_id, resolved.server_id());
@@ -268,6 +305,7 @@ impl MessageMutationUseCase {
     ) -> Result<()> {
         let actor = self.actor().await?;
         let resolved = self.resolve_message(message_id).await?;
+        let conversation_id = Self::require_resolved_conversation(conversation_id, &resolved)?;
         let plan = self.mutation_service.plan_mark(
             &actor,
             conversation_id,
@@ -286,6 +324,7 @@ impl MessageMutationUseCase {
     ) -> Result<()> {
         let actor = self.actor().await?;
         let resolved = self.resolve_message(message_id).await?;
+        let conversation_id = Self::require_resolved_conversation(conversation_id, &resolved)?;
         let plan = self.mutation_service.plan_unmark(
             &actor,
             conversation_id,
@@ -313,5 +352,52 @@ impl MessageMutationUseCase {
         self.sender
             .send_event(&event_from_transport_action(action), timeout())
             .await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::MessageMutationUseCase;
+    use crate::domain::ResolvedMessage;
+    use crate::model::message::IMMessage;
+    use crate::shared::error::ErrorCode;
+
+    fn resolved_message(conversation_id: &str) -> ResolvedMessage {
+        let proto = flare_proto::common::Message {
+            conversation_id: conversation_id.to_string(),
+            server_id: "server-1".to_string(),
+            ..Default::default()
+        };
+        ResolvedMessage::new(IMMessage::new(proto))
+    }
+
+    #[test]
+    fn require_resolved_conversation_accepts_matching_conversation() {
+        let resolved = resolved_message("conv-a");
+
+        let actual =
+            MessageMutationUseCase::require_resolved_conversation("conv-a", &resolved).unwrap();
+
+        assert_eq!(actual, "conv-a");
+    }
+
+    #[test]
+    fn require_resolved_conversation_rejects_empty_conversation() {
+        let resolved = resolved_message("conv-a");
+
+        let err = MessageMutationUseCase::require_resolved_conversation(" ", &resolved)
+            .expect_err("empty conversation must be rejected");
+
+        assert_eq!(err.code(), Some(ErrorCode::InvalidParameter));
+    }
+
+    #[test]
+    fn require_resolved_conversation_rejects_mismatched_conversation() {
+        let resolved = resolved_message("conv-a");
+
+        let err = MessageMutationUseCase::require_resolved_conversation("conv-b", &resolved)
+            .expect_err("mismatched conversation must be rejected");
+
+        assert_eq!(err.code(), Some(ErrorCode::InvalidParameter));
     }
 }

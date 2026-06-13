@@ -21,8 +21,8 @@ enum FlareSdkStateCode {
     Reconnecting = 4,
 }
 
-fn map_sdk_state(s: flare_im_core_sdk::core::SdkState) -> i32 {
-    use flare_im_core_sdk::core::SdkState as S;
+fn map_sdk_state(s: flare_im_core_sdk::SdkState) -> i32 {
+    use flare_im_core_sdk::SdkState as S;
     match s {
         S::Disconnected => FlareSdkStateCode::Disconnected as i32,
         S::Connecting => FlareSdkStateCode::Connecting as i32,
@@ -82,7 +82,7 @@ pub extern "C" fn flare_sdk_sync_conversation(
                 return code;
             }
         };
-        let params = serde_json::json!({"conversation_id": conversation_id});
+        let params = serde_json::json!({"conversationId": conversation_id});
         let ctx = CallbackContext::new(context, callback);
         let api_id = "sync.conversation";
         typed_invoke_unit(instance, ctx, &api_id, params);
@@ -112,7 +112,7 @@ pub extern "C" fn flare_sdk_sync_messages(
                 return code;
             }
         };
-        let params = serde_json::json!({"conversation_id": conversation_id, "last_seq": last_seq, "limit": limit});
+        let params = serde_json::json!({"conversationId": conversation_id, "lastSeq": last_seq, "limit": limit});
         let ctx = CallbackContext::new(context, callback);
         let api_id = "sync.messages";
         typed_invoke_unit(instance, ctx, &api_id, params);
@@ -141,7 +141,7 @@ pub extern "C" fn flare_sdk_mark_session_read(
                 return code;
             }
         };
-        let params = serde_json::json!({"conversation_id": conversation_id, "read_seq": read_seq});
+        let params = serde_json::json!({"conversationId": conversation_id, "readSeq": read_seq});
         let ctx = CallbackContext::new(context, callback);
         let api_id = "sync.mark_session_read";
         typed_invoke_unit(instance, ctx, &api_id, params);
@@ -170,10 +170,9 @@ pub extern "C" fn flare_sdk_set_conversation_input_state(
                 return code;
             }
         };
-        let params =
-            serde_json::json!({"conversation_id": conversation_id, "is_typing": is_typing});
+        let params = serde_json::json!({"conversationId": conversation_id, "typing": is_typing});
         let ctx = CallbackContext::new(context, callback);
-        let api_id = "sync.set_conversation_input_state";
+        let api_id = "message.typing";
         typed_invoke_unit(instance, ctx, &api_id, params);
         0
     })
@@ -199,7 +198,7 @@ pub extern "C" fn flare_sdk_get_user_presence(
                 return code;
             }
         };
-        let params = serde_json::json!({"user_id": user_id});
+        let params = serde_json::json!({"userId": user_id});
         let ctx = CallbackContext::new(context, callback);
         let api_id = "presence.get";
         typed_invoke_json(instance, ctx, &api_id, params);
@@ -251,7 +250,7 @@ pub extern "C" fn flare_sdk_batch_get_user_presence(
                 return crate::error_convert::FLARE_ERR_INVALID_PARAM;
             }
         };
-        let params = serde_json::json!({"user_ids": user_ids_json_value});
+        let params = serde_json::json!({"userIds": user_ids_json_value});
         let ctx = CallbackContext::new(context, callback);
         let api_id = "presence.batch_get";
         typed_invoke_json(instance, ctx, &api_id, params);
@@ -303,7 +302,7 @@ pub extern "C" fn flare_sdk_subscribe_user_presence(
                 return crate::error_convert::FLARE_ERR_INVALID_PARAM;
             }
         };
-        let params = serde_json::json!({"user_ids": user_ids_json_value});
+        let params = serde_json::json!({"userIds": user_ids_json_value});
         let ctx = CallbackContext::new(context, callback);
         let api_id = "presence.subscribe";
         typed_invoke_unit(instance, ctx, &api_id, params);
@@ -340,9 +339,9 @@ pub extern "C" fn flare_message_create_text(
                 return code;
             }
         };
-        let params = serde_json::json!({"conversation_id": conversation_id, "text": text});
+        let params = serde_json::json!({"conversationId": conversation_id, "text": text});
         let ctx = CallbackContext::new(context, callback);
-        let api_id = "messages.create_text_direct";
+        let api_id = "message.create_text";
         typed_invoke_json(instance, ctx, &api_id, params);
         0
     })
@@ -380,9 +379,9 @@ pub extern "C" fn flare_message_send(
                 return crate::error_convert::FLARE_ERR_INVALID_PARAM;
             }
         };
-        let params = serde_json::json!({"message_json": message_value});
+        let params = serde_json::json!({"messageJson": message_value});
         let ctx = CallbackContext::new(context, callback);
-        let api_id = "messages.send";
+        let api_id = "message.send";
         typed_invoke_send_ack(instance, ctx, &api_id, params);
         0
     })
@@ -410,9 +409,9 @@ pub extern "C" fn flare_message_list(
                 return code;
             }
         };
-        let params = serde_json::json!({"conversation_id": conversation_id, "before_seq": before_seq, "limit": limit});
+        let params = serde_json::json!({"conversationId": conversation_id, "beforeSeq": before_seq, "limit": limit});
         let ctx = CallbackContext::new(context, callback);
-        let api_id = "messages.list";
+        let api_id = "message.list";
         typed_invoke_json(instance, ctx, &api_id, params);
         0
     })
@@ -448,9 +447,9 @@ pub extern "C" fn flare_message_recall(
             }
         };
         let params =
-            serde_json::json!({"conversation_id": conversation_id, "message_id": message_id});
+            serde_json::json!({"conversationId": conversation_id, "messageId": message_id});
         let ctx = CallbackContext::new(context, callback);
-        let api_id = "messages.recall";
+        let api_id = "message.recall";
         typed_invoke_unit(instance, ctx, &api_id, params);
         0
     })
@@ -486,9 +485,9 @@ pub extern "C" fn flare_message_delete(
             }
         };
         let params =
-            serde_json::json!({"conversation_id": conversation_id, "message_id": message_id});
+            serde_json::json!({"conversationId": conversation_id, "messageId": message_id});
         let ctx = CallbackContext::new(context, callback);
-        let api_id = "messages.delete";
+        let api_id = "message.delete";
         typed_invoke_unit(instance, ctx, &api_id, params);
         0
     })
@@ -524,7 +523,7 @@ pub extern "C" fn flare_media_upload_file(
             }
         };
         let upload_options_value = match upload_options {
-            Some(opts) => serde_json::json!({ "chunk_size": opts.chunk_size }),
+            Some(opts) => serde_json::json!({ "chunkSize": opts.chunk_size }),
             None => serde_json::Value::Null,
         };
         let params = serde_json::json!({"path": path, "options": upload_options_value});
@@ -565,7 +564,7 @@ pub extern "C" fn flare_media_upload_image(
             }
         };
         let upload_options_value = match upload_options {
-            Some(opts) => serde_json::json!({ "chunk_size": opts.chunk_size }),
+            Some(opts) => serde_json::json!({ "chunkSize": opts.chunk_size }),
             None => serde_json::Value::Null,
         };
         let params = serde_json::json!({"path": path, "options": upload_options_value});
@@ -606,7 +605,7 @@ pub extern "C" fn flare_media_upload_video(
             }
         };
         let upload_options_value = match upload_options {
-            Some(opts) => serde_json::json!({ "chunk_size": opts.chunk_size }),
+            Some(opts) => serde_json::json!({ "chunkSize": opts.chunk_size }),
             None => serde_json::Value::Null,
         };
         let params = serde_json::json!({"path": path, "options": upload_options_value});
@@ -667,7 +666,7 @@ pub extern "C" fn flare_media_upload_bytes(
             }
         };
         let upload_options_value = match upload_options {
-            Some(opts) => serde_json::json!({ "chunk_size": opts.chunk_size }),
+            Some(opts) => serde_json::json!({ "chunkSize": opts.chunk_size }),
             None => serde_json::Value::Null,
         };
         let bytes_value = match serde_json::to_value(&payload) {
@@ -682,7 +681,7 @@ pub extern "C" fn flare_media_upload_bytes(
                 return crate::error_convert::FLARE_ERR_INVALID_PARAM;
             }
         };
-        let params = serde_json::json!({"bytes": bytes_value, "file_name": file_name, "mime_type": mime_type, "options": upload_options_value});
+        let params = serde_json::json!({"bytes": bytes_value, "fileName": file_name, "mimeType": mime_type, "options": upload_options_value});
         let ctx = CallbackContext::new(context, callback);
         let api_id = "media.upload_bytes";
         typed_invoke_json(instance, ctx, &api_id, params);
@@ -711,7 +710,7 @@ pub extern "C" fn flare_media_delete_file(
                 return code;
             }
         };
-        let params = serde_json::json!({"file_id": file_id, "hard_delete": hard_delete});
+        let params = serde_json::json!({"fileId": file_id, "hardDelete": hard_delete});
         let ctx = CallbackContext::new(context, callback);
         let api_id = "media.delete_file";
         typed_invoke_json(instance, ctx, &api_id, params);
@@ -733,7 +732,7 @@ pub extern "C" fn flare_media_cancel_user_file_download(
             Ok(s) => s,
             Err(_) => return false,
         };
-        let params = serde_json::json!({"download_key": download_key});
+        let params = serde_json::json!({"downloadKey": download_key});
 
         let api_id = "media.cancel_user_file_download";
         let inst = instance.clone();

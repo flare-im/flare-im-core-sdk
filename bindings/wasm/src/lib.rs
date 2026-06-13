@@ -1,70 +1,48 @@
-//! Browser WebAssembly binding for Flare IM Core SDK vNext.
+//! Browser WebAssembly binding for Flare IM Core SDK.
+//!
+//! The public wasm surface is generated metadata plus a thin runtime facade.
+//! Production builds use the real `IMClient`; smoke builds can opt into the
+//! in-memory runtime with `--features local-smoke-runtime`.
 
-use flare_im_core_sdk::{IMClient, SdkConfig};
-use serde_json::Value;
 use wasm_bindgen::prelude::*;
+
+pub mod generated;
+#[allow(dead_code)]
+mod runtime_port;
+mod tokio_runtime;
+
+#[cfg(feature = "local-smoke-runtime")]
+mod smoke;
+
+#[cfg(not(feature = "local-smoke-runtime"))]
+mod production;
+
+pub use generated::bindings::flare_binding_contract_version;
+pub use generated::client_config::{
+    flare_client_config_contract_json, flare_client_init_example_json,
+};
+
+#[cfg(not(feature = "local-smoke-runtime"))]
+pub use production::{
+    FlareImWasmRuntime, build_web_store_provider, clear_storage_host, create_wasm_runtime,
+    flare_clear_encryption_key, flare_encryption_key_len, flare_has_encryption_key,
+    flare_now_rfc3339, flare_runtime_id, flare_set_encryption_key, flare_set_encryption_key_hex,
+    flare_wall_clock_ms, set_storage_host, storage_host_configured,
+};
+
+#[cfg(feature = "local-smoke-runtime")]
+pub use generated::bindings::flare_invoke;
+
+#[cfg(feature = "local-smoke-runtime")]
+pub use smoke::{FlareImWasmRuntime, create_wasm_runtime};
 
 #[wasm_bindgen(start)]
 pub fn wasm_start() {
     console_error_panic_hook::set_once();
-}
-
-#[wasm_bindgen(js_name = flareBindingContractVersion)]
-pub fn flare_binding_contract_version() -> String {
-    flare_im_core_sdk_bindings_runtime::BINDING_CONTRACT_VERSION.to_string()
+    tokio_runtime::ensure_initialized();
 }
 
 #[wasm_bindgen(js_name = flareBindingContractJson)]
 pub fn flare_binding_contract_json() -> String {
     flare_im_core_sdk_bindings_runtime::contract_json()
-}
-
-#[wasm_bindgen(js_name = flareClientInitExampleJson)]
-pub fn flare_client_init_example_json() -> String {
-    flare_im_core_sdk_bindings_runtime::client_init_request_example_json()
-}
-
-#[wasm_bindgen(js_name = flareGenerateTestToken)]
-pub fn flare_generate_test_token(user_id: &str) -> String {
-    flare_im_core_sdk::generate_test_token(user_id)
-}
-
-#[wasm_bindgen]
-pub struct FlareImClient {
-    client: IMClient,
-}
-
-#[wasm_bindgen]
-impl FlareImClient {
-    #[wasm_bindgen(constructor)]
-    pub fn new(config: JsValue) -> Result<FlareImClient, JsValue> {
-        let config: SdkConfig = serde_wasm_bindgen::from_value(config)
-            .map_err(|e| JsValue::from_str(&e.to_string()))?;
-        let client = IMClient::new(config).map_err(|e| JsValue::from_str(&e.to_string()))?;
-        Ok(Self { client })
-    }
-
-    #[wasm_bindgen(js_name = invoke)]
-    pub async fn invoke(&self, request: JsValue) -> Result<JsValue, JsValue> {
-        let value: Value = serde_wasm_bindgen::from_value(request)
-            .map_err(|e| JsValue::from_str(&e.to_string()))?;
-        let request =
-            serde_json::from_value::<flare_im_core_sdk_bindings_runtime::BindingRequest>(value)
-                .map_err(|e| JsValue::from_str(&e.to_string()))?;
-        let response = flare_im_core_sdk_bindings_runtime::invoke_value(&self.client, request)
-            .await
-            .unwrap_or_else(flare_im_core_sdk_bindings_runtime::BindingResponse::err);
-        serde_wasm_bindgen::to_value(&response).map_err(|e| JsValue::from_str(&e.to_string()))
-    }
-
-    #[wasm_bindgen(js_name = invokeJson)]
-    pub async fn invoke_json(&self, request_json: String) -> String {
-        flare_im_core_sdk_bindings_runtime::invoke_json(&self.client, &request_json).await
-    }
-
-    #[wasm_bindgen(js_name = pollEvent)]
-    pub async fn poll_event(&self) -> Result<JsValue, JsValue> {
-        let event = self.client.poll_event().await;
-        serde_wasm_bindgen::to_value(&event).map_err(|e| JsValue::from_str(&e.to_string()))
-    }
 }

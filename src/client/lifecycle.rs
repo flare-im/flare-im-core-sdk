@@ -8,8 +8,10 @@ pub use crate::shared::util::paths::{
     resolve_sdk_data_root, resolve_user_db_path, sanitize_user_id_for_dir,
 };
 
-use crate::client::{SdkConfig, TransportKind, TransportPolicy};
+use crate::client::{SdkConfig, SdkResourceProfile, TransportKind, TransportPolicy};
 use crate::shared::error::Result;
+#[cfg(not(feature = "dev-test-token"))]
+use crate::shared::error::{ErrorCode, FlareError};
 
 /// 上层可选覆盖项（JSON 字段 snake_case，与 Rust 字段一致）。
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
@@ -29,11 +31,17 @@ pub struct SdkConfigOverlay {
     pub default_transport: Option<TransportKind>,
     /// 协议竞速优先级（从高到低），如 `["quic", "websocket"]`。
     pub protocol_race_order: Option<Vec<TransportKind>>,
+    /// 运行资源预算 profile（`desktop` / `mobile`）。
+    pub resource_profile: Option<SdkResourceProfile>,
     pub sync_batch_size: Option<u32>,
     /// Init/重连后会话消息补拉并发数（默认 4）。
     pub init_message_sync_concurrency: Option<u32>,
+    pub event_bus_capacity: Option<usize>,
+    pub event_dedupe_capacity: Option<usize>,
+    pub message_dedupe_capacity: Option<usize>,
     pub ack_timeout_secs: Option<u64>,
     pub ack_max_retries: Option<u32>,
+    pub ack_max_in_flight: Option<usize>,
     pub enable_metrics: Option<bool>,
 }
 
@@ -93,17 +101,32 @@ pub fn merge_sdk_config(ws_url: &str, overlay: Option<&SdkConfigOverlay>) -> Sdk
         if o.protocol_race_order.is_some() {
             config.protocol_race_order = o.protocol_race_order.clone();
         }
+        if let Some(profile) = o.resource_profile {
+            config.resource_profile = profile;
+        }
         if o.sync_batch_size.is_some() {
             config.sync_batch_size = o.sync_batch_size;
         }
         if o.init_message_sync_concurrency.is_some() {
             config.init_message_sync_concurrency = o.init_message_sync_concurrency;
         }
+        if o.event_bus_capacity.is_some() {
+            config.event_bus_capacity = o.event_bus_capacity;
+        }
+        if o.event_dedupe_capacity.is_some() {
+            config.event_dedupe_capacity = o.event_dedupe_capacity;
+        }
+        if o.message_dedupe_capacity.is_some() {
+            config.message_dedupe_capacity = o.message_dedupe_capacity;
+        }
         if o.ack_timeout_secs.is_some() {
             config.ack_timeout_secs = o.ack_timeout_secs;
         }
         if o.ack_max_retries.is_some() {
             config.ack_max_retries = o.ack_max_retries;
+        }
+        if o.ack_max_in_flight.is_some() {
+            config.ack_max_in_flight = o.ack_max_in_flight;
         }
         if let Some(b) = o.enable_metrics {
             config.enable_metrics = b;
@@ -138,14 +161,26 @@ pub fn resolve_connect_token(user_id: &str, explicit_token: Option<&str>) -> Res
             return Ok(t.to_string());
         }
     }
-    crate::shared::util::generate_test_token(
-        "insecure-secret",
-        "flare-im-core",
-        user_id,
-        3600,
-        None,
-        None,
-    )
+    #[cfg(feature = "dev-test-token")]
+    {
+        return crate::shared::util::generate_core_token(&crate::shared::util::CoreTokenConfig {
+            secret: "insecure-secret".to_string(),
+            issuer: "flare-im-core".to_string(),
+            user_id: user_id.to_string(),
+            ttl_secs: 3600,
+            device_id: None,
+            tenant_id: None,
+        });
+    }
+
+    #[cfg(not(feature = "dev-test-token"))]
+    {
+        let _ = user_id;
+        Err(FlareError::localized(
+            ErrorCode::ConfigurationError,
+            "connect token required; automatic development token generation is disabled",
+        ))
+    }
 }
 
 /// 登录时存储选型，配合 [`super::IMClient::login`]。

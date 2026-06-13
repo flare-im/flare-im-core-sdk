@@ -28,6 +28,26 @@ impl MemoryMessageStore {
             data: RwLock::new(HashMap::new()),
         }
     }
+
+    fn storage_key(message: &IMMessage) -> String {
+        if !message.server_id.is_empty() {
+            message.server_id.clone()
+        } else {
+            message.client_msg_id.clone()
+        }
+    }
+
+    fn remove_conflicting_client_msg_rows(
+        data: &mut HashMap<String, IMMessage>,
+        client_msg_id: &str,
+        keep_key: &str,
+    ) {
+        let client_msg_id = client_msg_id.trim();
+        if client_msg_id.is_empty() {
+            return;
+        }
+        data.retain(|key, stored| key == keep_key || stored.client_msg_id != client_msg_id);
+    }
 }
 
 impl Default for MemoryMessageStore {
@@ -67,25 +87,23 @@ impl MessageReader for MemoryMessageStore {
         let is_latest = before_seq == 0 || before_seq >= i64::MAX as u64;
         let mut msgs: Vec<_> = if is_latest {
             data.values()
-                .filter(|m| m.conversation_id == conversation_id && m.seq < bound)
+                .filter(|m| m.conversation_id == conversation_id && m.conversation_seq < bound)
                 .cloned()
                 .collect()
         } else {
             data.values()
-                .filter(|m| m.conversation_id == conversation_id && m.seq > 0 && m.seq < bound)
+                .filter(|m| {
+                    m.conversation_id == conversation_id
+                        && m.conversation_seq > 0
+                        && m.conversation_seq < bound
+                })
                 .cloned()
                 .collect()
         };
         if is_latest {
-            let key = |m: &IMMessage| {
-                m.local_state
-                    .sort_ts
-                    .max(m.timestamp)
-                    .max(m.client_timestamp)
-            };
-            msgs.sort_by(|a, b| key(b).cmp(&key(a)).then_with(|| b.seq.cmp(&a.seq)));
+            msgs.sort_by(IMMessage::compare_for_latest_window_desc);
         } else {
-            msgs.sort_by(|a, b| b.seq.cmp(&a.seq));
+            msgs.sort_by(|a, b| b.conversation_seq.cmp(&a.conversation_seq));
         }
         msgs.truncate(limit as usize);
         Ok(msgs)
@@ -117,7 +135,7 @@ impl MessageReader for MemoryMessageStore {
                     return false;
                 }
                 let from_extra = m
-                    .extra
+                    .attributes
                     .get("contentText")
                     .is_some_and(|t| t.to_lowercase().contains(&kw));
                 let from_preview = m
@@ -127,7 +145,7 @@ impl MessageReader for MemoryMessageStore {
             })
             .cloned()
             .collect();
-        results.sort_by(|a, b| b.seq.cmp(&a.seq));
+        results.sort_by(|a, b| b.conversation_seq.cmp(&a.conversation_seq));
         results.truncate(limit as usize);
         Ok(results)
     }
@@ -138,11 +156,8 @@ impl MessageWriter for MemoryMessageStore {
     async fn save_batch(&self, messages: &[IMMessage]) -> Result<()> {
         let mut data = self.data.write().await;
         for msg in messages {
-            let key = if !msg.server_id.is_empty() {
-                msg.server_id.clone()
-            } else {
-                msg.client_msg_id.clone()
-            };
+            let key = Self::storage_key(msg);
+            Self::remove_conflicting_client_msg_rows(&mut data, &msg.client_msg_id, &key);
             data.insert(key, msg.clone());
         }
         Ok(())
@@ -178,9 +193,9 @@ impl MessageWriter for MemoryMessageStore {
         let mut data = self.data.write().await;
         let mut hit = false;
         let mut apply = |msg: &mut IMMessage| {
-            msg.content_bytes = new_content.clone();
+            msg.encoded_content = new_content.clone();
             msg.is_edited = true;
-            msg.content = decode_content_bytes(&msg.content_bytes)
+            msg.content = decode_content_bytes(&msg.encoded_content)
                 .ok()
                 .and_then(|d| decoded_content_to_elem(&d));
             hit = true;
@@ -205,13 +220,16 @@ impl MessageWriter for MemoryMessageStore {
 
     async fn update_after_ack(&self, client_msg_id: &str, message: &IMMessage) -> Result<()> {
         let mut data = self.data.write().await;
-        data.remove(client_msg_id);
-        let key = if !message.server_id.is_empty() {
-            message.server_id.clone()
-        } else {
-            message.client_msg_id.clone()
-        };
-        data.insert(key, message.clone());
+        let mut message = message.clone();
+        let ack_client_msg_id = client_msg_id.trim();
+        if message.client_msg_id.trim().is_empty() && !ack_client_msg_id.is_empty() {
+            message.client_msg_id = ack_client_msg_id.to_string();
+        }
+        let key = Self::storage_key(&message);
+        Self::remove_conflicting_client_msg_rows(&mut data, ack_client_msg_id, &key);
+        Self::remove_conflicting_client_msg_rows(&mut data, &message.client_msg_id, &key);
+        data.retain(|stored_key, _| stored_key == &key || stored_key != ack_client_msg_id);
+        data.insert(key, message);
         Ok(())
     }
 }
@@ -420,5 +438,81 @@ pub fn in_memory_im_provider() -> StoreProvider {
         user_file_download_store: None,
         user_profiles_reader: Some(user_profiles.clone()),
         user_profiles_writer: Some(user_profiles),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::MemoryMessageStore;
+    use crate::domain::{MessageReader, MessageWriter};
+    use crate::model::IMMessage;
+    use flare_proto::common::MessageStatus;
+
+    fn local_message(server_id: &str, client_msg_id: &str) -> IMMessage {
+        let mut message = IMMessage::new(flare_proto::common::Message::default());
+        message.server_id = server_id.to_string();
+        message.client_msg_id = client_msg_id.to_string();
+        message.conversation_id = "conv-memory-dupe".to_string();
+        message.sender_id = "u1".to_string();
+        message.local_state.sending = true;
+        message.local_state.is_local = true;
+        message
+    }
+
+    #[tokio::test]
+    async fn save_batch_collapses_existing_client_msg_id() {
+        let store = MemoryMessageStore::new();
+        let pending = local_message("client-memory-1", "client-memory-1");
+        store.save_batch(&[pending.clone()]).await.unwrap();
+
+        let mut echoed = pending;
+        echoed.server_id = "server-memory-1".to_string();
+        echoed.conversation_seq = 10;
+        echoed.status = MessageStatus::Persisted as i32;
+        echoed.local_state.sending = false;
+        echoed.local_state.is_local = false;
+        store.save_batch(&[echoed]).await.unwrap();
+
+        assert!(store.get("client-memory-1").await.unwrap().is_none());
+        let stored = store
+            .get_by_client_msg_id("client-memory-1")
+            .await
+            .unwrap()
+            .expect("canonical message");
+        assert_eq!(stored.server_id, "server-memory-1");
+
+        let timeline = store
+            .get_by_conversation("conv-memory-dupe", 0, 10)
+            .await
+            .unwrap();
+        assert_eq!(timeline.len(), 1);
+        assert_eq!(timeline[0].server_id, "server-memory-1");
+    }
+
+    #[tokio::test]
+    async fn update_after_ack_collapses_existing_client_msg_id() {
+        let store = MemoryMessageStore::new();
+        let stale = local_message("stale-memory-1", "client-memory-ack-1");
+        store.save_batch(&[stale.clone()]).await.unwrap();
+
+        let mut acked = stale;
+        acked.server_id = "server-memory-ack-1".to_string();
+        acked.conversation_seq = 20;
+        acked.status = MessageStatus::Sent as i32;
+        store
+            .update_after_ack("client-memory-ack-1", &acked)
+            .await
+            .unwrap();
+
+        assert!(store.get("stale-memory-1").await.unwrap().is_none());
+        let stored = store.get("server-memory-ack-1").await.unwrap().unwrap();
+        assert_eq!(stored.client_msg_id, "client-memory-ack-1");
+
+        let timeline = store
+            .get_by_conversation("conv-memory-dupe", 0, 10)
+            .await
+            .unwrap();
+        assert_eq!(timeline.len(), 1);
+        assert_eq!(timeline[0].server_id, "server-memory-ack-1");
     }
 }

@@ -163,6 +163,7 @@ impl ConversationCommandUseCase {
     }
 
     pub async fn mark_read(&self, conversation_id: &str, read_seq: u64) -> Result<u32> {
+        let current_user_id = self.current_user_id().await?;
         let Some(current) = self.store.get(conversation_id).await? else {
             return Ok(0);
         };
@@ -182,8 +183,7 @@ impl ConversationCommandUseCase {
             )
             .await?;
 
-        let current_user_id = self.current_user_id.read().await.clone();
-        if decision.should_recompute_local_unread && !current_user_id.is_empty() {
+        if decision.should_recompute_local_unread {
             let _ = self
                 .store
                 .recompute_unread_for_user(conversation_id, &current_user_id)
@@ -196,6 +196,7 @@ impl ConversationCommandUseCase {
     }
 
     pub async fn mark_all_read(&self) -> Result<()> {
+        self.current_user_id().await?;
         let list = self.store.list().await?;
         for conversation in list {
             let _ = self
@@ -206,10 +207,12 @@ impl ConversationCommandUseCase {
     }
 
     pub async fn delete(&self, conversation_id: &str) -> Result<()> {
+        self.current_user_id().await?;
         self.store.delete(conversation_id).await
     }
 
     pub async fn set_pinned(&self, conversation_id: &str, pinned: bool) -> Result<()> {
+        self.current_user_id().await?;
         self.store.set_pinned(conversation_id, pinned).await?;
         self.after_user_settings_write(
             conversation_id,
@@ -222,6 +225,7 @@ impl ConversationCommandUseCase {
     }
 
     pub async fn set_muted(&self, conversation_id: &str, muted: bool) -> Result<()> {
+        self.current_user_id().await?;
         self.store.set_muted(conversation_id, muted).await?;
         self.after_user_settings_write(
             conversation_id,
@@ -234,6 +238,7 @@ impl ConversationCommandUseCase {
     }
 
     pub async fn set_archived(&self, conversation_id: &str, archived: bool) -> Result<()> {
+        self.current_user_id().await?;
         self.store.set_archived(conversation_id, archived).await?;
         self.after_user_settings_write(
             conversation_id,
@@ -246,10 +251,12 @@ impl ConversationCommandUseCase {
     }
 
     pub async fn mark_unread(&self, conversation_id: &str) -> Result<u32> {
+        self.current_user_id().await?;
         self.store.mark_unread(conversation_id).await
     }
 
     pub async fn update_draft(&self, conversation_id: &str, draft: Option<&str>) -> Result<()> {
+        self.current_user_id().await?;
         self.store.update_draft(conversation_id, draft).await?;
         self.after_user_settings_write(
             conversation_id,
@@ -286,6 +293,7 @@ impl ConversationCommandUseCase {
         business_type: &str,
         channel_id: String,
     ) -> Result<()> {
+        self.current_user_id().await?;
         if self.store.get(conversation_id).await?.is_some() {
             return Ok(());
         }

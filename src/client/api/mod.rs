@@ -13,6 +13,7 @@ mod presence;
 #[cfg(not(target_arch = "wasm32"))]
 #[path = "presence/native.rs"]
 mod presence;
+pub(crate) mod session_guard;
 
 pub use capability::{
     CapabilityApi, CapabilityDescriptorDto, CapabilityDispatchResult, RtcSfuSubscriptionRequest,

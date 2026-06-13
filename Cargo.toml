@@ -1,15 +1,16 @@
 [workspace]
 members = [
     ".",
+    "codegen",
     "storage/sqlite",
-    "bindings/runtime",
+    "storage/indexeddb",
+    "bindings/shared",
     "bindings/c",
     "bindings/wasm",
     "bindings/tauri",
 ]
 exclude = [
     "bindings/uniffi",
-    "examples/tauri/src-tauri",
 ]
 
 [workspace.package]
@@ -55,20 +56,23 @@ path = "src/lib.rs"
 crate-type = ["rlib", "cdylib", "staticlib"]
 
 [features]
-# 默认仅启用 IM 基础能力；通话/RTC 通过可选插件接入。
+# 默认仅启用 IM 基础能力；通话/RTC 通过 DATA capability 接入。
 default = []
 integration-tests = []
+# Development-only helper for local gateway auth. Production builds must not
+# expose token minting surfaces.
+dev-test-token = []
 # SQLite 持久化实现（Message/Conversation/PendingSend/UserProfile 仓储）
 storage-sqlite = ["dep:sqlx"]
 # 跨平台 SQLite 登录编排（依赖 storage/sqlite 连接池与 schema 注册）
 lifecycle-sqlite = ["storage-sqlite", "dep:flare-im-core-sdk-storage-sqlite"]
-# 通话信令 + `rtc.*` 能力插件（独立 crate `flare-sdk-plugin-call`）
-plugin-call = ["dep:flare-sdk-plugin-call"]
+# RTC/SFU typed helpers. Legacy call_signal plugin crates are intentionally not
+# pulled into the core SDK feature graph.
+plugin-call = []
 
 [dependencies]
 flare-core = { workspace = true }
 flare-proto = { workspace = true }
-flare-sdk-plugin-call = { path = "../flare-sdk-plugin/flare-sdk-plugin-call", optional = true }
 chrono = { workspace = true }
 
 serde = { workspace = true }
@@ -140,6 +144,10 @@ harness = false
 
 [[example]]
 name = "two_clients_chat"
+required-features = ["lifecycle-sqlite"]
+
+[[example]]
+name = "two_user_latency_throughput"
 required-features = ["lifecycle-sqlite"]
 
 [[example]]

@@ -29,6 +29,7 @@ pub type UploadProgressCallback = Arc<dyn Fn(UploadProgress) + Send + Sync>;
 
 /// 已下载字节数；`total` 来自 Content-Length 或本地文件大小（可能为 `None`）。
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct FileDownloadProgress {
     pub downloaded: u64,
     pub total: Option<u64>,

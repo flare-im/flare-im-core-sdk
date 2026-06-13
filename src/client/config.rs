@@ -2,6 +2,8 @@ use serde::{Deserialize, Serialize};
 
 use flare_core::common::config_types::TransportProtocol as CoreTransport;
 
+use crate::shared::util::RELIABLE_QUEUE_MAX_IN_FLIGHT;
+
 /// Wire transport kind for init overlay and protocol race ordering.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -36,17 +38,56 @@ impl TransportKind {
 ///
 /// Browser/WASM must use WebSocket because QUIC/native protocol racing is not
 /// available in the browser sandbox. Native targets can keep protocol racing.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TransportPolicy {
+    #[default]
     Auto,
     WebSocketOnly,
     ProtocolRace,
 }
 
-impl Default for TransportPolicy {
-    fn default() -> Self {
-        Self::Auto
+/// Runtime resource budget selected by the host app.
+///
+/// The profile only supplies defaults. Explicit numeric config fields still win,
+/// so production apps can tune one knob without forking the whole profile.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SdkResourceProfile {
+    /// Balanced defaults for desktop and server-like hosts.
+    #[default]
+    Desktop,
+    /// Conservative defaults for mobile devices and memory-constrained hosts.
+    Mobile,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SdkRuntimeResources {
+    pub sync_batch_size: u32,
+    pub init_message_sync_concurrency: u32,
+    pub event_bus_capacity: usize,
+    pub event_dedupe_capacity: usize,
+    pub message_dedupe_capacity: usize,
+}
+
+impl SdkResourceProfile {
+    fn defaults(self) -> SdkRuntimeResources {
+        match self {
+            Self::Desktop => SdkRuntimeResources {
+                sync_batch_size: 200,
+                init_message_sync_concurrency: 4,
+                event_bus_capacity: 2048,
+                event_dedupe_capacity: 4096,
+                message_dedupe_capacity: 8192,
+            },
+            Self::Mobile => SdkRuntimeResources {
+                sync_batch_size: 80,
+                init_message_sync_concurrency: 2,
+                event_bus_capacity: 512,
+                event_dedupe_capacity: 1024,
+                message_dedupe_capacity: 2048,
+            },
+        }
     }
 }
 
@@ -76,10 +117,16 @@ pub struct SdkConfig {
     /// 协议竞速顺序（前项优先），如 `["quic", "websocket"]`。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub protocol_race_order: Option<Vec<TransportKind>>,
+    #[serde(default)]
+    pub resource_profile: SdkResourceProfile,
     pub sync_batch_size: Option<u32>,
     pub init_message_sync_concurrency: Option<u32>,
+    pub event_bus_capacity: Option<usize>,
+    pub event_dedupe_capacity: Option<usize>,
+    pub message_dedupe_capacity: Option<usize>,
     pub ack_timeout_secs: Option<u64>,
     pub ack_max_retries: Option<u32>,
+    pub ack_max_in_flight: Option<usize>,
     pub enable_metrics: bool,
 }
 
@@ -103,12 +150,38 @@ impl SdkConfig {
     }
     /// 获取同步批大小，未配置时使用默认值。
     pub fn sync_batch_size(&self) -> u32 {
-        self.sync_batch_size.unwrap_or(200)
+        self.runtime_resources().sync_batch_size
     }
 
     /// Init/重连阶段按会话补拉消息的并发上限（默认 4，最小 1）。
     pub fn init_message_sync_concurrency(&self) -> u32 {
-        self.init_message_sync_concurrency.unwrap_or(4).max(1)
+        self.runtime_resources().init_message_sync_concurrency
+    }
+
+    pub fn runtime_resources(&self) -> SdkRuntimeResources {
+        let defaults = self.resource_profile.defaults();
+        SdkRuntimeResources {
+            sync_batch_size: self
+                .sync_batch_size
+                .unwrap_or(defaults.sync_batch_size)
+                .max(1),
+            init_message_sync_concurrency: self
+                .init_message_sync_concurrency
+                .unwrap_or(defaults.init_message_sync_concurrency)
+                .max(1),
+            event_bus_capacity: self
+                .event_bus_capacity
+                .unwrap_or(defaults.event_bus_capacity)
+                .max(1),
+            event_dedupe_capacity: self
+                .event_dedupe_capacity
+                .unwrap_or(defaults.event_dedupe_capacity)
+                .max(1),
+            message_dedupe_capacity: self
+                .message_dedupe_capacity
+                .unwrap_or(defaults.message_dedupe_capacity)
+                .max(1),
+        }
     }
 
     /// Effective transport policy for the current compilation target.
@@ -168,6 +241,41 @@ mod tests {
         assert_eq!(order[0], CoreTransport::WebSocket);
         assert_eq!(order[1], CoreTransport::QUIC);
     }
+
+    #[test]
+    fn mobile_resource_profile_uses_conservative_sync_budget() {
+        let config = SdkConfig {
+            resource_profile: SdkResourceProfile::Mobile,
+            ..SdkConfig::default()
+        };
+
+        assert_eq!(config.runtime_resources().sync_batch_size, 80);
+        assert_eq!(config.runtime_resources().init_message_sync_concurrency, 2);
+        assert_eq!(config.runtime_resources().event_bus_capacity, 512);
+        assert_eq!(config.runtime_resources().event_dedupe_capacity, 1024);
+        assert_eq!(config.runtime_resources().message_dedupe_capacity, 2048);
+        assert_eq!(config.sync_batch_size(), 80);
+        assert_eq!(config.init_message_sync_concurrency(), 2);
+    }
+
+    #[test]
+    fn explicit_resource_overrides_win_over_profile_defaults() {
+        let config = SdkConfig {
+            resource_profile: SdkResourceProfile::Mobile,
+            sync_batch_size: Some(32),
+            init_message_sync_concurrency: Some(1),
+            event_bus_capacity: Some(128),
+            event_dedupe_capacity: Some(256),
+            message_dedupe_capacity: Some(512),
+            ..SdkConfig::default()
+        };
+
+        assert_eq!(config.runtime_resources().sync_batch_size, 32);
+        assert_eq!(config.runtime_resources().init_message_sync_concurrency, 1);
+        assert_eq!(config.runtime_resources().event_bus_capacity, 128);
+        assert_eq!(config.runtime_resources().event_dedupe_capacity, 256);
+        assert_eq!(config.runtime_resources().message_dedupe_capacity, 512);
+    }
 }
 
 impl Default for SdkConfig {
@@ -185,10 +293,15 @@ impl Default for SdkConfig {
             transport_policy: TransportPolicy::Auto,
             default_transport: None,
             protocol_race_order: None,
-            sync_batch_size: Some(200),
+            resource_profile: SdkResourceProfile::Desktop,
+            sync_batch_size: None,
             init_message_sync_concurrency: None,
+            event_bus_capacity: None,
+            event_dedupe_capacity: None,
+            message_dedupe_capacity: None,
             ack_timeout_secs: Some(10),
             ack_max_retries: Some(3),
+            ack_max_in_flight: Some(RELIABLE_QUEUE_MAX_IN_FLIGHT),
             enable_metrics: false,
         }
     }
@@ -235,6 +348,16 @@ impl SdkConfigBuilder {
         self.config.connect_timeout_secs = Some(s);
         self
     }
+    /// 设置可靠发送 ACK 超时（秒）。
+    pub fn ack_timeout_secs(mut self, s: u64) -> Self {
+        self.config.ack_timeout_secs = Some(s);
+        self
+    }
+    /// 设置可靠发送 ACK 最大重试次数。
+    pub fn ack_max_retries(mut self, n: u32) -> Self {
+        self.config.ack_max_retries = Some(n);
+        self
+    }
     /// 设置重连间隔（秒）。
     pub fn reconnect_interval_secs(mut self, s: u64) -> Self {
         self.config.reconnect_interval_secs = Some(s);
@@ -253,6 +376,36 @@ impl SdkConfigBuilder {
     /// 设置单次同步批大小。
     pub fn sync_batch_size(mut self, n: u32) -> Self {
         self.config.sync_batch_size = Some(n);
+        self
+    }
+    /// 设置运行资源预算 profile。
+    pub fn resource_profile(mut self, profile: SdkResourceProfile) -> Self {
+        self.config.resource_profile = profile;
+        self
+    }
+    /// 设置 Init/重连阶段按会话补拉消息的并发上限。
+    pub fn init_message_sync_concurrency(mut self, n: u32) -> Self {
+        self.config.init_message_sync_concurrency = Some(n);
+        self
+    }
+    /// 设置 EventBus 有界广播容量。
+    pub fn event_bus_capacity(mut self, n: usize) -> Self {
+        self.config.event_bus_capacity = Some(n);
+        self
+    }
+    /// 设置事件去重内存窗口容量。
+    pub fn event_dedupe_capacity(mut self, n: usize) -> Self {
+        self.config.event_dedupe_capacity = Some(n);
+        self
+    }
+    /// 设置消息去重内存窗口容量。
+    pub fn message_dedupe_capacity(mut self, n: usize) -> Self {
+        self.config.message_dedupe_capacity = Some(n);
+        self
+    }
+    /// 设置可靠发送队列最大在途消息数。
+    pub fn ack_max_in_flight(mut self, n: usize) -> Self {
+        self.config.ack_max_in_flight = Some(n);
         self
     }
     /// 是否开启 SDK 指标采集。

@@ -3,7 +3,9 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 
 use crate::application::SyncProtocolAdapter;
-use crate::application::notification::{NotificationHandlerRegistry, NotificationInboundPipeline};
+use crate::application::notification::{
+    NotificationHandler, NotificationHandlerRegistry, NotificationInboundPipeline,
+};
 use crate::application::services::EventDeduper;
 use crate::application::services::MessageDeduper;
 use crate::application::sync_task::{
@@ -29,7 +31,10 @@ use crate::extension::capability::{
     SdkCapabilityPlugin, SdkCapabilityRegistry, reserved_namespaces_of_plugin,
 };
 use crate::extension::middleware::{EventInterceptor, MessageInterceptor, MiddlewareChain};
-use crate::extension::{ExtensionRegistry, SdkExtension};
+use crate::extension::{
+    ContentCodec, ConversationProjectionSource, ExtensionLifecycle, ExtensionMigration,
+    ExtensionRegistry, ExtensionRuntime, ProfileProvider, SdkExtension,
+};
 use crate::infrastructure::persistence::StoreProvider;
 use crate::infrastructure::protocol::{Codec, ProtobufCodec};
 use crate::infrastructure::transport::{HttpClient, HttpRequestContext, SocketTransport};
@@ -37,7 +42,57 @@ use crate::platform::adapters::media::{MediaService, UploadOnlyMediaService};
 use crate::platform::ports::media::MediaServicePort;
 use crate::platform::runtime::RuntimeComponents;
 use crate::shared::error::{ErrorCode, FlareError, Result};
-use flare_proto::common::CallSignalEvent;
+
+#[derive(Clone, Default)]
+pub(crate) struct IMClientExtensionComponents {
+    sync_tasks: Vec<Arc<dyn SyncTask>>,
+    message_interceptors: Vec<Arc<dyn MessageInterceptor>>,
+    event_interceptors: Vec<Arc<dyn EventInterceptor>>,
+    capability_plugins: Vec<Arc<dyn SdkCapabilityPlugin>>,
+    notification_handlers: Vec<Arc<dyn NotificationHandler>>,
+    extension_lifecycles: Vec<Arc<dyn ExtensionLifecycle>>,
+    profile_providers: Vec<Arc<dyn ProfileProvider>>,
+    conversation_projection_sources: Vec<Arc<dyn ConversationProjectionSource>>,
+    content_codecs: Vec<Arc<dyn ContentCodec>>,
+    extension_migrations: Vec<Arc<dyn ExtensionMigration>>,
+    allow_reserved_capability_namespace_override: bool,
+}
+
+impl IMClientExtensionComponents {
+    pub(crate) fn apply_to_builder(&self, mut builder: IMClientBuilder) -> IMClientBuilder {
+        builder.sync_tasks.extend(self.sync_tasks.iter().cloned());
+        builder
+            .message_interceptors
+            .extend(self.message_interceptors.iter().cloned());
+        builder
+            .event_interceptors
+            .extend(self.event_interceptors.iter().cloned());
+        builder
+            .capability_plugins
+            .extend(self.capability_plugins.iter().cloned());
+        builder
+            .notification_handlers
+            .extend(self.notification_handlers.iter().cloned());
+        builder
+            .extension_lifecycles
+            .extend(self.extension_lifecycles.iter().cloned());
+        builder
+            .profile_providers
+            .extend(self.profile_providers.iter().cloned());
+        builder
+            .conversation_projection_sources
+            .extend(self.conversation_projection_sources.iter().cloned());
+        builder
+            .content_codecs
+            .extend(self.content_codecs.iter().cloned());
+        builder
+            .extension_migrations
+            .extend(self.extension_migrations.iter().cloned());
+        builder.allow_reserved_capability_namespace_override =
+            self.allow_reserved_capability_namespace_override;
+        builder
+    }
+}
 
 #[cfg(not(target_arch = "wasm32"))]
 fn derive_capability_url(config: &SdkConfig) -> String {
@@ -126,6 +181,12 @@ pub struct IMClientBuilder {
     message_interceptors: Vec<Arc<dyn MessageInterceptor>>,
     event_interceptors: Vec<Arc<dyn EventInterceptor>>,
     capability_plugins: Vec<Arc<dyn SdkCapabilityPlugin>>,
+    notification_handlers: Vec<Arc<dyn NotificationHandler>>,
+    extension_lifecycles: Vec<Arc<dyn ExtensionLifecycle>>,
+    profile_providers: Vec<Arc<dyn ProfileProvider>>,
+    conversation_projection_sources: Vec<Arc<dyn ConversationProjectionSource>>,
+    content_codecs: Vec<Arc<dyn ContentCodec>>,
+    extension_migrations: Vec<Arc<dyn ExtensionMigration>>,
     allow_reserved_capability_namespace_override: bool,
     builder_errors: Vec<FlareError>,
 }
@@ -143,6 +204,12 @@ impl IMClientBuilder {
             message_interceptors: Vec::new(),
             event_interceptors: Vec::new(),
             capability_plugins: Vec::new(),
+            notification_handlers: Vec::new(),
+            extension_lifecycles: Vec::new(),
+            profile_providers: Vec::new(),
+            conversation_projection_sources: Vec::new(),
+            content_codecs: Vec::new(),
+            extension_migrations: Vec::new(),
             allow_reserved_capability_namespace_override: false,
             builder_errors: Vec::new(),
         }
@@ -156,7 +223,7 @@ impl IMClientBuilder {
 
     /// 注入存储实现（必填）。
     ///
-    /// 未设置时 [`Self::build`] 会 panic。
+    /// 未设置时 [`Self::build`] 返回配置错误。
     pub fn stores(mut self, stores: StoreProvider) -> Self {
         self.stores = Some(stores);
         self
@@ -226,7 +293,40 @@ impl IMClientBuilder {
         self
     }
 
-    /// 安装业务扩展（如 flare-social-sdk）。
+    pub fn add_notification_handler_arc(mut self, handler: Arc<dyn NotificationHandler>) -> Self {
+        self.notification_handlers.push(handler);
+        self
+    }
+
+    pub fn add_extension_lifecycle_arc(mut self, lifecycle: Arc<dyn ExtensionLifecycle>) -> Self {
+        self.extension_lifecycles.push(lifecycle);
+        self
+    }
+
+    pub fn add_profile_provider_arc(mut self, provider: Arc<dyn ProfileProvider>) -> Self {
+        self.profile_providers.push(provider);
+        self
+    }
+
+    pub fn add_conversation_projection_source_arc(
+        mut self,
+        source: Arc<dyn ConversationProjectionSource>,
+    ) -> Self {
+        self.conversation_projection_sources.push(source);
+        self
+    }
+
+    pub fn add_content_codec_arc(mut self, codec: Arc<dyn ContentCodec>) -> Self {
+        self.content_codecs.push(codec);
+        self
+    }
+
+    pub fn add_extension_migration_arc(mut self, migration: Arc<dyn ExtensionMigration>) -> Self {
+        self.extension_migrations.push(migration);
+        self
+    }
+
+    /// 安装业务扩展。
     ///
     /// 扩展只能注册任务、拦截器和能力插件；核心 IM API 不因业务扩展而变化。
     pub fn add_extension(mut self, extension: impl SdkExtension + 'static) -> Self {
@@ -238,6 +338,14 @@ impl IMClientBuilder {
                     .extend(registry.message_interceptors);
                 self.event_interceptors.extend(registry.event_interceptors);
                 self.capability_plugins.extend(registry.capability_plugins);
+                self.notification_handlers
+                    .extend(registry.notification_handlers);
+                self.extension_lifecycles.extend(registry.lifecycles);
+                self.profile_providers.extend(registry.profile_providers);
+                self.conversation_projection_sources
+                    .extend(registry.conversation_projection_sources);
+                self.content_codecs.extend(registry.content_codecs);
+                self.extension_migrations.extend(registry.migrations);
             }
             Err(err) => {
                 tracing::error!(
@@ -269,6 +377,20 @@ impl IMClientBuilder {
         if let Some(err) = self.builder_errors.first().cloned() {
             return Err(err);
         }
+        let extension_components = IMClientExtensionComponents {
+            sync_tasks: self.sync_tasks.clone(),
+            message_interceptors: self.message_interceptors.clone(),
+            event_interceptors: self.event_interceptors.clone(),
+            capability_plugins: self.capability_plugins.clone(),
+            notification_handlers: self.notification_handlers.clone(),
+            extension_lifecycles: self.extension_lifecycles.clone(),
+            profile_providers: self.profile_providers.clone(),
+            conversation_projection_sources: self.conversation_projection_sources.clone(),
+            content_codecs: self.content_codecs.clone(),
+            extension_migrations: self.extension_migrations.clone(),
+            allow_reserved_capability_namespace_override: self
+                .allow_reserved_capability_namespace_override,
+        };
         let codec: Arc<dyn Codec> = self.codec.unwrap_or_else(|| Arc::new(ProtobufCodec));
         let (stores, transport, runtime_media_service) = match self.runtime {
             Some(RuntimeComponents {
@@ -305,16 +427,39 @@ impl IMClientBuilder {
             chain.add_event_interceptor(i);
         }
         let chain = Arc::new(chain);
-        let bus = EventBus::with_middleware(chain.clone());
-        let event_deduper = EventDeduper::new(None);
-        let message_deduper = MessageDeduper::new(None);
-        let notification_registry = Arc::new(NotificationHandlerRegistry::new());
+        let resources = self.config.runtime_resources();
+        let bus =
+            EventBus::with_middleware_and_capacity(chain.clone(), resources.event_bus_capacity);
+        let event_deduper = EventDeduper::new(Some(resources.event_dedupe_capacity));
+        let message_deduper = MessageDeduper::new(Some(resources.message_dedupe_capacity));
+        let extension_runtime = Arc::new(ExtensionRuntime::new(
+            self.extension_lifecycles,
+            self.profile_providers,
+            self.conversation_projection_sources,
+            self.content_codecs,
+            self.extension_migrations,
+        ));
+        if !extension_runtime.is_empty() {
+            tracing::debug!(
+                target = "flare_sdk.extension",
+                lifecycles = extension_runtime.lifecycle_count(),
+                profile_providers = extension_runtime.profile_provider_count(),
+                conversation_projection_sources =
+                    extension_runtime.conversation_projection_source_count(),
+                content_codecs = extension_runtime.content_codec_count(),
+                migrations = extension_runtime.migration_count(),
+                "SDK extension runtime installed"
+            );
+        }
+        let notification_registry = Arc::new(NotificationHandlerRegistry::with_handlers(
+            self.notification_handlers,
+        ));
         let notification_pipeline = NotificationInboundPipeline::new(
             notification_registry.clone(),
             message_deduper.clone(),
             bus.clone(),
         );
-        let init_msg_concurrency = self.config.init_message_sync_concurrency() as usize;
+        let init_msg_concurrency = resources.init_message_sync_concurrency as usize;
         let sync_handler: Arc<SyncProtocolAdapter> = Arc::new(SyncProtocolAdapter::new(
             sender.clone(),
             stores.clone(),
@@ -340,15 +485,18 @@ impl IMClientBuilder {
             event_deduper,
             message_deduper,
             notification_pipeline,
+            ack_timeout_secs: self.config.ack_timeout_secs,
+            ack_max_retries: self.config.ack_max_retries,
+            ack_max_in_flight: self.config.ack_max_in_flight,
         });
 
         // 注入应用层同步任务（构造时传入 SyncProtocolAdapter，execute 内自行调用，与用户扩展一致）
         engine
             .sync_manager()
             .register_task_arc(Arc::new(ConversationsSyncTask::new(sync_handler.clone())));
-        engine
-            .sync_manager()
-            .register_task_arc(Arc::new(MessagesSyncTask::new(sync_handler.clone())));
+        engine.sync_manager().register_task_arc(Arc::new(
+            MessagesSyncTask::with_max_sync_concurrency(sync_handler.clone(), init_msg_concurrency),
+        ));
         engine
             .sync_manager()
             .register_task_arc(Arc::new(KeyEventsSyncTask::new(sync_handler.clone())));
@@ -410,6 +558,7 @@ impl IMClientBuilder {
         let message_send_use_case = Arc::new(MessageSendUseCase::new(
             sender.clone(),
             store_ref.messages.clone(),
+            store_ref.conversations.clone(),
             chain_ref,
             current_user_id.clone(),
             reliable_queue,
@@ -425,7 +574,10 @@ impl IMClientBuilder {
             store_ref.messages.clone(),
             profile_reader.clone(),
         ));
-        let media_api = Arc::new(MediaApi::from_handler(media_service));
+        let media_api = Arc::new(MediaApi::from_session_handler(
+            media_service,
+            current_user_id.clone(),
+        ));
         let capability_api = Arc::new(CapabilityApi::new(
             capability_base_url,
             current_user_id.clone(),
@@ -448,21 +600,24 @@ impl IMClientBuilder {
             http_request_context.clone(),
             bus.clone(),
         ));
-        let capability_registry = Arc::new(SdkCapabilityRegistry::new());
+        let capability_registry = Arc::new(SdkCapabilityRegistry::new_session_bound(
+            current_user_id.clone(),
+        ));
         let _ =
             capability_registry.register(Arc::new(AvCapabilityPlugin::new(capability_api.clone())));
-        capability_registry.register_call_signal_observer(|cid, _| {
+        capability_registry.register_capability_observer(|cid, packet| {
             tracing::debug!(
                 target = "flare_sdk.plugin.call",
                 conversation_id = %cid,
-                "call_signal (observer)"
+                capability_id = %packet.capability_id,
+                packet_type = %packet.packet_type,
+                "capability packet (observer)"
             );
         });
         let reg = capability_registry.clone();
-        let _call_signal_plugin_bridge =
-            bus.on_call_signal(move |conversation_id: &str, event: &CallSignalEvent| {
-                reg.dispatch_call_signal_to_observers(conversation_id, event);
-            });
+        let _capability_plugin_bridge = bus.on_capability(move |conversation_id: &str, packet| {
+            reg.dispatch_capability_to_observers(conversation_id, packet);
+        });
         for plugin in self.capability_plugins {
             let plugin_id = plugin.plugin_id();
             let reserved = reserved_namespaces_of_plugin(plugin.as_ref());
@@ -496,7 +651,7 @@ impl IMClientBuilder {
         }
         let conversation_command_use_case = Arc::new(ConversationCommandUseCase::new(
             store_ref.conversations.clone(),
-            current_user_id,
+            current_user_id.clone(),
             Some(sync_handler.clone()),
             Some(store_ref.cursors.clone()),
         ));
@@ -508,7 +663,9 @@ impl IMClientBuilder {
         let conversation_api = Arc::new(ConversationApi::new(
             conversation_command_use_case,
             conversation_view_assembler,
+            message_view_assembler.clone(),
             bus.clone(),
+            current_user_id.clone(),
         ));
 
         Ok(IMClient::from_inner(IMClientInner {
@@ -517,6 +674,7 @@ impl IMClientBuilder {
                 message_send_use_case,
                 message_mutation_use_case,
                 message_view_assembler,
+                current_user_id,
             )),
             media_api: Some(media_api),
             capability_api: Some(capability_api),
@@ -526,6 +684,8 @@ impl IMClientBuilder {
             conversation_api: Some(conversation_api),
             http_request_context: Some(http_request_context),
             notification_registry: Some(notification_registry),
+            extension_runtime: Some(extension_runtime),
+            extension_components,
             ..Default::default()
         }))
     }
@@ -534,5 +694,81 @@ impl IMClientBuilder {
 impl Default for IMClientBuilder {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::future::Future;
+    use std::pin::Pin;
+
+    use super::*;
+    use crate::core::{SyncContext, SyncResult, SyncTaskResult};
+    use crate::extension::ExtensionLifecycleContext;
+    use crate::infrastructure::persistence::in_memory_empty_im_provider;
+
+    struct ReplayTask;
+
+    impl SyncTask for ReplayTask {
+        fn id(&self) -> &'static str {
+            "test.replay"
+        }
+
+        fn execute(
+            &self,
+            _ctx: SyncContext,
+        ) -> Pin<Box<dyn Future<Output = SyncResult<SyncTaskResult>> + Send>> {
+            Box::pin(async { Ok(SyncTaskResult::ok()) })
+        }
+    }
+
+    struct ReplayLifecycle;
+
+    #[async_trait::async_trait]
+    impl ExtensionLifecycle for ReplayLifecycle {
+        fn namespace(&self) -> &str {
+            "test.lifecycle"
+        }
+
+        async fn on_login(&self, _context: &ExtensionLifecycleContext) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn extension_components_replay_into_child_builder() {
+        let parent = IMClientBuilder::new()
+            .stores(in_memory_empty_im_provider())
+            .add_sync_task_arc(Arc::new(ReplayTask))
+            .add_extension_lifecycle_arc(Arc::new(ReplayLifecycle))
+            .build()
+            .unwrap();
+        let components = parent
+            .inner
+            .try_read()
+            .unwrap()
+            .extension_components
+            .clone();
+
+        let child = components
+            .apply_to_builder(IMClientBuilder::new().stores(in_memory_empty_im_provider()))
+            .build()
+            .unwrap();
+        let inner = child.inner.try_read().unwrap();
+        let extension_task_count = inner
+            .engine
+            .as_ref()
+            .unwrap()
+            .sync_manager()
+            .registered_tasks()
+            .into_iter()
+            .filter(|task| task.id() == "test.replay")
+            .count();
+
+        assert_eq!(extension_task_count, 1);
+        assert_eq!(
+            inner.extension_runtime.as_ref().unwrap().lifecycle_count(),
+            1
+        );
     }
 }

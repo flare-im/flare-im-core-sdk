@@ -51,6 +51,16 @@ impl PendingSendReader for LayeredPendingSendStore {
     async fn take_oldest(&self) -> Result<Option<PendingSendVo>> {
         self.reader.take_oldest().await
     }
+
+    async fn list_oldest_excluding(
+        &self,
+        excluded_client_msg_ids: &[String],
+        limit: usize,
+    ) -> Result<Vec<PendingSendVo>> {
+        self.reader
+            .list_oldest_excluding(excluded_client_msg_ids, limit)
+            .await
+    }
 }
 
 #[async_trait]

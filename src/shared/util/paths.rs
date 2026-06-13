@@ -103,7 +103,6 @@ pub fn resolve_sdk_data_root(data_url: Option<&str>) -> Result<PathBuf> {
 pub fn resolve_user_db_path(base: &std::path::Path, user_id: &str) -> PathBuf {
     let user_dir = sanitize_user_id_for_dir(user_id);
     let user_data_dir = base.join("users").join(user_dir);
-    let _ = std::fs::create_dir_all(&user_data_dir);
     user_data_dir.join("flare_im_sdk.db")
 }
 
@@ -119,9 +118,7 @@ pub fn resolve_media_cache_dir_next_to_db(db_file: &std::path::Path) -> PathBuf 
         .parent()
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("."));
-    let cache = parent.join("media_cache");
-    let _ = std::fs::create_dir_all(&cache);
-    cache
+    parent.join("media_cache")
 }
 
 #[cfg(test)]

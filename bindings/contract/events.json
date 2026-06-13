@@ -136,12 +136,12 @@
       "tauri": "im://typing"
     },
     {
-      "id": "message.call_signal",
-      "core": "SdkEvent::Message(MessageEvent::CallSignal)",
+      "id": "message.capability",
+      "core": "SdkEvent::Message(MessageEvent::Capability)",
       "cCode": 2007,
-      "cCodeName": "FLARE_EVENT_MESSAGE_CALL_SIGNAL",
-      "cJson": { "type": "message", "event": "call_signal", "fields": ["conversation_id", "call_id", "from_user_id", "to_user_id", "audience", "media_session", "transport", "variant", "body", "ext"] },
-      "tauri": "im://call_signal"
+      "cCodeName": "FLARE_EVENT_MESSAGE_CAPABILITY",
+      "cJson": { "type": "message", "event": "capability", "fields": ["conversation_id", "capability_id", "packet_type", "version", "payload", "attributes", "correlation_id"] },
+      "tauri": "im://message_capability"
     },
     {
       "id": "message.edited",
@@ -172,32 +172,32 @@
       "core": "SdkEvent::Message(MessageEvent::ReadReceipt)",
       "cCode": 2011,
       "cCodeName": "FLARE_EVENT_MESSAGE_READ_RECEIPT",
-      "cJson": { "type": "message", "event": "read_receipt", "fields": ["conversation_id", "user_id", "read_seq", "message_ids", "burn_after_read"] },
+      "cJson": { "type": "message", "event": "read_receipt", "fields": ["conversation_id", "user_id", "read_seq", "message_ids", "read_at"] },
       "tauri": "im://message_read_receipt"
     },
     {
-      "id": "message.burn_scheduled",
-      "core": "SdkEvent::Message(MessageEvent::BurnScheduled)",
+      "id": "message.retention_scheduled",
+      "core": "SdkEvent::Message(MessageEvent::RetentionScheduled)",
       "cCode": 2012,
-      "cCodeName": "FLARE_EVENT_MESSAGE_BURN_SCHEDULED",
-      "cJson": { "type": "message", "event": "burn_scheduled", "fields": ["conversation_id", "tenant_id", "message_id", "server_id", "seq", "reader_id", "burn_at", "event_time"] },
-      "tauri": "im://message_burn_scheduled"
+      "cCodeName": "FLARE_EVENT_MESSAGE_RETENTION_SCHEDULED",
+      "cJson": { "type": "message", "event": "retention_scheduled", "fields": ["conversation_id", "server_msg_id", "reader_id", "policy", "state", "scheduled_at"] },
+      "tauri": "im://message_retention_scheduled"
     },
     {
-      "id": "message.burned",
-      "core": "SdkEvent::Message(MessageEvent::Burned)",
+      "id": "message.retention_expired",
+      "core": "SdkEvent::Message(MessageEvent::RetentionExpired)",
       "cCode": 2013,
-      "cCodeName": "FLARE_EVENT_MESSAGE_BURNED",
-      "cJson": { "type": "message", "event": "burned", "fields": ["conversation_id", "tenant_id", "message_id", "server_id", "seq", "reader_id", "burn_at", "burned_at", "event_time"] },
-      "tauri": "im://message_burned"
+      "cCodeName": "FLARE_EVENT_MESSAGE_RETENTION_EXPIRED",
+      "cJson": { "type": "message", "event": "retention_expired", "fields": ["conversation_id", "server_msg_id", "reader_id", "state", "expired_at"] },
+      "tauri": "im://message_retention_expired"
     },
     {
-      "id": "message.hard_deleted",
-      "core": "SdkEvent::Message(MessageEvent::HardDeleted)",
+      "id": "message.retention_purged",
+      "core": "SdkEvent::Message(MessageEvent::RetentionPurged)",
       "cCode": 2014,
-      "cCodeName": "FLARE_EVENT_MESSAGE_HARD_DELETED",
-      "cJson": { "type": "message", "event": "hard_deleted", "fields": ["conversation_id", "tenant_id", "message_id", "server_id", "seq", "reader_id", "burn_at", "burned_at", "event_time"] },
-      "tauri": "im://message_hard_deleted"
+      "cCodeName": "FLARE_EVENT_MESSAGE_RETENTION_PURGED",
+      "cJson": { "type": "message", "event": "retention_purged", "fields": ["conversation_id", "server_msg_id", "reader_id", "state", "purged_at"] },
+      "tauri": "im://message_retention_purged"
     },
     {
       "id": "message.pinned",
@@ -342,6 +342,14 @@
       "cCodeName": "FLARE_EVENT_SYNC_STATE_CHANGED",
       "cJson": { "type": "sync", "event": "state_changed", "fields": ["run_id", "trigger", "scope", "visibility", "reason", "state"] },
       "tauri": "im://sync_state_changed"
+    },
+    {
+      "id": "sync.resync_needed",
+      "core": "SdkEvent::Sync(SyncNotify::ResyncNeeded)",
+      "cCode": 4007,
+      "cCodeName": "FLARE_EVENT_SYNC_RESYNC_NEEDED",
+      "cJson": { "type": "sync", "event": "resync_needed", "fields": ["scope", "reason", "dropped_events"] },
+      "tauri": "im://resync_needed"
     },
     {
       "id": "extension.event",

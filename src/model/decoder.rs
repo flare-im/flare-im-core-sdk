@@ -60,25 +60,27 @@ fn content_message_type(c: &ProtoContent) -> MessageType {
         C::Emoji(_) => M::Emoji,
         C::Quote(_) => M::Quote,
         C::LinkCard(_) => M::LinkCard,
-        C::Forward(_) => M::MergeForward,
+        C::Forward(_) => M::Forward,
         C::Thread(_) => M::Thread,
-        C::MiniProgram(_) => M::MiniProgram,
+        C::AppCard(_) => M::AppCard,
         C::RichText(_) => M::RichText,
         C::ImageGroup(_) => M::ImageGroup,
         C::System(_) => M::System,
         C::Notification(_) => M::Notification,
-        C::Vote(_) => M::Poll,
-        C::Task(_) => M::Task,
-        C::Schedule(_) => M::Schedule,
-        C::Announcement(_) => M::Announcement,
         C::Custom(_) => M::Custom,
-        C::Placeholder(_) => M::E2ePlaceholder,
+        C::Placeholder(_) => M::Placeholder,
     }
 }
 
 /// 从 Message 解码内容（直接使用 message_content.proto 的 Content）
 pub fn decode_content(msg: &Message) -> Result<DecodedContent> {
-    decode_content_bytes(&msg.content)
+    let Some(content) = msg.content.as_ref() else {
+        return Ok(DecodedContent::Unknown);
+    };
+    Ok(match content.content.clone() {
+        Some(c) => DecodedContent::Content(Box::new(c)),
+        None => DecodedContent::Unknown,
+    })
 }
 
 /// 解码 `common.Message.content`（与 [message.proto] field 20、[message_content.proto] `MessageContent` 一致）。

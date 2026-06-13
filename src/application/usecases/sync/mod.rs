@@ -136,13 +136,13 @@ impl SyncApplyUseCase {
         }
 
         let safe_max_seq = max_contiguous_seq(known_seq, &applied_item_seqs);
-        let has_seq_gap = response.max_seq > safe_max_seq;
+        let has_seq_gap = response.max_conversation_seq > safe_max_seq;
         if has_seq_gap {
             tracing::warn!(
                 conversation_id = %conversation_id,
                 known_seq,
                 safe_max_seq,
-                remote_max_seq = response.max_seq,
+                remote_max_seq = response.max_conversation_seq,
                 item_count = response.items.len(),
                 "消息同步响应存在非连续 seq，游标只推进到已落库连续位点"
             );
@@ -151,7 +151,7 @@ impl SyncApplyUseCase {
         Ok(AppliedSingleConversationPage {
             has_decoded_items: decoded.has_decoded_items,
             max_seq: safe_max_seq,
-            remote_max_seq: response.max_seq,
+            remote_max_seq: response.max_conversation_seq,
             has_more: response.has_more || has_seq_gap,
             next_cursor: response.next_cursor.clone(),
             has_seq_gap,
@@ -258,9 +258,7 @@ impl SyncApplyUseCase {
         } else {
             tracing::debug!(
                 has_more = response.has_more,
-                server_cursor_ms = crate::shared::util::date::prost_timestamp_to_ms(
-                    response.server_conversation_cursor.as_ref()
-                ),
+                server_cursor = %response.next_cursor,
                 "会话增量同步无变更"
             );
         }
@@ -272,9 +270,6 @@ impl SyncApplyUseCase {
 
         Ok(AppliedConversationIncremental {
             has_more: response.has_more,
-            server_cursor_ms: crate::shared::util::date::prost_timestamp_to_ms(
-                response.server_conversation_cursor.as_ref(),
-            ),
             message_sync_conversation_ids,
             synced_conversation_ids: conversation_ids,
         })

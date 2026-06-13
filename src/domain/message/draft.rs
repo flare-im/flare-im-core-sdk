@@ -33,11 +33,11 @@ impl MessageDraftService {
         if message.sender_id.trim().is_empty() || message.sender_id != actor.user_id {
             message.sender_id = actor.user_id.clone();
         }
-        if message.timestamp == 0 {
-            message.timestamp = id::now_millis();
+        if message.created_at == 0 {
+            message.created_at = id::now_millis();
         }
-        if message.client_timestamp == 0 {
-            message.client_timestamp = message.timestamp;
+        if message.client_created_at == 0 {
+            message.client_created_at = message.created_at;
         }
         self.content_policy.validate_outbound_message(&message)?;
         Ok(message)
@@ -61,7 +61,7 @@ mod tests {
 
         assert_eq!(prepared.sender_id, "user-1");
         assert!(!prepared.client_msg_id.is_empty());
-        assert!(prepared.timestamp > 0);
-        assert_eq!(prepared.client_timestamp, prepared.timestamp);
+        assert!(prepared.created_at > 0);
+        assert_eq!(prepared.client_created_at, prepared.created_at);
     }
 }

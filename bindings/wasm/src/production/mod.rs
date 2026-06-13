@@ -2,7 +2,6 @@ mod events;
 mod platform;
 mod runtime;
 mod session;
-mod storage;
 
 pub use platform::{
     flare_clear_encryption_key, flare_encryption_key_len, flare_has_encryption_key,
@@ -10,7 +9,7 @@ pub use platform::{
     flare_wall_clock_ms,
 };
 
-pub use storage::{
+pub use flare_im_core_sdk_storage_indexeddb::{
     build_web_store_provider, clear_storage_host, set_storage_host, storage_host_configured,
 };
 

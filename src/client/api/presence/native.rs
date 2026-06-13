@@ -8,6 +8,7 @@ use tokio::sync::{Mutex, RwLock};
 use tonic::metadata::MetadataValue;
 use tonic::transport::{Channel, Endpoint};
 
+use crate::client::api::session_guard::SessionGuard;
 use crate::core::event::{EventBus, MessageEvent, SdkEvent};
 use crate::infrastructure::transport::http::http_client::HttpRequestContext;
 use crate::shared::error::{ErrorCode, FlareError, Result};
@@ -16,7 +17,7 @@ use flare_grpc_proto::signaling::online::{
     BatchGetUserPresenceRequest, GetUserPresenceRequest, LogoutRequest,
     SubscribeUserPresenceRequest, UserPresence,
 };
-use flare_proto::common::PresenceEvent;
+use flare_proto::common::PresenceHintPacket;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -41,6 +42,7 @@ pub struct UserPresenceDto {
 
 #[derive(Clone)]
 pub struct PresenceApi {
+    session_guard: SessionGuard,
     endpoint: String,
     channel: Arc<Mutex<Option<Channel>>>,
     current_user_id: Arc<RwLock<String>>,
@@ -59,6 +61,7 @@ impl PresenceApi {
         bus: EventBus,
     ) -> Self {
         Self {
+            session_guard: SessionGuard::new(current_user_id.clone(), "presence"),
             endpoint: grpc_endpoint.into(),
             channel: Arc::new(Mutex::new(None)),
             current_user_id,
@@ -111,7 +114,7 @@ impl PresenceApi {
         Ok(())
     }
 
-    pub async fn get_user_presence(&self, user_id: &str) -> Result<UserPresenceDto> {
+    async fn get_user_presence_unbound(&self, user_id: &str) -> Result<UserPresenceDto> {
         let uid = user_id.trim();
         if uid.is_empty() {
             return Err(FlareError::localized(
@@ -135,6 +138,21 @@ impl PresenceApi {
             .ok_or_else(|| FlareError::system("GetUserPresence: missing presence"))
     }
 
+    pub async fn get_user_presence(&self, user_id: &str) -> Result<UserPresenceDto> {
+        let uid = user_id.trim();
+        if uid.is_empty() {
+            return Err(FlareError::localized(
+                ErrorCode::InvalidParameter,
+                "sdk.presence.user_id_required",
+            ));
+        }
+        let api = self.clone();
+        let uid = uid.to_string();
+        self.session_guard
+            .run(async move { api.get_user_presence_unbound(&uid).await })
+            .await
+    }
+
     pub async fn batch_get_user_presence(
         &self,
         user_ids: &[String],
@@ -147,20 +165,27 @@ impl PresenceApi {
         if ids.is_empty() {
             return Ok(HashMap::new());
         }
-        let ch = self.connect().await?;
-        let mut client = OnlineServiceClient::new(ch);
-        let mut req = tonic::Request::new(BatchGetUserPresenceRequest { user_ids: ids });
-        self.enrich_metadata(&mut req).await?;
-        let resp = client
-            .batch_get_user_presence(req)
+        let api = self.clone();
+        self.session_guard
+            .run(async move {
+                let ch = api.connect().await?;
+                let mut client = OnlineServiceClient::new(ch);
+                let mut req = tonic::Request::new(BatchGetUserPresenceRequest { user_ids: ids });
+                api.enrich_metadata(&mut req).await?;
+                let resp = client
+                    .batch_get_user_presence(req)
+                    .await
+                    .map_err(|s| {
+                        FlareError::system(format!("BatchGetUserPresence: {}", s.message()))
+                    })?
+                    .into_inner();
+                Ok(resp
+                    .presences
+                    .into_iter()
+                    .map(|(user_id, p)| (user_id, user_presence_to_dto(p)))
+                    .collect())
+            })
             .await
-            .map_err(|s| FlareError::system(format!("BatchGetUserPresence: {}", s.message())))?
-            .into_inner();
-        Ok(resp
-            .presences
-            .into_iter()
-            .map(|(user_id, p)| (user_id, user_presence_to_dto(p)))
-            .collect())
     }
 
     /// 主动注销当前 SDK 用户最近活跃的 Online 会话。
@@ -171,8 +196,16 @@ impl PresenceApi {
         if user_id.is_empty() {
             return Ok(());
         }
+        self.logout_user_device_presence(&user_id).await
+    }
 
-        let presence = self.get_user_presence(&user_id).await?;
+    pub(crate) async fn logout_user_device_presence(&self, user_id: &str) -> Result<()> {
+        let user_id = user_id.trim().to_string();
+        if user_id.is_empty() {
+            return Ok(());
+        }
+
+        let presence = self.get_user_presence_unbound(&user_id).await?;
         let Some(device) = presence
             .devices
             .into_iter()
@@ -219,17 +252,27 @@ impl PresenceApi {
         if ids.is_empty() {
             return Ok(());
         }
-        let ch = self.connect().await?;
-        let mut client = OnlineServiceClient::new(ch);
-        let mut req = tonic::Request::new(SubscribeUserPresenceRequest {
-            user_ids: ids.clone(),
-        });
-        self.enrich_metadata(&mut req).await?;
-        let mut stream = client
-            .subscribe_user_presence(req)
-            .await
-            .map_err(|s| FlareError::system(format!("SubscribeUserPresence: {}", s.message())))?
-            .into_inner();
+        let api = self.clone();
+        let ids_for_request = ids.clone();
+        let (mut stream, session_user_id) = self
+            .session_guard
+            .run_with_user(move |session_user_id| async move {
+                let ch = api.connect().await?;
+                let mut client = OnlineServiceClient::new(ch);
+                let mut req = tonic::Request::new(SubscribeUserPresenceRequest {
+                    user_ids: ids_for_request,
+                });
+                api.enrich_metadata(&mut req).await?;
+                let stream = client
+                    .subscribe_user_presence(req)
+                    .await
+                    .map_err(|s| {
+                        FlareError::system(format!("SubscribeUserPresence: {}", s.message()))
+                    })?
+                    .into_inner();
+                Ok((stream, session_user_id.unwrap_or_default()))
+            })
+            .await?;
         {
             let mut subscribed = self.subscribed_user_ids.lock().await;
             for id in &ids {
@@ -238,35 +281,39 @@ impl PresenceApi {
         }
         let bus = self.bus.clone();
         let subscribed_user_ids = self.subscribed_user_ids.clone();
+        let session_guard = self.session_guard.clone();
         tokio::spawn(async move {
             loop {
-                match stream.message().await {
-                    Ok(Some(event)) => {
-                        let mut extra = HashMap::new();
-                        extra.insert("deviceId".to_string(), event.device_id.clone());
-                        if let Some(ts) = event.timestamp {
-                            extra.insert(
-                                "lastSeenMs".to_string(),
-                                ((ts.seconds * 1000) + i64::from(ts.nanos / 1_000_000)).to_string(),
-                            );
+                tokio::select! {
+                    _ = session_guard.wait_until_session_changes(&session_user_id) => break,
+                    message = stream.message() => {
+                        match message {
+                            Ok(Some(event)) => {
+                                let occurred_at = timestamp_ms(event.timestamp);
+                                let mut extra = HashMap::new();
+                                extra.insert("deviceId".to_string(), event.device_id.clone());
+                                extra.insert("lastSeenMs".to_string(), occurred_at.to_string());
+                                bus.publish(SdkEvent::Message(MessageEvent::PresenceChanged {
+                                    conversation_id: String::new(),
+                                    event: PresenceHintPacket {
+                                        user_id: event.user_id,
+                                        status: if event.is_online {
+                                            "online".to_string()
+                                        } else {
+                                            "offline".to_string()
+                                        },
+                                        device_id: Some(event.device_id),
+                                        attributes: extra,
+                                        occurred_at: Some(occurred_at),
+                                    },
+                                }));
+                            }
+                            Ok(None) => break,
+                            Err(err) => {
+                                tracing::warn!(%err, "presence subscription stream ended");
+                                break;
+                            }
                         }
-                        bus.publish(SdkEvent::Message(MessageEvent::PresenceChanged {
-                            conversation_id: String::new(),
-                            event: PresenceEvent {
-                                user_id: event.user_id,
-                                status: if event.is_online {
-                                    "online".to_string()
-                                } else {
-                                    "offline".to_string()
-                                },
-                                extra,
-                            },
-                        }));
-                    }
-                    Ok(None) => break,
-                    Err(err) => {
-                        tracing::warn!(%err, "presence subscription stream ended");
-                        break;
                     }
                 }
             }

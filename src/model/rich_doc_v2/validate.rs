@@ -28,14 +28,61 @@ const INLINE: &[&str] = &[
 
 const MARK: &[&str] = &["bold", "italic", "underline", "strike", "spoiler"];
 
+pub const MAX_RICH_DOC_SOURCE_BYTES: usize = 256 * 1024;
+pub const MAX_RICH_DOC_JSON_BYTES: usize = 512 * 1024;
+pub const MAX_RICH_DOC_TEXT_BYTES: usize = 128 * 1024;
+pub const MAX_RICH_DOC_NODES: usize = 10_000;
+pub const MAX_RICH_DOC_DEPTH: usize = 64;
+
+struct RichDocBudget {
+    nodes: usize,
+}
+
+impl RichDocBudget {
+    fn new() -> Self {
+        Self { nodes: 0 }
+    }
+
+    fn enter(&mut self, kind: &str, depth: usize) -> Result<(), RichDocV2Error> {
+        if depth > MAX_RICH_DOC_DEPTH {
+            return Err(RichDocV2Error::InvalidStructure(format!(
+                "{kind} depth exceeds {MAX_RICH_DOC_DEPTH}"
+            )));
+        }
+        self.nodes += 1;
+        if self.nodes > MAX_RICH_DOC_NODES {
+            return Err(RichDocV2Error::InvalidStructure(format!(
+                "node count exceeds {MAX_RICH_DOC_NODES}"
+            )));
+        }
+        Ok(())
+    }
+}
+
+pub fn validate_source_payload_bytes(input: &str) -> Result<(), RichDocV2Error> {
+    if input.len() > MAX_RICH_DOC_SOURCE_BYTES {
+        return Err(RichDocV2Error::InvalidStructure(format!(
+            "source payload exceeds {MAX_RICH_DOC_SOURCE_BYTES} bytes"
+        )));
+    }
+    Ok(())
+}
+
 /// 校验整棵 Rich Doc JSON（根须为 `doc` + `version == 2`）。
 pub fn validate_doc_json(doc_json: &str) -> Result<(), RichDocV2Error> {
+    if doc_json.len() > MAX_RICH_DOC_JSON_BYTES {
+        return Err(RichDocV2Error::InvalidStructure(format!(
+            "doc_json exceeds {MAX_RICH_DOC_JSON_BYTES} bytes"
+        )));
+    }
     let v: Value =
         serde_json::from_str(doc_json).map_err(|e| RichDocV2Error::InvalidJson(e.to_string()))?;
     validate_value_as_doc(&v)
 }
 
 fn validate_value_as_doc(v: &Value) -> Result<(), RichDocV2Error> {
+    let mut budget = RichDocBudget::new();
+    budget.enter("doc", 0)?;
     let obj = v
         .as_object()
         .ok_or_else(|| RichDocV2Error::InvalidStructure("root must be object".into()))?;
@@ -54,12 +101,17 @@ fn validate_value_as_doc(v: &Value) -> Result<(), RichDocV2Error> {
         .and_then(Value::as_array)
         .ok_or_else(|| RichDocV2Error::InvalidStructure("doc.children must be array".into()))?;
     for c in children {
-        validate_block(c)?;
+        validate_block(c, &mut budget, 1)?;
     }
     Ok(())
 }
 
-fn validate_block(v: &Value) -> Result<(), RichDocV2Error> {
+fn validate_block(
+    v: &Value,
+    budget: &mut RichDocBudget,
+    depth: usize,
+) -> Result<(), RichDocV2Error> {
+    budget.enter("block", depth)?;
     let obj = v
         .as_object()
         .ok_or_else(|| RichDocV2Error::InvalidStructure("block must be object".into()))?;
@@ -76,7 +128,7 @@ fn validate_block(v: &Value) -> Result<(), RichDocV2Error> {
         "paragraph" => {
             let ch = children_array(obj, "paragraph")?;
             for x in ch {
-                validate_inline(x)?;
+                validate_inline(x, budget, depth + 1)?;
             }
         }
         "heading" => {
@@ -91,13 +143,13 @@ fn validate_block(v: &Value) -> Result<(), RichDocV2Error> {
             }
             let ch = children_array(obj, "heading")?;
             for x in ch {
-                validate_inline(x)?;
+                validate_inline(x, budget, depth + 1)?;
             }
         }
         "quote" => {
             let ch = children_array(obj, "quote")?;
             for x in ch {
-                validate_block(x)?;
+                validate_block(x, budget, depth + 1)?;
             }
         }
         "code_block" => {
@@ -108,26 +160,26 @@ fn validate_block(v: &Value) -> Result<(), RichDocV2Error> {
                 ));
             }
             for x in ch {
-                validate_inline(x)?;
+                validate_inline(x, budget, depth + 1)?;
             }
         }
         "bullet_list" | "ordered_list" => {
             let ch = children_array(obj, "list")?;
             for x in ch {
-                validate_block(x)?;
+                validate_block(x, budget, depth + 1)?;
             }
         }
         "list_item" => {
             let ch = children_array(obj, "list_item")?;
             for x in ch {
-                validate_block(x)?;
+                validate_block(x, budget, depth + 1)?;
             }
         }
         "divider" | "custom_block" => {
             // optional children
             if let Some(Value::Array(ch)) = obj.get("children") {
                 for x in ch {
-                    validate_block(x)?;
+                    validate_block(x, budget, depth + 1)?;
                 }
             }
         }
@@ -145,7 +197,12 @@ fn children_array<'a>(
         .ok_or_else(|| RichDocV2Error::InvalidStructure(format!("{ctx}.children must be array")))
 }
 
-fn validate_inline(v: &Value) -> Result<(), RichDocV2Error> {
+fn validate_inline(
+    v: &Value,
+    budget: &mut RichDocBudget,
+    depth: usize,
+) -> Result<(), RichDocV2Error> {
+    budget.enter("inline", depth)?;
     let obj = v
         .as_object()
         .ok_or_else(|| RichDocV2Error::InvalidStructure("inline must be object".into()))?;
@@ -160,10 +217,14 @@ fn validate_inline(v: &Value) -> Result<(), RichDocV2Error> {
     }
     match ty {
         "text" => {
-            if !obj.contains_key("text") {
-                return Err(RichDocV2Error::InvalidStructure(
-                    "text.text required".into(),
-                ));
+            let text = obj
+                .get("text")
+                .and_then(Value::as_str)
+                .ok_or_else(|| RichDocV2Error::InvalidStructure("text.text required".into()))?;
+            if text.len() > MAX_RICH_DOC_TEXT_BYTES {
+                return Err(RichDocV2Error::InvalidStructure(format!(
+                    "text node exceeds {MAX_RICH_DOC_TEXT_BYTES} bytes"
+                )));
             }
             if let Some(Value::Array(marks)) = obj.get("marks") {
                 for m in marks {
@@ -184,7 +245,7 @@ fn validate_inline(v: &Value) -> Result<(), RichDocV2Error> {
             }
             let ch = children_array(obj, "link")?;
             for x in ch {
-                validate_inline(x)?;
+                validate_inline(x, budget, depth + 1)?;
             }
         }
         "inline_code" => {
@@ -271,5 +332,23 @@ mod tests {
             r#"{"type":"doc","version":2,"children":[{"type":"paragraph","children":[{"type":"text","text":"hi","marks":[{"type":"bold"}]}]}]}"#,
         )
         .unwrap();
+    }
+
+    #[test]
+    fn rejects_oversized_text_node() {
+        let text = "a".repeat(128 * 1024 + 1);
+        let doc = serde_json::json!({
+            "type": "doc",
+            "version": 2,
+            "children": [{
+                "type": "paragraph",
+                "children": [{ "type": "text", "text": text }]
+            }]
+        })
+        .to_string();
+
+        let err = validate_doc_json(&doc).expect_err("oversized text must fail");
+
+        assert!(err.to_string().contains("text"));
     }
 }

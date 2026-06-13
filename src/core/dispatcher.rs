@@ -28,6 +28,8 @@ use crate::shared::util::spawn_background;
 
 const SEQ_REPAIR_BASE_BACKOFF_MS: u64 = 1_000;
 const SEQ_REPAIR_MAX_BACKOFF_MS: u64 = 60_000;
+const SEQ_REPAIR_IDLE_TTL_MS: u64 = 10 * 60 * 1_000;
+const SEQ_REPAIR_MAX_TRACKED_CONVERSATIONS: usize = 2_048;
 
 #[derive(Debug, Clone, Default)]
 struct SeqRepairState {
@@ -36,6 +38,7 @@ struct SeqRepairState {
     last_progress_seq: u64,
     attempts: u32,
     next_attempt_at_ms: u64,
+    updated_at_ms: u64,
 }
 
 pub struct Dispatcher {
@@ -116,7 +119,7 @@ impl Dispatcher {
             Ok(messages) => {
                 let mut seqs = messages
                     .into_iter()
-                    .map(|message| message.seq)
+                    .map(|message| message.conversation_seq)
                     .filter(|seq| *seq > 0)
                     .collect::<Vec<_>>();
                 seqs.sort_unstable();
@@ -146,13 +149,13 @@ impl Dispatcher {
 
         let mut by_conversation = HashMap::<String, Vec<u64>>::new();
         for message in messages {
-            if message.conversation_id.trim().is_empty() || message.seq == 0 {
+            if message.conversation_id.trim().is_empty() || message.conversation_seq == 0 {
                 continue;
             }
             by_conversation
                 .entry(message.conversation_id.clone())
                 .or_default()
-                .push(message.seq);
+                .push(message.conversation_seq);
         }
 
         for (conversation_id, mut seqs) in by_conversation {
@@ -226,7 +229,20 @@ impl Dispatcher {
                 if let Some(sync) = self.session_sync.clone() {
                     let now = now_ms();
                     let mut guard = self.seq_repair_state.lock().await;
+                    prune_seq_repair_state(&mut guard, now);
+                    if !guard.contains_key(&conversation_id)
+                        && guard.len() >= SEQ_REPAIR_MAX_TRACKED_CONVERSATIONS
+                    {
+                        warn!(
+                            conversation_id = %conversation_id,
+                            tracked = guard.len(),
+                            limit = SEQ_REPAIR_MAX_TRACKED_CONVERSATIONS,
+                            "实时消息缺口补拉状态已达上限，跳过本次新会话补拉触发"
+                        );
+                        continue;
+                    }
                     let state = guard.entry(conversation_id.clone()).or_default();
+                    state.updated_at_ms = now;
                     let has_progress = contiguous_seq > state.last_progress_seq;
                     if state.in_flight {
                         continue;
@@ -256,14 +272,14 @@ impl Dispatcher {
 
                     let repair_state = self.seq_repair_state.clone();
                     spawn_background(async move {
-                        if let Err(error) = sync
+                        let repair_result = sync
                             .request_message_sync_from_seq(
                                 &conversation_id,
                                 first_gap_after,
                                 DEFAULT_SYNC_LIMIT,
                             )
-                            .await
-                        {
+                            .await;
+                        if let Err(error) = &repair_result {
                             warn!(
                                 conversation_id = %conversation_id,
                                 first_gap_after,
@@ -271,8 +287,12 @@ impl Dispatcher {
                                 "实时消息缺口补拉失败"
                             );
                         }
-                        if let Some(state) = repair_state.lock().await.get_mut(&conversation_id) {
+                        let mut guard = repair_state.lock().await;
+                        if repair_result.is_ok() {
+                            guard.remove(&conversation_id);
+                        } else if let Some(state) = guard.get_mut(&conversation_id) {
                             state.in_flight = false;
+                            state.updated_at_ms = now_ms();
                         }
                     });
                 } else {
@@ -282,6 +302,8 @@ impl Dispatcher {
                         "实时消息出现 seq 缺口，但 SDK 未配置单会话同步器，无法自动补拉"
                     );
                 }
+            } else {
+                self.seq_repair_state.lock().await.remove(&conversation_id);
             }
         }
     }
@@ -400,6 +422,46 @@ impl Dispatcher {
                     payload: data.payload.clone(),
                 }));
             }
+            DownlinkPayload::Capability(packet) => {
+                let conversation_id = packet
+                    .attributes
+                    .get("conversation_id")
+                    .cloned()
+                    .unwrap_or_default();
+                self.bus
+                    .publish(SdkEvent::Message(MessageEvent::Capability {
+                        conversation_id,
+                        packet: Box::new(packet),
+                    }));
+            }
+            DownlinkPayload::RealtimeControl(control) => {
+                let conversation_id = control.conversation_id.clone().unwrap_or_default();
+                match control.payload {
+                    Some(flare_proto::common::realtime_control_packet::Payload::Typing(typing)) => {
+                        self.bus.publish(SdkEvent::Message(MessageEvent::Typing {
+                            conversation_id,
+                            event: typing,
+                        }));
+                    }
+                    Some(flare_proto::common::realtime_control_packet::Payload::Presence(
+                        presence,
+                    )) => {
+                        self.bus
+                            .publish(SdkEvent::Message(MessageEvent::PresenceChanged {
+                                conversation_id,
+                                event: presence,
+                            }));
+                    }
+                    Some(flare_proto::common::realtime_control_packet::Payload::Custom(data)) => {
+                        self.bus.publish(SdkEvent::Extension(ExtensionEvent {
+                            source: "realtime_control".to_string(),
+                            event_type: data.r#type,
+                            payload: data.payload,
+                        }));
+                    }
+                    None => {}
+                }
+            }
             DownlinkPayload::SyncResp(resp) => {
                 if let Some(h) = &self.sync_response_handler {
                     h.handle_sync_response(resp).await;
@@ -418,28 +480,27 @@ impl Dispatcher {
         if let Some(EventPayload::Message(m)) = &ev.payload {
             messages.push(IMMessage::new(m.clone()));
         }
-        let current_user_id = self.current_user_id.read().await.clone();
-        if let Some(converger) = &self.incoming_message_converger {
-            match converger
-                .converge_messages(&current_user_id, messages)
-                .await
-            {
-                Ok(converged) => messages = converged,
-                Err(error) => {
-                    warn!(error = %error, "single event message converge failed");
-                    self.event_deduper.forget(ev).await;
-                    return;
+        if !messages.is_empty() {
+            let current_user_id = self.current_user_id.read().await.clone();
+            if let Some(converger) = &self.incoming_message_converger {
+                match converger
+                    .converge_messages(&current_user_id, messages)
+                    .await
+                {
+                    Ok(converged) => messages = converged,
+                    Err(error) => {
+                        warn!(error = %error, "single event message converge failed");
+                        self.event_deduper.forget(ev).await;
+                        return;
+                    }
                 }
             }
-        }
-        if !messages.is_empty() {
             if let Some(ref stores) = self.stores {
                 if let Err(e) = stores.messages.save_batch(&messages).await {
                     warn!(error = %e, "single event message save_batch failed");
                     self.event_deduper.forget(ev).await;
                     return;
                 } else if let Some(applier) = &self.conversation_projection_applier {
-                    let current_user_id = self.current_user_id.read().await.clone();
                     if let Err(e) = applier.apply_messages(&messages, &current_user_id).await {
                         warn!(error = %e, "single event conversation projection failed");
                         self.event_deduper.forget(ev).await;
@@ -456,7 +517,7 @@ impl Dispatcher {
                 }
             }
         }
-        let conv_id = ev.conversation_id.clone();
+        let conversation_id = ev.conversation_id.as_str();
         if let Some(p) = &ev.payload {
             match p {
                 EventPayload::Recall(recall) => {
@@ -475,18 +536,26 @@ impl Dispatcher {
                         return;
                     }
                     self.bus.publish(SdkEvent::Message(MessageEvent::Recalled {
-                        conversation_id: conv_id,
+                        conversation_id: conversation_id.to_string(),
                         event: recall.clone(),
                     }));
                 }
                 EventPayload::Edit(edit) => {
                     let mut should_publish = true;
+                    let Some(new_content) = edit.new_content.as_ref() else {
+                        warn!(
+                            server_msg_id = %edit.server_msg_id,
+                            "Event Edit missing new_content; event will be retried"
+                        );
+                        self.event_deduper.forget(ev).await;
+                        return;
+                    };
                     if let Some(ref stores) = self.stores {
                         match stores
                             .messages
                             .apply_edit_event(
                                 &edit.server_msg_id,
-                                edit.new_content.clone(),
+                                new_content.encode_to_vec(),
                                 edit.edit_version,
                             )
                             .await
@@ -512,7 +581,7 @@ impl Dispatcher {
                     }
                     if should_publish {
                         self.bus.publish(SdkEvent::Message(MessageEvent::Edited {
-                            conversation_id: conv_id.clone(),
+                            conversation_id: conversation_id.to_string(),
                             server_msg_id: edit.server_msg_id.clone(),
                             edit_version: Some(edit.edit_version),
                         }));
@@ -524,7 +593,7 @@ impl Dispatcher {
                         match stores
                             .messages
                             .apply_reaction_event(
-                                &conv_id,
+                                conversation_id,
                                 &reaction.server_msg_id,
                                 &reaction.user_id,
                                 &reaction.emoji,
@@ -555,7 +624,7 @@ impl Dispatcher {
                     if should_publish {
                         self.bus
                             .publish(SdkEvent::Message(MessageEvent::ReactionChanged {
-                                conversation_id: conv_id,
+                                conversation_id: conversation_id.to_string(),
                                 server_msg_id: reaction.server_msg_id.clone(),
                                 user_id: reaction.user_id.clone(),
                                 emoji: reaction.emoji.clone(),
@@ -593,7 +662,7 @@ impl Dispatcher {
                         }
                         if should_publish {
                             self.bus.publish(SdkEvent::Message(MessageEvent::Deleted {
-                                conversation_id: conv_id.clone(),
+                                conversation_id: conversation_id.to_string(),
                                 event: delete.clone(),
                             }));
                             self.bus.publish(SdkEvent::Extension(ExtensionEvent {
@@ -617,7 +686,7 @@ impl Dispatcher {
                             let _ = stores
                                 .messages
                                 .mark_outgoing_read_upto_seq(
-                                    &conv_id,
+                                    conversation_id,
                                     &current_user_id,
                                     read.read_seq,
                                 )
@@ -626,19 +695,31 @@ impl Dispatcher {
                     }
                     self.bus
                         .publish(SdkEvent::Message(MessageEvent::ReadReceipt {
-                            conversation_id: conv_id,
+                            conversation_id: conversation_id.to_string(),
                             event: read.clone(),
                         }));
                 }
-                EventPayload::BurnScheduled(burn_scheduled) => {
+                EventPayload::RetentionScheduled(retention_scheduled) => {
                     let mut should_publish = true;
+                    let (Some(policy), Some(state)) = (
+                        retention_scheduled.policy.as_ref(),
+                        retention_scheduled.state.as_ref(),
+                    ) else {
+                        warn!(
+                            message_id = %retention_scheduled.server_msg_id,
+                            "Event RetentionScheduled missing policy/state; event will be retried"
+                        );
+                        self.event_deduper.forget(ev).await;
+                        return;
+                    };
                     if let Some(ref stores) = self.stores {
                         match stores
                             .messages
-                            .apply_burn_scheduled_event(
-                                &burn_scheduled.message_id,
-                                burn_scheduled.burn_at,
-                                burn_scheduled.event_time,
+                            .apply_retention_scheduled_event(
+                                &retention_scheduled.server_msg_id,
+                                policy,
+                                state,
+                                retention_scheduled.scheduled_at,
                                 operation_seq(ev),
                             )
                             .await
@@ -649,14 +730,14 @@ impl Dispatcher {
                             Ok(crate::domain::OperationApplyResult::Applied) => {}
                             Ok(crate::domain::OperationApplyResult::NotFound) => {
                                 warn!(
-                                    message_id = %burn_scheduled.message_id,
-                                    "Event BurnScheduled: no local row matched; event will be retried after message sync"
+                                    message_id = %retention_scheduled.server_msg_id,
+                                    "Event RetentionScheduled: no local row matched; event will be retried after message sync"
                                 );
                                 self.event_deduper.forget(ev).await;
                                 return;
                             }
                             Err(error) => {
-                                warn!(error = %error, message_id = %burn_scheduled.message_id, "Event BurnScheduled apply failed");
+                                warn!(error = %error, message_id = %retention_scheduled.server_msg_id, "Event RetentionScheduled apply failed");
                                 self.event_deduper.forget(ev).await;
                                 return;
                             }
@@ -664,21 +745,29 @@ impl Dispatcher {
                     }
                     if should_publish {
                         self.bus
-                            .publish(SdkEvent::Message(MessageEvent::BurnScheduled {
-                                conversation_id: conv_id,
-                                event: burn_scheduled.clone(),
+                            .publish(SdkEvent::Message(MessageEvent::RetentionScheduled {
+                                conversation_id: conversation_id.to_string(),
+                                event: retention_scheduled.clone(),
                             }));
                     }
                 }
-                EventPayload::Burned(burned) => {
+                EventPayload::RetentionExpired(retention_expired) => {
                     let mut should_publish = true;
+                    let Some(state) = retention_expired.state.as_ref() else {
+                        warn!(
+                            message_id = %retention_expired.server_msg_id,
+                            "Event RetentionExpired missing state; event will be retried"
+                        );
+                        self.event_deduper.forget(ev).await;
+                        return;
+                    };
                     if let Some(ref stores) = self.stores {
                         match stores
                             .messages
-                            .apply_burned_event(
-                                &burned.message_id,
-                                burned.burn_at,
-                                burned.burned_at,
+                            .apply_retention_expired_event(
+                                &retention_expired.server_msg_id,
+                                state,
+                                retention_expired.expired_at,
                                 operation_seq(ev),
                             )
                             .await
@@ -689,54 +778,14 @@ impl Dispatcher {
                             Ok(crate::domain::OperationApplyResult::Applied) => {}
                             Ok(crate::domain::OperationApplyResult::NotFound) => {
                                 warn!(
-                                    message_id = %burned.message_id,
-                                    "Event Burned: no local row matched; event will be retried after message sync"
+                                    message_id = %retention_expired.server_msg_id,
+                                    "Event RetentionExpired: no local row matched; event will be retried after message sync"
                                 );
                                 self.event_deduper.forget(ev).await;
                                 return;
                             }
                             Err(error) => {
-                                warn!(error = %error, message_id = %burned.message_id, "Event Burned apply failed");
-                                self.event_deduper.forget(ev).await;
-                                return;
-                            }
-                        }
-                    }
-                    if should_publish {
-                        self.bus.publish(SdkEvent::Message(MessageEvent::Burned {
-                            conversation_id: conv_id,
-                            event: burned.clone(),
-                        }));
-                    }
-                }
-                EventPayload::HardDeleted(hard_deleted) => {
-                    let mut should_publish = true;
-                    if let Some(ref stores) = self.stores {
-                        match stores
-                            .messages
-                            .apply_hard_deleted_event(
-                                &hard_deleted.message_id,
-                                hard_deleted.burn_at,
-                                hard_deleted.burned_at,
-                                hard_deleted.event_time,
-                                operation_seq(ev),
-                            )
-                            .await
-                        {
-                            Ok(crate::domain::OperationApplyResult::IgnoredStale) => {
-                                should_publish = false;
-                            }
-                            Ok(crate::domain::OperationApplyResult::Applied) => {}
-                            Ok(crate::domain::OperationApplyResult::NotFound) => {
-                                warn!(
-                                    message_id = %hard_deleted.message_id,
-                                    "Event HardDeleted: no local row matched; event will be retried after message sync"
-                                );
-                                self.event_deduper.forget(ev).await;
-                                return;
-                            }
-                            Err(error) => {
-                                warn!(error = %error, message_id = %hard_deleted.message_id, "Event HardDeleted apply failed");
+                                warn!(error = %error, message_id = %retention_expired.server_msg_id, "Event RetentionExpired apply failed");
                                 self.event_deduper.forget(ev).await;
                                 return;
                             }
@@ -744,9 +793,57 @@ impl Dispatcher {
                     }
                     if should_publish {
                         self.bus
-                            .publish(SdkEvent::Message(MessageEvent::HardDeleted {
-                                conversation_id: conv_id,
-                                event: hard_deleted.clone(),
+                            .publish(SdkEvent::Message(MessageEvent::RetentionExpired {
+                                conversation_id: conversation_id.to_string(),
+                                event: retention_expired.clone(),
+                            }));
+                    }
+                }
+                EventPayload::RetentionPurged(retention_purged) => {
+                    let mut should_publish = true;
+                    let Some(state) = retention_purged.state.as_ref() else {
+                        warn!(
+                            message_id = %retention_purged.server_msg_id,
+                            "Event RetentionPurged missing state; event will be retried"
+                        );
+                        self.event_deduper.forget(ev).await;
+                        return;
+                    };
+                    if let Some(ref stores) = self.stores {
+                        match stores
+                            .messages
+                            .apply_retention_purged_event(
+                                &retention_purged.server_msg_id,
+                                state,
+                                retention_purged.purged_at,
+                                operation_seq(ev),
+                            )
+                            .await
+                        {
+                            Ok(crate::domain::OperationApplyResult::IgnoredStale) => {
+                                should_publish = false;
+                            }
+                            Ok(crate::domain::OperationApplyResult::Applied) => {}
+                            Ok(crate::domain::OperationApplyResult::NotFound) => {
+                                warn!(
+                                    message_id = %retention_purged.server_msg_id,
+                                    "Event RetentionPurged: no local row matched; event will be retried after message sync"
+                                );
+                                self.event_deduper.forget(ev).await;
+                                return;
+                            }
+                            Err(error) => {
+                                warn!(error = %error, message_id = %retention_purged.server_msg_id, "Event RetentionPurged apply failed");
+                                self.event_deduper.forget(ev).await;
+                                return;
+                            }
+                        }
+                    }
+                    if should_publish {
+                        self.bus
+                            .publish(SdkEvent::Message(MessageEvent::RetentionPurged {
+                                conversation_id: conversation_id.to_string(),
+                                event: retention_purged.clone(),
                             }));
                     }
                 }
@@ -779,7 +876,7 @@ impl Dispatcher {
                     }
                     if should_publish {
                         self.bus.publish(SdkEvent::Message(MessageEvent::Pinned {
-                            conversation_id: conv_id,
+                            conversation_id: conversation_id.to_string(),
                             event: pin.clone(),
                         }));
                     }
@@ -813,7 +910,7 @@ impl Dispatcher {
                     }
                     if should_publish {
                         self.bus.publish(SdkEvent::Message(MessageEvent::Unpinned {
-                            conversation_id: conv_id,
+                            conversation_id: conversation_id.to_string(),
                             event: unpin.clone(),
                         }));
                     }
@@ -857,7 +954,7 @@ impl Dispatcher {
                     }
                     if should_publish {
                         self.bus.publish(SdkEvent::Message(MessageEvent::Marked {
-                            conversation_id: conv_id,
+                            conversation_id: conversation_id.to_string(),
                             event: mark.clone(),
                         }));
                     }
@@ -897,56 +994,36 @@ impl Dispatcher {
                     }
                     if should_publish {
                         self.bus.publish(SdkEvent::Message(MessageEvent::Unmarked {
-                            conversation_id: conv_id,
+                            conversation_id: conversation_id.to_string(),
                             event: unmark.clone(),
                         }));
                     }
                 }
-                EventPayload::Presence(presence) => {
-                    self.bus
-                        .publish(SdkEvent::Message(MessageEvent::PresenceChanged {
-                            conversation_id: conv_id,
-                            event: presence.clone(),
-                        }));
-                }
-                EventPayload::CallSignal(call) => {
-                    self.bus
-                        .publish(SdkEvent::Message(MessageEvent::CallSignal {
-                            conversation_id: conv_id,
-                            event: Box::new(call.clone()),
-                        }));
-                }
                 EventPayload::Custom(custom) => {
                     self.bus.publish(SdkEvent::Message(MessageEvent::Custom {
-                        conversation_id: conv_id,
+                        conversation_id: conversation_id.to_string(),
                         event: custom.clone(),
-                    }));
-                }
-                EventPayload::Typing(typing) => {
-                    self.bus.publish(SdkEvent::Message(MessageEvent::Typing {
-                        conversation_id: conv_id,
-                        event: typing.clone(),
                     }));
                 }
                 EventPayload::Conversation(_) => {
                     self.bus
                         .publish(SdkEvent::Conversation(ConversationEvent::Updated {
-                            conversation_id: conv_id,
+                            conversation_id: conversation_id.to_string(),
                         }));
                 }
                 EventPayload::ConversationDelete(_) => {
                     if let Some(stores) = self.stores.as_ref()
-                        && let Err(error) = stores.conversations.delete(&conv_id).await
+                        && let Err(error) = stores.conversations.delete(conversation_id).await
                     {
                         warn!(
-                            conversation_id = %conv_id,
+                            conversation_id = %conversation_id,
                             error = %error,
                             "ConversationDelete push: local conversation purge failed"
                         );
                     }
                     self.bus
                         .publish(SdkEvent::Conversation(ConversationEvent::Deleted {
-                            conversation_id: conv_id,
+                            conversation_id: conversation_id.to_string(),
                         }));
                 }
                 _ => {}
@@ -956,9 +1033,7 @@ impl Dispatcher {
 }
 
 fn operation_seq(event: &flare_proto::common::Event) -> Option<u64> {
-    event
-        .event_seq
-        .or(if event.seq > 0 { Some(event.seq) } else { None })
+    (event.conversation_seq > 0).then_some(event.conversation_seq)
 }
 
 fn max_contiguous_seq(known_seq: u64, seqs: &[u64]) -> u64 {
@@ -1023,6 +1098,32 @@ fn seq_repair_backoff_ms(attempt: u32) -> u64 {
         .min(SEQ_REPAIR_MAX_BACKOFF_MS)
 }
 
+fn prune_seq_repair_state(states: &mut HashMap<String, SeqRepairState>, now_ms: u64) {
+    states.retain(|_, state| {
+        state.in_flight
+            || state.updated_at_ms.saturating_add(SEQ_REPAIR_IDLE_TTL_MS) > now_ms
+            || state.next_attempt_at_ms > now_ms
+    });
+
+    if states.len() <= SEQ_REPAIR_MAX_TRACKED_CONVERSATIONS {
+        return;
+    }
+
+    let mut idle_entries = states
+        .iter()
+        .filter(|(_, state)| !state.in_flight)
+        .map(|(conversation_id, state)| (conversation_id.clone(), state.updated_at_ms))
+        .collect::<Vec<_>>();
+    idle_entries.sort_unstable_by_key(|(_, updated_at_ms)| *updated_at_ms);
+
+    let excess = states
+        .len()
+        .saturating_sub(SEQ_REPAIR_MAX_TRACKED_CONVERSATIONS);
+    for (conversation_id, _) in idle_entries.into_iter().take(excess) {
+        states.remove(&conversation_id);
+    }
+}
+
 fn now_ms() -> u64 {
     crate::shared::util::now_millis()
 }
@@ -1033,7 +1134,10 @@ mod tests {
         Dispatcher, first_gap_after, first_internal_gap_after, first_internal_gap_after_from,
         max_contiguous_seq,
     };
-    use super::{SEQ_REPAIR_MAX_BACKOFF_MS, seq_repair_backoff_ms};
+    use super::{
+        SEQ_REPAIR_IDLE_TTL_MS, SEQ_REPAIR_MAX_BACKOFF_MS, SEQ_REPAIR_MAX_TRACKED_CONVERSATIONS,
+        SeqRepairState, prune_seq_repair_state, seq_repair_backoff_ms,
+    };
     use crate::application::notification::{
         NotificationHandlerRegistry, NotificationInboundPipeline,
     };
@@ -1054,7 +1158,9 @@ mod tests {
     use crate::model::IMMessage;
     use crate::shared::error::Result;
     use async_trait::async_trait;
-    use flare_proto::common::{MessageDeleteEvent, SendAck};
+    use flare_proto::common::{
+        MessageDeleteEvent, SendAccepted, SendAck, SendAckDurability, send_ack,
+    };
     use std::collections::HashMap;
     use std::sync::Arc;
     use tokio::sync::{Mutex, RwLock};
@@ -1066,6 +1172,32 @@ mod tests {
             MessageDeduper::new(Some(64)),
             bus,
         )
+    }
+
+    fn accepted_ack(
+        client_msg_id: &str,
+        conversation_id: &str,
+        server_msg_id: &str,
+        conversation_seq: u64,
+    ) -> SendAck {
+        SendAck {
+            client_msg_id: client_msg_id.to_string(),
+            conversation_id: conversation_id.to_string(),
+            result: Some(send_ack::Result::Accepted(SendAccepted {
+                server_msg_id: server_msg_id.to_string(),
+                conversation_seq,
+                server_time: 0,
+                durability: SendAckDurability::Persisted as i32,
+            })),
+            ..Default::default()
+        }
+    }
+
+    fn accepted_server_msg_id(ack: &SendAck) -> Option<&str> {
+        match ack.result.as_ref() {
+            Some(send_ack::Result::Accepted(accepted)) => Some(accepted.server_msg_id.as_str()),
+            _ => None,
+        }
     }
 
     struct MemoryPendingSendStore {
@@ -1339,6 +1471,7 @@ mod tests {
             bus: bus.clone(),
             timeout_secs: Some(60),
             max_retries: Some(3),
+            max_in_flight: Some(32),
         }));
 
         let dispatcher = Dispatcher::new(
@@ -1362,14 +1495,9 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(20)).await;
 
         dispatcher
-            .dispatch(DownlinkPayload::SendAck(SendAck {
-                client_msg_id: "client-1".to_string(),
-                server_msg_id: "server-1".to_string(),
-                seq: 1,
-                conversation_id: "conv-1".to_string(),
-                success: true,
-                ..Default::default()
-            }))
+            .dispatch(DownlinkPayload::SendAck(accepted_ack(
+                "client-1", "conv-1", "server-1", 1,
+            )))
             .await
             .unwrap();
 
@@ -1381,7 +1509,7 @@ mod tests {
         match first {
             SdkEvent::Message(MessageEvent::SendAck { ack }) => {
                 assert_eq!(ack.client_msg_id, "client-1");
-                assert_eq!(ack.server_msg_id, "server-1");
+                assert_eq!(accepted_server_msg_id(&ack), Some("server-1"));
             }
             other => panic!("unexpected event: {other:?}"),
         }
@@ -1425,6 +1553,7 @@ mod tests {
             bus: bus.clone(),
             timeout_secs: Some(60),
             max_retries: Some(3),
+            max_in_flight: Some(32),
         }));
 
         let dispatcher = Dispatcher::new(
@@ -1451,7 +1580,7 @@ mod tests {
             client_msg_id: "client-self-1".to_string(),
             conversation_id: "conv-1".to_string(),
             sender_id: "u1".to_string(),
-            seq: 11,
+            conversation_seq: 11,
             ..Default::default()
         };
 
@@ -1472,7 +1601,7 @@ mod tests {
         match first {
             SdkEvent::Message(MessageEvent::SendAck { ack }) => {
                 assert_eq!(ack.client_msg_id, "client-self-1");
-                assert_eq!(ack.server_msg_id, "server-self-1");
+                assert_eq!(accepted_server_msg_id(&ack), Some("server-self-1"));
             }
             other => panic!("unexpected event: {other:?}"),
         }
@@ -1505,6 +1634,7 @@ mod tests {
             bus: bus.clone(),
             timeout_secs: Some(60),
             max_retries: Some(3),
+            max_in_flight: Some(32),
         }));
         let dispatcher = Dispatcher::new(
             bus.clone(),
@@ -1534,26 +1664,16 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(20)).await;
 
         dispatcher
-            .dispatch(DownlinkPayload::SendAck(SendAck {
-                client_msg_id: "client-2".to_string(),
-                server_msg_id: "server-2".to_string(),
-                seq: 2,
-                conversation_id: "conv-1".to_string(),
-                success: true,
-                ..Default::default()
-            }))
+            .dispatch(DownlinkPayload::SendAck(accepted_ack(
+                "client-2", "conv-1", "server-2", 2,
+            )))
             .await
             .unwrap();
 
         dispatcher
-            .dispatch(DownlinkPayload::SendAck(SendAck {
-                client_msg_id: "client-1".to_string(),
-                server_msg_id: "server-1".to_string(),
-                seq: 1,
-                conversation_id: "conv-1".to_string(),
-                success: true,
-                ..Default::default()
-            }))
+            .dispatch(DownlinkPayload::SendAck(accepted_ack(
+                "client-1", "conv-1", "server-1", 1,
+            )))
             .await
             .unwrap();
 
@@ -1707,7 +1827,7 @@ mod tests {
             client_msg_id: "client-msg-1".to_string(),
             conversation_id: "conv-1".to_string(),
             sender_id: "u2".to_string(),
-            seq: 10,
+            conversation_seq: 10,
             ..Default::default()
         };
 
@@ -1729,13 +1849,13 @@ mod tests {
                 &flare_proto::common::SingleConversationSyncRes {
                     conversation_id: "conv-1".to_string(),
                     items: vec![flare_proto::common::SyncSliceItem {
-                        seq: 10,
-                        created_at: None,
-                        payload: prost::Message::encode_to_vec(&proto_message),
-                        kind: flare_proto::common::SyncSliceItemKind::Message as i32,
-                        skip_reason: String::new(),
+                        conversation_seq: 10,
+                        created_at: 0,
+                        payload: Some(flare_proto::common::sync_slice_item::Payload::Message(
+                            proto_message.clone(),
+                        )),
                     }],
-                    max_seq: 10,
+                    max_conversation_seq: 10,
                     next_cursor: String::new(),
                     has_more: false,
                     hints: None,
@@ -1761,6 +1881,105 @@ mod tests {
         assert_eq!(
             received_count, 1,
             "duplicate replay should not emit second Received event"
+        );
+    }
+
+    #[tokio::test]
+    async fn concurrent_message_push_dispatch_is_lossless_for_slow_subscriber() {
+        const TASKS: usize = 8;
+        const PER_TASK: usize = 250;
+        const TOTAL: usize = TASKS * PER_TASK;
+
+        let bus = EventBus::new();
+        let mut receiver = bus.subscribe_raw();
+        let current_user_id: CurrentUserIdStore = Arc::new(RwLock::new("u1".to_string()));
+        let message_store = Arc::new(MemoryMessageStore::new());
+        let stores = StoreProvider {
+            messages: message_store.clone(),
+            conversations: Arc::new(NoopConversationStore),
+            conversation_participants: None,
+            cursors: Arc::new(NoopSyncCursorStore),
+            pending_send_reader: None,
+            pending_send_writer: None,
+            upload_manifest_store: None,
+            media_cache_store: None,
+            media_cache_admin: None,
+            user_file_download_store: None,
+            user_profiles_reader: None,
+            user_profiles_writer: None,
+        };
+        let dispatcher = Arc::new(Dispatcher::new(
+            bus.clone(),
+            None,
+            None,
+            None,
+            Some(stores.clone()),
+            current_user_id,
+            EventDeduper::new(Some(TOTAL * 2)),
+            MessageDeduper::new(Some(TOTAL * 2)),
+            test_notification_pipeline(bus.clone()),
+        ));
+
+        let mut tasks = Vec::with_capacity(TASKS);
+        for task_id in 0..TASKS {
+            let dispatcher = dispatcher.clone();
+            tasks.push(tokio::spawn(async move {
+                let mut messages = Vec::with_capacity(PER_TASK);
+                for index in 0..PER_TASK {
+                    let seq = (task_id * PER_TASK + index + 1) as u64;
+                    messages.push(flare_proto::common::Message {
+                        server_id: format!("server-{seq}"),
+                        client_msg_id: format!("client-{seq}"),
+                        conversation_id: format!("conv-{}", task_id % 4),
+                        sender_id: "u2".to_string(),
+                        conversation_seq: seq,
+                        message_type: flare_proto::common::MessageType::Text as i32,
+                        ..Default::default()
+                    });
+                }
+                dispatcher
+                    .dispatch(DownlinkPayload::MessagePush(
+                        flare_proto::common::MessagePush {
+                            messages,
+                            notifications: Vec::new(),
+                        },
+                    ))
+                    .await
+                    .expect("message push dispatch");
+            }));
+        }
+
+        for task in tasks {
+            task.await.expect("dispatch task panicked");
+        }
+
+        let mut received_server_ids = std::collections::HashSet::with_capacity(TOTAL);
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        while received_server_ids.len() < TOTAL {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            assert!(
+                !remaining.is_zero(),
+                "timed out after receiving {} of {TOTAL} messages",
+                received_server_ids.len()
+            );
+            match timeout(remaining.min(Duration::from_millis(100)), receiver.recv()).await {
+                Ok(Ok(SdkEvent::Message(MessageEvent::Received { message }))) => {
+                    assert!(
+                        received_server_ids.insert(message.server_id.clone()),
+                        "duplicate received message {}",
+                        message.server_id
+                    );
+                }
+                Ok(Ok(_)) => {}
+                Ok(Err(error)) => panic!("event receiver closed: {error:?}"),
+                Err(_) => {}
+            }
+        }
+
+        assert_eq!(
+            message_store.data.read().await.len(),
+            TOTAL,
+            "all dispatched messages should be persisted exactly once"
         );
     }
 
@@ -1798,5 +2017,64 @@ mod tests {
         assert_eq!(seq_repair_backoff_ms(2), 2_000);
         assert_eq!(seq_repair_backoff_ms(3), 4_000);
         assert_eq!(seq_repair_backoff_ms(30), SEQ_REPAIR_MAX_BACKOFF_MS);
+    }
+
+    #[test]
+    fn seq_repair_state_prunes_expired_idle_entries() {
+        let now = 20 * 60 * 1_000;
+        let mut states = HashMap::from([
+            (
+                "expired".to_string(),
+                SeqRepairState {
+                    updated_at_ms: now - SEQ_REPAIR_IDLE_TTL_MS - 1,
+                    next_attempt_at_ms: now - 1,
+                    ..Default::default()
+                },
+            ),
+            (
+                "backoff".to_string(),
+                SeqRepairState {
+                    updated_at_ms: now - SEQ_REPAIR_IDLE_TTL_MS - 1,
+                    next_attempt_at_ms: now + 1_000,
+                    ..Default::default()
+                },
+            ),
+            (
+                "in-flight".to_string(),
+                SeqRepairState {
+                    in_flight: true,
+                    updated_at_ms: now - SEQ_REPAIR_IDLE_TTL_MS - 1,
+                    ..Default::default()
+                },
+            ),
+        ]);
+
+        prune_seq_repair_state(&mut states, now);
+
+        assert!(!states.contains_key("expired"));
+        assert!(states.contains_key("backoff"));
+        assert!(states.contains_key("in-flight"));
+    }
+
+    #[test]
+    fn seq_repair_state_trims_oldest_idle_entries_when_over_capacity() {
+        let now = 1_000;
+        let mut states = HashMap::with_capacity(SEQ_REPAIR_MAX_TRACKED_CONVERSATIONS + 2);
+        for index in 0..(SEQ_REPAIR_MAX_TRACKED_CONVERSATIONS + 2) {
+            states.insert(
+                format!("conv-{index}"),
+                SeqRepairState {
+                    updated_at_ms: now + index as u64,
+                    ..Default::default()
+                },
+            );
+        }
+
+        prune_seq_repair_state(&mut states, now);
+
+        assert_eq!(states.len(), SEQ_REPAIR_MAX_TRACKED_CONVERSATIONS);
+        assert!(!states.contains_key("conv-0"));
+        assert!(!states.contains_key("conv-1"));
+        assert!(states.contains_key("conv-2"));
     }
 }

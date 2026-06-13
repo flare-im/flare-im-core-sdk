@@ -86,7 +86,11 @@ host-flutter: host
 	DY="$(HOST_OUT)/lib$(LIB_NAME).dylib"; \
 	if [ ! -f "$$DY" ]; then DY="$(CARGO_TARGET_DIR)/$(HOST_TRIPLE)/$(PROFILE)/lib$(LIB_NAME).dylib"; fi; \
 	if [ ! -f "$$DY" ]; then echo "[ERROR] 无 dylib，已查 $(HOST_OUT)/ 与 $(CARGO_TARGET_DIR)/$(HOST_TRIPLE)/$(PROFILE)/"; exit 1; fi; \
-	cp -f "$$DY" "$(FLUTTER_MACOS_RUNNER)/" && echo "[flutter] macOS <- $$DY"
+	OUT="$(FLUTTER_MACOS_RUNNER)/lib$(LIB_NAME).dylib"; \
+	cp -f "$$DY" "$$OUT"; \
+	install_name_tool -id "@rpath/lib$(LIB_NAME).dylib" "$$OUT"; \
+	codesign --force --sign - "$$OUT" >/dev/null; \
+	echo "[flutter] macOS <- $$DY"
 
 flutter-sync-ios: ios-sim
 	@test -d "$(FLUTTER_EXAMPLE_DIR)" || (echo "[ERROR] 无 Flutter 目录"; exit 1)

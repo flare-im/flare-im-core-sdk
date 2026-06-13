@@ -1,4 +1,4 @@
-//! 事件 API - 订阅与转发（payload 序列化见 `bindings/runtime/event_bridge`）
+//! 事件 API - 订阅与转发（payload 序列化见共享 runtime event helpers）
 
 use std::ffi::c_void;
 use std::sync::Arc;
@@ -14,14 +14,31 @@ use tokio::sync::oneshot;
 use tokio::time::{Duration, sleep};
 
 lazy_static::lazy_static! {
-    static ref EVENT_SUBSCRIPTIONS: DashMap<u64, oneshot::Sender<()>> = DashMap::new();
+    static ref EVENT_SUBSCRIPTIONS: DashMap<u64, EventSubscription> = DashMap::new();
+}
+
+struct EventSubscription {
+    handle: FlareHandle,
+    cancel: oneshot::Sender<()>,
 }
 
 pub(crate) fn unsubscribe_all_events() {
     let keys: Vec<u64> = EVENT_SUBSCRIPTIONS.iter().map(|e| *e.key()).collect();
     for key in keys {
-        if let Some((_, tx)) = EVENT_SUBSCRIPTIONS.remove(&key) {
-            let _ = tx.send(());
+        if let Some((_, sub)) = EVENT_SUBSCRIPTIONS.remove(&key) {
+            let _ = sub.cancel.send(());
+        }
+    }
+}
+
+pub(crate) fn unsubscribe_events_for_handle(handle: FlareHandle) {
+    let keys: Vec<u64> = EVENT_SUBSCRIPTIONS
+        .iter()
+        .filter_map(|e| (e.value().handle == handle).then_some(*e.key()))
+        .collect();
+    for key in keys {
+        if let Some((_, sub)) = EVENT_SUBSCRIPTIONS.remove(&key) {
+            let _ = sub.cancel.send(());
         }
     }
 }
@@ -51,7 +68,13 @@ fn subscribe_events_inner(
         static NEXT_SUB_ID: AtomicU64 = AtomicU64::new(1);
         NEXT_SUB_ID.fetch_add(1, Ordering::SeqCst)
     };
-    EVENT_SUBSCRIPTIONS.insert(subscription_id, cancel_tx);
+    EVENT_SUBSCRIPTIONS.insert(
+        subscription_id,
+        EventSubscription {
+            handle,
+            cancel: cancel_tx,
+        },
+    );
 
     spawn_event_forwarder(
         instance,
@@ -111,13 +134,10 @@ fn spawn_event_forwarder(
                                 callback(user_context as *mut c_void, event_type, event_json);
                             });
                         }
-                        Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                        Err(_) => {
                             tracing::debug!("Event bus closed");
                             EVENT_SUBSCRIPTIONS.remove(&subscription_id);
                             break;
-                        }
-                        Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                            tracing::warn!("Event subscription lagged, missed {} events", n);
                         }
                     }
                 }
@@ -129,8 +149,8 @@ fn spawn_event_forwarder(
 #[unsafe(no_mangle)]
 pub extern "C" fn flare_event_unsubscribe(subscription: FlareSubscriptionHandle) {
     abi::catch_ffi_void(|| {
-        if let Some((_, tx)) = EVENT_SUBSCRIPTIONS.remove(&subscription) {
-            let _ = tx.send(());
+        if let Some((_, sub)) = EVENT_SUBSCRIPTIONS.remove(&subscription) {
+            let _ = sub.cancel.send(());
         } else {
             tracing::debug!("Unsubscribe {} ignored: not found", subscription);
         }

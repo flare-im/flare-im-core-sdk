@@ -6,6 +6,7 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, RwLock};
 
+use crate::client::api::session_guard::SessionGuard;
 use crate::core::event::{EventBus, MessageEvent, SdkEvent};
 use crate::infrastructure::transport::http::http_client::HttpRequestContext;
 use crate::infrastructure::transport::http::{
@@ -41,20 +42,24 @@ struct BatchGetUserPresenceHttpResponse {
 }
 
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct BatchGetUserPresenceHttpRequest {
     user_ids: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct LogoutPresenceHttpRequest {
     conversation_id: String,
 }
 
 #[derive(Clone)]
 pub struct PresenceApi {
+    session_guard: SessionGuard,
     http: HttpClient,
     current_user_id: Arc<RwLock<String>>,
     cache: Arc<RwLock<HashMap<String, UserPresenceDto>>>,
+    cache_owner_user_id: Arc<RwLock<Option<String>>>,
     subscribed_user_ids: Arc<Mutex<HashSet<String>>>,
 }
 
@@ -67,20 +72,33 @@ impl PresenceApi {
         bus: EventBus,
     ) -> Self {
         let cache = Arc::new(RwLock::new(HashMap::new()));
+        let cache_owner_user_id = Arc::new(RwLock::new(None));
         let cache_for_task = cache.clone();
+        let cache_owner_for_task = cache_owner_user_id.clone();
+        let current_user_id_for_task = current_user_id.clone();
         let mut rx = bus.subscribe();
         wasm_bindgen_futures::spawn_local(async move {
             loop {
                 let ev = match rx.recv().await {
                     Ok(event) => event,
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                    Err(_) => break,
                 };
                 if let SdkEvent::Message(MessageEvent::PresenceChanged {
                     conversation_id,
                     event,
                 }) = ev
                 {
+                    let owner_user_id = current_user_id_for_task.read().await.trim().to_string();
+                    if owner_user_id.is_empty() {
+                        continue;
+                    }
+                    {
+                        let mut owner = cache_owner_for_task.write().await;
+                        if owner.as_deref() != Some(owner_user_id.as_str()) {
+                            cache_for_task.write().await.clear();
+                            *owner = Some(owner_user_id);
+                        }
+                    }
                     let user_id = event.user_id.clone();
                     let status = event.status.clone();
                     let is_online = !status.eq_ignore_ascii_case("offline")
@@ -106,9 +124,11 @@ impl PresenceApi {
 
         let _ = crate::shared::util::normalize_tenant_id(default_tenant_id.into());
         Self {
+            session_guard: SessionGuard::new(current_user_id.clone(), "presence"),
             http: HttpClient::with_context(http_base_url, http_request_context),
             current_user_id,
             cache,
+            cache_owner_user_id,
             subscribed_user_ids: Arc::new(Mutex::new(HashSet::new())),
         }
     }
@@ -123,15 +143,48 @@ impl PresenceApi {
         }
     }
 
-    async fn fetch_user_presence(&self, user_id: &str) -> Result<UserPresenceDto> {
+    async fn ensure_session_cache(&self) -> Result<String> {
+        let user_id = self
+            .session_guard
+            .capture_user()
+            .await?
+            .ok_or_else(|| FlareError::localized(ErrorCode::NotConnected, "未连接"))?;
+        let should_clear = {
+            let mut owner = self.cache_owner_user_id.write().await;
+            if owner.as_deref() == Some(user_id.as_str()) {
+                false
+            } else {
+                *owner = Some(user_id.clone());
+                true
+            }
+        };
+        if should_clear {
+            self.cache.write().await.clear();
+        }
+        Ok(user_id)
+    }
+
+    async fn fetch_user_presence_unbound(&self, user_id: &str) -> Result<UserPresenceDto> {
         let path = format!("/api/v1/presence/users/{user_id}");
         let body: HttpApiResponse<UserPresenceDto> = self.http.get(&path, None).await?;
-        let dto = unwrap_api_response(body, "get user presence")?;
-        self.cache
-            .write()
+        unwrap_api_response(body, "get user presence")
+    }
+
+    async fn fetch_user_presence(&self, user_id: &str) -> Result<UserPresenceDto> {
+        let api = self.clone();
+        let user_id = user_id.to_string();
+        self.session_guard
+            .run_with_user(move |session_user_id| async move {
+                let session_user_id = session_user_id
+                    .ok_or_else(|| FlareError::localized(ErrorCode::NotConnected, "未连接"))?;
+                let dto = api.fetch_user_presence_unbound(&user_id).await?;
+                api.session_guard
+                    .ensure_unchanged(Some(&session_user_id))
+                    .await?;
+                api.cache.write().await.insert(user_id, dto.clone());
+                Ok(dto)
+            })
             .await
-            .insert(user_id.to_string(), dto.clone());
-        Ok(dto)
     }
 
     pub async fn get_user_presence(&self, user_id: &str) -> Result<UserPresenceDto> {
@@ -142,11 +195,13 @@ impl PresenceApi {
                 "sdk.presence.user_id_required",
             ));
         }
+        self.ensure_session_cache().await?;
         if let Some(cached) = self.cache.read().await.get(uid).cloned() {
             return Ok(cached);
         }
         match self.fetch_user_presence(uid).await {
             Ok(dto) => Ok(dto),
+            Err(err) if err.code() == Some(ErrorCode::NotConnected) => Err(err),
             Err(_) => Ok(Self::offline(uid)),
         }
     }
@@ -163,6 +218,7 @@ impl PresenceApi {
         if ids.is_empty() {
             return Ok(HashMap::new());
         }
+        self.ensure_session_cache().await?;
 
         let mut out = HashMap::new();
         let mut missing = Vec::new();
@@ -181,23 +237,35 @@ impl PresenceApi {
             let req = BatchGetUserPresenceHttpRequest {
                 user_ids: missing.clone(),
             };
-            match self
-                .http
-                .post::<_, HttpApiResponse<BatchGetUserPresenceHttpResponse>>(
-                    "/api/v1/presence/users/batch",
-                    &req,
-                )
-                .await
-            {
+            let api = self.clone();
+            let fetch_result = self
+                .session_guard
+                .run_with_user(move |session_user_id| async move {
+                    let session_user_id = session_user_id
+                        .ok_or_else(|| FlareError::localized(ErrorCode::NotConnected, "未连接"))?;
+                    let body = api
+                        .http
+                        .post::<_, HttpApiResponse<BatchGetUserPresenceHttpResponse>>(
+                            "/api/v1/presence/users/batch",
+                            &req,
+                        )
+                        .await?;
+                    let data = unwrap_api_response(body, "batch get user presence")?;
+                    api.session_guard
+                        .ensure_unchanged(Some(&session_user_id))
+                        .await?;
+                    Ok(data)
+                })
+                .await;
+            match fetch_result {
                 Ok(body) => {
-                    if let Ok(data) = unwrap_api_response(body, "batch get user presence") {
-                        let mut cache = self.cache.write().await;
-                        for (user_id, dto) in data.presences {
-                            cache.insert(user_id.clone(), dto.clone());
-                            out.insert(user_id, dto);
-                        }
+                    let mut cache = self.cache.write().await;
+                    for (user_id, dto) in body.presences {
+                        cache.insert(user_id.clone(), dto.clone());
+                        out.insert(user_id, dto);
                     }
                 }
+                Err(err) if err.code() == Some(ErrorCode::NotConnected) => return Err(err),
                 Err(_) => {
                     for id in missing {
                         out.entry(id.clone()).or_insert_with(|| Self::offline(&id));
@@ -217,8 +285,16 @@ impl PresenceApi {
         if user_id.is_empty() {
             return Ok(());
         }
+        self.logout_user_device_presence(&user_id).await
+    }
 
-        let presence = self.get_user_presence(&user_id).await?;
+    pub(crate) async fn logout_user_device_presence(&self, user_id: &str) -> Result<()> {
+        let user_id = user_id.trim().to_string();
+        if user_id.is_empty() {
+            return Ok(());
+        }
+
+        let presence = self.fetch_user_presence_unbound(&user_id).await?;
         let Some(device) = presence
             .devices
             .into_iter()
@@ -239,6 +315,7 @@ impl PresenceApi {
     }
 
     pub async fn subscribe_user_presence(&self, user_ids: Vec<String>) -> Result<()> {
+        self.ensure_session_cache().await?;
         let mut subscribed = self.subscribed_user_ids.lock().await;
         for user_id in user_ids {
             let uid = user_id.trim();

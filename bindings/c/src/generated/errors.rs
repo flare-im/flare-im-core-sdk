@@ -15,8 +15,8 @@ pub const FLARE_ERR_JSON_PARSE: i32 = 9;
 pub const FLARE_ERR_NULL_POINTER: i32 = 10;
 pub const FLARE_ERR_FFI_PANIC: i32 = 11;
 
-pub fn error_code_to_c(code: flare_im_core_sdk::shared::error::ErrorCode) -> i32 {
-    use flare_im_core_sdk::shared::error::ErrorCode;
+pub fn error_code_to_c(code: flare_im_core_sdk::ErrorCode) -> i32 {
+    use flare_im_core_sdk::ErrorCode;
     match code {
         ErrorCode::AuthenticationFailed => FLARE_ERR_AUTH_FAILED,
         ErrorCode::ConfigurationError => FLARE_ERR_INTERNAL,

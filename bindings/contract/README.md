@@ -7,7 +7,7 @@ make -C bindings codegen
 make -C bindings codegen-check
 ```
 
-`contract/tools/*.py` 是 **codegen 执行器**（类似 protoc），不是业务配置源。新增 API / 事件时 **不要改 Python**。
+`contract/tools/*.py` 是临时 codegen 执行器（类似 protoc），不是业务配置源。新增 API / 事件时优先改 JSON 契约；生成器迁移到 Rust `codegen`/`xtask` 后，Python 执行器应删除。
 
 ## 配置文件
 
@@ -24,7 +24,7 @@ make -C bindings codegen-check
 
 ## 初始化与传输配置
 
-所有平台的 init 使用同一 JSON 形状（`snake_case`）：
+所有平台的 init 使用同一 JSON 形状（camelCase）：
 
 - 裸 [`SdkConfigOverlay`](../../src/client/lifecycle.rs)（C `flare_sdk_init` 传统用法）
 - 或 `{ "environment": "...", "sdk_config": { ... } }`（推荐，与 `client.init` / `sdk.init` 一致）
@@ -78,18 +78,18 @@ make -C bindings codegen-check
 1. 在 `events.json` 的 `events` 数组增加一条（`id`、`cCode`、`cCodeName`、`tauri`、`cJson`）
 2. 在 core 增加对应 `SdkEvent` 变体（Rust 侧仍是真相源）
 3. `make -C bindings codegen` — 自动生成：
-   - `runtime/.../event_registry.rs`
+   - `shared/.../event_registry.rs`
    - `tauri/.../event_emit.rs`（转发入口）
    - `wasm/.../events.rs`、`uniffi/.../events.rs`（契约表）
-4. 若 payload 形状全新：在 `runtime/src/event_bridge.rs` 补 **一次** C JSON 序列化；Tauri 侧在 `convert.rs` 补强类型 payload（可选）。`c/src/event.rs` 仅保留订阅/转发
+4. 若 payload 形状全新：在当前启用的 binding runtime/平台 adapter 中补序列化；不要恢复旧 event bridge / Tauri `convert.rs` 事件链。
 
 ## 平台 crate 职责（保持瘦）
 
 | 平台 | 手写保留 | 自动生成 |
 |------|----------|----------|
-| **c** | 句柄、回调、内存、上传二进制、事件订阅 | `typed_abi`、`json_dispatch`、`invoke`、`events` |
-| **tauri** | `lifecycle`（AppHandle）、`convert`（SdkEvent→payload） | `handler`、`invoke`、`event_emit` |
-| **wasm** | smoke runtime、宿主 port | `contract`、`bindings`、`events` |
+| **c** | 句柄、内存、共享 JSON runtime 调用 | `typed_abi`、`json_dispatch`、`invoke`、`events` |
+| **tauri** | `sdk_init` / `sdk_invoke` IPC adapter | `handler`、`invoke`、`event_emit` |
+| **wasm** | `FlareImClient` wasm-bindgen facade | `contract`、`bindings`、`events` |
 | **uniffi** | 后续 session adapter | `contract`、`types`、`events`、`invoke` 占位 |
 
 ## 统一调用入口
@@ -98,4 +98,4 @@ make -C bindings codegen-check
 - **Tauri**：`sdk_invoke(api_id, request)` + `sdk_init` / `sdk_login` / `sdk_logout`
 - **Wasm（smoke）**：`flareInvoke(runtime, api_id, request_json)`
 
-契约 `api_id` 与 `apis.json` 中 `id` 字段一致（如 `messages.list`、`sync.conversation`）。
+契约 `api_id` 与 `apis.json` 中 `id` 字段一致（如 `message.list`、`conversation.list`、`sync.conversation`）。

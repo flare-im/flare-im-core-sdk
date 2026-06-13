@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use crate::model::conversation::ConversationType;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "camelCase")]
 pub enum MessageSearchKind {
     /// 消息记录页签：不额外限制消息类型。
     Message,
@@ -16,11 +16,13 @@ pub enum MessageSearchKind {
     Image,
     Video,
     Audio,
+    /// 文件附件：支持按 typed 文件名、描述、MIME 与文件 ID 搜索。
     File,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
+#[serde(rename_all = "camelCase")]
 pub struct MessageSearchQuery {
     pub keyword: Option<String>,
     pub conversation_id: Option<String>,
@@ -83,6 +85,7 @@ impl MessageSearchQuery {
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
+#[serde(rename_all = "camelCase")]
 pub struct ConversationListQuery {
     pub keyword: Option<String>,
     pub include_archived: bool,
@@ -128,4 +131,50 @@ pub(crate) fn escaped_like_contains(value: &str) -> String {
     }
     out.push('%');
     out
+}
+
+#[cfg(feature = "storage-sqlite")]
+pub(crate) enum SqliteKeywordSearch {
+    Fts(String),
+    ContentLike(String),
+}
+
+#[cfg(feature = "storage-sqlite")]
+pub(crate) fn sqlite_keyword_search(value: &str) -> Option<SqliteKeywordSearch> {
+    let value = value.trim();
+    if value.is_empty() || !value.chars().any(|ch| ch.is_alphanumeric()) {
+        return None;
+    }
+
+    let searchable_chars = value
+        .chars()
+        .filter(|ch| ch.is_alphanumeric())
+        .take(3)
+        .count();
+    if searchable_chars < 3 {
+        return Some(SqliteKeywordSearch::ContentLike(escaped_like_contains(
+            value,
+        )));
+    }
+
+    fts5_phrase_query(value).map(SqliteKeywordSearch::Fts)
+}
+
+#[cfg(feature = "storage-sqlite")]
+fn fts5_phrase_query(value: &str) -> Option<String> {
+    let value = value.trim();
+    if value.is_empty() || !value.chars().any(|ch| ch.is_alphanumeric()) {
+        return None;
+    }
+
+    let mut out = String::with_capacity(value.len() + 2);
+    out.push('"');
+    for ch in value.chars() {
+        if ch == '"' {
+            out.push('"');
+        }
+        out.push(ch);
+    }
+    out.push('"');
+    Some(out)
 }

@@ -8,6 +8,7 @@ use super::media::UploadProgressCallback;
 use crate::application::usecases::{
     MessageMutationUseCase, MessageSendUseCase, MessageViewAssembler,
 };
+use crate::core::CurrentUserIdStore;
 use crate::model::MessageSearchQuery;
 use crate::model::content_builder::{BuiltContent, ContentBuilder};
 use crate::model::message::{IMMessage, MarkType, SendAck};
@@ -33,6 +34,7 @@ pub struct MessageApi {
     send_use_case: Arc<MessageSendUseCase>,
     mutation_use_case: Arc<MessageMutationUseCase>,
     view_assembler: Arc<MessageViewAssembler>,
+    current_user_id: CurrentUserIdStore,
 }
 
 impl MessageApi {
@@ -40,12 +42,21 @@ impl MessageApi {
         send_use_case: Arc<MessageSendUseCase>,
         mutation_use_case: Arc<MessageMutationUseCase>,
         view_assembler: Arc<MessageViewAssembler>,
+        current_user_id: CurrentUserIdStore,
     ) -> Self {
         Self {
             send_use_case,
             mutation_use_case,
             view_assembler,
+            current_user_id,
         }
+    }
+
+    async fn ensure_session_active(&self) -> Result<()> {
+        if self.current_user_id.read().await.trim().is_empty() {
+            return Err(FlareError::localized(ErrorCode::NotConnected, "未连接"));
+        }
+        Ok(())
     }
 
     pub async fn current_user_id(&self) -> Result<String> {
@@ -54,6 +65,7 @@ impl MessageApi {
 
     /// 默认发送：若检测到本地媒体路径则先上传 OSS，再发送消息。
     pub async fn send(&self, message: IMMessage) -> Result<SendAck> {
+        self.ensure_session_active().await?;
         self.send_use_case.send_with_media(message, None).await
     }
 
@@ -63,6 +75,7 @@ impl MessageApi {
         message: IMMessage,
         on_progress: Option<UploadProgressCallback>,
     ) -> Result<SendAck> {
+        self.ensure_session_active().await?;
         self.send_use_case
             .send_with_media(message, on_progress)
             .await
@@ -70,11 +83,13 @@ impl MessageApi {
 
     /// 原样发送：不做 OSS 上传预处理。
     pub async fn send_no_oss(&self, message: IMMessage) -> Result<SendAck> {
+        self.ensure_session_active().await?;
         self.send_use_case.send(message).await
     }
 
     /// 撤回消息。message_id 为 client_msg_id。
     pub async fn recall(&self, message_id: &str) -> Result<()> {
+        self.ensure_session_active().await?;
         self.mutation_use_case.recall(message_id).await
     }
 
@@ -85,6 +100,7 @@ impl MessageApi {
         message_id: &str,
         new_content: Vec<u8>,
     ) -> Result<()> {
+        self.ensure_session_active().await?;
         self.mutation_use_case
             .edit(conversation_id, message_id, new_content)
             .await
@@ -97,6 +113,7 @@ impl MessageApi {
         message_id: &str,
         content: BuiltContent,
     ) -> Result<()> {
+        self.ensure_session_active().await?;
         self.mutation_use_case
             .edit(conversation_id, message_id, content.encode())
             .await
@@ -104,6 +121,7 @@ impl MessageApi {
 
     /// 按 message_id（client_msg_id）编辑为纯文本。
     pub async fn edit_text_by_message_id(&self, message_id: &str, text: &str) -> Result<()> {
+        self.ensure_session_active().await?;
         let (conversation_id, _) = self
             .mutation_use_case
             .resolve_message_id(message_id)
@@ -118,6 +136,7 @@ impl MessageApi {
 
     /// 按 message_id 编辑为 Rich Doc（与 [`ContentBuilder::try_rich_doc`] 规则一致）。
     pub async fn edit_rich_doc_by_message_id(&self, request: EditRichDocRequest) -> Result<()> {
+        self.ensure_session_active().await?;
         let (conversation_id, _) = self
             .mutation_use_case
             .resolve_message_id(&request.message_id)
@@ -154,6 +173,7 @@ impl MessageApi {
 
     /// 删除消息。message_id 为 client_msg_id。
     pub async fn delete(&self, message_id: &str) -> Result<()> {
+        self.ensure_session_active().await?;
         self.mutation_use_case
             .delete_for_self(message_id, None)
             .await
@@ -161,6 +181,7 @@ impl MessageApi {
 
     /// 仅删除自己可见（多端同步）。
     pub async fn delete_for_self(&self, message_id: &str, reason: Option<String>) -> Result<()> {
+        self.ensure_session_active().await?;
         self.mutation_use_case
             .delete_for_self(message_id, reason)
             .await
@@ -172,12 +193,14 @@ impl MessageApi {
         message_id: &str,
         reason: Option<String>,
     ) -> Result<()> {
+        self.ensure_session_active().await?;
         self.mutation_use_case
             .delete_for_everyone(message_id, reason)
             .await
     }
 
     pub async fn mark_read(&self, conversation_id: &str, read_seq: u64) -> Result<()> {
+        self.ensure_session_active().await?;
         self.mutation_use_case
             .mark_read_with_ids(conversation_id, Vec::new(), read_seq)
             .await
@@ -189,6 +212,7 @@ impl MessageApi {
         message_ids: Vec<String>,
         read_seq: u64,
     ) -> Result<()> {
+        self.ensure_session_active().await?;
         self.mutation_use_case
             .mark_read_with_ids(conversation_id, message_ids, read_seq)
             .await
@@ -196,20 +220,24 @@ impl MessageApi {
 
     /// 标记单条消息已读并触发阅后即焚。message_id 为 client_msg_id 或 server_msg_id。
     pub async fn mark_read_and_burn(&self, message_id: &str) -> Result<()> {
+        self.ensure_session_active().await?;
         self.mutation_use_case.mark_read_and_burn(message_id).await
     }
 
     pub async fn typing(&self, conversation_id: &str, typing: bool) -> Result<()> {
+        self.ensure_session_active().await?;
         self.mutation_use_case.typing(conversation_id, typing).await
     }
 
     /// 按 message_id（client_msg_id）添加反应。
     pub async fn add_reaction(&self, message_id: &str, emoji: &str) -> Result<()> {
+        self.ensure_session_active().await?;
         self.mutation_use_case.add_reaction(message_id, emoji).await
     }
 
     /// 按 message_id（client_msg_id）移除反应。
     pub async fn remove_reaction(&self, message_id: &str, emoji: &str) -> Result<()> {
+        self.ensure_session_active().await?;
         self.mutation_use_case
             .remove_reaction(message_id, emoji)
             .await
@@ -217,6 +245,7 @@ impl MessageApi {
 
     /// 置顶消息。message_id 为 client_msg_id。
     pub async fn pin(&self, conversation_id: &str, message_id: &str) -> Result<()> {
+        self.ensure_session_active().await?;
         self.mutation_use_case
             .pin(conversation_id, message_id)
             .await
@@ -224,6 +253,7 @@ impl MessageApi {
 
     /// 取消置顶。message_id 为 client_msg_id。
     pub async fn unpin(&self, conversation_id: &str, message_id: &str) -> Result<()> {
+        self.ensure_session_active().await?;
         self.mutation_use_case
             .unpin(conversation_id, message_id)
             .await
@@ -231,6 +261,7 @@ impl MessageApi {
 
     /// 按 message_id（client_msg_id）置顶。
     pub async fn pin_by_message_id(&self, message_id: &str) -> Result<()> {
+        self.ensure_session_active().await?;
         let (conversation_id, _) = self
             .mutation_use_case
             .resolve_message_id(message_id)
@@ -240,6 +271,7 @@ impl MessageApi {
 
     /// 按 message_id（client_msg_id）取消置顶。
     pub async fn unpin_by_message_id(&self, message_id: &str) -> Result<()> {
+        self.ensure_session_active().await?;
         let (conversation_id, _) = self
             .mutation_use_case
             .resolve_message_id(message_id)
@@ -254,6 +286,7 @@ impl MessageApi {
         message_id: &str,
         mark_type: MarkType,
     ) -> Result<()> {
+        self.ensure_session_active().await?;
         self.mutation_use_case
             .mark(conversation_id, message_id, mark_type, "")
             .await
@@ -267,6 +300,7 @@ impl MessageApi {
         mark_type: MarkType,
         color: &str,
     ) -> Result<()> {
+        self.ensure_session_active().await?;
         self.mutation_use_case
             .mark(conversation_id, message_id, mark_type, color)
             .await
@@ -279,6 +313,7 @@ impl MessageApi {
         message_id: &str,
         mark_type: MarkType,
     ) -> Result<()> {
+        self.ensure_session_active().await?;
         self.mutation_use_case
             .unmark(conversation_id, message_id, mark_type)
             .await
@@ -291,6 +326,7 @@ impl MessageApi {
         mark_type: MarkType,
         color: &str,
     ) -> Result<()> {
+        self.ensure_session_active().await?;
         let (conversation_id, _) = self
             .mutation_use_case
             .resolve_message_id(message_id)
@@ -302,6 +338,7 @@ impl MessageApi {
 
     /// 按 message_id（client_msg_id）取消标记。
     pub async fn unmark_by_message_id(&self, message_id: &str, mark_type: MarkType) -> Result<()> {
+        self.ensure_session_active().await?;
         let (conversation_id, _) = self
             .mutation_use_case
             .resolve_message_id(message_id)
@@ -313,11 +350,13 @@ impl MessageApi {
 
     /// 按 message_id（client_msg_id）查询单条消息。
     pub async fn get(&self, message_id: &str) -> Result<Option<IMMessage>> {
+        self.ensure_session_active().await?;
         self.view_assembler.get(message_id).await
     }
 
     /// 按 message_id（client_msg_id）查询原始消息（不填充发送者资料）。
     pub async fn get_raw(&self, message_id: &str) -> Result<Option<IMMessage>> {
+        self.ensure_session_active().await?;
         self.view_assembler.get_raw(message_id).await
     }
 
@@ -328,17 +367,20 @@ impl MessageApi {
         before_seq: u64,
         limit: u32,
     ) -> Result<Vec<IMMessage>> {
+        self.ensure_session_active().await?;
         self.view_assembler
             .list(conversation_id, before_seq, limit)
             .await
     }
 
     pub async fn search(&self, keyword: &str, limit: u32) -> Result<Vec<IMMessage>> {
+        self.ensure_session_active().await?;
         self.view_assembler.search(keyword, limit).await
     }
 
     /// 飞书式高级搜索：SDK 统一处理关键词、会话、发送人、时间、媒体类型等筛选。
     pub async fn search_by_query(&self, query: MessageSearchQuery) -> Result<Vec<IMMessage>> {
+        self.ensure_session_active().await?;
         self.view_assembler.search_by_query(&query).await
     }
 
@@ -348,6 +390,7 @@ impl MessageApi {
         keyword: &str,
         limit: u32,
     ) -> Result<Vec<IMMessage>> {
+        self.ensure_session_active().await?;
         self.view_assembler
             .search_in_conversation(conversation_id, keyword, limit)
             .await

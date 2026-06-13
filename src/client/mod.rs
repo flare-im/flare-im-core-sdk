@@ -11,7 +11,9 @@ pub mod im_client;
 pub mod lifecycle;
 pub mod profile_center;
 
-pub use crate::extension::{ExtensionRegistry, SdkExtension};
+pub use crate::extension::{
+    ExtensionLifecycle, ExtensionLifecycleContext, ExtensionRegistry, SdkExtension,
+};
 pub use crate::model::{
     MediaAccessUrl, MediaCacheEntryVo, MediaCacheStatsVo, MediaResolvedAccess, UploadOptions,
     UploadedMedia,
@@ -20,6 +22,7 @@ pub use crate::platform::ports::media::{
     MediaMetadata, MediaServicePort, MediaSourceDescriptor, MediaSourceKind,
 };
 pub use crate::platform::runtime::{NativeRuntimeAssembler, RuntimeAssembler, RuntimeComponents};
+pub use crate::shared::util::CoreTokenConfig;
 pub use api::{
     CapabilityApi, CapabilityDescriptorDto, CapabilityDispatchResult, ConversationApi,
     CreateLocationRequest, CreateRichDocRequest, CreateStickerRequest, EditRichDocRequest,
@@ -28,8 +31,12 @@ pub use api::{
     UserCapabilityGrantDto,
 };
 pub use builder::IMClientBuilder;
-pub use config::{SdkConfig, SdkConfigBuilder, TransportKind, TransportPolicy};
+pub use config::{
+    SdkConfig, SdkConfigBuilder, SdkResourceProfile, SdkRuntimeResources, TransportKind,
+    TransportPolicy,
+};
 pub use connected_apis::ConnectedApis;
+pub use flare_core::common::{HeartbeatAppState, HeartbeatConfig};
 pub use im_client::IMClient;
 pub use lifecycle::{
     LoginDbKind, SdkConfigOverlay, default_sdk_data_root, default_ws_url,

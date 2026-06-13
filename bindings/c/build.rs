@@ -1,11 +1,26 @@
 use std::env;
 use std::path::PathBuf;
 
+fn emit_rerun_for_rs_files(dir: &std::path::Path) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            emit_rerun_for_rs_files(&path);
+        } else if path.extension().is_some_and(|ext| ext == "rs") {
+            println!("cargo:rerun-if-changed={}", path.display());
+        }
+    }
+}
+
 fn main() {
     let crate_dir = env::var("CARGO_MANIFEST_DIR").unwrap();
+    let crate_dir_path = PathBuf::from(&crate_dir);
 
     // 生成头文件到 target 目录
-    let output_file = PathBuf::from(&crate_dir)
+    let output_file = crate_dir_path
         .parent()
         .unwrap()
         .parent()
@@ -38,5 +53,13 @@ fn main() {
     }
 
     println!("cargo:rerun-if-changed=cbindgen.toml");
-    println!("cargo:rerun-if-changed=src/lib.rs");
+    emit_rerun_for_rs_files(&PathBuf::from(&crate_dir).join("src"));
+    println!("cargo:rerun-if-changed=../contract/apis.json");
+    println!("cargo:rerun-if-changed=../contract/c_typed_abi.json");
+    println!("cargo:rerun-if-changed=../contract/client_config.json");
+    println!("cargo:rerun-if-changed=../contract/dispatch.json");
+    println!("cargo:rerun-if-changed=../contract/direct_invoke.json");
+    println!("cargo:rerun-if-changed=../contract/errors.json");
+    println!("cargo:rerun-if-changed=../contract/events.json");
+    println!("cargo:rerun-if-changed=../contract/manifest.json");
 }

@@ -145,8 +145,10 @@ pub(crate) fn message_build_dispatch_entry(
             ctx,
             async move {
                 let api = instance.message_build_api().await?;
-                flare_im_core_sdk_bindings_runtime::message::dispatch_message_build(&api, request)
-                    .await
+                flare_im_core_sdk_bindings_runtime::message_build::dispatch_message_build(
+                    &api, request,
+                )
+                .await
             },
             binding_response_to_json,
         );

@@ -22,12 +22,16 @@ use tonic::metadata::MetadataValue;
 use tonic::transport::{Channel, Endpoint};
 
 #[cfg(not(target_arch = "wasm32"))]
+use super::session_guard::SessionGuard;
+#[cfg(not(target_arch = "wasm32"))]
 use crate::extension::capability::rtc_ids;
 use crate::infrastructure::transport::http::http_client::HttpRequestContext;
 use crate::shared::error::{ErrorCode, FlareError, Result};
 
 #[derive(Clone)]
 pub struct CapabilityApi {
+    #[cfg(not(target_arch = "wasm32"))]
+    session_guard: SessionGuard,
     #[cfg(not(target_arch = "wasm32"))]
     endpoint: String,
     #[cfg(not(target_arch = "wasm32"))]
@@ -72,6 +76,7 @@ impl CapabilityApi {
         }
         #[cfg(not(target_arch = "wasm32"))]
         Self {
+            session_guard: SessionGuard::new(current_user_id.clone(), "capability"),
             endpoint: grpc_endpoint.into(),
             channel: Arc::new(Mutex::new(None)),
             current_user_id,
@@ -125,18 +130,6 @@ impl CapabilityApi {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    async fn current_user(&self) -> Result<String> {
-        let user_id = self.current_user_id.read().await.clone();
-        if user_id.trim().is_empty() {
-            return Err(FlareError::localized(
-                ErrorCode::NotConnected,
-                "sdk.capability.user_not_logged_in",
-            ));
-        }
-        Ok(user_id)
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
     fn effective_tenant_id(&self, tenant_id: Option<&str>) -> String {
         tenant_id
             .map(str::trim)
@@ -147,31 +140,36 @@ impl CapabilityApi {
 
     #[cfg(not(target_arch = "wasm32"))]
     pub async fn list_capabilities(&self) -> Result<Vec<CapabilityDescriptorDto>> {
-        let ch = self.connect().await?;
-        let mut client = CapabilityServiceClient::new(ch);
-        let mut req = tonic::Request::new(flare_grpc_proto::capability::ListCapabilitiesRequest {});
-        self.enrich_metadata(&mut req).await?;
-        let resp = client
-            .list_capabilities(req)
-            .await
-            .map_err(|s| FlareError::system(format!("ListCapabilities: {}", s.message())))?;
-        let out = resp
-            .into_inner()
-            .capabilities
-            .into_iter()
-            .map(|c| CapabilityDescriptorDto {
-                capability_id: c.capability_id,
-                plugin_id: c.plugin_id,
-                version: c.version,
-                scope: c.scope,
-                visibility: c.visibility,
-                permissions: c.permissions,
-                message_types: c.message_types,
-                timeout_ms: c.timeout_ms,
-                description: c.description,
+        let api = self.clone();
+        self.session_guard
+            .run(async move {
+                let ch = api.connect().await?;
+                let mut client = CapabilityServiceClient::new(ch);
+                let mut req =
+                    tonic::Request::new(flare_grpc_proto::capability::ListCapabilitiesRequest {});
+                api.enrich_metadata(&mut req).await?;
+                let resp = client.list_capabilities(req).await.map_err(|s| {
+                    FlareError::system(format!("ListCapabilities: {}", s.message()))
+                })?;
+                let out = resp
+                    .into_inner()
+                    .capabilities
+                    .into_iter()
+                    .map(|c| CapabilityDescriptorDto {
+                        capability_id: c.capability_id,
+                        plugin_id: c.plugin_id,
+                        version: c.version,
+                        scope: c.scope,
+                        visibility: c.visibility,
+                        permissions: c.permissions,
+                        message_types: c.message_types,
+                        timeout_ms: c.timeout_ms,
+                        description: c.description,
+                    })
+                    .collect();
+                Ok(out)
             })
-            .collect();
-        Ok(out)
+            .await
     }
 
     #[cfg(target_arch = "wasm32")]
@@ -188,51 +186,55 @@ impl CapabilityApi {
         tenant_id: Option<&str>,
         user_id: Option<&str>,
     ) -> Result<Vec<UserCapabilityGrantDto>> {
-        let tenant = self.effective_tenant_id(tenant_id);
-        let user = if let Some(user) = user_id {
-            user.to_string()
-        } else {
-            self.current_user().await?
-        };
-        let ch = self.connect().await?;
-        let mut client = CapabilityServiceClient::new(ch);
-        let mut req = tonic::Request::new(ListUserCapabilitiesRequest {
-            tenant_id: tenant,
-            user_id: user,
-        });
-        self.enrich_metadata(&mut req).await?;
-        let resp = client
-            .list_user_capabilities(req)
+        let api = self.clone();
+        let tenant_id = tenant_id.map(str::to_string);
+        let user_id = user_id.map(str::to_string);
+        self.session_guard
+            .run_with_user(move |session_user_id| async move {
+                let tenant = api.effective_tenant_id(tenant_id.as_deref());
+                let user = user_id
+                    .or(session_user_id)
+                    .ok_or_else(|| FlareError::localized(ErrorCode::NotConnected, "未连接"))?;
+                let ch = api.connect().await?;
+                let mut client = CapabilityServiceClient::new(ch);
+                let mut req = tonic::Request::new(ListUserCapabilitiesRequest {
+                    tenant_id: tenant,
+                    user_id: user,
+                });
+                api.enrich_metadata(&mut req).await?;
+                let resp = client.list_user_capabilities(req).await.map_err(|s| {
+                    FlareError::system(format!("ListUserCapabilities: {}", s.message()))
+                })?;
+                let mut out = Vec::new();
+                for g in resp.into_inner().grants {
+                    let granted_at = g
+                        .granted_at
+                        .map(|t| prost_timestamp_to_rfc3339(&t))
+                        .unwrap_or_default();
+                    let expires_at = g.expires_at.as_ref().map(prost_timestamp_to_rfc3339);
+                    let plan = if g.plan_code.is_empty() {
+                        None
+                    } else {
+                        Some(g.plan_code)
+                    };
+                    let source = if g.source.is_empty() {
+                        None
+                    } else {
+                        Some(g.source)
+                    };
+                    out.push(UserCapabilityGrantDto {
+                        tenant_id: g.tenant_id,
+                        user_id: g.user_id,
+                        capability_id: g.capability_id,
+                        granted_at,
+                        expires_at,
+                        plan_code: plan,
+                        source,
+                    });
+                }
+                Ok(out)
+            })
             .await
-            .map_err(|s| FlareError::system(format!("ListUserCapabilities: {}", s.message())))?;
-        let mut out = Vec::new();
-        for g in resp.into_inner().grants {
-            let granted_at = g
-                .granted_at
-                .map(|t| prost_timestamp_to_rfc3339(&t))
-                .unwrap_or_default();
-            let expires_at = g.expires_at.as_ref().map(prost_timestamp_to_rfc3339);
-            let plan = if g.plan_code.is_empty() {
-                None
-            } else {
-                Some(g.plan_code)
-            };
-            let source = if g.source.is_empty() {
-                None
-            } else {
-                Some(g.source)
-            };
-            out.push(UserCapabilityGrantDto {
-                tenant_id: g.tenant_id,
-                user_id: g.user_id,
-                capability_id: g.capability_id,
-                granted_at,
-                expires_at,
-                plan_code: plan,
-                source,
-            });
-        }
-        Ok(out)
     }
 
     #[cfg(target_arch = "wasm32")]
@@ -256,55 +258,62 @@ impl CapabilityApi {
         tenant_id: Option<&str>,
         user_id: Option<&str>,
     ) -> Result<CapabilityDispatchResult> {
-        let tenant = self.effective_tenant_id(tenant_id);
-        let user = if let Some(user) = user_id {
-            user.to_string()
-        } else {
-            self.current_user().await?
-        };
-        let payload_json = if payload.is_null() {
-            String::new()
-        } else {
-            serde_json::to_string(&payload)
-                .map_err(|e| FlareError::system(format!("capability payload json: {e}")))?
-        };
-        let ch = self.connect().await?;
-        let mut client = CapabilityServiceClient::new(ch);
-        let mut req = tonic::Request::new(DispatchCapabilityRequest {
-            capability_id: capability_id.to_string(),
-            tenant_id: tenant,
-            user_id: user,
-            conversation_id: conversation_id.unwrap_or("").to_string(),
-            payload_json,
-            request_id: String::new(),
-        });
-        self.enrich_metadata(&mut req).await?;
-        let resp = client
-            .dispatch(req)
+        let api = self.clone();
+        let capability_id = capability_id.to_string();
+        let conversation_id = conversation_id.map(str::to_string);
+        let tenant_id = tenant_id.map(str::to_string);
+        let user_id = user_id.map(str::to_string);
+        self.session_guard
+            .run_with_user(move |session_user_id| async move {
+                let tenant = api.effective_tenant_id(tenant_id.as_deref());
+                let user = user_id
+                    .or(session_user_id)
+                    .ok_or_else(|| FlareError::localized(ErrorCode::NotConnected, "未连接"))?;
+                let payload_json = if payload.is_null() {
+                    String::new()
+                } else {
+                    serde_json::to_string(&payload)
+                        .map_err(|e| FlareError::system(format!("capability payload json: {e}")))?
+                };
+                let ch = api.connect().await?;
+                let mut client = CapabilityServiceClient::new(ch);
+                let mut req = tonic::Request::new(DispatchCapabilityRequest {
+                    capability_id,
+                    tenant_id: tenant,
+                    user_id: user,
+                    conversation_id: conversation_id.unwrap_or_default(),
+                    payload_json,
+                    request_id: String::new(),
+                });
+                api.enrich_metadata(&mut req).await?;
+                let resp = client
+                    .dispatch(req)
+                    .await
+                    .map_err(|s| FlareError::system(format!("Dispatch: {}", s.message())))?;
+                let r = resp
+                    .into_inner()
+                    .result
+                    .ok_or_else(|| FlareError::system("Dispatch: empty result"))?;
+                let data = if r.result_json.trim().is_empty() {
+                    Value::Null
+                } else {
+                    serde_json::from_str(&r.result_json).unwrap_or(Value::Null)
+                };
+                let err = if r.error_message.is_empty() {
+                    None
+                } else {
+                    Some(r.error_message)
+                };
+                Ok(CapabilityDispatchResult {
+                    request_id: r.request_id,
+                    success: r.success,
+                    plugin_id: r.plugin_id,
+                    capability_id: r.capability_id,
+                    data,
+                    error: err,
+                })
+            })
             .await
-            .map_err(|s| FlareError::system(format!("Dispatch: {}", s.message())))?;
-        let r = resp
-            .into_inner()
-            .result
-            .ok_or_else(|| FlareError::system("Dispatch: empty result"))?;
-        let data = if r.result_json.trim().is_empty() {
-            Value::Null
-        } else {
-            serde_json::from_str(&r.result_json).unwrap_or(Value::Null)
-        };
-        let err = if r.error_message.is_empty() {
-            None
-        } else {
-            Some(r.error_message)
-        };
-        Ok(CapabilityDispatchResult {
-            request_id: r.request_id,
-            success: r.success,
-            plugin_id: r.plugin_id,
-            capability_id: r.capability_id,
-            data,
-            error: err,
-        })
     }
 
     #[cfg(target_arch = "wasm32")]
@@ -564,22 +573,32 @@ impl CapabilityApi {
         plan_code: Option<&str>,
         source: Option<&str>,
     ) -> Result<()> {
-        let ch = self.connect().await?;
-        let mut client = CapabilityServiceClient::new(ch);
-        let mut req = tonic::Request::new(GrantUserCapabilityRequest {
-            tenant_id: tenant_id.to_string(),
-            user_id: user_id.to_string(),
-            capability_id: capability_id.to_string(),
-            expires_at_rfc3339: expires_at_rfc3339.unwrap_or("").to_string(),
-            plan_code: plan_code.unwrap_or("").to_string(),
-            source: source.unwrap_or("").to_string(),
-        });
-        self.enrich_metadata(&mut req).await?;
-        client
-            .grant_user_capability(req)
+        let api = self.clone();
+        let tenant_id = tenant_id.to_string();
+        let user_id = user_id.to_string();
+        let capability_id = capability_id.to_string();
+        let expires_at_rfc3339 = expires_at_rfc3339.unwrap_or("").to_string();
+        let plan_code = plan_code.unwrap_or("").to_string();
+        let source = source.unwrap_or("").to_string();
+        self.session_guard
+            .run(async move {
+                let ch = api.connect().await?;
+                let mut client = CapabilityServiceClient::new(ch);
+                let mut req = tonic::Request::new(GrantUserCapabilityRequest {
+                    tenant_id,
+                    user_id,
+                    capability_id,
+                    expires_at_rfc3339,
+                    plan_code,
+                    source,
+                });
+                api.enrich_metadata(&mut req).await?;
+                client.grant_user_capability(req).await.map_err(|s| {
+                    FlareError::system(format!("GrantUserCapability: {}", s.message()))
+                })?;
+                Ok(())
+            })
             .await
-            .map_err(|s| FlareError::system(format!("GrantUserCapability: {}", s.message())))?;
-        Ok(())
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -589,19 +608,26 @@ impl CapabilityApi {
         user_id: &str,
         capability_id: &str,
     ) -> Result<()> {
-        let ch = self.connect().await?;
-        let mut client = CapabilityServiceClient::new(ch);
-        let mut req = tonic::Request::new(RevokeUserCapabilityRequest {
-            tenant_id: tenant_id.to_string(),
-            user_id: user_id.to_string(),
-            capability_id: capability_id.to_string(),
-        });
-        self.enrich_metadata(&mut req).await?;
-        client
-            .revoke_user_capability(req)
+        let api = self.clone();
+        let tenant_id = tenant_id.to_string();
+        let user_id = user_id.to_string();
+        let capability_id = capability_id.to_string();
+        self.session_guard
+            .run(async move {
+                let ch = api.connect().await?;
+                let mut client = CapabilityServiceClient::new(ch);
+                let mut req = tonic::Request::new(RevokeUserCapabilityRequest {
+                    tenant_id,
+                    user_id,
+                    capability_id,
+                });
+                api.enrich_metadata(&mut req).await?;
+                client.revoke_user_capability(req).await.map_err(|s| {
+                    FlareError::system(format!("RevokeUserCapability: {}", s.message()))
+                })?;
+                Ok(())
+            })
             .await
-            .map_err(|s| FlareError::system(format!("RevokeUserCapability: {}", s.message())))?;
-        Ok(())
     }
 
     #[cfg(target_arch = "wasm32")]
@@ -785,6 +811,7 @@ fn prost_timestamp_to_rfc3339(t: &prost_types::Timestamp) -> String {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CapabilityDescriptorDto {
     pub capability_id: String,
     pub plugin_id: String,
@@ -798,6 +825,7 @@ pub struct CapabilityDescriptorDto {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct UserCapabilityGrantDto {
     pub tenant_id: String,
     pub user_id: String,
@@ -809,6 +837,7 @@ pub struct UserCapabilityGrantDto {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CapabilityDispatchResult {
     pub request_id: String,
     pub success: bool,

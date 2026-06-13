@@ -4,9 +4,10 @@
 //! 不暴露大 trait，便于 FFI / Swift / Kotlin / TypeScript 绑定。
 
 use flare_proto::common::{
-    CallSignalEvent, CustomEvent, MarkEvent, MessageBurnScheduledEvent, MessageBurnedEvent,
-    MessageDeleteEvent, MessageHardDeletedEvent, MessageRecallEvent, PinEvent, PresenceEvent,
-    ReadReceiptEvent, SendAck, TypingEvent, UnmarkEvent, UnpinEvent,
+    CapabilityPacket, CustomEvent, MarkEvent, MessageDeleteEvent, MessageRecallEvent,
+    MessageRetentionExpiredEvent, MessageRetentionPurgedEvent, MessageRetentionScheduledEvent,
+    PinEvent, PresenceHintPacket, ReadReceiptEvent, SendAck, TypingStatePacket, UnmarkEvent,
+    UnpinEvent,
 };
 
 use crate::core::SyncState;
@@ -60,10 +61,10 @@ pub enum MessageEvent {
         conversation_id: String,
         event: MessageRecallEvent,
     },
-    /// 正在输入（会话 id + Typing 事件体）
+    /// 正在输入（DATA realtime_control.typing，不占用 conversation_seq）
     Typing {
         conversation_id: String,
-        event: TypingEvent,
+        event: TypingStatePacket,
     },
     /// 消息正文已更新（本地编辑确认或服务端推送/同步下发后，本地库已写入新 `content`）
     Edited {
@@ -91,20 +92,20 @@ pub enum MessageEvent {
         conversation_id: String,
         event: ReadReceiptEvent,
     },
-    /// 阅后即焚倒计时已安排
-    BurnScheduled {
+    /// Retention 生命周期已安排
+    RetentionScheduled {
         conversation_id: String,
-        event: MessageBurnScheduledEvent,
+        event: MessageRetentionScheduledEvent,
     },
-    /// 阅后即焚消息已焚毁
-    Burned {
+    /// Retention 生命周期已过期
+    RetentionExpired {
         conversation_id: String,
-        event: MessageBurnedEvent,
+        event: MessageRetentionExpiredEvent,
     },
-    /// 阅后即焚消息已硬删除
-    HardDeleted {
+    /// Retention 生命周期已清理
+    RetentionPurged {
         conversation_id: String,
-        event: MessageHardDeletedEvent,
+        event: MessageRetentionPurgedEvent,
     },
     /// 消息被置顶
     Pinned {
@@ -126,15 +127,15 @@ pub enum MessageEvent {
         conversation_id: String,
         event: UnmarkEvent,
     },
-    /// 在线状态事件（presence）
+    /// 在线状态提示（DATA realtime_control.presence，不占用 conversation_seq）
     PresenceChanged {
         conversation_id: String,
-        event: PresenceEvent,
+        event: PresenceHintPacket,
     },
-    /// 通话信令事件（call_signal）
-    CallSignal {
+    /// 能力包下行（RTC/通话等插件能力统一走 DATA capability）
+    Capability {
         conversation_id: String,
-        event: Box<CallSignalEvent>,
+        packet: Box<CapabilityPacket>,
     },
     /// 自定义领域事件（custom）
     Custom {
@@ -168,6 +169,13 @@ pub enum ConversationEvent {
 /// 命名为 `SyncNotify`（非 `Sync`），避免与 Rust `std::marker::Sync` 及 wire 层 `flare_proto::common::Sync` 混淆。
 #[derive(Clone, Debug)]
 pub enum SyncNotify {
+    /// Raw event subscriber queue overflowed. Consumers must refresh local
+    /// read models from the SDK store because events may have been dropped.
+    ResyncNeeded {
+        scope: String,
+        reason: String,
+        dropped_events: u64,
+    },
     StateChanged {
         run: SyncRunContext,
         state: SyncState,
@@ -199,6 +207,7 @@ pub enum SyncNotify {
 impl SyncNotify {
     pub fn is_user_visible(&self) -> bool {
         match self {
+            Self::ResyncNeeded { .. } => true,
             Self::StateChanged { run, .. }
             | Self::Started { run }
             | Self::Finished { run, .. }
@@ -234,6 +243,7 @@ pub enum SyncPhase {
 
 /// 顶层 SDK 事件：按域聚合，内部总线与跨语言绑定均使用此枚举
 #[derive(Clone, Debug)]
+#[allow(clippy::large_enum_variant)]
 pub enum SdkEvent {
     Connection(ConnectionEvent),
     Message(MessageEvent),

@@ -3,9 +3,10 @@ MAKEFILE_DIR := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
 WORKSPACE_ROOT := $(abspath $(MAKEFILE_DIR)/..)
 CARGO ?= cargo
 PYTHON ?= python3
+XTASK ?= $(CARGO) run --manifest-path "$(WORKSPACE_ROOT)/Cargo.toml" -p flare-im-core-sdk-codegen --quiet --
 
 # Sub-packages with local Makefiles (run `make help` in each directory)
-SUBDIRS := runtime wasm c tauri uniffi
+SUBDIRS := shared wasm c tauri uniffi
 
 .PHONY: help all verify codegen codegen-check fmt check test build clean \
 	$(SUBDIRS) subdirs-help
@@ -37,10 +38,10 @@ subdirs-help:
 	done
 
 codegen:
-	$(PYTHON) "$(MAKEFILE_DIR)/contract/tools/generate_bindings.py"
+	$(XTASK) codegen
 
 codegen-check:
-	$(PYTHON) "$(MAKEFILE_DIR)/contract/tools/generate_bindings.py" --check
+	$(XTASK) check
 
 fmt:
 	$(CARGO) fmt --manifest-path "$(WORKSPACE_ROOT)/Cargo.toml" \
@@ -68,10 +69,10 @@ core-check:
 	$(CARGO) check --manifest-path "$(WORKSPACE_ROOT)/Cargo.toml" -p flare-im-core-sdk
 
 runtime-check:
-	$(MAKE) -C "$(MAKEFILE_DIR)/runtime" check
+	$(MAKE) -C "$(MAKEFILE_DIR)/shared" check
 
 runtime-test:
-	$(MAKE) -C "$(MAKEFILE_DIR)/runtime" test
+	$(MAKE) -C "$(MAKEFILE_DIR)/shared" test
 
 wasm-check:
 	$(MAKE) -C "$(MAKEFILE_DIR)/wasm" check

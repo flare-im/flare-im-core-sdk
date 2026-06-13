@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use flare_proto::common::{MessageRetentionPolicy, MessageRetentionState};
 use std::collections::HashMap;
 
 use crate::model::message::ReactionEntry;
@@ -25,6 +26,17 @@ pub trait MessageReader: Send + Sync {
     async fn get(&self, message_id: &str) -> Result<Option<IMMessage>>;
     /// 按 client_msg_id 查询（发送中/待 ACK 时可能仅有 client_msg_id）
     async fn get_by_client_msg_id(&self, client_msg_id: &str) -> Result<Option<IMMessage>>;
+    /// 批量按 client_msg_id 查询。默认逐条兜底；SQLite 实现覆盖为 `IN (...)` 单次查询，
+    /// 降低可靠队列对账每 tick 的 O(n) DB 往返与连接池争用。
+    async fn get_by_client_msg_ids(&self, client_msg_ids: &[String]) -> Result<Vec<IMMessage>> {
+        let mut out = Vec::with_capacity(client_msg_ids.len());
+        for id in client_msg_ids {
+            if let Some(message) = self.get_by_client_msg_id(id).await? {
+                out.push(message);
+            }
+        }
+        Ok(out)
+    }
     /// `before_seq == 0`：首屏，返回该会话最新 `limit` 条（`seq` 降序）。
     /// `before_seq > 0`：返回满足 `seq < before_seq` 的更早消息。
     async fn get_by_conversation(
@@ -134,35 +146,35 @@ pub trait MessageStore: MessageReader + MessageWriter {
         Ok(OperationApplyResult::Applied)
     }
 
-    /// 应用阅后即焚「已安排倒计时」事件到存储层；实现可基于 `event_seq/seq` 防旧事件回放覆盖新状态。
-    async fn apply_burn_scheduled_event(
+    /// 应用 retention「已安排」事件到存储层；实现可基于 `conversation_seq` 防旧事件回放覆盖新状态。
+    async fn apply_retention_scheduled_event(
         &self,
         _message_id: &str,
-        _burn_at: i64,
-        _first_read_at: i64,
+        _policy: &MessageRetentionPolicy,
+        _state: &MessageRetentionState,
+        _scheduled_at: i64,
         _event_seq: Option<u64>,
     ) -> Result<OperationApplyResult> {
         Ok(OperationApplyResult::NotFound)
     }
 
-    /// 应用阅后即焚「已焚毁」事件到存储层；实现可基于 `event_seq/seq` 防旧事件回放覆盖新状态。
-    async fn apply_burned_event(
+    /// 应用 retention「已过期」事件到存储层；实现可基于 `conversation_seq` 防旧事件回放覆盖新状态。
+    async fn apply_retention_expired_event(
         &self,
         _message_id: &str,
-        _burn_at: i64,
-        _burned_at: i64,
+        _state: &MessageRetentionState,
+        _expired_at: i64,
         _event_seq: Option<u64>,
     ) -> Result<OperationApplyResult> {
         Ok(OperationApplyResult::NotFound)
     }
 
-    /// 应用阅后即焚「硬删除」事件到存储层；实现可基于 `event_seq/seq` 防旧事件回放覆盖新状态。
-    async fn apply_hard_deleted_event(
+    /// 应用 retention「已清理」事件到存储层；实现可基于 `conversation_seq` 防旧事件回放覆盖新状态。
+    async fn apply_retention_purged_event(
         &self,
         _message_id: &str,
-        _burn_at: Option<i64>,
-        _burned_at: Option<i64>,
-        _hard_deleted_at: i64,
+        _state: &MessageRetentionState,
+        _purged_at: i64,
         _event_seq: Option<u64>,
     ) -> Result<OperationApplyResult> {
         Ok(OperationApplyResult::NotFound)

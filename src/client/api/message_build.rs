@@ -132,7 +132,7 @@ impl MessageBuildApi {
                 participant_ids
             };
             if !member_ids.trim().is_empty() {
-                msg.extra
+                msg.attributes
                     .entry("group_member_ids".to_string())
                     .or_insert(member_ids);
             }

@@ -125,7 +125,7 @@ SQLite 表结构（消息本地状态列）：
     → 解析 events 得到 Vec<IMMessage>
     → MessageStore.save_batch(messages)
     → 取本批中 seq 最大的消息 latest，ConversationStore.update_last_message(
-          conversation_id, latest.server_id(), latest.sender_id(), latest.timestamp,
+          conversation_id, latest.server_id(), latest.sender_id(), latest.created_at,
           latest.text_for_storage().as_deref(), max_seq)
     → 实现: persistence/sqlite/conversation_repo.rs (SqliteConversationRepo.update_last_message)
     → SyncCursorStore.save("sync:{conversation_id}", envelope.max_seq)

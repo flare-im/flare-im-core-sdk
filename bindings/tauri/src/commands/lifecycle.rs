@@ -1,14 +1,16 @@
 //! 生命周期：透传 [IMClient]；事件仅做 SdkEvent → emit，无查库或合并。
 
-use tauri::State;
-use tokio::sync::broadcast;
-use tracing::info;
+use tauri::{Emitter, State};
+use tokio::sync::oneshot;
+use tracing::{info, warn};
 
 use crate::model::RtcIceConfigSnapshotPayload;
-use crate::model::SdkInitArgs;
 use crate::state::SdkState;
-use flare_im_core_sdk::client::{IMClient, LoginDbKind};
-use flare_im_core_sdk::core::event::SdkEvent;
+#[cfg(feature = "dev-test-token")]
+use flare_im_core_sdk::client::CoreTokenConfig;
+use flare_im_core_sdk::client::{LoginDbKind, SdkConfigOverlay};
+use flare_im_core_sdk::event::{EventReceiver, SdkEvent, SyncNotify};
+use flare_im_core_sdk_bindings_runtime::SessionTaskSlot;
 
 fn env_bool(name: &str, default: bool) -> bool {
     match std::env::var(name) {
@@ -122,10 +124,11 @@ fn bool_with_file_fallback(
 #[tauri::command]
 pub async fn sdk_init(
     state: State<'_, SdkState>,
-    args: SdkInitArgs,
+    environment: Option<String>,
+    sdk_config: Option<SdkConfigOverlay>,
 ) -> std::result::Result<(), String> {
     state
-        .set_config(args.environment, args.sdk_config)
+        .set_config(environment, sdk_config)
         .await
         .map_err(super::map_sdk_err)
 }
@@ -139,7 +142,10 @@ pub async fn sdk_login(
     token: String,
 ) -> std::result::Result<(), String> {
     let client = state.client();
-    let apis = client
+    let event_bridge = state.event_bridge();
+    event_bridge.clear();
+    let event_bridge_for_login = event_bridge.clone();
+    let login_result = client
         .login(
             &user_id,
             Some(&token),
@@ -147,31 +153,150 @@ pub async fn sdk_login(
             move |bus, _msg_store| {
                 let rx = bus.subscribe();
                 let app = app.clone();
-                tauri::async_runtime::spawn(async move {
-                    forward_event_rx_to_webview(app, rx).await;
-                });
+                spawn_event_bridge(app, rx, event_bridge_for_login.clone());
             },
         )
-        .await
-        .map_err(super::map_sdk_err)?;
+        .await;
+    let apis = match login_result {
+        Ok(apis) => apis,
+        Err(err) => {
+            event_bridge.clear();
+            return Err(super::map_sdk_err(err));
+        }
+    };
     state.install_session(apis).await;
 
     info!(user_id = %user_id, "sdk_login ok");
     Ok(())
 }
 
+/// 透传 [IMClient::prepare]：开库 + 建引擎（不连网），把开库 / 迁移移出登录关键路径。
+///
+/// 与 [`sdk_connect`] 配合实现「初始化前置、登录只做网络」。
+#[tauri::command]
+pub async fn sdk_prepare(
+    state: State<'_, SdkState>,
+    app: tauri::AppHandle,
+    user_id: String,
+) -> std::result::Result<(), String> {
+    let client = state.client();
+    let event_bridge = state.event_bridge();
+    event_bridge.clear();
+    client
+        .prepare(&user_id, LoginDbKind::Sqlite)
+        .await
+        .map_err(super::map_sdk_err)?;
+    // 预热后订阅事件总线 → webview（等价 login 闭包在 connect 前所做）。
+    let bus = client.bus().await.map_err(super::map_sdk_err)?;
+    let rx = bus.subscribe();
+    spawn_event_bridge(app, rx, event_bridge);
+    info!(user_id = %user_id, "sdk_prepare ok");
+    Ok(())
+}
+
+/// 透传 [IMClient::connect]：连接已预热引擎 + 首次同步（登录的网络半段）。
+#[tauri::command]
+pub async fn sdk_connect(
+    state: State<'_, SdkState>,
+    user_id: String,
+    token: String,
+) -> std::result::Result<(), String> {
+    let client = state.client();
+    let apis = client
+        .connect(&user_id, Some(&token))
+        .await
+        .map_err(super::map_sdk_err)?;
+    state.install_session(apis).await;
+    info!(user_id = %user_id, "sdk_connect ok");
+    Ok(())
+}
+
 /// EventBus → `im://*`，独立任务避免阻塞登录路径。
-async fn forward_event_rx_to_webview(app: tauri::AppHandle, mut rx: broadcast::Receiver<SdkEvent>) {
+fn spawn_event_bridge(app: tauri::AppHandle, rx: EventReceiver, bridge: SessionTaskSlot) {
+    let (cancel_tx, cancel_rx) = oneshot::channel();
+    bridge.replace(move || {
+        let _ = cancel_tx.send(());
+    });
+    tauri::async_runtime::spawn(async move {
+        forward_event_rx_to_webview(app, rx, cancel_rx).await;
+    });
+}
+
+async fn forward_event_rx_to_webview(
+    app: tauri::AppHandle,
+    mut rx: EventReceiver,
+    mut cancel_rx: oneshot::Receiver<()>,
+) {
+    let mut missed_events = 0u64;
     loop {
-        let ev = match rx.recv().await {
-            Ok(e) => e,
-            Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                tracing::warn!(dropped = n, "tauri event forward lagged, skipped events");
-                continue;
+        tokio::select! {
+            _ = &mut cancel_rx => break,
+            result = rx.recv() => {
+                let ev = match result {
+                    Ok(e) => e,
+                    Err(_) => break,
+                };
+                if missed_events > 0 {
+                    let marker = platform_event_bridge_resync_marker(missed_events);
+                    if emit_event_to_webview(&app, &marker) {
+                        missed_events = 0;
+                    } else {
+                        missed_events = missed_events.saturating_add(1);
+                        warn!(
+                            missed_events,
+                            "failed to emit resync marker to Tauri webview"
+                        );
+                        continue;
+                    }
+                }
+
+                if !emit_event_to_webview(&app, &ev) {
+                    missed_events = missed_events.saturating_add(1);
+                    warn!(missed_events, "failed to emit SDK event to Tauri webview");
+                }
             }
-            Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-        };
-        let _ = crate::generated::event_emit::emit_sdk_event(&app, &ev);
+        }
+    }
+}
+
+fn emit_event_to_webview<R: tauri::Runtime>(app: &tauri::AppHandle<R>, ev: &SdkEvent) -> bool {
+    let Some((name, payload)) = crate::convert::sdk_event_to_tauri(ev) else {
+        return true;
+    };
+    app.emit(&name, payload).is_ok()
+}
+
+fn platform_event_bridge_resync_marker(dropped_events: u64) -> SdkEvent {
+    SdkEvent::Sync(SyncNotify::ResyncNeeded {
+        scope: "platform_event_bridge".to_string(),
+        reason: "tauri_emit_failed".to_string(),
+        dropped_events,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn platform_event_bridge_resync_marker_maps_to_tauri_event() {
+        let event = platform_event_bridge_resync_marker(3);
+        let (channel, payload) =
+            crate::convert::sdk_event_to_tauri(&event).expect("resync marker should convert");
+
+        assert_eq!(channel, "im://resync_needed");
+        assert_eq!(
+            payload.get("scope").and_then(|v| v.as_str()),
+            Some("platform_event_bridge")
+        );
+        assert_eq!(
+            payload.get("reason").and_then(|v| v.as_str()),
+            Some("tauri_emit_failed")
+        );
+        assert_eq!(
+            payload.get("dropped_events").and_then(|v| v.as_u64()),
+            Some(3)
+        );
     }
 }
 
@@ -205,19 +330,24 @@ pub async fn sdk_current_user_id(
     Ok(state.client().current_user_id().await)
 }
 
+#[cfg(feature = "dev-test-token")]
 #[tauri::command]
-pub async fn sdk_generate_test_token(
+pub async fn sdk_generate_core_token(
     secret: String,
     issuer: String,
     user_id: String,
+    ttl_secs: u64,
+    device_id: Option<String>,
     tenant_id: Option<String>,
 ) -> std::result::Result<String, String> {
-    IMClient::generate_test_token(
-        secret.as_str(),
-        issuer.as_str(),
-        &user_id,
-        tenant_id.as_deref(),
-    )
+    flare_im_core_sdk::client::IMClient::generate_core_token(CoreTokenConfig {
+        secret,
+        issuer,
+        user_id,
+        ttl_secs,
+        device_id,
+        tenant_id,
+    })
     .map_err(super::map_sdk_err)
 }
 

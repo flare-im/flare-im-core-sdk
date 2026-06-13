@@ -1,4 +1,4 @@
-//! [`SdkCapabilityPlugin`]：扩展能力在 SDK 内的统一调用面（由独立 `flare-sdk-plugin-*` crate 约定 ID / payload）。
+//! [`SdkCapabilityPlugin`]：扩展能力在 SDK 内的统一调用面（由独立插件 crate 约定 ID / payload）。
 
 use async_trait::async_trait;
 use serde_json::Value;

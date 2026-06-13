@@ -16,12 +16,60 @@ use log::LevelFilter;
 use sqlx::ConnectOptions;
 use sqlx::SqlitePool;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
+use std::fmt;
 use std::path::Path;
 use std::str::FromStr;
 use std::time::Duration;
 
 pub use runtime::SqliteRuntime;
 pub use schema_registry::{SchemaInitializer, register_schema_init, register_schema_init_with};
+
+/// SQLite 安全配置。
+///
+/// 传入 `encryption_key` 时要求底层 SQLite 真实支持 SQLCipher；普通 SQLite 会直接返回错误，
+/// 避免 `PRAGMA key` 被静默忽略后让调用方误以为本地库已经加密。
+#[derive(Clone, Default)]
+pub struct SqliteSecurityConfig {
+    encryption_key: Option<String>,
+    require_sqlcipher: bool,
+}
+
+impl fmt::Debug for SqliteSecurityConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SqliteSecurityConfig")
+            .field(
+                "encryption_key",
+                &self.encryption_key.as_ref().map(|_| "<redacted>"),
+            )
+            .field("require_sqlcipher", &self.require_sqlcipher)
+            .finish()
+    }
+}
+
+impl SqliteSecurityConfig {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn with_encryption_key(mut self, key: impl Into<String>) -> Self {
+        self.encryption_key = Some(key.into());
+        self.require_sqlcipher = true;
+        self
+    }
+
+    pub fn require_sqlcipher(mut self, require: bool) -> Self {
+        self.require_sqlcipher = require;
+        self
+    }
+
+    pub fn is_encryption_required(&self) -> bool {
+        self.encryption_key.is_some() || self.require_sqlcipher
+    }
+
+    fn encryption_key(&self) -> Option<&str> {
+        self.encryption_key.as_deref()
+    }
+}
 
 /// 统一连接选项：WAL + 较长 busy_timeout + 页缓存，减轻多连接争用写锁时的阻塞与 sqlx 慢查询告警。
 pub(crate) fn connect_options(database_url: &str) -> AnyhowResult<SqliteConnectOptions> {
@@ -39,23 +87,46 @@ pub(crate) fn connect_options(database_url: &str) -> AnyhowResult<SqliteConnectO
         .log_slow_statements(LevelFilter::Warn, Duration::from_secs(5)))
 }
 
-/// 创建 SQLite 连接池（不建表）
-///
-/// 默认 `max_connections = 20`：单库写仍串行，但可减少「池耗尽 → 长时间等连接」导致的
-/// `sqlx::pool::acquire` 与 `PRAGMA foreign_keys` 等初始化被拖慢。
-pub async fn create_pool(database_url: &str) -> AnyhowResult<SqlitePool> {
+fn pool_options() -> SqlitePoolOptions {
     let max = std::env::var("FLARE_SQLITE_MAX_CONNECTIONS")
         .ok()
         .and_then(|s| s.parse::<u32>().ok())
         .filter(|n| (1..=256).contains(n))
         .unwrap_or(20);
 
-    Ok(SqlitePoolOptions::new()
+    SqlitePoolOptions::new()
         .max_connections(max)
         // 新连接建立 + busy 等锁可能 >2s，提高阈值减少误报
         .acquire_slow_threshold(Duration::from_secs(8))
-        .connect_with(connect_options(database_url)?)
-        .await?)
+}
+
+/// 创建 SQLite 连接池（不建表）
+///
+/// 默认 `max_connections = 20`：单库写仍串行，但可减少「池耗尽 → 长时间等连接」导致的
+/// `sqlx::pool::acquire` 与 `PRAGMA foreign_keys` 等初始化被拖慢。
+pub async fn create_pool(database_url: &str) -> AnyhowResult<SqlitePool> {
+    create_pool_with_security(database_url, SqliteSecurityConfig::default()).await
+}
+
+/// 创建 SQLite 连接池并应用安全配置（不建表）。
+pub async fn create_pool_with_security(
+    database_url: &str,
+    security: SqliteSecurityConfig,
+) -> AnyhowResult<SqlitePool> {
+    let mut options = connect_options(database_url)?;
+    if let Some(key) = security.encryption_key() {
+        options = options.pragma("key", key.to_string());
+    }
+
+    let pool = pool_options().connect_with(options).await?;
+    if security.is_encryption_required()
+        && let Err(error) = verify_sqlcipher_available(&pool).await
+    {
+        pool.close().await;
+        return Err(error);
+    }
+
+    Ok(pool)
 }
 
 /// 将本地文件路径转为 `sqlite://` URL
@@ -75,9 +146,31 @@ pub fn database_url_from_path(path: &Path) -> String {
 
 /// 创建连接池并执行所有已注册的 [register_schema_init] 初始化器。
 pub async fn open_pool(database_url: &str) -> AnyhowResult<SqlitePool> {
-    let pool = create_pool(database_url).await?;
+    open_pool_with_security(database_url, SqliteSecurityConfig::default()).await
+}
+
+/// 创建连接池、应用安全配置，并执行所有已注册的 [register_schema_init] 初始化器。
+pub async fn open_pool_with_security(
+    database_url: &str,
+    security: SqliteSecurityConfig,
+) -> AnyhowResult<SqlitePool> {
+    let pool = create_pool_with_security(database_url, security).await?;
     schema_registry::run_registered_schema_inits(&pool).await?;
     Ok(pool)
+}
+
+async fn verify_sqlcipher_available(pool: &SqlitePool) -> AnyhowResult<()> {
+    let version: Option<(String,)> = sqlx::query_as("PRAGMA cipher_version;")
+        .fetch_optional(pool)
+        .await?;
+    let version = version.map(|row| row.0).unwrap_or_default();
+    if version.trim().is_empty() {
+        anyhow::bail!(
+            "SQLite encryption requires SQLCipher, but the current sqlite runtime does not report PRAGMA cipher_version"
+        );
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]
@@ -93,6 +186,15 @@ mod tests {
         assert!(url.ends_with("?mode=rwc"));
     }
 
+    #[test]
+    fn sqlite_security_config_redacts_key_in_debug() {
+        let config = SqliteSecurityConfig::new().with_encryption_key("very-secret-key");
+        let debug = format!("{config:?}");
+
+        assert!(debug.contains("<redacted>"));
+        assert!(!debug.contains("very-secret-key"));
+    }
+
     #[tokio::test]
     async fn create_pool_supports_paths_with_spaces() {
         let root =
@@ -105,6 +207,38 @@ mod tests {
         pool.close().await;
 
         assert!(db.exists());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn encrypted_pool_requires_sqlcipher_runtime() {
+        let root = std::env::temp_dir().join(format!(
+            "flare sqlite encrypted path test {}",
+            std::process::id()
+        ));
+        let db = root.join("flare im encrypted sdk.db");
+        std::fs::create_dir_all(&root).expect("create temp sqlite dir");
+
+        let url = database_url_from_path(&db);
+        let plain_pool = create_pool(&url).await.expect("open sqlite db");
+        let sqlcipher_available = verify_sqlcipher_available(&plain_pool).await.is_ok();
+        plain_pool.close().await;
+
+        let encrypted = create_pool_with_security(
+            &url,
+            SqliteSecurityConfig::new().with_encryption_key("test-key"),
+        )
+        .await;
+
+        if sqlcipher_available {
+            encrypted
+                .expect("SQLCipher runtime should accept encrypted pool")
+                .close()
+                .await;
+        } else {
+            encrypted.expect_err("plain SQLite must reject encryption config");
+        }
+
         let _ = std::fs::remove_dir_all(root);
     }
 }

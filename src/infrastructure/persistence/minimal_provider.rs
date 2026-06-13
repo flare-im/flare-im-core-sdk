@@ -6,7 +6,7 @@ use super::StoreProvider;
 use super::empty_stores::{EmptyConversationStore, EmptyMessageStore, MemorySyncCursorStore};
 use super::memory::MemoryUserProfileStore;
 
-/// 无 SQLite 时的 IM 空仓储（不含好友/群；社交域见 `flare-social-sdk::store`）。
+/// 无 SQLite 时的 IM 空仓储（不含好友/群；业务域通过扩展自行持有本地 store）。
 pub fn in_memory_empty_im_provider() -> StoreProvider {
     let user_profiles = Arc::new(MemoryUserProfileStore::new());
     StoreProvider {

@@ -91,13 +91,24 @@ impl MessageListener for SocketHandler {
                 if let Ok(ack) = Ack::decode(payload.as_slice()) {
                     match ack.payload {
                         Some(AckPayload::Send(send_ack)) => {
+                            let accepted =
+                                send_ack.result.as_ref().and_then(|result| match result {
+                                    flare_proto::common::send_ack::Result::Accepted(accepted) => {
+                                        Some(accepted)
+                                    }
+                                    _ => None,
+                                });
+                            let error = send_ack.result.as_ref().and_then(|result| match result {
+                                flare_proto::common::send_ack::Result::Error(error) => Some(error),
+                                _ => None,
+                            });
                             debug!(
                                 frame_id = %frame.message_id,
                                 client_msg_id = %send_ack.client_msg_id,
-                                server_msg_id = %send_ack.server_msg_id,
-                                success = send_ack.success,
-                                error_code = send_ack.error_code,
-                                error_message = %send_ack.error_message,
+                                server_msg_id = %accepted.map(|a| a.server_msg_id.as_str()).unwrap_or_default(),
+                                conversation_seq = accepted.map(|a| a.conversation_seq).unwrap_or_default(),
+                                error_code = error.map(|e| e.code).unwrap_or_default(),
+                                error_message = %error.map(|e| e.message.as_str()).unwrap_or_default(),
                                 "received SendAck (PayloadCommand Ack), dispatching to bus"
                             );
                             let payload = DownlinkPayload::SendAck(send_ack.clone());
@@ -107,7 +118,7 @@ impl MessageListener for SocketHandler {
                             debug!(
                                 frame_id = %frame.message_id,
                                 event_id = %event_ack.event_id,
-                                metadata = ?event_ack.metadata,
+                                attributes = ?event_ack.attributes,
                                 "received EventAck (PayloadCommand Ack)"
                             );
                         }
@@ -152,6 +163,7 @@ impl MessageListener for SocketHandler {
     }
 
     async fn on_connect(&self) -> Result<()> {
+        self.signal_ready();
         self.dispatcher.bus().publish(SdkEvent::Connection(
             crate::core::event::ConnectionEvent::Connected,
         ));

@@ -3,9 +3,11 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use flare_im_core_sdk::core::event::SdkEvent;
+use flare_im_core_sdk::EventReceiver;
+use flare_im_core_sdk::event::SdkEvent;
 use js_sys::Function;
 use serde_json::{Value, json};
+use tokio::sync::oneshot;
 use wasm_bindgen::JsValue;
 
 thread_local! {
@@ -40,8 +42,58 @@ fn message_json(message: &flare_im_core_sdk::model::IMMessage) -> Value {
     serde_json::to_value(message).unwrap_or_else(|_| json!({}))
 }
 
+fn send_ack_json(ack: &flare_im_core_sdk::model::SendAck) -> Value {
+    let (server_msg_id, seq, timestamp, success, error_code, error_message, error_detail) =
+        match ack.result.as_ref() {
+            Some(flare_proto::common::send_ack::Result::Accepted(accepted)) => (
+                accepted.server_msg_id.clone(),
+                accepted.conversation_seq,
+                accepted.server_time,
+                true,
+                0,
+                String::new(),
+                Value::Null,
+            ),
+            Some(flare_proto::common::send_ack::Result::Error(error)) => (
+                String::new(),
+                0,
+                0,
+                false,
+                error.code,
+                error.message.clone(),
+                json!({
+                    "code": error.code,
+                    "reason": error.reason,
+                    "message": error.message,
+                    "track": error.track,
+                }),
+            ),
+            None => (
+                String::new(),
+                0,
+                0,
+                false,
+                0,
+                "missing send ack result".to_string(),
+                Value::Null,
+            ),
+        };
+    json!({
+        "client_msg_id": ack.client_msg_id,
+        "server_msg_id": server_msg_id,
+        "seq": seq,
+        "conversation_id": ack.conversation_id,
+        "ack_id": ack.ack_id,
+        "timestamp": timestamp,
+        "success": success,
+        "error_code": error_code,
+        "error_message": error_message,
+        "error_detail": error_detail,
+    })
+}
+
 fn sdk_event_to_web_payload(ev: &SdkEvent) -> Option<Value> {
-    use flare_im_core_sdk::core::event::{
+    use flare_im_core_sdk::event::{
         ConnectionEvent, ConversationEvent, MessageEvent, NotificationEvent, SdkEvent, SyncNotify,
         SyncPhase,
     };
@@ -93,21 +145,7 @@ fn sdk_event_to_web_payload(ev: &SdkEvent) -> Option<Value> {
             let ack = ack.as_ref();
             Some(json!({
                 "channel": "im://send_ack",
-                "payload": {
-                    "client_msg_id": ack.client_msg_id,
-                    "server_msg_id": ack.server_msg_id,
-                    "seq": ack.seq,
-                    "conversation_id": ack.conversation_id,
-                    "success": ack.success,
-                    "error_code": ack.error_code,
-                    "error_message": ack.error_message,
-                    "error_detail": ack.error_detail.as_ref().map(|detail| json!({
-                        "code": detail.code,
-                        "reason": detail.reason,
-                        "message": detail.message,
-                        "track": detail.track,
-                    })),
-                }
+                "payload": send_ack_json(ack)
             }))
         }
         SdkEvent::Message(MessageEvent::SendFailed {
@@ -187,7 +225,6 @@ fn sdk_event_to_web_payload(ev: &SdkEvent) -> Option<Value> {
                 "user_id": event.user_id,
                 "read_seq": event.read_seq,
                 "message_ids": event.message_ids,
-                "burn_after_read": event.burn_after_read.unwrap_or(false)
             }
         })),
         SdkEvent::Message(MessageEvent::PresenceChanged {
@@ -199,7 +236,7 @@ fn sdk_event_to_web_payload(ev: &SdkEvent) -> Option<Value> {
                 "conversation_id": conversation_id,
                 "user_id": event.user_id,
                 "status": event.status,
-                "extra": event.extra
+                "extra": event.attributes
             }
         })),
         SdkEvent::Message(MessageEvent::Custom {
@@ -213,7 +250,7 @@ fn sdk_event_to_web_payload(ev: &SdkEvent) -> Option<Value> {
                 "name": event.name,
                 "version": event.version,
                 "payload": event.payload,
-                "metadata": event.metadata
+                "attributes": event.attributes
             }
         })),
 
@@ -246,6 +283,18 @@ fn sdk_event_to_web_payload(ev: &SdkEvent) -> Option<Value> {
             "payload": { "conversation_id": conversation_id, "unread_count": unread_count }
         })),
 
+        SdkEvent::Sync(SyncNotify::ResyncNeeded {
+            scope,
+            reason,
+            dropped_events,
+        }) => Some(json!({
+            "channel": "im://resync_needed",
+            "payload": {
+                "scope": scope,
+                "reason": reason,
+                "dropped_events": dropped_events
+            }
+        })),
         SdkEvent::Sync(SyncNotify::Started { .. }) => Some(json!({
             "channel": "im://sync_started",
             "payload": {}
@@ -281,16 +330,17 @@ fn sdk_event_to_web_payload(ev: &SdkEvent) -> Option<Value> {
     }
 }
 
-pub async fn forward_event_rx_to_js(mut rx: tokio::sync::broadcast::Receiver<SdkEvent>) {
+pub async fn forward_event_rx_to_js(mut rx: EventReceiver, mut cancel_rx: oneshot::Receiver<()>) {
     loop {
-        let ev = match rx.recv().await {
-            Ok(event) => event,
-            Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                tracing::warn!(dropped = n, "wasm event forward lagged");
-                continue;
+        tokio::select! {
+            _ = &mut cancel_rx => break,
+            result = rx.recv() => {
+                let ev = match result {
+                    Ok(event) => event,
+                    Err(_) => break,
+                };
+                emit_sdk_event_to_js(&ev);
             }
-            Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-        };
-        emit_sdk_event_to_js(&ev);
+        }
     }
 }

@@ -1,20 +1,25 @@
 //! 内部事件总线 + 类型化回调 API
 //!
-//! 流程：内部发布 SdkEvent → broadcast 通道 → 异步分发任务 → 按事件类型调用已注册的回调。
+//! 流程：内部发布 SdkEvent → bounded fan-out → 按事件类型调用已注册的回调和 raw 订阅者。
 //! 不暴露大 trait，仅暴露 `on_*` 类型化注册，便于跨语言绑定（Swift / Kotlin / TypeScript）。
 
-use std::future::Future;
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
-use flare_proto::common::{CallSignalEvent, MessageRecallEvent, SendAck, TypingEvent};
+use flare_proto::common::{
+    CapabilityPacket, CustomEvent, MessageRecallEvent, SendAck, TypingStatePacket,
+};
 
 use crate::model::IMMessage;
-use tokio::sync::broadcast;
+use tokio::sync::mpsc;
 
 use tracing::warn;
 
+use super::selector::{
+    CustomEventSelector, EventFilter, ExtensionEventType, MessageEventType, NotificationEventType,
+    SdkEventKind, SdkEventType,
+};
 use super::types::{
     ConnectionEvent, ConversationEvent, MessageEvent, NotificationEvent, SdkEvent, SyncNotify,
     SyncPhase,
@@ -23,43 +28,136 @@ use crate::core::SdkState;
 use crate::core::SyncState;
 use crate::extension::middleware::MiddlewareChain;
 #[cfg(target_arch = "wasm32")]
-use crate::shared::util::delay;
-use crate::shared::util::spawn_background;
+use crate::shared::util::{delay, spawn_background};
 #[cfg(target_arch = "wasm32")]
 use std::time::Duration;
 
-/// 事件通道容量。保持有界，避免宿主侧消费慢时无限占用内存；同步高峰下也要尽量减少 Lagged。
+/// 每个 raw 订阅者的默认队列容量。慢消费者超过容量时会被丢事件保护 SDK 内存。
 const BUS_CAPACITY: usize = 2048;
+const CALLBACK_DISPATCH_CAPACITY: usize = 8192;
+const REPLAY_DISPATCH_CAPACITY: usize = 1024;
 const REPLAY_DELAY_MS: u64 = 10;
+static CALLBACK_DISPATCH_DROPPED: AtomicU64 = AtomicU64::new(0);
+static REPLAY_DISPATCH_DROPPED: AtomicU64 = AtomicU64::new(0);
+static RAW_SUBSCRIBER_DROPPED: AtomicU64 = AtomicU64::new(0);
 
-/// 启动 EventBus 分发循环：在已有 Tokio runtime 内 `spawn`；否则在独立线程上创建 runtime（Tauri/FFI 同步初始化）。
-#[cfg(not(target_arch = "wasm32"))]
-fn spawn_event_dispatch_loop(fut: impl Future<Output = ()> + Send + 'static) {
-    spawn_background(fut);
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PublishOutcome {
+    Published { receiver_count: usize },
+    DroppedSilentSync,
+    DroppedByMiddleware,
+    NoReceivers,
 }
 
-#[cfg(target_arch = "wasm32")]
-fn spawn_event_dispatch_loop(fut: impl Future<Output = ()> + 'static) {
-    spawn_background(fut);
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EventReceiveError {
+    Closed,
+}
+
+/// Bounded event receiver. Each subscription owns an independent queue.
+pub struct EventReceiver {
+    rx: mpsc::Receiver<SdkEvent>,
+    filter: EventFilter,
+    lagged: Arc<AtomicBool>,
+    dropped_events: Arc<AtomicU64>,
+}
+
+pub type FilteredEventReceiver = EventReceiver;
+
+impl EventReceiver {
+    pub fn new(
+        rx: mpsc::Receiver<SdkEvent>,
+        filter: EventFilter,
+        lagged: Arc<AtomicBool>,
+        dropped_events: Arc<AtomicU64>,
+    ) -> Self {
+        Self {
+            rx,
+            filter,
+            lagged,
+            dropped_events,
+        }
+    }
+
+    pub fn filter(&self) -> &EventFilter {
+        &self.filter
+    }
+
+    pub async fn recv(&mut self) -> Result<SdkEvent, EventReceiveError> {
+        if let Some(event) = self.take_resync_event() {
+            return Ok(event);
+        }
+        self.rx.recv().await.ok_or(EventReceiveError::Closed)
+    }
+
+    pub fn try_recv(&mut self) -> Result<SdkEvent, mpsc::error::TryRecvError> {
+        if let Some(event) = self.take_resync_event() {
+            return Ok(event);
+        }
+        self.rx.try_recv()
+    }
+
+    fn take_resync_event(&self) -> Option<SdkEvent> {
+        if !self.lagged.swap(false, Ordering::AcqRel) {
+            return None;
+        }
+        let dropped_events = self.dropped_events.swap(0, Ordering::AcqRel).max(1);
+        Some(SdkEvent::Sync(SyncNotify::ResyncNeeded {
+            scope: "global".to_string(),
+            reason: "event_queue_lagged".to_string(),
+            dropped_events,
+        }))
+    }
+}
+
+/// 单一长生命周期事件分发线程的发送端（懒初始化）。
+///
+/// 取代「每次发布 spawn_blocking / 新线程」：有界 FIFO 队列保证回调按**发布顺序**执行，
+/// 线程数恒定为 1，且不占用 Tokio blocking 池（避免事件风暴饿死 DB/网络等阻塞任务）。
+#[cfg(not(target_arch = "wasm32"))]
+fn event_dispatch_sender() -> &'static std::sync::mpsc::SyncSender<Box<dyn FnOnce() + Send>> {
+    use std::sync::OnceLock;
+    static DISPATCH: OnceLock<std::sync::mpsc::SyncSender<Box<dyn FnOnce() + Send>>> =
+        OnceLock::new();
+    DISPATCH.get_or_init(|| {
+        let (tx, rx) =
+            std::sync::mpsc::sync_channel::<Box<dyn FnOnce() + Send>>(CALLBACK_DISPATCH_CAPACITY);
+        if let Err(error) = std::thread::Builder::new()
+            .name("flare-sdk-event-dispatch".into())
+            .spawn(move || {
+                // 回调内部已各自 catch_unwind，此处顺序执行不会因单个回调 panic 而中断。
+                while let Ok(job) = rx.recv() {
+                    job();
+                }
+            })
+        {
+            warn!(%error, "failed to spawn flare-sdk-event-dispatch thread");
+        }
+        tx
+    })
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 fn spawn_callback(f: impl FnOnce() + Send + 'static) {
-    let f = move || {
+    let job = Box::new(move || {
         if catch_unwind(AssertUnwindSafe(f)).is_err() {
             warn!("EventBus callback panicked; continuing");
         }
-    };
-
-    if tokio::runtime::Handle::try_current().is_ok() {
-        tokio::task::spawn_blocking(f);
-        return;
-    }
-    if let Err(error) = std::thread::Builder::new()
-        .name("flare-sdk-event-callback".into())
-        .spawn(f)
-    {
-        warn!(%error, "failed to spawn flare-sdk-event-callback thread");
+    }) as Box<dyn FnOnce() + Send>;
+    match event_dispatch_sender().try_send(job) {
+        Ok(()) => {}
+        Err(std::sync::mpsc::TrySendError::Full(_)) => {
+            let dropped = CALLBACK_DISPATCH_DROPPED.fetch_add(1, Ordering::Relaxed) + 1;
+            if dropped == 1 || dropped % 1024 == 0 {
+                warn!(
+                    total_dropped = dropped,
+                    "EventBus callback dispatch queue full; callback dropped"
+                );
+            }
+        }
+        Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
+            warn!("EventBus dispatch thread unavailable; callback dropped");
+        }
     }
 }
 
@@ -74,10 +172,47 @@ fn spawn_callback(f: impl FnOnce() + 'static) {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn replay_after_dispatch_window(f: impl FnOnce() + Send + 'static) {
-    spawn_callback(move || {
-        std::thread::sleep(std::time::Duration::from_millis(REPLAY_DELAY_MS));
-        f();
-    });
+    match replay_dispatch_sender().try_send(Box::new(f)) {
+        Ok(()) => {}
+        Err(std::sync::mpsc::TrySendError::Full(_)) => {
+            let dropped = REPLAY_DISPATCH_DROPPED.fetch_add(1, Ordering::Relaxed) + 1;
+            if dropped == 1 || dropped % 1024 == 0 {
+                warn!(
+                    total_dropped = dropped,
+                    "EventBus replay dispatch queue full; replay callback dropped"
+                );
+            }
+        }
+        Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
+            warn!("EventBus replay dispatch thread unavailable; replay callback dropped");
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn replay_dispatch_sender() -> &'static std::sync::mpsc::SyncSender<Box<dyn FnOnce() + Send>> {
+    use std::sync::OnceLock;
+    static REPLAY: OnceLock<std::sync::mpsc::SyncSender<Box<dyn FnOnce() + Send>>> =
+        OnceLock::new();
+    REPLAY.get_or_init(|| {
+        let (tx, rx) =
+            std::sync::mpsc::sync_channel::<Box<dyn FnOnce() + Send>>(REPLAY_DISPATCH_CAPACITY);
+        if let Err(error) = std::thread::Builder::new()
+            .name("flare-sdk-event-replay".into())
+            .spawn(move || {
+                while let Ok(first) = rx.recv() {
+                    std::thread::sleep(std::time::Duration::from_millis(REPLAY_DELAY_MS));
+                    spawn_callback(first);
+                    while let Ok(job) = rx.try_recv() {
+                        spawn_callback(job);
+                    }
+                }
+            })
+        {
+            warn!(%error, "failed to spawn flare-sdk-event-replay thread");
+        }
+        tx
+    })
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -127,14 +262,15 @@ fn callback_snapshot<T: Clone>(callbacks: &Arc<RwLock<Vec<T>>>) -> Vec<T> {
     callbacks.safe_read("event_bus").clone()
 }
 
-fn dispatch_callbacks<T, F>(callbacks: &Arc<RwLock<Vec<T>>>, invoke: F)
+fn dispatch_callbacks<T, F>(callbacks: &Arc<RwLock<Vec<T>>>, invoke: F) -> usize
 where
     T: Clone + Send + 'static,
     F: Fn(&T) + Send + 'static,
 {
     let callbacks = callback_snapshot(callbacks);
+    let count = callbacks.len();
     if callbacks.is_empty() {
-        return;
+        return 0;
     }
 
     spawn_callback(move || {
@@ -142,9 +278,14 @@ where
             invoke(&callback);
         }
     });
+    count
 }
 
-fn dispatch_callbacks_with<T, P, M, F>(callbacks: &Arc<RwLock<Vec<T>>>, make_payload: M, invoke: F)
+fn dispatch_callbacks_with<T, P, M, F>(
+    callbacks: &Arc<RwLock<Vec<T>>>,
+    make_payload: M,
+    invoke: F,
+) -> usize
 where
     T: Clone + Send + 'static,
     P: Send + 'static,
@@ -152,8 +293,9 @@ where
     F: Fn(&T, &P) + Send + 'static,
 {
     let callbacks = callback_snapshot(callbacks);
+    let count = callbacks.len();
     if callbacks.is_empty() {
-        return;
+        return 0;
     }
 
     let payload = make_payload();
@@ -162,12 +304,14 @@ where
             invoke(&callback, &payload);
         }
     });
+    count
 }
 
-fn dispatch_any_callbacks(callbacks: &Arc<RwLock<Vec<FnAny>>>, event: SdkEvent) {
+fn dispatch_any_callbacks(callbacks: &Arc<RwLock<Vec<FnAny>>>, event: SdkEvent) -> usize {
     let callbacks = callback_snapshot(callbacks);
+    let count = callbacks.len();
     if callbacks.is_empty() {
-        return;
+        return 0;
     }
 
     let event = Arc::new(event);
@@ -176,10 +320,38 @@ fn dispatch_any_callbacks(callbacks: &Arc<RwLock<Vec<FnAny>>>, event: SdkEvent) 
             callback(Arc::clone(&event));
         }
     });
+    count
+}
+
+fn dispatch_route_callbacks(routes: &Arc<RwLock<Vec<EventRoute>>>, event: &SdkEvent) -> usize {
+    let callbacks = {
+        let routes = routes.safe_read("event_bus");
+        routes
+            .iter()
+            .filter(|route| route.filter.matches(event))
+            .map(|route| route.callback.clone())
+            .collect::<Vec<_>>()
+    };
+    let count = callbacks.len();
+    if callbacks.is_empty() {
+        return 0;
+    }
+
+    let event = Arc::new(event.clone());
+    spawn_callback(move || {
+        for callback in callbacks {
+            callback(Arc::clone(&event));
+        }
+    });
+    count
 }
 
 fn same_arc<T: ?Sized>(left: &Arc<T>, right: &Arc<T>) -> bool {
     Arc::ptr_eq(left, right)
+}
+
+fn same_event_route(left: &EventRoute, right: &EventRoute) -> bool {
+    left.filter == right.filter && Arc::ptr_eq(&left.callback, &right.callback)
 }
 
 // 回调存储：Arc 便于 clone 后传入 spawn_blocking，不阻塞分发循环
@@ -195,8 +367,8 @@ type FnMessageBatch = Arc<dyn Fn(Vec<IMMessage>) + Send + Sync>;
 type FnSendAck = Arc<dyn Fn(SendAck) + Send + Sync>;
 type FnSendFailed = Arc<dyn Fn(String, String) + Send + Sync>;
 type FnRecalled = Arc<dyn Fn(String, MessageRecallEvent) + Send + Sync>;
-type FnTyping = Arc<dyn Fn(String, TypingEvent) + Send + Sync>;
-type FnCallSignal = Arc<dyn Fn(String, CallSignalEvent) + Send + Sync>;
+type FnTyping = Arc<dyn Fn(String, TypingStatePacket) + Send + Sync>;
+type FnCapability = Arc<dyn Fn(String, CapabilityPacket) + Send + Sync>;
 type FnConversationIds = Arc<dyn Fn(Vec<String>) + Send + Sync>;
 type FnConversationId = Arc<dyn Fn(String) + Send + Sync>;
 type FnConversationUnreadCountChanged = Arc<dyn Fn(String, u32) + Send + Sync>;
@@ -207,13 +379,28 @@ type FnSyncProgress = Arc<dyn Fn(String, f32, String) + Send + Sync>;
 type FnAny = Arc<dyn Fn(Arc<SdkEvent>) + Send + Sync>;
 
 #[derive(Clone)]
+struct EventRoute {
+    filter: EventFilter,
+    callback: FnAny,
+}
+
+#[derive(Clone)]
+struct RawSubscriber {
+    filter: EventFilter,
+    tx: mpsc::Sender<SdkEvent>,
+    lagged: Arc<AtomicBool>,
+    dropped_events: Arc<AtomicU64>,
+}
+
+#[derive(Clone)]
 pub struct EventBus {
-    tx: broadcast::Sender<SdkEvent>,
     middleware: Arc<MiddlewareChain>,
+    raw_subscriber_capacity: usize,
+    subscribers: Arc<RwLock<Vec<RawSubscriber>>>,
     last_connection_state: Arc<RwLock<Option<SdkState>>>,
     last_sync_state: Arc<RwLock<Option<SyncState>>>,
     last_sync_finished: Arc<RwLock<Option<SyncPhase>>>,
-    // Connection（std::sync::RwLock 支持同步注册，分发时在 spawn_blocking 内读）
+    // Connection（std::sync::RwLock 支持同步注册，回调在专用分发线程中执行）
     on_connected: Arc<RwLock<Vec<FnConnected>>>,
     on_disconnected: Arc<RwLock<Vec<FnDisconnected>>>,
     on_state_changed: Arc<RwLock<Vec<FnStateChanged>>>,
@@ -228,7 +415,7 @@ pub struct EventBus {
     on_send_failed: Arc<RwLock<Vec<FnSendFailed>>>,
     on_recalled: Arc<RwLock<Vec<FnRecalled>>>,
     on_typing: Arc<RwLock<Vec<FnTyping>>>,
-    call_signal_listeners: Arc<RwLock<Vec<FnCallSignal>>>,
+    capability_listeners: Arc<RwLock<Vec<FnCapability>>>,
     // Conversation
     on_conversation_synced: Arc<RwLock<Vec<FnConversationIds>>>,
     on_conversation_created: Arc<RwLock<Vec<FnConversationId>>>,
@@ -244,17 +431,28 @@ pub struct EventBus {
     on_sync_failed: Arc<RwLock<Vec<FnSendFailed>>>,
     on_sync_progress: Arc<RwLock<Vec<FnSyncProgress>>>,
     on_sync_task_completed: Arc<RwLock<Vec<FnConversationId>>>,
+    // Filtered event routes
+    routes: Arc<RwLock<Vec<EventRoute>>>,
     // Any
     on_any: Arc<RwLock<Vec<FnAny>>>,
 }
 
 impl EventBus {
     pub fn new() -> Self {
-        Self::with_middleware(Arc::new(MiddlewareChain::new()))
+        Self::with_capacity(BUS_CAPACITY)
+    }
+
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self::with_middleware_and_capacity(Arc::new(MiddlewareChain::new()), capacity)
     }
 
     pub fn with_middleware(middleware: Arc<MiddlewareChain>) -> Self {
-        let (tx, mut rx) = broadcast::channel(BUS_CAPACITY);
+        Self::with_middleware_and_capacity(middleware, BUS_CAPACITY)
+    }
+
+    pub fn with_middleware_and_capacity(middleware: Arc<MiddlewareChain>, capacity: usize) -> Self {
+        let raw_subscriber_capacity = capacity.max(1);
+        let subscribers = Arc::new(RwLock::new(Vec::new()));
         let last_connection_state = Arc::new(RwLock::new(None));
         let last_sync_state = Arc::new(RwLock::new(None));
         let last_sync_finished = Arc::new(RwLock::new(None));
@@ -272,7 +470,7 @@ impl EventBus {
         let on_send_failed = Arc::new(RwLock::new(Vec::new()));
         let on_recalled = Arc::new(RwLock::new(Vec::new()));
         let on_typing = Arc::new(RwLock::new(Vec::new()));
-        let call_signal_listeners = Arc::new(RwLock::new(Vec::new()));
+        let capability_listeners = Arc::new(RwLock::new(Vec::new()));
         let on_conversation_synced = Arc::new(RwLock::new(Vec::new()));
         let on_conversation_created = Arc::new(RwLock::new(Vec::new()));
         let on_conversation_updated = Arc::new(RwLock::new(Vec::new()));
@@ -285,322 +483,350 @@ impl EventBus {
         let on_sync_failed = Arc::new(RwLock::new(Vec::new()));
         let on_sync_progress = Arc::new(RwLock::new(Vec::new()));
         let on_sync_task_completed = Arc::new(RwLock::new(Vec::new()));
+        let routes = Arc::new(RwLock::new(Vec::new()));
         let on_any = Arc::new(RwLock::new(Vec::new()));
 
-        let bus = Self {
-            tx: tx.clone(),
+        Self {
             middleware,
-            last_connection_state: last_connection_state.clone(),
-            last_sync_state: last_sync_state.clone(),
-            last_sync_finished: last_sync_finished.clone(),
-            on_connected: on_connected.clone(),
-            on_disconnected: on_disconnected.clone(),
-            on_state_changed: on_state_changed.clone(),
-            on_sync_state_changed: on_sync_state_changed.clone(),
-            on_server_error: on_server_error.clone(),
-            on_kicked_off: on_kicked_off.clone(),
-            on_token_expired: on_token_expired.clone(),
-            on_message: on_message.clone(),
-            on_message_batch: on_message_batch.clone(),
-            on_send_ack: on_send_ack.clone(),
-            on_send_failed: on_send_failed.clone(),
-            on_recalled: on_recalled.clone(),
-            on_typing: on_typing.clone(),
-            call_signal_listeners: call_signal_listeners.clone(),
-            on_conversation_synced: on_conversation_synced.clone(),
-            on_conversation_created: on_conversation_created.clone(),
-            on_conversation_updated: on_conversation_updated.clone(),
-            on_conversation_unread_count_changed: on_conversation_unread_count_changed.clone(),
-            on_conversation_deleted: on_conversation_deleted.clone(),
-            on_extension: on_extension.clone(),
-            on_notification: on_notification.clone(),
-            on_sync_started: on_sync_started.clone(),
-            on_sync_finished: on_sync_finished.clone(),
-            on_sync_failed: on_sync_failed.clone(),
-            on_sync_progress: on_sync_progress.clone(),
-            on_sync_task_completed: on_sync_task_completed.clone(),
-            on_any: on_any.clone(),
-        };
-
-        // 异步分发任务：非阻塞接收，每类回调在 spawn_blocking 中执行，避免阻塞事件循环。
-        // 必须处理 Lagged：若只写 while let Ok(ev)，当通道积压导致 Lagged 时循环会退出，后续推送等事件将永远不再被分发。
-        spawn_event_dispatch_loop(async move {
-            loop {
-                let ev = match rx.recv().await {
-                    Ok(ev) => ev,
-                    Err(broadcast::error::RecvError::Lagged(n)) => {
-                        warn!(
-                            dropped = n,
-                            "EventBus dispatch lagged, dropped events (continuing)"
-                        );
-                        continue;
-                    }
-                    Err(broadcast::error::RecvError::Closed) => break,
-                };
-                match &ev {
-                    SdkEvent::Connection(ce) => match ce {
-                        ConnectionEvent::Connected => {
-                            dispatch_callbacks(&on_connected, |f| f());
-                        }
-                        ConnectionEvent::Disconnected { reason } => {
-                            dispatch_callbacks_with(
-                                &on_disconnected,
-                                || reason.clone(),
-                                |f, reason| f(reason.clone()),
-                            );
-                        }
-                        ConnectionEvent::StateChanged { state } => {
-                            dispatch_callbacks_with(
-                                &on_state_changed,
-                                || state.clone(),
-                                |f, state| f(state.clone()),
-                            );
-                        }
-                        ConnectionEvent::SyncStateChanged { state } => {
-                            let s = *state;
-                            dispatch_callbacks(&on_sync_state_changed, move |f| {
-                                f(s);
-                            });
-                        }
-                        ConnectionEvent::ServerError { code, message } => {
-                            dispatch_callbacks_with(
-                                &on_server_error,
-                                || (*code, message.clone()),
-                                |f, (code, message)| f(*code, message.clone()),
-                            );
-                        }
-                        ConnectionEvent::KickedOff { reason } => {
-                            dispatch_callbacks_with(
-                                &on_kicked_off,
-                                || reason.clone(),
-                                |f, reason| f(reason.clone()),
-                            );
-                        }
-                        ConnectionEvent::TokenExpired { message } => {
-                            dispatch_callbacks_with(
-                                &on_token_expired,
-                                || message.clone(),
-                                |f, message| f(message.clone()),
-                            );
-                        }
-                        ConnectionEvent::Reconnecting { .. } => {}
-                    },
-                    SdkEvent::Message(me) => match me {
-                        MessageEvent::Received { message } => {
-                            dispatch_callbacks_with(
-                                &on_message,
-                                || message.as_ref().clone(),
-                                |f, message| f(message.clone()),
-                            );
-                        }
-                        MessageEvent::ReceivedBatch { messages } => {
-                            dispatch_callbacks_with(
-                                &on_message_batch,
-                                || messages.clone(),
-                                |f, messages| f(messages.clone()),
-                            );
-                        }
-                        MessageEvent::SendAck { ack } => {
-                            dispatch_callbacks_with(
-                                &on_send_ack,
-                                || ack.as_ref().clone(),
-                                |f, ack| f(ack.clone()),
-                            );
-                        }
-                        MessageEvent::SendFailed {
-                            client_msg_id,
-                            reason,
-                        } => {
-                            dispatch_callbacks_with(
-                                &on_send_failed,
-                                || (client_msg_id.clone(), reason.clone()),
-                                |f, (client_msg_id, reason)| {
-                                    f(client_msg_id.clone(), reason.clone());
-                                },
-                            );
-                        }
-                        MessageEvent::Recalled {
-                            conversation_id,
-                            event,
-                        } => {
-                            dispatch_callbacks_with(
-                                &on_recalled,
-                                || (conversation_id.clone(), event.clone()),
-                                |f, (conversation_id, event)| {
-                                    f(conversation_id.clone(), event.clone());
-                                },
-                            );
-                        }
-                        MessageEvent::Typing {
-                            conversation_id,
-                            event,
-                        } => {
-                            dispatch_callbacks_with(
-                                &on_typing,
-                                || (conversation_id.clone(), event.clone()),
-                                |f, (conversation_id, event)| {
-                                    f(conversation_id.clone(), event.clone());
-                                },
-                            );
-                        }
-                        MessageEvent::CallSignal {
-                            conversation_id,
-                            event,
-                        } => {
-                            dispatch_callbacks_with(
-                                &call_signal_listeners,
-                                || (conversation_id.clone(), event.as_ref().clone()),
-                                |f, (conversation_id, event)| {
-                                    f(conversation_id.clone(), event.clone());
-                                },
-                            );
-                        }
-                        MessageEvent::Edited { .. }
-                        | MessageEvent::ReactionChanged { .. }
-                        | MessageEvent::Deleted { .. }
-                        | MessageEvent::ReadReceipt { .. }
-                        | MessageEvent::BurnScheduled { .. }
-                        | MessageEvent::Burned { .. }
-                        | MessageEvent::HardDeleted { .. }
-                        | MessageEvent::Pinned { .. }
-                        | MessageEvent::Unpinned { .. }
-                        | MessageEvent::Marked { .. }
-                        | MessageEvent::Unmarked { .. }
-                        | MessageEvent::PresenceChanged { .. }
-                        | MessageEvent::Custom { .. } => {}
-                    },
-                    SdkEvent::Notification(NotificationEvent::Received { message }) => {
-                        dispatch_callbacks_with(
-                            &on_notification,
-                            || message.as_ref().clone(),
-                            |f, message| f(message.clone()),
-                        );
-                    }
-                    SdkEvent::Conversation(ce) => match ce {
-                        ConversationEvent::Synced { conversation_ids } => {
-                            dispatch_callbacks_with(
-                                &on_conversation_synced,
-                                || conversation_ids.clone(),
-                                |f, conversation_ids| f(conversation_ids.clone()),
-                            );
-                        }
-                        ConversationEvent::Created { conversation_id } => {
-                            dispatch_callbacks_with(
-                                &on_conversation_created,
-                                || conversation_id.clone(),
-                                |f, conversation_id| f(conversation_id.clone()),
-                            );
-                        }
-                        ConversationEvent::Updated { conversation_id } => {
-                            dispatch_callbacks_with(
-                                &on_conversation_updated,
-                                || conversation_id.clone(),
-                                |f, conversation_id| f(conversation_id.clone()),
-                            );
-                        }
-                        ConversationEvent::UnreadCountChanged {
-                            conversation_id,
-                            unread_count,
-                        } => {
-                            dispatch_callbacks_with(
-                                &on_conversation_unread_count_changed,
-                                || (conversation_id.clone(), *unread_count),
-                                |f, (conversation_id, unread_count)| {
-                                    f(conversation_id.clone(), *unread_count);
-                                },
-                            );
-                        }
-                        ConversationEvent::Deleted { conversation_id } => {
-                            dispatch_callbacks_with(
-                                &on_conversation_deleted,
-                                || conversation_id.clone(),
-                                |f, conversation_id| f(conversation_id.clone()),
-                            );
-                        }
-                    },
-                    SdkEvent::Sync(se) => match se {
-                        SyncNotify::Started { run } if run.visibility.is_user_visible() => {
-                            dispatch_callbacks(&on_sync_started, |f| f());
-                        }
-                        SyncNotify::Finished { run, phase } if run.visibility.is_user_visible() => {
-                            dispatch_callbacks_with(
-                                &on_sync_finished,
-                                || phase.clone(),
-                                |f, phase| f(phase.clone()),
-                            );
-                        }
-                        SyncNotify::Failed { run, task, message }
-                            if run.visibility.is_user_visible() =>
-                        {
-                            dispatch_callbacks_with(
-                                &on_sync_failed,
-                                || (task.clone(), message.clone()),
-                                |f, (task, message)| f(task.clone(), message.clone()),
-                            );
-                        }
-                        SyncNotify::Progress {
-                            run,
-                            task,
-                            progress,
-                            detail,
-                        } if run.visibility.is_user_visible() => {
-                            dispatch_callbacks_with(
-                                &on_sync_progress,
-                                || (task.clone(), *progress, detail.clone()),
-                                |f, (task, progress, detail)| {
-                                    f(task.clone(), *progress, detail.clone());
-                                },
-                            );
-                        }
-                        SyncNotify::TaskCompleted { run, task }
-                            if run.visibility.is_user_visible() =>
-                        {
-                            dispatch_callbacks_with(
-                                &on_sync_task_completed,
-                                || task.clone(),
-                                |f, task| f(task.clone()),
-                            );
-                        }
-                        SyncNotify::StateChanged { run, state }
-                            if run.visibility.is_user_visible() =>
-                        {
-                            let s = *state;
-                            dispatch_callbacks(&on_sync_state_changed, move |f| {
-                                f(s);
-                            });
-                        }
-                        _ => {}
-                    },
-                    SdkEvent::Extension(ext) => {
-                        dispatch_callbacks_with(
-                            &on_extension,
-                            || {
-                                (
-                                    ext.source.clone(),
-                                    ext.event_type.clone(),
-                                    ext.payload.clone(),
-                                )
-                            },
-                            |f, (source, event_type, payload)| {
-                                f(source.clone(), event_type.clone(), payload.clone());
-                            },
-                        );
-                    }
-                }
-                // on_any 收到完整事件；无订阅时不额外分配 Arc。
-                dispatch_any_callbacks(&on_any, ev);
-            }
-        });
-
-        bus
+            raw_subscriber_capacity,
+            subscribers,
+            last_connection_state,
+            last_sync_state,
+            last_sync_finished,
+            on_connected,
+            on_disconnected,
+            on_state_changed,
+            on_sync_state_changed,
+            on_server_error,
+            on_kicked_off,
+            on_token_expired,
+            on_message,
+            on_message_batch,
+            on_send_ack,
+            on_send_failed,
+            on_recalled,
+            on_typing,
+            capability_listeners,
+            on_conversation_synced,
+            on_conversation_created,
+            on_conversation_updated,
+            on_conversation_unread_count_changed,
+            on_conversation_deleted,
+            on_extension,
+            on_notification,
+            on_sync_started,
+            on_sync_finished,
+            on_sync_failed,
+            on_sync_progress,
+            on_sync_task_completed,
+            routes,
+            on_any,
+        }
     }
 
-    pub fn publish(&self, mut event: SdkEvent) {
+    fn publish_to_subscribers(&self, event: &SdkEvent) -> usize {
+        let mut delivered = 0;
+        let mut has_closed = false;
+        let mut dropped_full = 0usize;
+
+        let subscribers = self.subscribers.safe_read("event_bus").clone();
+        for subscriber in subscribers.iter() {
+            if subscriber.tx.is_closed() {
+                has_closed = true;
+                continue;
+            }
+            if !subscriber.filter.matches(event) {
+                continue;
+            }
+            match subscriber.tx.try_send(event.clone()) {
+                Ok(()) => delivered += 1,
+                Err(mpsc::error::TrySendError::Closed(_)) => {
+                    has_closed = true;
+                }
+                Err(mpsc::error::TrySendError::Full(_)) => {
+                    subscriber.lagged.store(true, Ordering::Release);
+                    subscriber.dropped_events.fetch_add(1, Ordering::Relaxed);
+                    dropped_full += 1;
+                }
+            }
+        }
+
+        if dropped_full > 0 {
+            let previous = RAW_SUBSCRIBER_DROPPED.fetch_add(dropped_full as u64, Ordering::Relaxed);
+            let current = previous + dropped_full as u64;
+            if previous == 0 || previous / 1024 != current / 1024 {
+                warn!(
+                    dropped = dropped_full,
+                    total_dropped = current,
+                    "EventBus raw subscriber queue full; dropping events for slow subscribers"
+                );
+            }
+        }
+
+        if has_closed {
+            self.subscribers
+                .safe_write("event_bus")
+                .retain(|subscriber| !subscriber.tx.is_closed());
+        }
+
+        delivered
+    }
+
+    fn dispatch_typed_callbacks(&self, ev: &SdkEvent) -> usize {
+        let mut dispatched = 0;
+        match ev {
+            SdkEvent::Connection(ce) => match ce {
+                ConnectionEvent::Connected => {
+                    dispatched += dispatch_callbacks(&self.on_connected, |f| f());
+                }
+                ConnectionEvent::Disconnected { reason } => {
+                    dispatched += dispatch_callbacks_with(
+                        &self.on_disconnected,
+                        || reason.clone(),
+                        |f, reason| f(reason.clone()),
+                    );
+                }
+                ConnectionEvent::StateChanged { state } => {
+                    dispatched += dispatch_callbacks_with(
+                        &self.on_state_changed,
+                        || state.clone(),
+                        |f, state| f(state.clone()),
+                    );
+                }
+                ConnectionEvent::SyncStateChanged { state } => {
+                    let s = *state;
+                    dispatched += dispatch_callbacks(&self.on_sync_state_changed, move |f| {
+                        f(s);
+                    });
+                }
+                ConnectionEvent::ServerError { code, message } => {
+                    dispatched += dispatch_callbacks_with(
+                        &self.on_server_error,
+                        || (*code, message.clone()),
+                        |f, (code, message)| f(*code, message.clone()),
+                    );
+                }
+                ConnectionEvent::KickedOff { reason } => {
+                    dispatched += dispatch_callbacks_with(
+                        &self.on_kicked_off,
+                        || reason.clone(),
+                        |f, reason| f(reason.clone()),
+                    );
+                }
+                ConnectionEvent::TokenExpired { message } => {
+                    dispatched += dispatch_callbacks_with(
+                        &self.on_token_expired,
+                        || message.clone(),
+                        |f, message| f(message.clone()),
+                    );
+                }
+                ConnectionEvent::Reconnecting { .. } => {}
+            },
+            SdkEvent::Message(me) => match me {
+                MessageEvent::Received { message } => {
+                    dispatched += dispatch_callbacks_with(
+                        &self.on_message,
+                        || message.as_ref().clone(),
+                        |f, message| f(message.clone()),
+                    );
+                }
+                MessageEvent::ReceivedBatch { messages } => {
+                    dispatched += dispatch_callbacks_with(
+                        &self.on_message_batch,
+                        || messages.clone(),
+                        |f, messages| f(messages.clone()),
+                    );
+                }
+                MessageEvent::SendAck { ack } => {
+                    dispatched += dispatch_callbacks_with(
+                        &self.on_send_ack,
+                        || ack.as_ref().clone(),
+                        |f, ack| f(ack.clone()),
+                    );
+                }
+                MessageEvent::SendFailed {
+                    client_msg_id,
+                    reason,
+                } => {
+                    dispatched += dispatch_callbacks_with(
+                        &self.on_send_failed,
+                        || (client_msg_id.clone(), reason.clone()),
+                        |f, (client_msg_id, reason)| {
+                            f(client_msg_id.clone(), reason.clone());
+                        },
+                    );
+                }
+                MessageEvent::Recalled {
+                    conversation_id,
+                    event,
+                } => {
+                    dispatched += dispatch_callbacks_with(
+                        &self.on_recalled,
+                        || (conversation_id.clone(), event.clone()),
+                        |f, (conversation_id, event)| {
+                            f(conversation_id.clone(), event.clone());
+                        },
+                    );
+                }
+                MessageEvent::Typing {
+                    conversation_id,
+                    event,
+                } => {
+                    dispatched += dispatch_callbacks_with(
+                        &self.on_typing,
+                        || (conversation_id.clone(), event.clone()),
+                        |f, (conversation_id, event)| {
+                            f(conversation_id.clone(), event.clone());
+                        },
+                    );
+                }
+                MessageEvent::Capability {
+                    conversation_id,
+                    packet,
+                } => {
+                    dispatched += dispatch_callbacks_with(
+                        &self.capability_listeners,
+                        || (conversation_id.clone(), packet.as_ref().clone()),
+                        |f, (conversation_id, packet)| {
+                            f(conversation_id.clone(), packet.clone());
+                        },
+                    );
+                }
+                MessageEvent::Edited { .. }
+                | MessageEvent::ReactionChanged { .. }
+                | MessageEvent::Deleted { .. }
+                | MessageEvent::ReadReceipt { .. }
+                | MessageEvent::RetentionScheduled { .. }
+                | MessageEvent::RetentionExpired { .. }
+                | MessageEvent::RetentionPurged { .. }
+                | MessageEvent::Pinned { .. }
+                | MessageEvent::Unpinned { .. }
+                | MessageEvent::Marked { .. }
+                | MessageEvent::Unmarked { .. }
+                | MessageEvent::PresenceChanged { .. }
+                | MessageEvent::Custom { .. } => {}
+            },
+            SdkEvent::Notification(NotificationEvent::Received { message }) => {
+                dispatched += dispatch_callbacks_with(
+                    &self.on_notification,
+                    || message.as_ref().clone(),
+                    |f, message| f(message.clone()),
+                );
+            }
+            SdkEvent::Conversation(ce) => match ce {
+                ConversationEvent::Synced { conversation_ids } => {
+                    dispatched += dispatch_callbacks_with(
+                        &self.on_conversation_synced,
+                        || conversation_ids.clone(),
+                        |f, conversation_ids| f(conversation_ids.clone()),
+                    );
+                }
+                ConversationEvent::Created { conversation_id } => {
+                    dispatched += dispatch_callbacks_with(
+                        &self.on_conversation_created,
+                        || conversation_id.clone(),
+                        |f, conversation_id| f(conversation_id.clone()),
+                    );
+                }
+                ConversationEvent::Updated { conversation_id } => {
+                    dispatched += dispatch_callbacks_with(
+                        &self.on_conversation_updated,
+                        || conversation_id.clone(),
+                        |f, conversation_id| f(conversation_id.clone()),
+                    );
+                }
+                ConversationEvent::UnreadCountChanged {
+                    conversation_id,
+                    unread_count,
+                } => {
+                    dispatched += dispatch_callbacks_with(
+                        &self.on_conversation_unread_count_changed,
+                        || (conversation_id.clone(), *unread_count),
+                        |f, (conversation_id, unread_count)| {
+                            f(conversation_id.clone(), *unread_count);
+                        },
+                    );
+                }
+                ConversationEvent::Deleted { conversation_id } => {
+                    dispatched += dispatch_callbacks_with(
+                        &self.on_conversation_deleted,
+                        || conversation_id.clone(),
+                        |f, conversation_id| f(conversation_id.clone()),
+                    );
+                }
+            },
+            SdkEvent::Sync(se) => match se {
+                SyncNotify::Started { run } if run.visibility.is_user_visible() => {
+                    dispatched += dispatch_callbacks(&self.on_sync_started, |f| f());
+                }
+                SyncNotify::Finished { run, phase } if run.visibility.is_user_visible() => {
+                    dispatched += dispatch_callbacks_with(
+                        &self.on_sync_finished,
+                        || phase.clone(),
+                        |f, phase| f(phase.clone()),
+                    );
+                }
+                SyncNotify::Failed { run, task, message } if run.visibility.is_user_visible() => {
+                    dispatched += dispatch_callbacks_with(
+                        &self.on_sync_failed,
+                        || (task.clone(), message.clone()),
+                        |f, (task, message)| f(task.clone(), message.clone()),
+                    );
+                }
+                SyncNotify::Progress {
+                    run,
+                    task,
+                    progress,
+                    detail,
+                } if run.visibility.is_user_visible() => {
+                    dispatched += dispatch_callbacks_with(
+                        &self.on_sync_progress,
+                        || (task.clone(), *progress, detail.clone()),
+                        |f, (task, progress, detail)| {
+                            f(task.clone(), *progress, detail.clone());
+                        },
+                    );
+                }
+                SyncNotify::TaskCompleted { run, task } if run.visibility.is_user_visible() => {
+                    dispatched += dispatch_callbacks_with(
+                        &self.on_sync_task_completed,
+                        || task.clone(),
+                        |f, task| f(task.clone()),
+                    );
+                }
+                SyncNotify::StateChanged { run, state } if run.visibility.is_user_visible() => {
+                    let s = *state;
+                    dispatched += dispatch_callbacks(&self.on_sync_state_changed, move |f| {
+                        f(s);
+                    });
+                }
+                _ => {}
+            },
+            SdkEvent::Extension(ext) => {
+                dispatched += dispatch_callbacks_with(
+                    &self.on_extension,
+                    || {
+                        (
+                            ext.source.clone(),
+                            ext.event_type.clone(),
+                            ext.payload.clone(),
+                        )
+                    },
+                    |f, (source, event_type, payload)| {
+                        f(source.clone(), event_type.clone(), payload.clone());
+                    },
+                );
+            }
+        }
+        dispatched
+    }
+
+    pub fn publish(&self, mut event: SdkEvent) -> PublishOutcome {
         if matches!(&event, SdkEvent::Sync(sync) if !sync.is_user_visible()) {
-            return;
+            return PublishOutcome::DroppedSilentSync;
         }
         if self.middleware.before_publish(&mut event).is_drop() {
-            return;
+            return PublishOutcome::DroppedByMiddleware;
         }
         match &event {
             SdkEvent::Connection(ConnectionEvent::StateChanged { state }) => {
@@ -624,11 +850,53 @@ impl EventBus {
             _ => {}
         }
         self.middleware.on_publish(&event);
-        let _ = self.tx.send(event);
+        let raw_count = self.publish_to_subscribers(&event);
+        let typed_count = self.dispatch_typed_callbacks(&event);
+        let route_count = dispatch_route_callbacks(&self.routes, &event);
+        let any_count = dispatch_any_callbacks(&self.on_any, event);
+        let receiver_count = raw_count + typed_count + route_count + any_count;
+        if receiver_count == 0 {
+            PublishOutcome::NoReceivers
+        } else {
+            PublishOutcome::Published { receiver_count }
+        }
     }
 
-    pub fn subscribe(&self) -> broadcast::Receiver<SdkEvent> {
-        self.tx.subscribe()
+    pub fn publish_extension(
+        &self,
+        source: impl Into<String>,
+        event_type: impl Into<String>,
+        payload: impl Into<Vec<u8>>,
+    ) -> PublishOutcome {
+        self.publish(SdkEvent::custom_extension(source, event_type, payload))
+    }
+
+    pub fn subscribe(&self) -> EventReceiver {
+        self.subscribe_filter(EventFilter::Any)
+    }
+
+    pub fn subscribe_filter(&self, filter: impl Into<EventFilter>) -> FilteredEventReceiver {
+        let filter = filter.into();
+        let (tx, rx) = mpsc::channel(self.raw_subscriber_capacity);
+        let lagged = Arc::new(AtomicBool::new(false));
+        let dropped_events = Arc::new(AtomicU64::new(0));
+        self.subscribers
+            .safe_write("event_bus")
+            .push(RawSubscriber {
+                filter: filter.clone(),
+                tx,
+                lagged: lagged.clone(),
+                dropped_events: dropped_events.clone(),
+            });
+        EventReceiver::new(rx, filter, lagged, dropped_events)
+    }
+
+    pub fn subscribe_kind(&self, kind: SdkEventKind) -> FilteredEventReceiver {
+        self.subscribe_filter(kind)
+    }
+
+    pub fn subscribe_event_type(&self, event_type: SdkEventType) -> FilteredEventReceiver {
+        self.subscribe_filter(event_type)
     }
 
     fn callback_subscription<T, S>(
@@ -644,7 +912,6 @@ impl EventBus {
         callbacks.safe_write("event_bus").push(callback.clone());
         let callbacks = callbacks.clone();
         Subscription {
-            _tx: self.tx.clone(),
             cleanup: Some(Box::new(move || {
                 callbacks
                     .safe_write("event_bus")
@@ -821,22 +1088,22 @@ impl EventBus {
         self.callback_subscription(&self.on_recalled, f, same_arc)
     }
 
-    /// 注册「正在输入」回调
+    /// 注册「正在输入」回调（DATA realtime_control.typing）
     pub fn on_typing<F>(&self, f: F) -> Subscription
     where
-        F: Fn(&str, &TypingEvent) + Send + Sync + 'static,
+        F: Fn(&str, &TypingStatePacket) + Send + Sync + 'static,
     {
         let f: FnTyping = Arc::new(move |cid, e| f(cid.as_str(), &e));
         self.callback_subscription(&self.on_typing, f, same_arc)
     }
 
-    /// 注册「通话信令」下行（`EVENT_CALL_SIGNAL` → [`MessageEvent::CallSignal`]）。
-    pub fn on_call_signal<F>(&self, f: F) -> Subscription
+    /// 注册能力包下行（DATA capability；RTC/通话等插件信令统一走这里）。
+    pub fn on_capability<F>(&self, f: F) -> Subscription
     where
-        F: Fn(&str, &CallSignalEvent) + Send + Sync + 'static,
+        F: Fn(&str, &CapabilityPacket) + Send + Sync + 'static,
     {
-        let f: FnCallSignal = Arc::new(move |cid, e| f(cid.as_str(), &e));
-        self.callback_subscription(&self.call_signal_listeners, f, same_arc)
+        let f: FnCapability = Arc::new(move |cid, packet| f(cid.as_str(), &packet));
+        self.callback_subscription(&self.capability_listeners, f, same_arc)
     }
 
     // ---------- Conversation ----------
@@ -896,6 +1163,28 @@ impl EventBus {
         self.callback_subscription(&self.on_extension, f, same_arc)
     }
 
+    /// 注册某个扩展源 + 扩展事件类型的回调。
+    pub fn on_extension_event<F>(
+        &self,
+        source: impl Into<String>,
+        event_type: impl Into<String>,
+        f: F,
+    ) -> Subscription
+    where
+        F: Fn(&str, &str, &[u8]) + Send + Sync + 'static,
+    {
+        let event_type = SdkEventType::Extension(ExtensionEventType::named(source, event_type));
+        self.on_event_type(event_type, move |event| {
+            if let SdkEvent::Extension(extension) = event.as_ref() {
+                f(
+                    extension.source.as_str(),
+                    extension.event_type.as_str(),
+                    extension.payload.as_slice(),
+                );
+            }
+        })
+    }
+
     /// 注册 IM 下行 Notification 回调（与聊天 `on_message` 分离）。
     pub fn on_notification<F>(&self, f: F) -> Subscription
     where
@@ -903,6 +1192,42 @@ impl EventBus {
     {
         let f: FnNotification = Arc::new(move |m| f(&m));
         self.callback_subscription(&self.on_notification, f, same_arc)
+    }
+
+    /// 注册某个 `NotificationContent.notification_type` 的回调。
+    pub fn on_notification_type<F>(
+        &self,
+        notification_type: impl Into<String>,
+        f: F,
+    ) -> Subscription
+    where
+        F: Fn(&IMMessage) + Send + Sync + 'static,
+    {
+        let event_type =
+            SdkEventType::Notification(NotificationEventType::notification_type(notification_type));
+        self.on_event_type(event_type, move |event| {
+            if let SdkEvent::Notification(NotificationEvent::Received { message }) = event.as_ref()
+            {
+                f(message.as_ref());
+            }
+        })
+    }
+
+    /// 注册某个 durable `CustomEvent` 的回调。
+    pub fn on_custom_event<F>(&self, selector: impl Into<CustomEventSelector>, f: F) -> Subscription
+    where
+        F: Fn(&str, &CustomEvent) + Send + Sync + 'static,
+    {
+        let event_type = SdkEventType::Message(MessageEventType::CustomNamed(selector.into()));
+        self.on_event_type(event_type, move |event| {
+            if let SdkEvent::Message(MessageEvent::Custom {
+                conversation_id,
+                event,
+            }) = event.as_ref()
+            {
+                f(conversation_id.as_str(), event);
+            }
+        })
     }
 
     // ---------- Sync ----------
@@ -970,9 +1295,37 @@ impl EventBus {
     }
 
     // ---------- Raw / Any ----------
-    /// 订阅原始事件流（broadcast receiver）
-    pub fn subscribe_raw(&self) -> broadcast::Receiver<SdkEvent> {
+    /// 订阅原始事件流（每个订阅者独立 lossless queue）。
+    pub fn subscribe_raw(&self) -> EventReceiver {
         self.subscribe()
+    }
+
+    /// 注册过滤后的事件回调。多个相同过滤器的回调会全部执行。
+    pub fn on_event_filter<F>(&self, filter: impl Into<EventFilter>, f: F) -> Subscription
+    where
+        F: Fn(Arc<SdkEvent>) + Send + Sync + 'static,
+    {
+        let route = EventRoute {
+            filter: filter.into(),
+            callback: Arc::new(f),
+        };
+        self.callback_subscription(&self.routes, route, same_event_route)
+    }
+
+    /// 注册某个顶层事件域的回调。
+    pub fn on_event_kind<F>(&self, kind: SdkEventKind, f: F) -> Subscription
+    where
+        F: Fn(Arc<SdkEvent>) + Send + Sync + 'static,
+    {
+        self.on_event_filter(kind, f)
+    }
+
+    /// 注册某个精确事件类型的回调。
+    pub fn on_event_type<F>(&self, event_type: SdkEventType, f: F) -> Subscription
+    where
+        F: Fn(Arc<SdkEvent>) + Send + Sync + 'static,
+    {
+        self.on_event_filter(event_type, f)
     }
 
     /// 注册「任意事件」回调（拿到完整 SdkEvent，用于日志、审计或未分类扩展）
@@ -991,15 +1344,12 @@ impl Default for EventBus {
     }
 }
 
-pub type EventReceiver = broadcast::Receiver<SdkEvent>;
-
 /// Callback subscription handle.
 ///
 /// Dropping the handle removes the callback from the EventBus. This keeps
 /// hot-reload, screen remount, and long-running app sessions from accumulating
 /// stale host callbacks.
 pub struct Subscription {
-    pub(crate) _tx: broadcast::Sender<SdkEvent>,
     cleanup: Option<Box<dyn FnOnce() + Send + 'static>>,
 }
 
@@ -1013,20 +1363,25 @@ impl Drop for Subscription {
 
 #[cfg(test)]
 mod tests {
-    use super::{EventBus, RecoverableRwLock};
+    use super::{EventBus, PublishOutcome, RecoverableRwLock};
     use crate::core::SyncRunContext;
-    use crate::core::event::{SdkEvent, SyncNotify};
-    use tokio::sync::broadcast::error::TryRecvError;
+    use crate::core::event::{
+        ConnectionEvent, ConnectionEventType, CustomEventDefinition, MessageEvent,
+        MessageEventType, SdkEvent, SyncNotify,
+    };
+    use std::time::Duration;
+    use tokio::sync::mpsc::{self, error::TryRecvError};
 
     #[tokio::test]
     async fn publish_drops_silent_sync_events_before_raw_subscribers() {
         let bus = EventBus::new();
         let mut rx = bus.subscribe_raw();
 
-        bus.publish(SdkEvent::Sync(SyncNotify::Started {
+        let outcome = bus.publish(SdkEvent::Sync(SyncNotify::Started {
             run: SyncRunContext::silent_gap_repair(),
         }));
 
+        assert_eq!(outcome, PublishOutcome::DroppedSilentSync);
         assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
     }
 
@@ -1035,15 +1390,155 @@ mod tests {
         let bus = EventBus::new();
         let mut rx = bus.subscribe_raw();
 
-        bus.publish(SdkEvent::Sync(SyncNotify::Started {
+        let outcome = bus.publish(SdkEvent::Sync(SyncNotify::Started {
             run: SyncRunContext::initial_login(),
         }));
 
+        assert!(matches!(
+            outcome,
+            PublishOutcome::Published { receiver_count } if receiver_count >= 1
+        ));
         let received = rx.try_recv().expect("user visible sync event emitted");
         assert!(matches!(
             received,
             SdkEvent::Sync(SyncNotify::Started { .. })
         ));
+    }
+
+    #[tokio::test]
+    async fn raw_subscriber_queue_honors_capacity_hint() {
+        let bus = EventBus::with_capacity(1);
+        let mut rx = bus.subscribe_raw();
+
+        let first_outcome = bus.publish(SdkEvent::Sync(SyncNotify::Started {
+            run: SyncRunContext::initial_login(),
+        }));
+        let second_outcome = bus.publish(SdkEvent::Sync(SyncNotify::Finished {
+            run: SyncRunContext::initial_login(),
+            phase: crate::core::event::SyncPhase::Init,
+        }));
+
+        assert!(matches!(
+            first_outcome,
+            PublishOutcome::Published { receiver_count } if receiver_count == 1
+        ));
+        assert_eq!(second_outcome, PublishOutcome::NoReceivers);
+
+        let resync = rx.try_recv().expect("overflow emits resync marker first");
+        assert!(matches!(
+            resync,
+            SdkEvent::Sync(SyncNotify::ResyncNeeded {
+                scope,
+                reason,
+                dropped_events: 1,
+            }) if scope == "global" && reason == "event_queue_lagged"
+        ));
+        let first = rx.try_recv().expect("first event retained");
+        assert!(matches!(first, SdkEvent::Sync(SyncNotify::Started { .. })));
+        assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
+    }
+
+    #[tokio::test]
+    async fn raw_subscriber_queue_drops_overflow_for_slow_consumers() {
+        let bus = EventBus::with_capacity(2);
+        let mut rx = bus.subscribe_raw();
+        let total = 10_000usize;
+
+        for i in 0..total {
+            bus.publish(SdkEvent::Connection(ConnectionEvent::Disconnected {
+                reason: format!("network-{i}"),
+            }));
+        }
+
+        let resync = rx
+            .try_recv()
+            .expect("resync marker emitted before retained events");
+        assert!(matches!(
+            resync,
+            SdkEvent::Sync(SyncNotify::ResyncNeeded {
+                dropped_events,
+                ..
+            }) if dropped_events == (total - 2) as u64
+        ));
+        let received = rx.try_recv().expect("first burst event retained");
+        assert!(matches!(
+            received,
+            SdkEvent::Connection(ConnectionEvent::Disconnected { reason })
+                if reason == "network-0"
+        ));
+        let second = rx.try_recv().expect("second burst event retained");
+        assert!(matches!(
+            second,
+            SdkEvent::Connection(ConnectionEvent::Disconnected { reason })
+                if reason == "network-1"
+        ));
+        assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
+    }
+
+    #[tokio::test]
+    async fn filtered_receiver_gets_resync_marker_after_own_queue_overflows() {
+        let bus = EventBus::with_capacity(1);
+        let mut rx = bus.subscribe_event_type(ConnectionEventType::Connected.into());
+
+        bus.publish(SdkEvent::Connection(ConnectionEvent::Connected));
+        bus.publish(SdkEvent::Connection(ConnectionEvent::Connected));
+
+        let resync = rx.try_recv().expect("resync marker emitted first");
+        assert!(matches!(
+            resync,
+            SdkEvent::Sync(SyncNotify::ResyncNeeded {
+                dropped_events: 1,
+                ..
+            })
+        ));
+        assert!(matches!(
+            rx.try_recv().expect("retained matching event follows"),
+            SdkEvent::Connection(ConnectionEvent::Connected)
+        ));
+    }
+
+    #[tokio::test]
+    async fn filtered_subscribers_are_isolated_under_burst() {
+        let bus = EventBus::new();
+        let mut connection_rx = bus.subscribe_event_type(ConnectionEventType::Connected.into());
+        let mut custom_rx = bus.subscribe_event_type(MessageEventType::Custom.into());
+        let total = 1_000usize;
+
+        for i in 0..total {
+            bus.publish(SdkEvent::Connection(ConnectionEvent::Connected));
+            bus.publish(SdkEvent::Message(MessageEvent::Custom {
+                conversation_id: "c1".into(),
+                event: CustomEventDefinition::new("app.iso", format!("event_{i}")).build(vec![]),
+            }));
+        }
+
+        for _ in 0..total {
+            assert!(matches!(
+                connection_rx.try_recv().expect("connection event retained"),
+                SdkEvent::Connection(ConnectionEvent::Connected)
+            ));
+        }
+        assert!(matches!(connection_rx.try_recv(), Err(TryRecvError::Empty)));
+
+        for i in 0..total {
+            assert!(matches!(
+                custom_rx.try_recv().expect("custom event retained"),
+                SdkEvent::Message(MessageEvent::Custom { event, .. })
+                    if event.name == format!("event_{i}")
+            ));
+        }
+        assert!(matches!(custom_rx.try_recv(), Err(TryRecvError::Empty)));
+    }
+
+    #[test]
+    fn closed_raw_subscriber_is_pruned_on_next_publish() {
+        let bus = EventBus::new();
+        let rx = bus.subscribe_raw();
+
+        assert_eq!(bus.subscribers.safe_read("event_bus").len(), 1);
+        drop(rx);
+        bus.publish(SdkEvent::Connection(ConnectionEvent::Connected));
+        assert_eq!(bus.subscribers.safe_read("event_bus").len(), 0);
     }
 
     #[test]
@@ -1054,5 +1549,155 @@ mod tests {
         assert_eq!(bus.on_connected.safe_read("event_bus").len(), 1);
         drop(subscription);
         assert_eq!(bus.on_connected.safe_read("event_bus").len(), 0);
+    }
+
+    #[tokio::test]
+    async fn connected_callback_replays_last_state_after_registration() {
+        let bus = EventBus::new();
+        bus.publish(SdkEvent::Connection(ConnectionEvent::Connected));
+
+        let (tx, mut rx) = mpsc::channel(1);
+        let _subscription = bus.on_connected(move || {
+            let _ = tx.try_send(());
+        });
+
+        tokio::time::timeout(Duration::from_secs(2), rx.recv())
+            .await
+            .expect("connected replay callback invoked")
+            .expect("connected replay value");
+    }
+
+    #[test]
+    fn dropping_filtered_subscription_removes_registered_route() {
+        let bus = EventBus::new();
+        let subscription = bus.on_event_type(ConnectionEventType::Connected.into(), |_| {});
+
+        assert_eq!(bus.routes.safe_read("event_bus").len(), 1);
+        drop(subscription);
+        assert_eq!(bus.routes.safe_read("event_bus").len(), 0);
+    }
+
+    #[tokio::test]
+    async fn filtered_receiver_skips_unmatched_events() {
+        let bus = EventBus::new();
+        let mut rx = bus.subscribe_event_type(ConnectionEventType::Connected.into());
+
+        bus.publish(SdkEvent::Connection(ConnectionEvent::Disconnected {
+            reason: "network".into(),
+        }));
+        bus.publish(SdkEvent::Connection(ConnectionEvent::Connected));
+
+        let received = rx.try_recv().expect("connected event emitted");
+        assert!(matches!(
+            received,
+            SdkEvent::Connection(ConnectionEvent::Connected)
+        ));
+    }
+
+    #[tokio::test]
+    async fn event_type_routes_fan_out_to_multiple_handlers() {
+        let bus = EventBus::new();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+
+        let tx1 = tx.clone();
+        let _sub1 = bus.on_event_type(ConnectionEventType::Connected.into(), move |_| {
+            tx1.send("first").expect("first route sends");
+        });
+        let _sub2 = bus.on_event_type(ConnectionEventType::Connected.into(), move |_| {
+            tx.send("second").expect("second route sends");
+        });
+
+        bus.publish(SdkEvent::Connection(ConnectionEvent::Connected));
+
+        let mut seen = vec![
+            tokio::time::timeout(Duration::from_secs(2), rx.recv())
+                .await
+                .expect("first route invoked")
+                .expect("first route value"),
+            tokio::time::timeout(Duration::from_secs(2), rx.recv())
+                .await
+                .expect("second route invoked")
+                .expect("second route value"),
+        ];
+        seen.sort_unstable();
+        assert_eq!(seen, vec!["first", "second"]);
+    }
+
+    #[tokio::test]
+    async fn callbacks_fire_in_publish_order() {
+        // 单一分发线程的核心保证：回调严格按发布顺序执行（取代 spawn_blocking 的并发乱序）。
+        let bus = EventBus::new();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let _sub = bus.on_event_type(ConnectionEventType::Disconnected.into(), move |ev| {
+            if let SdkEvent::Connection(ConnectionEvent::Disconnected { reason }) = ev.as_ref() {
+                let _ = tx.send(reason.clone());
+            }
+        });
+
+        const N: u32 = 64;
+        for i in 0..N {
+            bus.publish(SdkEvent::Connection(ConnectionEvent::Disconnected {
+                reason: i.to_string(),
+            }));
+        }
+
+        let mut got = Vec::with_capacity(N as usize);
+        for _ in 0..N {
+            let reason = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+                .await
+                .expect("callback invoked within window")
+                .expect("callback value");
+            got.push(reason);
+        }
+        let expected: Vec<String> = (0..N).map(|i| i.to_string()).collect();
+        assert_eq!(
+            got, expected,
+            "single dispatch thread must preserve publish order"
+        );
+    }
+
+    #[tokio::test]
+    async fn custom_event_definition_builds_and_filters_user_event() {
+        let bus = EventBus::new();
+        let definition = CustomEventDefinition::new("app.orders", "order_paid").with_version("v1");
+        let mut rx = bus.subscribe_event_type(definition.event_type());
+
+        bus.publish(SdkEvent::Message(MessageEvent::Custom {
+            conversation_id: "c1".into(),
+            event: CustomEventDefinition::new("app.orders", "order_cancelled")
+                .with_version("v1")
+                .build(Vec::new()),
+        }));
+        bus.publish(SdkEvent::Message(MessageEvent::Custom {
+            conversation_id: "c1".into(),
+            event: definition.build(b"{\"order_id\":\"o1\"}".to_vec()),
+        }));
+
+        let received = rx.try_recv().expect("custom event emitted");
+        assert!(matches!(
+            received,
+            SdkEvent::Message(MessageEvent::Custom { event, .. })
+                if event.namespace == "app.orders"
+                    && event.name == "order_paid"
+                    && event.version == "v1"
+        ));
+    }
+
+    #[tokio::test]
+    async fn broad_custom_event_filter_matches_all_custom_events() {
+        let bus = EventBus::new();
+        let mut rx = bus.subscribe_event_type(MessageEventType::Custom.into());
+
+        bus.publish(SdkEvent::Connection(ConnectionEvent::Connected));
+        bus.publish(SdkEvent::Message(MessageEvent::Custom {
+            conversation_id: "c1".into(),
+            event: CustomEventDefinition::new("app.any", "anything").build(Vec::new()),
+        }));
+
+        let received = rx.try_recv().expect("custom event emitted");
+        assert!(matches!(
+            received,
+            SdkEvent::Message(MessageEvent::Custom { .. })
+        ));
     }
 }

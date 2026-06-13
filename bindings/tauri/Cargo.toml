@@ -10,7 +10,7 @@ description = "Flare IM Core SDK - Tauri Plugin"
 [dependencies]
 anyhow = "1.0"
 base64 = "0.22"
-flare-im-core-sdk-bindings-runtime = { path = "../runtime" }
+flare-im-core-sdk-bindings-runtime = { path = "../shared" }
 flare-im-core-sdk = { path = "../..", features = ["lifecycle-sqlite"] }
 flare-proto = { path = "../../../flare-proto" }
 serde = { version = "1.0", features = ["derive"] }
@@ -19,3 +19,10 @@ tauri = { version = "2.10.1", features = ["macos-private-api"] }
 tokio = { version = "1", features = ["full"] }
 tracing = "0.1"
 uuid = { version = "1", features = ["v4"] }
+
+[features]
+default = []
+dev-test-token = [
+    "flare-im-core-sdk/dev-test-token",
+    "flare-im-core-sdk-bindings-runtime/dev-test-token",
+]

@@ -265,7 +265,7 @@ mod tests {
             _ctx: &MessageMiddlewareContext,
         ) -> Result<()> {
             message
-                .extra
+                .attributes
                 .entry("middlewareTags".to_string())
                 .or_default()
                 .push_str(self.0);
@@ -306,7 +306,7 @@ mod tests {
         chain.before_send(&mut message, &ctx).await.unwrap();
 
         assert_eq!(
-            message.extra.get("middlewareTags").map(String::as_str),
+            message.attributes.get("middlewareTags").map(String::as_str),
             Some("ab")
         );
     }

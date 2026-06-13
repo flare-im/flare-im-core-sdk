@@ -13,7 +13,7 @@ ROUTES: list[dict[str, Any]] = [
         "route": "sync.conversation",
         "result": "unit",
         "body": """
-            let conversation_id = dispatch_support::json_string(request, "conversation_id")?;
+            let conversation_id = dispatch_support::json_string(request, "conversationId")?;
             client.sync_conversation(&conversation_id).await?;
         """,
     },
@@ -21,8 +21,8 @@ ROUTES: list[dict[str, Any]] = [
         "route": "sync.messages",
         "result": "unit",
         "body": """
-            let conversation_id = dispatch_support::json_string(request, "conversation_id")?;
-            let last_seq = dispatch_support::json_u64(request, "last_seq")?;
+            let conversation_id = dispatch_support::json_string(request, "conversationId")?;
+            let last_seq = dispatch_support::json_u64(request, "lastSeq")?;
             let limit = dispatch_support::optional_i32(request, "limit").unwrap_or(50);
             client.sync_messages(&conversation_id, last_seq, limit).await?;
         """,
@@ -31,8 +31,8 @@ ROUTES: list[dict[str, Any]] = [
         "route": "sync.mark_session_read",
         "result": "unit",
         "body": """
-            let conversation_id = dispatch_support::json_string(request, "conversation_id")?;
-            let read_seq = dispatch_support::json_u64(request, "read_seq")?;
+            let conversation_id = dispatch_support::json_string(request, "conversationId")?;
+            let read_seq = dispatch_support::json_u64(request, "readSeq")?;
             client.mark_session_read(&conversation_id, read_seq).await?;
         """,
     },
@@ -40,7 +40,7 @@ ROUTES: list[dict[str, Any]] = [
         "route": "presence.get",
         "result": "json",
         "body": """
-            let user_id = dispatch_support::json_string(request, "user_id")?;
+            let user_id = dispatch_support::json_string(request, "userId")?;
             let dto = client.get_user_presence(&user_id).await?;
         """,
         "json_expr": "dto",
@@ -49,7 +49,7 @@ ROUTES: list[dict[str, Any]] = [
         "route": "presence.batch_get",
         "result": "json",
         "body": """
-            let user_ids = dispatch_support::json_vec_string(request, "user_ids")?;
+            let user_ids = dispatch_support::json_vec_string(request, "userIds")?;
             let items = client.batch_get_user_presence(&user_ids).await?;
         """,
         "json_expr": "items",
@@ -58,7 +58,7 @@ ROUTES: list[dict[str, Any]] = [
         "route": "presence.subscribe",
         "result": "unit",
         "body": """
-            let user_ids = dispatch_support::json_vec_string(request, "user_ids")?;
+            let user_ids = dispatch_support::json_vec_string(request, "userIds")?;
             client.subscribe_user_presence(user_ids).await?;
         """,
     },
@@ -101,36 +101,18 @@ ROUTES: list[dict[str, Any]] = [
         "body": """
             let user_id = client.current_user_id().await;
         """,
-        "json_expr": "serde_json::json!({ \"user_id\": user_id })",
+        "json_expr": "serde_json::json!({ \"userId\": user_id })",
     },
     {
         "route": "sdk.update_access_token",
         "result": "unit",
         "body": """
-            let access_token = dispatch_support::json_string(request, "access_token")?;
-            let tenant_id = dispatch_support::optional_string(request, "tenant_id");
+            let access_token = dispatch_support::json_string(request, "accessToken")?;
+            let tenant_id = dispatch_support::optional_string(request, "tenantId");
             client
                 .update_access_token(access_token, tenant_id.as_deref())
                 .await?;
         """,
-    },
-    {
-        "route": "sdk.generate_test_token",
-        "result": "json",
-        "body": """
-            let secret = dispatch_support::optional_string(request, "secret").unwrap_or_default();
-            let issuer = dispatch_support::optional_string(request, "issuer").unwrap_or_default();
-            let user_id = dispatch_support::json_string(request, "user_id")?;
-            let tenant_id = dispatch_support::optional_string(request, "tenant_id");
-            let token = flare_im_core_sdk::client::IMClient::generate_test_token(
-                &secret,
-                &issuer,
-                &user_id,
-                tenant_id.as_deref(),
-            )?;
-        """,
-        "json_expr": "serde_json::json!({ \"token\": token })",
-        "skip_client": True,
     },
     {
         "route": "message_builder.list_catalog",
@@ -161,7 +143,7 @@ ROUTES: list[dict[str, Any]] = [
         """,
         "json_expr": """
             serde_json::json!({
-                \"data_root\": data_root.as_ref().map(|p| p.display().to_string())
+                \"dataRoot\": data_root.as_ref().map(|p| p.display().to_string())
             })
         """,
     },

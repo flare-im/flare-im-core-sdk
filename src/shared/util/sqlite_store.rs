@@ -6,7 +6,8 @@
 use std::sync::{Arc, OnceLock};
 
 use flare_im_core_sdk_storage_sqlite::{
-    database_url_from_path, open_pool, register_schema_init_with,
+    SqliteSecurityConfig, database_url_from_path, open_pool, open_pool_with_security,
+    register_schema_init_with,
 };
 
 use crate::FlareError;
@@ -49,8 +50,27 @@ pub async fn open_sqlite_store_provider(
     database_url: &str,
     media_cache_dir: Option<&std::path::Path>,
 ) -> Result<StoreProvider> {
+    open_sqlite_store_provider_with_security(
+        database_url,
+        media_cache_dir,
+        SqliteSecurityConfig::default(),
+    )
+    .await
+}
+
+/// 打开连接池、应用 SQLite 安全配置并组装核心 SDK 所需的 SQLite 仓储集合。
+pub async fn open_sqlite_store_provider_with_security(
+    database_url: &str,
+    media_cache_dir: Option<&std::path::Path>,
+    security: SqliteSecurityConfig,
+) -> Result<StoreProvider> {
     ensure_core_sqlite_schema_registered();
-    let pool = open_pool(database_url).await.map_err(|e| {
+    let pool = if security.is_encryption_required() {
+        open_pool_with_security(database_url, security).await
+    } else {
+        open_pool(database_url).await
+    }
+    .map_err(|e| {
         FlareError::localized(
             ErrorCode::ConfigurationError,
             format!("open_pool failed: {}", e),
@@ -96,7 +116,7 @@ pub async fn open_sqlite_store_for_user(
     let db_path = resolve_user_db_path(base_data_dir, user_id);
     let cache_dir = resolve_media_cache_dir_next_to_db(&db_path);
     if let Some(parent) = db_path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| {
+        tokio::fs::create_dir_all(parent).await.map_err(|e| {
             FlareError::localized(
                 ErrorCode::ConfigurationError,
                 format!(
@@ -107,7 +127,7 @@ pub async fn open_sqlite_store_for_user(
             )
         })?;
     }
-    std::fs::create_dir_all(&cache_dir).map_err(|e| {
+    tokio::fs::create_dir_all(&cache_dir).await.map_err(|e| {
         FlareError::localized(
             ErrorCode::ConfigurationError,
             format!(
@@ -120,6 +140,46 @@ pub async fn open_sqlite_store_for_user(
     tracing::info!(db = %db_path.display(), cache = %cache_dir.display(), "Opening SQLite store");
     let database_url = sqlite_database_url_from_path(&db_path);
     open_sqlite_store_provider(&database_url, Some(&cache_dir)).await
+}
+
+/// 在 `data_root` 下按用户目录打开加密 SQLite 库。
+pub async fn open_sqlite_store_for_user_with_security(
+    base_data_dir: &std::path::Path,
+    user_id: &str,
+    security: SqliteSecurityConfig,
+) -> Result<StoreProvider> {
+    let db_path = resolve_user_db_path(base_data_dir, user_id);
+    let cache_dir = resolve_media_cache_dir_next_to_db(&db_path);
+    if let Some(parent) = db_path.parent() {
+        tokio::fs::create_dir_all(parent).await.map_err(|e| {
+            FlareError::localized(
+                ErrorCode::ConfigurationError,
+                format!(
+                    "sqlite database directory create_dir_all failed: path={}, error={}",
+                    parent.display(),
+                    e
+                ),
+            )
+        })?;
+    }
+    tokio::fs::create_dir_all(&cache_dir).await.map_err(|e| {
+        FlareError::localized(
+            ErrorCode::ConfigurationError,
+            format!(
+                "media cache directory create_dir_all failed: path={}, error={}",
+                cache_dir.display(),
+                e
+            ),
+        )
+    })?;
+    tracing::info!(
+        db = %db_path.display(),
+        cache = %cache_dir.display(),
+        encrypted = security.is_encryption_required(),
+        "Opening SQLite store"
+    );
+    let database_url = sqlite_database_url_from_path(&db_path);
+    open_sqlite_store_provider_with_security(&database_url, Some(&cache_dir), security).await
 }
 
 #[cfg(test)]
@@ -142,6 +202,6 @@ mod tests {
                 .join("flare_im_sdk.db")
                 .exists()
         );
-        let _ = std::fs::remove_dir_all(root);
+        let _ = tokio::fs::remove_dir_all(root).await;
     }
 }

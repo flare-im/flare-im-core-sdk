@@ -3,9 +3,10 @@
 //! 避免每个函数重复 spawn 和 callback 代码
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::abi;
-use crate::error_convert::{make_error, make_simple_error, make_success};
+use crate::error_convert::{FLARE_ERR_FFI_PANIC, make_error, make_simple_error, make_success};
 use crate::helpers::string_to_flare;
 use crate::registry::SdkInstance;
 use crate::types::{FlareError, FlareResultCallback, FlareString};
@@ -27,9 +28,10 @@ fn heap_error(e: FlareError) -> *const FlareError {
 pub struct CallbackContext {
     pub user_context: usize, // 使用 usize 代替 *mut c_void 以确保 Send
     pub callback: FlareResultCallback,
+    fired: AtomicBool,
 }
 
-// Safety: usize 是 Send
+// Safety: user_context 存为 usize，callback 为 C ABI 函数指针，完成标记为原子值。
 unsafe impl Send for CallbackContext {}
 unsafe impl Sync for CallbackContext {}
 
@@ -38,11 +40,35 @@ impl CallbackContext {
         Self {
             user_context: user_context as usize,
             callback,
+            fired: AtomicBool::new(false),
         }
     }
 
     pub fn user_context_ptr(&self) -> *mut std::ffi::c_void {
         self.user_context as *mut std::ffi::c_void
+    }
+
+    fn complete(&self, error: *const FlareError, result: FlareString) {
+        if self
+            .fired
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+        {
+            invoke_result_callback(self, error, result);
+        }
+    }
+}
+
+impl Drop for CallbackContext {
+    fn drop(&mut self) {
+        if self.fired.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        let error = make_simple_error(
+            FLARE_ERR_FFI_PANIC,
+            "FFI async operation dropped before callback completion",
+        );
+        invoke_result_callback(self, heap_error(error), FlareString::default());
     }
 }
 
@@ -56,9 +82,7 @@ impl CallbackContext {
 pub fn execute_async<T, F, G>(instance: Arc<SdkInstance>, ctx: CallbackContext, op: F, to_json: G)
 where
     T: Send + 'static,
-    F: std::future::Future<Output = Result<T, flare_im_core_sdk::shared::error::FlareError>>
-        + Send
-        + 'static,
+    F: std::future::Future<Output = Result<T, flare_im_core_sdk::FlareError>> + Send + 'static,
     G: FnOnce(T) -> Result<String, i32> + Send + 'static,
 {
     instance.runtime.spawn(async move {
@@ -70,19 +94,19 @@ where
                 match to_json(value) {
                     Ok(json) => {
                         let result_json = string_to_flare(json);
-                        invoke_result_callback(&ctx, make_success(), result_json);
+                        ctx.complete(make_success(), result_json);
                     }
                     Err(code) => {
                         // JSON 序列化失败
                         let error = make_simple_error(code, "Failed to serialize result");
-                        invoke_result_callback(&ctx, heap_error(error), FlareString::default());
+                        ctx.complete(heap_error(error), FlareString::default());
                     }
                 }
             }
             Err(err) => {
                 // 操作失败
                 let error = make_error(&err);
-                invoke_result_callback(&ctx, heap_error(error), FlareString::default());
+                ctx.complete(heap_error(error), FlareString::default());
             }
         }
     });
@@ -96,20 +120,18 @@ where
 /// * `op` - 异步操作,返回 Result<(), SdkError>
 pub fn execute_async_unit<F>(instance: Arc<SdkInstance>, ctx: CallbackContext, op: F)
 where
-    F: std::future::Future<Output = Result<(), flare_im_core_sdk::shared::error::FlareError>>
-        + Send
-        + 'static,
+    F: std::future::Future<Output = Result<(), flare_im_core_sdk::FlareError>> + Send + 'static,
 {
     instance.runtime.spawn(async move {
         let result = op.await;
 
         match result {
             Ok(()) => {
-                invoke_result_callback(&ctx, make_success(), FlareString::default());
+                ctx.complete(make_success(), FlareString::default());
             }
             Err(err) => {
                 let error = make_error(&err);
-                invoke_result_callback(&ctx, heap_error(error), FlareString::default());
+                ctx.complete(heap_error(error), FlareString::default());
             }
         }
     });
@@ -121,5 +143,5 @@ where
 #[inline]
 pub fn return_error(ctx: &CallbackContext, code: i32, message: &str) {
     let error = make_simple_error(code, message);
-    invoke_result_callback(ctx, heap_error(error), FlareString::default());
+    ctx.complete(heap_error(error), FlareString::default());
 }

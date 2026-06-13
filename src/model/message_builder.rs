@@ -3,7 +3,6 @@
 use crate::model::content_builder::BuiltContent;
 use crate::model::message::{ConversationType, Message};
 use crate::shared::error::Result;
-use crate::shared::util::date::ms_to_prost_timestamp;
 use crate::shared::util::id::now_millis;
 use flare_proto::common::{MessageSource, OfflinePushInfo};
 
@@ -82,6 +81,10 @@ impl MessageBuilder {
         self
     }
 
+    pub fn attributes(self, key: &str, value: impl Into<String>) -> Self {
+        self.extra(key, value)
+    }
+
     /// 便捷：构建纯文本消息
     pub fn text(
         conversation_id: impl Into<String>,
@@ -104,7 +107,7 @@ impl MessageBuilder {
         let message_type = content.message_type as i32;
         // 未下行前 `timestamp` 为空会导致 `IMMessage::timestamp/client_timestamp` 均为 0，
         // 前端按时间排序时会把待发消息误排到更早的对方消息之前。
-        let timestamp = ms_to_prost_timestamp(now_millis());
+        let created_at = now_millis() as i64;
         Ok(Message {
             server_id: String::new(),
             conversation_id: self.conversation_id,
@@ -113,21 +116,18 @@ impl MessageBuilder {
             sender_name: self.sender_name,
             sender_avatar: self.sender_avatar,
             source: MessageSource::User as i32,
-            seq: 0,
-            timestamp,
+            conversation_seq: 0,
+            created_at,
             conversation_type: self.conversation_type,
             message_type,
+            message_seq: None,
             channel_id: self.channel_id,
-            content: content.encode(),
+            content: Some(content.inner),
             status: 0,
-            burn_enabled: false,
-            burn_after_read_seconds: None,
-            burn_status: 0,
-            first_read_at: None,
-            burn_at: None,
-            burned_at: None,
+            retention_policy: None,
+            retention_state: None,
             offline_push_info: self.offline_push_info,
-            extra: self.extra,
+            attributes: self.extra,
             extensions: std::collections::HashMap::new(),
         })
     }

@@ -75,11 +75,11 @@ fn dedupe_key_for_message(message: &IMMessage) -> Option<MessageDedupeKey> {
     if !message.client_msg_id.trim().is_empty() {
         return Some(MessageDedupeKey::ClientMsgId(message.client_msg_id.clone()));
     }
-    if !message.conversation_id.trim().is_empty() && message.seq > 0 {
+    if !message.conversation_id.trim().is_empty() && message.conversation_seq > 0 {
         return Some(MessageDedupeKey::ConversationSeq {
             conversation_id: message.conversation_id.clone(),
             sender_id: message.sender_id.clone(),
-            seq: message.seq,
+            seq: message.conversation_seq,
         });
     }
     None

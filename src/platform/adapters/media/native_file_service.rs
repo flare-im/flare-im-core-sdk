@@ -65,6 +65,36 @@ struct NewUploadManifest<'a> {
     full_sha256: Option<String>,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+const MAX_USER_DOWNLOAD_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+
+#[cfg(not(target_arch = "wasm32"))]
+fn enforce_user_download_byte_budget(
+    content_length: Option<u64>,
+    downloaded_bytes: u64,
+    incoming_bytes: u64,
+) -> Result<()> {
+    if content_length.is_some_and(|total| total > MAX_USER_DOWNLOAD_BYTES) {
+        return Err(FlareError::localized(
+            ErrorCode::ResourceExhausted,
+            format!("download exceeds {MAX_USER_DOWNLOAD_BYTES} bytes"),
+        ));
+    }
+
+    let next_total = downloaded_bytes
+        .checked_add(incoming_bytes)
+        .ok_or_else(|| {
+            FlareError::localized(ErrorCode::ResourceExhausted, "download byte count overflow")
+        })?;
+    if next_total > MAX_USER_DOWNLOAD_BYTES {
+        return Err(FlareError::localized(
+            ErrorCode::ResourceExhausted,
+            format!("download exceeds {MAX_USER_DOWNLOAD_BYTES} bytes"),
+        ));
+    }
+    Ok(())
+}
+
 impl MediaService {
     pub fn new(
         http: HttpClient,
@@ -761,7 +791,7 @@ impl MediaUploaderPort for MediaService {
         progress: Option<UploadProgressSink>,
     ) -> Result<UploadedMedia> {
         let local_path = local_path_from_media_source(&media.source)?;
-        let progress = progress.map(|sink| Arc::new(move |p| sink(p)) as UploadProgressCallback);
+        let progress = progress.map(|sink| Arc::new(sink) as UploadProgressCallback);
         self.upload_file_from_path_with_progress(Path::new(&local_path), options, progress)
             .await
     }
@@ -1126,7 +1156,7 @@ impl MediaService {
                 FlareError::localized(ErrorCode::ConfigurationError, "cannot resolve download dir")
             })?;
             let dir = base.join(sub.trim());
-            std::fs::create_dir_all(&dir).map_err(|e| {
+            tokio::fs::create_dir_all(&dir).await.map_err(|e| {
                 FlareError::localized(
                     ErrorCode::GeneralError,
                     format!("create download subdir failed: {e}"),
@@ -1223,6 +1253,7 @@ impl MediaService {
             .await
             .map_err(|e| FlareError::general_error(format!("metadata: {e}")))?
             .len();
+        enforce_user_download_byte_budget(Some(total), 0, 0)?;
         emit_file_download_progress(on_progress, 0, Some(total));
         let mut reader = tokio::fs::File::open(&src)
             .await
@@ -1245,6 +1276,7 @@ impl MediaService {
             if n == 0 {
                 break;
             }
+            enforce_user_download_byte_budget(Some(total), downloaded, n as u64)?;
             writer
                 .write_all(&buf[..n])
                 .await
@@ -1266,6 +1298,7 @@ impl MediaService {
     ) -> Result<PathBuf> {
         let resp = http.get_response_direct_url(url).await?;
         let total = resp.content_length();
+        enforce_user_download_byte_budget(total, 0, 0)?;
         emit_file_download_progress(on_progress, 0, total);
         let mut stream = resp.bytes_stream();
         let mut file = tokio::fs::File::create(dest)
@@ -1279,6 +1312,7 @@ impl MediaService {
                 return Err(FlareError::general_error("下载已取消"));
             }
             let chunk = item.map_err(|e| FlareError::system(format!("http chunk: {e}")))?;
+            enforce_user_download_byte_budget(total, downloaded, chunk.len() as u64)?;
             file.write_all(&chunk)
                 .await
                 .map_err(|e| FlareError::general_error(format!("write: {e}")))?;
@@ -1353,6 +1387,27 @@ fn unique_user_download_destination(dir: &Path, file_name: &str) -> PathBuf {
         .map(|d| d.as_nanos())
         .unwrap_or(0);
     dir.join(format!("{stem}_{t}{ext}"))
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod user_download_policy_tests {
+    use super::*;
+
+    #[test]
+    fn rejects_content_length_over_user_download_budget() {
+        let err = enforce_user_download_byte_budget(Some(MAX_USER_DOWNLOAD_BYTES + 1), 0, 0)
+            .expect_err("content length beyond budget must fail");
+
+        assert_eq!(err.code(), Some(ErrorCode::ResourceExhausted));
+    }
+
+    #[test]
+    fn rejects_chunked_download_when_accumulated_bytes_exceed_budget() {
+        let err = enforce_user_download_byte_budget(None, MAX_USER_DOWNLOAD_BYTES, 1)
+            .expect_err("chunked response beyond budget must fail");
+
+        assert_eq!(err.code(), Some(ErrorCode::ResourceExhausted));
+    }
 }
 
 /// 选择用于下载/展示的 HTTP 地址。

@@ -40,9 +40,15 @@
 //! ```
 
 mod event_bus;
+mod selector;
 mod types;
 
-pub use event_bus::{EventBus, EventReceiver, Subscription};
+pub use event_bus::{EventBus, EventReceiver, FilteredEventReceiver, PublishOutcome, Subscription};
+pub use selector::{
+    ConnectionEventType, ConversationEventType, CustomEventDefinition, CustomEventSelector,
+    EventFilter, ExtensionEventType, MessageEventType, NotificationEventType, SdkEventKind,
+    SdkEventType, SyncEventType,
+};
 pub use types::{
     ConnectionEvent, ConversationEvent, ExtensionEvent, MessageEvent, NotificationEvent, SdkEvent,
     SyncNotify, SyncPhase,

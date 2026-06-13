@@ -8,9 +8,9 @@ use std::sync::{Arc, Mutex};
 use futures::stream::{self, StreamExt};
 
 use flare_proto::common::{
-    Ack, AckType, ConversationParticipantsSync, GetSyncCursorSync, MultiDeviceCursor,
-    QueryEventsSync, ReadAck, SyncKind, SyncRes, UpdateConversationUserSettingsSync,
-    UpdateSyncCursorSync, ack::Payload as AckPayload, sync_res::Payload as SyncResPayload,
+    Ack, ConversationParticipantsSync, GetSyncCursorSync, MultiDeviceCursor, QueryEventsSync,
+    ReadAck, SyncRes, UpdateSyncCursorSync, ack::Payload as AckPayload,
+    sync_res::Payload as SyncResPayload,
 };
 use tokio::sync::Mutex as AsyncMutex;
 
@@ -29,14 +29,14 @@ use crate::domain::{
 };
 use crate::infrastructure::persistence::StoreProvider;
 use crate::infrastructure::protocol::PacketSender;
-use crate::shared::error::{FlareError, Result};
-use crate::shared::util::date::{ms_to_prost_timestamp, system_time_to_prost_timestamp};
+use crate::shared::error::{ErrorCode, FlareError, Result};
+use crate::shared::util::now_millis;
 
 #[derive(Debug, Clone, Default)]
 struct QueryEventsReqV1 {
     conversation_id: String,
-    after_seq: i64,
-    before_seq: i64,
+    after_seq: u64,
+    before_seq: u64,
     limit: i32,
     event_types: Vec<i32>,
     include_deleted: bool,
@@ -45,9 +45,8 @@ struct QueryEventsReqV1 {
 fn build_read_ack(conversation_id: &str, read_seq: u64) -> Ack {
     let ack_id = format!("read:{}:{}", conversation_id, read_seq);
     Ack {
-        r#type: AckType::Read as i32,
         ack_id: Some(ack_id.clone()),
-        at: Some(system_time_to_prost_timestamp()),
+        ack_at: Some(now_millis() as i64),
         payload: Some(AckPayload::Read(ReadAck {
             conversation_id: conversation_id.to_string(),
             read_seq,
@@ -80,6 +79,7 @@ impl SyncProtocolAdapter {
             .request_get_cursor(GetSyncCursorSync {
                 device_id: String::new(),
                 conversation_id: conversation_id.to_string(),
+                ..Default::default()
             })
             .await?;
         let Some(SyncResPayload::GetSyncCursor(res)) = resp.payload else {
@@ -90,7 +90,7 @@ impl SyncProtocolAdapter {
         let Some(parsed) = res.cursor else {
             return Ok(None);
         };
-        Ok(Some(parsed.last_sync_seq))
+        Ok(Some(parsed.last_conversation_seq))
     }
 
     async fn update_remote_cursor_seq(
@@ -124,10 +124,10 @@ impl SyncProtocolAdapter {
                 cursor: Some(MultiDeviceCursor {
                     device_id: String::new(),
                     conversation_id: conversation_id.to_string(),
-                    last_sync_seq: effective,
-                    last_sync_at: Some(system_time_to_prost_timestamp()),
+                    last_conversation_seq: effective,
+                    last_sync_at: now_millis() as i64,
                     last_read_seq: local_read_seq,
-                    last_critical_event_seq: 0,
+                    last_message_seq: 0,
                 }),
             })
             .await?;
@@ -250,27 +250,21 @@ impl SyncProtocolAdapter {
         self.sender.send_ack(&ack).await
     }
 
-    /// 上行同步当前用户的会话偏好（置顶/免打扰/归档/草稿）
+    /// 上行同步当前用户的会话偏好（置顶/免打扰/归档/草稿）。
+    ///
+    /// 当前 common sync.proto 已移除旧 `UpdateConversationUserSettingsSync` payload；
+    /// 设置同步需要接入新的会话设置命令/RPC 后再启用。
     pub async fn push_conversation_user_settings(
         &self,
         conversation_id: &str,
         base_settings_version: u64,
         patch: crate::application::sync_task::ConversationUserSettingsPatch,
     ) -> Result<()> {
-        let req = UpdateConversationUserSettingsSync {
-            conversation_id: conversation_id.to_string(),
-            is_pinned: patch.is_pinned,
-            is_muted: patch.is_muted,
-            is_archived: patch.is_archived,
-            draft: patch.draft,
-            base_settings_version,
-        };
-        let resp = self
-            .sync_request_use_case
-            .request_update_conversation_user_settings(req)
-            .await?;
-        self.apply_user_settings_response(conversation_id, &resp)
-            .await
+        let _ = (conversation_id, base_settings_version, patch);
+        Err(FlareError::localized(
+            ErrorCode::OperationNotSupported,
+            "conversation user settings sync is not defined in current sync.proto",
+        ))
     }
 
     pub async fn push_conversation_user_settings_from_local(
@@ -290,41 +284,6 @@ impl SyncProtocolAdapter {
             },
         )
         .await
-    }
-
-    async fn apply_user_settings_response(
-        &self,
-        conversation_id: &str,
-        resp: &SyncRes,
-    ) -> Result<()> {
-        let Some(SyncResPayload::UpdateConversationUserSettingsRes(body)) = &resp.payload else {
-            return Ok(());
-        };
-        let Some(settings) = &body.settings else {
-            return Ok(());
-        };
-        let Some(mut conversation) = self.stores.conversations.get(conversation_id).await? else {
-            return Ok(());
-        };
-        conversation.is_pinned = settings.is_pinned;
-        conversation.is_muted = settings.is_muted;
-        conversation.is_archived = settings.is_archived;
-        conversation.draft = if settings.draft.trim().is_empty() {
-            None
-        } else {
-            Some(settings.draft.clone())
-        };
-        crate::model::apply_remote_settings_version(&mut conversation, settings.settings_version);
-        self.stores
-            .conversations
-            .save_batch(&[conversation])
-            .await?;
-        self.bus.publish(crate::core::event::SdkEvent::Conversation(
-            crate::core::event::ConversationEvent::Updated {
-                conversation_id: conversation_id.to_string(),
-            },
-        ));
-        Ok(())
     }
 
     /// 将 SyncRes.payload.single_conversation 转为事件列表并落库、发布、更新游标
@@ -347,7 +306,7 @@ impl SyncProtocolAdapter {
         tracing::debug!(
             conversation_id = %conversation_id,
             items_count = sc.items.len(),
-            max_seq = sc.max_seq,
+            max_seq = sc.max_conversation_seq,
             has_more = sc.has_more,
             "收到消息同步响应"
         );
@@ -492,7 +451,7 @@ impl SyncProtocolAdapter {
             loop {
                 let req = QueryEventsReqV1 {
                     conversation_id: conversation_id.clone(),
-                    after_seq,
+                    after_seq: after_seq.max(0) as u64,
                     before_seq: 0,
                     limit: 200,
                     event_types: SyncPolicy::critical_event_query_plan().event_types,
@@ -501,13 +460,13 @@ impl SyncProtocolAdapter {
                 let resp = match self
                     .request_query_events(QueryEventsSync {
                         conversation_id: req.conversation_id,
-                        after_seq: req.after_seq,
-                        before_seq: req.before_seq,
+                        after_conversation_seq: req.after_seq,
+                        before_conversation_seq: req.before_seq,
                         limit: req.limit,
                         event_types: req.event_types,
                         include_deleted: req.include_deleted,
                         replay_preset: 0,
-                        client_last_applied_event_seq: 0,
+                        client_last_applied_conversation_seq: after_seq.max(0) as u64,
                     })
                     .await
                 {
@@ -554,17 +513,17 @@ impl SyncProtocolAdapter {
                         );
                     }
                 }
-                if envelope.max_seq > safe_event_seq {
+                if envelope.max_conversation_seq > safe_event_seq {
                     tracing::warn!(
                         conversation_id = %conversation_id,
                         after_seq,
                         safe_event_seq,
-                        remote_max_seq = envelope.max_seq,
+                        remote_max_seq = envelope.max_conversation_seq,
                         "关键事件回放未连续完成，保留 cursor 等待后续重放"
                     );
                     break;
                 }
-                if !envelope.has_more || envelope.max_seq == 0 {
+                if !envelope.has_more || envelope.max_conversation_seq == 0 {
                     break;
                 }
             }
@@ -667,7 +626,7 @@ fn max_applied_event_prefix_seq(
         .collect::<std::collections::HashSet<_>>();
     let mut cursor = known_seq;
     for event in events {
-        let seq = event.seq;
+        let seq = event.conversation_seq;
         if seq <= cursor {
             continue;
         }
@@ -748,14 +707,15 @@ impl SyncProtocolAdapter {
                 "服务端未返回 __conversations__ 游标（常见于同步编排实例冷启动/缓存未命中）；放弃本地时间游标，全量拉会话列表"
             );
         }
-        let mut cursor_ts = cursor_selection
+        let mut cursor = cursor_selection
             .selected_cursor_ms
-            .and_then(ms_to_prost_timestamp);
+            .map(|value| value.to_string())
+            .unwrap_or_default();
 
         tracing::debug!(
             local_cursor = ?local_cursor_ms,
             remote_cursor = ?remote_cursor_ms,
-            using_cursor = ?cursor_ts,
+            using_cursor = %cursor,
             local_conv_count,
             "会话同步游标信息"
         );
@@ -769,13 +729,12 @@ impl SyncProtocolAdapter {
             );
         loop {
             tracing::debug!(
-                cursor = ?cursor_ts,
-                sync_kind = SyncKind::Conversations as i32,
+                cursor = %cursor,
                 "发送会话同步请求"
             );
             let resp = match self
                 .sync_request_use_case
-                .request_conversations(cursor_ts, 100)
+                .request_conversations(cursor.clone(), 100)
                 .await
             {
                 Ok(response) => response,
@@ -798,7 +757,7 @@ impl SyncProtocolAdapter {
                 .await?;
             server_conversation_ids.extend(applied.synced_conversation_ids.iter().cloned());
             total_synced += resp.conversations.len();
-            let server_cursor_ms = applied.server_cursor_ms;
+            let server_cursor_ms = resp.next_cursor.parse::<u64>().unwrap_or_default();
             self.save_cursor_with_remote(user_id, CONVERSATION_CURSOR_KEY, server_cursor_ms)
                 .await?;
             if matches!(
@@ -854,7 +813,7 @@ impl SyncProtocolAdapter {
                 tracing::debug!(total_synced, "会话列表同步完成");
                 break;
             }
-            cursor_ts = resp.server_conversation_cursor;
+            cursor = resp.next_cursor;
         }
         Ok(())
     }
@@ -1115,11 +1074,11 @@ impl SyncProtocolAdapter {
 #[cfg(test)]
 mod tests {
     use super::{build_read_ack, max_applied_event_prefix_seq};
-    use flare_proto::common::{AckType, ack::Payload as AckPayload};
+    use flare_proto::common::ack::Payload as AckPayload;
 
     fn make_event(seq: u64) -> flare_proto::common::Event {
         flare_proto::common::Event {
-            seq,
+            conversation_seq: seq,
             ..Default::default()
         }
     }
@@ -1148,7 +1107,6 @@ mod tests {
     fn build_read_ack_uses_typed_payload() {
         let ack = build_read_ack("conv-1", 42);
 
-        assert_eq!(ack.r#type, AckType::Read as i32);
         match ack.payload {
             Some(AckPayload::Read(read)) => {
                 assert_eq!(read.conversation_id, "conv-1");

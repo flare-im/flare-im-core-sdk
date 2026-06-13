@@ -12,6 +12,8 @@ pub mod message_elem;
 pub mod preview_storage;
 pub mod rich_doc_v2;
 pub mod search;
+pub mod sync;
+pub mod timeline;
 
 pub use crate::domain::{MediaCacheEntryVo, MediaCacheStatsVo};
 pub use content_builder::{BuiltContent, ContentBuilder, DEFAULT_STICKER_DISPLAY_SIDE};
@@ -35,3 +37,11 @@ pub use rich_doc_v2::{
     normalize_from_doc_json, normalize_from_html, normalize_from_markdown, validate_doc_json,
 };
 pub use search::{ConversationListQuery, MessageSearchKind, MessageSearchQuery};
+pub use sync::{
+    ConversationVersion, SyncConversationSummariesRequest, SyncConversationSummariesResponse,
+};
+pub use timeline::{
+    BootstrapHomeTimelineRequest, ConversationTimelineSnapshot, HomeTimelineSnapshot,
+    OpenConversationTimelineRequest, TimelineSyncState, normalized_conversation_limit,
+    normalized_message_limit,
+};

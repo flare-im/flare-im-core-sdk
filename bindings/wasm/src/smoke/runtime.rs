@@ -4,15 +4,15 @@
 // stays thin. Do not add durable IM behavior here. Add shared behavior under
 // `flare-im-core-sdk/src`, then route the wasm binding to that core facade.
 
-use flare_im_core_sdk::client::lifecycle::SdkConfigOverlay;
-use flare_im_core_sdk::domain::conversation::id::{
-    extract_conversation_type as extract_cid_conversation_type, generate_group_conversation_id,
-    generate_single_chat_conversation_id, generate_system_conversation_id,
-};
 use flare_im_core_sdk::model::conversation::{Conversation, ConversationType};
 use flare_im_core_sdk::model::message::{IMMessage, ReactionEntry};
 use flare_im_core_sdk::model::message_elem::{
     CustomElem, Elem, EmojiElem, MentionElem, StickerElem, TextElem,
+};
+use flare_im_core_sdk::prelude::SdkConfigOverlay;
+use flare_im_core_sdk::spi::{
+    extract_conversation_type as extract_cid_conversation_type, generate_group_conversation_id,
+    generate_single_chat_conversation_id, generate_system_conversation_id,
 };
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -120,10 +120,11 @@ impl FlareImWasmRuntime {
                 Ok(json!({ "user_id": self.current_user_id.clone().unwrap_or_default() }))
             }
             "sdk.is_connected" | "sdk.session_active" => Ok(json!(self.connected)),
-            "sdk.generate_test_token" => {
+            #[cfg(feature = "dev-test-token")]
+            "sdk.generate_core_token" => {
                 let user_id =
                     string_field(&request, "user_id").unwrap_or_else(|| "web-user".to_string());
-                Ok(json!({ "token": format!("wasm-dev-token-{user_id}") }))
+                Ok(json!({ "token": format!("wasm-core-token-{user_id}") }))
             }
             "sdk.init_logging" => Ok(Value::Null),
             "sdk.update_access_token" => Ok(Value::Null),
@@ -237,7 +238,7 @@ impl FlareImWasmRuntime {
                     .filter(|item| item.conversation_id == id)
                     .cloned()
                     .collect::<Vec<_>>();
-                messages.sort_by_key(|item| item.seq);
+                messages.sort_by(IMMessage::compare_for_timeline_asc);
                 Ok(json!({ "messages": messages_to_json(&messages) }))
             }
             "message.dispatch" => self.dispatch_message(request),
@@ -337,10 +338,7 @@ impl FlareImWasmRuntime {
             "presence.subscribe" => Ok(json!({ "subscribed": true })),
             "capability.list" => Ok(json!({ "capabilities": [] })),
             "capability.list_user" => Ok(json!({ "capabilities": [] })),
-            "capability.dispatch"
-            | "capability.grant"
-            | "capability.revoke"
-            | "capability.send_call_signal" => Err(js_message(
+            "capability.dispatch" | "capability.grant" | "capability.revoke" => Err(js_message(
                 "capabilityUnavailable",
                 operation,
                 "WASM capability runtime is not connected to a host plugin adapter",
@@ -609,11 +607,13 @@ impl FlareImWasmRuntime {
             } else {
                 2
             },
-            seq,
-            timestamp: now,
-            client_timestamp: now,
+            conversation_seq: seq,
+            created_at: now,
+            client_created_at: now,
             message_type: 0,
             content: Some(text_elem(text)),
+            encoded_content: Vec::new(),
+            text_preview: text.to_string(),
             sender_name: sender_id.to_string(),
             sender_avatar: String::new(),
             sender_display_name: sender_id.to_string(),
@@ -621,23 +621,18 @@ impl FlareImWasmRuntime {
             is_read: !unread,
             is_recalled: false,
             is_edited: false,
-            burn_enabled: false,
-            burn_after_read_seconds: None,
-            burn_status: 0,
-            first_read_at: None,
-            burn_at: None,
-            burned_at: None,
+            retention_policy: None,
+            retention_state: None,
             mention_users: Vec::new(),
             mention_all: false,
             offline_push_info: None,
             reply_to: None,
             quote_preview: None,
-            extra: Default::default(),
+            attributes: Default::default(),
             extensions: Default::default(),
             reactions: Vec::new(),
             version: 1,
             updated_at: now,
-            content_bytes: Vec::new(),
             local_state: Default::default(),
         });
         if let Some(conversation) = self
@@ -851,6 +846,7 @@ impl FlareImWasmRuntime {
             .find(|item| item.conversation_id == conversation_id)
             .map(|item| item.conversation_type.to_proto_int())
             .unwrap_or(ConversationType::Single.to_proto_int());
+        let text_preview = content_text(Some(&content));
         IMMessage {
             server_id: String::new(),
             client_msg_id,
@@ -862,11 +858,13 @@ impl FlareImWasmRuntime {
                 .unwrap_or_else(|| self.channel_id_for_conversation(&conversation_id)),
             sender_id: sender_id.clone(),
             source: 1,
-            seq: 0,
-            timestamp: now,
-            client_timestamp: now,
+            conversation_seq: 0,
+            created_at: now,
+            client_created_at: now,
             message_type,
             content: Some(content),
+            encoded_content: Vec::new(),
+            text_preview,
             sender_name: sender_id.clone(),
             sender_avatar: String::new(),
             sender_display_name: sender_id,
@@ -874,23 +872,18 @@ impl FlareImWasmRuntime {
             is_read: false,
             is_recalled: false,
             is_edited: false,
-            burn_enabled: false,
-            burn_after_read_seconds: None,
-            burn_status: 0,
-            first_read_at: None,
-            burn_at: None,
-            burned_at: None,
+            retention_policy: None,
+            retention_state: None,
             mention_users: Vec::new(),
             mention_all: false,
             offline_push_info: None,
             reply_to: None,
             quote_preview: None,
-            extra: Default::default(),
+            attributes: Default::default(),
             extensions: Default::default(),
             reactions: Vec::new(),
             version: 1,
             updated_at: now,
-            content_bytes: Vec::new(),
             local_state: Default::default(),
         }
     }
@@ -901,14 +894,14 @@ impl FlareImWasmRuntime {
             .messages
             .iter()
             .filter(|item| item.conversation_id == message.conversation_id)
-            .map(|item| item.seq)
+            .map(|item| item.conversation_seq)
             .max()
             .unwrap_or(0)
             + 1;
         self.next_seq = self.next_seq.max(seq + 1);
         let now = now_ms();
-        message.seq = seq;
-        message.timestamp = now;
+        message.conversation_seq = seq;
+        message.created_at = now;
         message.updated_at = now;
         if message.server_id.is_empty() {
             message.server_id = format!("wasm-server-{seq}");
@@ -921,8 +914,8 @@ impl FlareImWasmRuntime {
             "server_msg_id": message.server_id,
             "client_msg_id": message.client_msg_id,
             "conversation_id": message.conversation_id,
-            "seq": message.seq,
-            "timestamp": message.timestamp
+            "seq": message.conversation_seq,
+            "timestamp": message.created_at
         }))
     }
 
@@ -955,7 +948,7 @@ impl FlareImWasmRuntime {
             }
             if op.contains("pin") {
                 message
-                    .extra
+                    .attributes
                     .insert("pinned".to_string(), "true".to_string());
                 message.updated_at = now;
                 return Ok(json!({ "pinned": true, "message_id": id }));
@@ -1006,6 +999,13 @@ impl FlareImWasmRuntime {
             .and_then(Value::as_i64)
             .unwrap_or(0) as i32;
         let now = now_ms();
+        let content = parse_web_content(value.get("content"), message_type);
+        let text_preview = content_text(content.as_ref());
+        let conversation_seq =
+            u64_field_any(value, &["conversation_seq", "seq"]).unwrap_or_default();
+        let created_at = u64_field_any(value, &["created_at", "timestamp"]).unwrap_or(now);
+        let client_created_at =
+            u64_field_any(value, &["client_created_at", "client_timestamp"]).unwrap_or(created_at);
         let mut message = IMMessage {
             server_id: string_field(value, "server_id").unwrap_or_default(),
             client_msg_id: string_field(value, "client_msg_id").unwrap_or_else(|| {
@@ -1025,18 +1025,13 @@ impl FlareImWasmRuntime {
                 .unwrap_or_else(|| self.channel_id_for_conversation(&conversation_id)),
             sender_id: sender_id.clone(),
             source: value.get("source").and_then(Value::as_i64).unwrap_or(1) as i32,
-            seq: value.get("seq").and_then(Value::as_u64).unwrap_or_default(),
-            timestamp: value
-                .get("timestamp")
-                .and_then(Value::as_u64)
-                .unwrap_or(now),
-            client_timestamp: value
-                .get("client_timestamp")
-                .and_then(Value::as_u64)
-                .unwrap_or(now),
+            conversation_seq,
+            created_at,
+            client_created_at,
             message_type,
-            content: parse_web_content(value.get("content"), message_type),
-            content_bytes: Vec::new(),
+            content,
+            encoded_content: Vec::new(),
+            text_preview,
             sender_name: string_field(value, "sender_name").unwrap_or_else(|| sender_id.clone()),
             sender_avatar: string_field(value, "sender_avatar").unwrap_or_default(),
             sender_display_name: string_field(value, "sender_display_name")
@@ -1056,22 +1051,12 @@ impl FlareImWasmRuntime {
                 .get("is_edited")
                 .and_then(Value::as_bool)
                 .unwrap_or(false),
-            burn_enabled: value
-                .get("burn_enabled")
-                .and_then(Value::as_bool)
-                .unwrap_or(false),
-            burn_after_read_seconds: None,
-            burn_status: value
-                .get("burn_status")
-                .and_then(Value::as_i64)
-                .unwrap_or(0) as i32,
-            first_read_at: None,
-            burn_at: None,
-            burned_at: None,
+            retention_policy: None,
+            retention_state: None,
             mention_users: Vec::new(),
             mention_all: false,
             offline_push_info: None,
-            extra: Default::default(),
+            attributes: Default::default(),
             extensions: Default::default(),
             reactions: Vec::new(),
             version: value.get("version").and_then(Value::as_u64).unwrap_or(1),
@@ -1100,7 +1085,7 @@ impl FlareImWasmRuntime {
 
     fn upsert_conversation_from_message(&mut self, message: &IMMessage) {
         let preview = message_text(message);
-        let now = message.timestamp;
+        let now = message.created_at;
         if let Some(conversation) = self
             .conversations
             .iter_mut()
@@ -1111,7 +1096,7 @@ impl FlareImWasmRuntime {
             conversation.last_message_at = Some(now);
             conversation.last_message_preview = Some(preview);
             conversation.last_sender_nickname = message.sender_display_name.clone();
-            conversation.max_seq = message.seq;
+            conversation.max_seq = message.conversation_seq;
             conversation.updated_at = now;
             conversation.version += 1;
             return;
@@ -1125,7 +1110,7 @@ impl FlareImWasmRuntime {
         conversation.last_sender_id = Some(message.sender_id.clone());
         conversation.last_message_at = Some(now);
         conversation.last_message_preview = Some(preview);
-        conversation.max_seq = message.seq;
+        conversation.max_seq = message.conversation_seq;
         conversation.updated_at = now;
         if let Some(stored) = self
             .conversations
@@ -1173,6 +1158,11 @@ fn string_field(value: &Value, key: &str) -> Option<String> {
         .map(ToString::to_string)
 }
 
+fn u64_field_any(value: &Value, keys: &[&str]) -> Option<u64> {
+    keys.iter()
+        .find_map(|key| value.get(*key).and_then(Value::as_u64))
+}
+
 fn source_id_field(value: &Value) -> Option<String> {
     string_field(value, "source_id").or_else(|| string_field(value, "sourceId"))
 }
@@ -1193,7 +1183,7 @@ fn conversation_type_from_request(value: &Value) -> ConversationType {
 }
 
 fn conversation_type_from_cid(
-    conversation_type: flare_im_core_sdk::domain::conversation::id::CidConversationType,
+    conversation_type: flare_im_core_sdk::spi::CidConversationType,
 ) -> ConversationType {
     ConversationType::from_proto_int(conversation_type as i32)
 }

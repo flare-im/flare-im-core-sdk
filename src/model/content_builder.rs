@@ -3,13 +3,52 @@
 use crate::model::rich_doc_v2::pipeline::CONTENT_SCHEMA_RICH_DOC;
 use crate::model::rich_doc_v2::{RichDocV2Error, validate_doc_json};
 use flare_proto::common::{
-    AnnouncementContent, AudioContent, AudioInfo, CardContent, CustomContent, EmojiContent,
-    FileContent, ForwardContent, ForwardItem, ForwardMode, ImageContent, ImageFormat,
-    ImageGroupContent, ImageInfo, LinkCardContent, LocationContent, Mention, MentionType,
-    MessageContent, MessageType, MiniProgramContent, NotificationContent, PlaceholderContent,
-    QuoteContent, RichTextContent, ScheduleContent, StickerContent, SystemContent, TaskContent,
-    TextContent, ThreadContent, VideoContent, VideoInfo, VoteContent,
+    AppCardContent, AudioContent, AudioInfo, CardContent, CustomContent, EmojiContent, FileContent,
+    ForwardContent, ForwardItem, ForwardMode, ImageContent, ImageFormat, ImageGroupContent,
+    ImageInfo, LinkCardContent, LocationContent, Mention, MentionType, MessageContent, MessageType,
+    NotificationContent, PlaceholderContent, QuoteContent, RichTextContent, StickerContent,
+    SystemContent, TextContent, ThreadContent, VideoContent, VideoInfo,
 };
+use serde_json::{Value, json};
+
+const APP_CARD_MINI_PROGRAM: &str = "mini_program";
+const APP_CARD_VOTE: &str = "vote";
+const APP_CARD_TASK: &str = "task";
+const APP_CARD_SCHEDULE: &str = "schedule";
+const APP_CARD_ANNOUNCEMENT: &str = "announcement";
+
+fn app_card(
+    app_id: impl Into<String>,
+    card_type: impl Into<String>,
+    title: impl Into<String>,
+) -> AppCardContent {
+    AppCardContent {
+        app_id: app_id.into(),
+        card_type: card_type.into(),
+        title: title.into(),
+        subtitle: String::new(),
+        summary: String::new(),
+        thumbnail_url: String::new(),
+        payload_schema: String::new(),
+        payload: Vec::new(),
+        actions: Vec::new(),
+        attributes: std::collections::HashMap::new(),
+    }
+}
+
+fn set_json_payload(card: &mut AppCardContent, payload: Value) {
+    card.payload_schema = "json".to_string();
+    card.payload = serde_json::to_vec(&payload).unwrap_or_default();
+}
+
+fn update_json_payload(card: &mut AppCardContent, key: impl Into<String>, value: Value) {
+    let mut map = serde_json::from_slice::<Value>(&card.payload)
+        .ok()
+        .and_then(|value| value.as_object().cloned())
+        .unwrap_or_default();
+    map.insert(key.into(), value);
+    set_json_payload(card, Value::Object(map));
+}
 
 /// 已构建的消息内容（协议层 MessageContent + 类型，便于 encode 与预览）
 #[derive(Clone, Debug)]
@@ -396,7 +435,7 @@ impl ContentBuilder {
                     title: String::new(),
                     avatar: String::new(),
                     subtitle: String::new(),
-                    extra: std::collections::HashMap::new(),
+                    attributes: std::collections::HashMap::new(),
                     card_type: String::new(),
                 },
             )),
@@ -445,7 +484,7 @@ impl ContentBuilder {
                     url: String::new(),
                     width: DEFAULT_STICKER_DISPLAY_SIDE,
                     height: DEFAULT_STICKER_DISPLAY_SIDE,
-                    extra: std::collections::HashMap::new(),
+                    attributes: std::collections::HashMap::new(),
                     package_id: String::new(),
                     format: String::new(),
                 },
@@ -503,7 +542,7 @@ impl ContentBuilder {
                 EmojiContent {
                     emoji: emoji.into(),
                     description: String::new(),
-                    extra: std::collections::HashMap::new(),
+                    attributes: std::collections::HashMap::new(),
                 },
             )),
         };
@@ -652,7 +691,7 @@ impl ContentBuilder {
                     thread_id: thread_id.into(),
                     thread_title: String::new(),
                     root_content: None,
-                    metadata: std::collections::HashMap::new(),
+                    attributes: std::collections::HashMap::new(),
                 }),
             )),
         };
@@ -683,7 +722,7 @@ impl ContentBuilder {
             )),
         };
         Self {
-            message_type: MessageType::MergeForward,
+            message_type: MessageType::Forward,
             content: Some(content),
         }
     }
@@ -743,7 +782,9 @@ impl ContentBuilder {
                 Some(flare_proto::common::message_content::Content::LinkCard(ref mut l)) => {
                     l.title = t.into();
                 }
-                Some(flare_proto::common::message_content::Content::MiniProgram(ref mut m)) => {
+                Some(flare_proto::common::message_content::Content::AppCard(ref mut m))
+                    if m.card_type == APP_CARD_MINI_PROGRAM =>
+                {
                     m.title = t.into();
                 }
                 Some(flare_proto::common::message_content::Content::Location(ref mut loc)) => {
@@ -759,56 +800,54 @@ impl ContentBuilder {
     }
 
     pub fn page_path(mut self, p: impl Into<String>) -> Self {
+        let page_path = p.into();
         if let Some(ref mut c) = self.content
-            && let Some(flare_proto::common::message_content::Content::MiniProgram(ref mut m)) =
+            && let Some(flare_proto::common::message_content::Content::AppCard(ref mut m)) =
                 c.content
+            && m.card_type == APP_CARD_MINI_PROGRAM
         {
-            m.page_path = p.into();
+            update_json_payload(m, "page_path", json!(page_path));
         }
         self
     }
 
     pub fn mini_program(app_id: impl Into<String>) -> Self {
         let content = MessageContent {
-            content: Some(flare_proto::common::message_content::Content::MiniProgram(
-                MiniProgramContent {
-                    app_id: app_id.into(),
-                    title: String::new(),
-                    page_path: String::new(),
-                    thumbnail_url: String::new(),
-                    extra: std::collections::HashMap::new(),
-                },
+            content: Some(flare_proto::common::message_content::Content::AppCard(
+                app_card(app_id, APP_CARD_MINI_PROGRAM, String::new()),
             )),
         };
         Self {
-            message_type: MessageType::MiniProgram,
+            message_type: MessageType::AppCard,
             content: Some(content),
         }
     }
 
     pub fn mini_program_thumbnail_url(mut self, u: impl Into<String>) -> Self {
         if let Some(ref mut c) = self.content
-            && let Some(flare_proto::common::message_content::Content::MiniProgram(ref mut m)) =
+            && let Some(flare_proto::common::message_content::Content::AppCard(ref mut m)) =
                 c.content
+            && m.card_type == APP_CARD_MINI_PROGRAM
         {
             m.thumbnail_url = u.into();
         }
         self
     }
 
-    /// 合并 `MiniProgramContent.extra`（跳过空 key）。
+    /// 合并 `MiniProgramContent.attributes`（跳过空 key）。
     pub fn mini_program_extend_extra(
         mut self,
         entries: std::collections::HashMap<String, String>,
     ) -> Self {
         if let Some(ref mut c) = self.content
-            && let Some(flare_proto::common::message_content::Content::MiniProgram(ref mut m)) =
+            && let Some(flare_proto::common::message_content::Content::AppCard(ref mut m)) =
                 c.content
+            && m.card_type == APP_CARD_MINI_PROGRAM
         {
             for (k, v) in entries {
                 let k = k.trim().to_string();
                 if !k.is_empty() {
-                    m.extra.insert(k, v);
+                    m.attributes.insert(k, v);
                 }
             }
         }
@@ -833,7 +872,7 @@ impl ContentBuilder {
                     content_schema,
                     plain_text: plain_text.into(),
                     input_format: None,
-                    source_payload: std::collections::HashMap::new(),
+                    source_attributes: std::collections::HashMap::new(),
                     input_format_version: None,
                     title: None,
                     search_text: None,
@@ -876,7 +915,7 @@ impl ContentBuilder {
             && let Some(flare_proto::common::message_content::Content::RichText(ref mut r)) =
                 c.content
         {
-            r.source_payload.insert(key.into(), value.into());
+            r.source_attributes.insert(key.into(), value.into());
         }
         self
     }
@@ -934,7 +973,7 @@ impl ContentBuilder {
                 ImageGroupContent {
                     images,
                     description: description.into(),
-                    metadata,
+                    attributes: metadata,
                 },
             )),
         };
@@ -950,7 +989,7 @@ impl ContentBuilder {
                 SystemContent {
                     event_kind: event_kind.into(),
                     body: body.into(),
-                    data: std::collections::HashMap::new(),
+                    attributes: std::collections::HashMap::new(),
                     payload: vec![],
                 },
             )),
@@ -966,7 +1005,7 @@ impl ContentBuilder {
             && let Some(flare_proto::common::message_content::Content::System(ref mut s)) =
                 c.content
         {
-            s.data.insert(key.into(), value.into());
+            s.attributes.insert(key.into(), value.into());
         }
         self
     }
@@ -978,7 +1017,7 @@ impl ContentBuilder {
                     title: title.into(),
                     body: body.into(),
                     notification_type: String::new(),
-                    data: std::collections::HashMap::new(),
+                    attributes: std::collections::HashMap::new(),
                     target_user_ids: vec![],
                     target_role_id: String::new(),
                     notify_all: false,
@@ -1030,131 +1069,144 @@ impl ContentBuilder {
         title: impl Into<String>,
         options: Vec<String>,
     ) -> Self {
+        let vote_id = vote_id.into();
+        let mut card = app_card(String::new(), APP_CARD_VOTE, title);
+        card.summary = options.join(", ");
+        set_json_payload(
+            &mut card,
+            json!({
+                "vote_id": vote_id,
+                "options": options,
+                "participant_user_ids": [],
+            }),
+        );
         let content = MessageContent {
-            content: Some(flare_proto::common::message_content::Content::Vote(
-                VoteContent {
-                    vote_id: vote_id.into(),
-                    title: title.into(),
-                    options,
-                    metadata: std::collections::HashMap::new(),
-                    participant_user_ids: vec![],
-                },
-            )),
+            content: Some(flare_proto::common::message_content::Content::AppCard(card)),
         };
         Self {
-            message_type: MessageType::Poll,
+            message_type: MessageType::AppCard,
             content: Some(content),
         }
     }
 
     pub fn vote_participant_user_ids(mut self, ids: Vec<String>) -> Self {
         if let Some(ref mut c) = self.content
-            && let Some(flare_proto::common::message_content::Content::Vote(ref mut v)) = c.content
+            && let Some(flare_proto::common::message_content::Content::AppCard(ref mut v)) =
+                c.content
+            && v.card_type == APP_CARD_VOTE
         {
-            v.participant_user_ids = ids;
+            update_json_payload(v, "participant_user_ids", json!(ids));
         }
         self
     }
 
     pub fn task(task_id: impl Into<String>, title: impl Into<String>) -> Self {
+        let task_id = task_id.into();
+        let mut card = app_card(String::new(), APP_CARD_TASK, title);
+        set_json_payload(
+            &mut card,
+            json!({
+                "task_id": task_id,
+                "status": "",
+                "participant_user_ids": [],
+            }),
+        );
         let content = MessageContent {
-            content: Some(flare_proto::common::message_content::Content::Task(
-                TaskContent {
-                    task_id: task_id.into(),
-                    title: title.into(),
-                    status: String::new(),
-                    metadata: std::collections::HashMap::new(),
-                    participant_user_ids: vec![],
-                },
-            )),
+            content: Some(flare_proto::common::message_content::Content::AppCard(card)),
         };
         Self {
-            message_type: MessageType::Task,
+            message_type: MessageType::AppCard,
             content: Some(content),
         }
     }
 
     pub fn status(mut self, s: impl Into<String>) -> Self {
+        let status = s.into();
         if let Some(ref mut c) = self.content
-            && let Some(flare_proto::common::message_content::Content::Task(ref mut t)) = c.content
+            && let Some(flare_proto::common::message_content::Content::AppCard(ref mut t)) =
+                c.content
+            && t.card_type == APP_CARD_TASK
         {
-            t.status = s.into();
+            update_json_payload(t, "status", json!(status));
         }
         self
     }
 
     pub fn task_participant_user_ids(mut self, ids: Vec<String>) -> Self {
         if let Some(ref mut c) = self.content
-            && let Some(flare_proto::common::message_content::Content::Task(ref mut t)) = c.content
+            && let Some(flare_proto::common::message_content::Content::AppCard(ref mut t)) =
+                c.content
+            && t.card_type == APP_CARD_TASK
         {
-            t.participant_user_ids = ids;
+            update_json_payload(t, "participant_user_ids", json!(ids));
         }
         self
     }
 
     pub fn schedule(schedule_id: impl Into<String>, title: impl Into<String>) -> Self {
+        let schedule_id = schedule_id.into();
+        let mut card = app_card(String::new(), APP_CARD_SCHEDULE, title);
+        set_json_payload(
+            &mut card,
+            json!({
+                "schedule_id": schedule_id,
+                "start_time_ms": 0,
+                "end_time_ms": 0,
+                "participant_user_ids": [],
+            }),
+        );
         let content = MessageContent {
-            content: Some(flare_proto::common::message_content::Content::Schedule(
-                ScheduleContent {
-                    schedule_id: schedule_id.into(),
-                    title: title.into(),
-                    start_time_ms: 0,
-                    end_time_ms: 0,
-                    metadata: std::collections::HashMap::new(),
-                    participant_user_ids: vec![],
-                },
-            )),
+            content: Some(flare_proto::common::message_content::Content::AppCard(card)),
         };
         Self {
-            message_type: MessageType::Schedule,
+            message_type: MessageType::AppCard,
             content: Some(content),
         }
     }
 
     pub fn schedule_times_ms(mut self, start_ms: i64, end_ms: i64) -> Self {
         if let Some(ref mut c) = self.content
-            && let Some(flare_proto::common::message_content::Content::Schedule(ref mut s)) =
+            && let Some(flare_proto::common::message_content::Content::AppCard(ref mut s)) =
                 c.content
+            && s.card_type == APP_CARD_SCHEDULE
         {
-            s.start_time_ms = start_ms;
-            s.end_time_ms = end_ms;
+            update_json_payload(s, "start_time_ms", json!(start_ms));
+            update_json_payload(s, "end_time_ms", json!(end_ms));
         }
         self
     }
 
     pub fn schedule_participant_user_ids(mut self, ids: Vec<String>) -> Self {
         if let Some(ref mut c) = self.content
-            && let Some(flare_proto::common::message_content::Content::Schedule(ref mut sch)) =
+            && let Some(flare_proto::common::message_content::Content::AppCard(ref mut sch)) =
                 c.content
+            && sch.card_type == APP_CARD_SCHEDULE
         {
-            sch.participant_user_ids = ids;
+            update_json_payload(sch, "participant_user_ids", json!(ids));
         }
         self
     }
 
     pub fn announcement(title: impl Into<String>, body: impl Into<String>) -> Self {
+        let mut card = app_card(String::new(), APP_CARD_ANNOUNCEMENT, title);
+        card.summary = body.into();
+        set_json_payload(&mut card, json!({ "pinned": false }));
         let content = MessageContent {
-            content: Some(flare_proto::common::message_content::Content::Announcement(
-                AnnouncementContent {
-                    title: title.into(),
-                    body: body.into(),
-                    pinned: false,
-                    metadata: std::collections::HashMap::new(),
-                },
-            )),
+            content: Some(flare_proto::common::message_content::Content::AppCard(card)),
         };
         Self {
-            message_type: MessageType::Announcement,
+            message_type: MessageType::AppCard,
             content: Some(content),
         }
     }
 
     pub fn pinned(mut self, v: bool) -> Self {
         if let Some(ref mut c) = self.content
-            && let Some(flare_proto::common::message_content::Content::Announcement(ref mut a)) =
+            && let Some(flare_proto::common::message_content::Content::AppCard(ref mut a)) =
                 c.content
+            && a.card_type == APP_CARD_ANNOUNCEMENT
         {
-            a.pinned = v;
+            update_json_payload(a, "pinned", json!(v));
         }
         self
     }
@@ -1166,12 +1218,12 @@ impl ContentBuilder {
                     reason: reason.into(),
                     payload: vec![],
                     fallback_text: String::new(),
-                    metadata: std::collections::HashMap::new(),
+                    attributes: std::collections::HashMap::new(),
                 },
             )),
         };
         Self {
-            message_type: MessageType::E2ePlaceholder,
+            message_type: MessageType::Placeholder,
             content: Some(content),
         }
     }
@@ -1193,7 +1245,7 @@ impl ContentBuilder {
                     r#type: r#type.into(),
                     payload: vec![],
                     description: String::new(),
-                    metadata: std::collections::HashMap::new(),
+                    attributes: std::collections::HashMap::new(),
                 },
             )),
         };
@@ -1223,7 +1275,7 @@ impl ContentBuilder {
             && let Some(flare_proto::common::message_content::Content::Custom(ref mut cu)) =
                 c.content
         {
-            cu.metadata.insert(key.into(), value.into());
+            cu.attributes.insert(key.into(), value.into());
         }
         self
     }

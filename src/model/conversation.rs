@@ -1,17 +1,26 @@
 //! 会话模型 — SDK 内部统一使用 Conversation；从 proto ConversationSummary 获取后即转换为 Conversation。
-//! 序列化用 serde 默认字段名（snake_case JSON）；前端可通过桥接层转 camelCase。
+//! 序列化用 serde camelCase JSON；client 不再做命名桥接转换。
 
 use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::model::message_elem::{MessagePreviewElem, message_preview_from_proto};
-use crate::shared::util::date::{ms_to_prost_timestamp, prost_timestamp_to_ms};
+use crate::model::message_elem::{
+    MessagePreviewElem, message_preview_from_proto, message_preview_to_proto,
+};
+
+fn proto_ms_to_u64(ms: i64) -> u64 {
+    if ms > 0 { ms as u64 } else { 0 }
+}
+
+fn u64_to_proto_ms(ms: u64) -> i64 {
+    i64::try_from(ms).unwrap_or(i64::MAX)
+}
 
 // ---------- 会话类型（严格对齐 `flare.common.v1.ConversationType`，并与 flare_core CID 前缀一致）----------
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
+#[serde(rename_all = "camelCase")]
 pub enum ConversationType {
     #[default]
     Unspecified,
@@ -120,6 +129,7 @@ impl From<&str> for ConversationType {
 // ---------- 本地状态（不序列化到 JSON/DB，仅内存）----------
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ConversationLocalState {
     /// 草稿光标等 UI 状态可放此处
     #[serde(default)]
@@ -129,6 +139,7 @@ pub struct ConversationLocalState {
 /// SDK 本地会话参与者快照。单聊不依赖该结构；群聊/频道/客服等非单聊用它支撑群通话、成员面板和后续设置页。
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
+#[serde(rename_all = "camelCase")]
 pub struct ConversationParticipant {
     pub user_id: String,
     pub roles: Vec<String>,
@@ -148,7 +159,7 @@ impl From<flare_proto::common::ConversationParticipant> for ConversationParticip
             muted: p.muted,
             pinned: p.pinned,
             attributes: p.attributes,
-            joined_at: prost_timestamp_to_ms(p.joined_at.as_ref()),
+            joined_at: proto_ms_to_u64(p.joined_at),
             nickname,
         }
     }
@@ -168,15 +179,16 @@ impl From<ConversationParticipant> for flare_proto::common::ConversationParticip
             muted: p.muted,
             pinned: p.pinned,
             attributes,
-            joined_at: ms_to_prost_timestamp(p.joined_at),
+            joined_at: u64_to_proto_ms(p.joined_at),
         }
     }
 }
 
 /// SDK 层会话类型：内部统一使用，从 proto ConversationSummary 获取后即转换为此类型。
-/// 与 message.rs 的 IMMessage 一致：扁平字段、serde 默认 snake_case。
+/// 与 message.rs 的 IMMessage 一致：扁平字段、serde camelCase。
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
+#[serde(rename_all = "camelCase")]
 pub struct Conversation {
     // ===============================
     // Identity
@@ -333,23 +345,26 @@ impl Conversation {
 
     /// 转为 proto ConversationSummary（持久化/回写服务端用）
     pub fn to_proto_summary(&self) -> flare_proto::common::ConversationSummary {
-        let mut ext = self.ext.clone();
-        ext.insert("peer_read_seq".to_string(), self.peer_read_seq.to_string());
+        let mut attributes = self.ext.clone();
+        attributes.insert("peer_read_seq".to_string(), self.peer_read_seq.to_string());
+        if !self.business_type.trim().is_empty() {
+            attributes.insert("business_type".to_string(), self.business_type.clone());
+        }
         flare_proto::common::ConversationSummary {
             conversation_id: self.conversation_id.clone(),
             conversation_type: self.conversation_type.as_str().to_string(),
-            business_type: self.business_type.clone(),
             channel_id: self.channel_id.clone(),
             display_name: self.display_name.clone(),
             avatar_url: self.avatar_url.clone(),
             unread_count: self.unread_count,
-            max_seq: self.max_seq,
-            visible_after_seq: self.visible_after_seq,
+            max_conversation_seq: self.max_seq,
+            visible_after_conversation_seq: self.visible_after_seq,
             last_read_seq: self.last_read_seq,
             is_muted: self.is_muted,
             is_pinned: self.is_pinned,
-            updated_at: ms_to_prost_timestamp(self.updated_at),
-            created_at: ms_to_prost_timestamp(self.created_at),
+            is_archived: self.is_archived,
+            updated_at: u64_to_proto_ms(self.updated_at),
+            created_at: u64_to_proto_ms(self.created_at),
             member_count: self.members_count as i32,
             participant_version: self.participant_version,
             member_preview: self
@@ -358,7 +373,9 @@ impl Conversation {
                 .into_iter()
                 .map(Into::into)
                 .collect(),
-            ext,
+            draft: self.draft.clone().unwrap_or_default(),
+            last_message: self.last_message.as_ref().map(message_preview_to_proto),
+            attributes,
             ..Default::default()
         }
     }
@@ -437,25 +454,30 @@ impl Conversation {
 
 impl From<flare_proto::common::ConversationSummary> for Conversation {
     fn from(s: flare_proto::common::ConversationSummary) -> Self {
-        let updated_at = prost_timestamp_to_ms(s.updated_at.as_ref());
-        let created_at = prost_timestamp_to_ms(s.created_at.as_ref());
+        let updated_at = proto_ms_to_u64(s.updated_at);
+        let created_at = proto_ms_to_u64(s.created_at);
         let last_message = s.last_message.as_ref().map(message_preview_from_proto);
+        let business_type = s
+            .attributes
+            .get("business_type")
+            .cloned()
+            .unwrap_or_default();
         let peer_read_seq = s
-            .ext
+            .attributes
             .get("peer_read_seq")
             .and_then(|v| v.parse::<u64>().ok())
             .unwrap_or_default();
-        let peer_read_seq = if peer_read_seq <= s.max_seq {
+        let peer_read_seq = if peer_read_seq <= s.max_conversation_seq {
             peer_read_seq
         } else {
             0
         };
         let member_preview: Vec<ConversationParticipant> =
             s.member_preview.into_iter().map(Into::into).collect();
-        let visible_after_seq = s.visible_after_seq;
+        let visible_after_seq = s.visible_after_conversation_seq;
         // 以服务端聚合后的 unread_count 为准；若服务端下发了用户历史可见边界，
         // SDK 仍在模型入口做一次硬约束，避免旧摘要/旧消息回灌成本地未读。
-        let unread_count = if visible_after_seq > 0 && s.max_seq <= visible_after_seq {
+        let unread_count = if visible_after_seq > 0 && s.max_conversation_seq <= visible_after_seq {
             0
         } else {
             s.unread_count
@@ -464,12 +486,12 @@ impl From<flare_proto::common::ConversationSummary> for Conversation {
         Self {
             conversation_id: s.conversation_id,
             conversation_type: ConversationType::from(s.conversation_type.as_str()),
-            business_type: s.business_type,
+            business_type,
             channel_id: s.channel_id,
             display_name: s.display_name,
             avatar_url: s.avatar_url,
             unread_count,
-            max_seq: s.max_seq,
+            max_seq: s.max_conversation_seq,
             visible_after_seq,
             last_read_seq,
             peer_read_seq,
@@ -519,7 +541,7 @@ impl From<flare_proto::common::ConversationSummary> for Conversation {
             badge: None,
             role: None,
             ext: {
-                let mut ext = s.ext.clone();
+                let mut ext = s.attributes.clone();
                 ext.insert("peer_read_seq".to_string(), peer_read_seq.to_string());
                 if s.user_settings_version > 0 {
                     ext.insert(
@@ -551,15 +573,12 @@ mod tests {
         let conversation = Conversation::from(ConversationSummary {
             conversation_id: "conv-1".to_string(),
             conversation_type: "single".to_string(),
-            max_seq: 7,
+            max_conversation_seq: 7,
             last_message: Some(MessagePreview {
                 message_id: "msg-7".to_string(),
                 sender_id: "u2".to_string(),
                 text: "latest".to_string(),
-                time: Some(prost_types::Timestamp {
-                    seconds: 12,
-                    nanos: 345_000_000,
-                }),
+                created_at: 12_345,
                 ..Default::default()
             }),
             ..Default::default()
@@ -576,11 +595,11 @@ mod tests {
         let mut summary = ConversationSummary {
             conversation_id: "conv-1".to_string(),
             conversation_type: "single".to_string(),
-            max_seq: 7,
+            max_conversation_seq: 7,
             ..Default::default()
         };
         summary
-            .ext
+            .attributes
             .insert("peer_read_seq".to_string(), "999999".to_string());
 
         let conversation = Conversation::from(summary);

@@ -5,9 +5,12 @@
 use std::ffi::{c_char, c_void};
 use std::sync::Arc;
 
-use flare_im_core_sdk::client::lifecycle::SdkConfigOverlay;
-use flare_im_core_sdk::client::{IMClient, LoginDbKind};
-use flare_im_core_sdk::shared::util::generate_test_token as util_generate_test_token;
+use flare_im_core_sdk::prelude::SdkConfigOverlay;
+#[cfg(feature = "dev-test-token")]
+use flare_im_core_sdk::prelude::{
+    CoreTokenConfig, generate_core_token as util_generate_core_token,
+};
+use flare_im_core_sdk::prelude::{IMClient, LoginDbKind};
 
 use crate::abi;
 use crate::executor::{CallbackContext, execute_async, execute_async_unit, return_error};
@@ -45,7 +48,17 @@ pub extern "C" fn flare_sdk_create() -> FlareHandle {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn flare_sdk_release(handle: FlareHandle) {
-    abi::catch_ffi_void(|| release_instance(handle));
+    abi::catch_ffi_void(|| {
+        crate::event::unsubscribe_events_for_handle(handle);
+        release_instance(handle);
+    });
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn flare_sdk_init_logging() {
+    abi::catch_ffi_void(|| {
+        let _ = tracing_subscriber::fmt::try_init();
+    });
 }
 
 /// FFI 全局硬重置：取消全部事件订阅并释放全部 SDK 句柄。
@@ -190,6 +203,108 @@ pub extern "C" fn flare_sdk_login(
     })
 }
 
+/// 预热登录会话：开 per-user 本地库 + 装配引擎，**不连网**。
+///
+/// 与 [`flare_sdk_connect`] 配合实现「初始化前置、登录只做网络」：App 启动即可对
+/// 「上次登录用户」调用本函数，把开库 / 迁移 / 建引擎移出登录关键路径。
+#[unsafe(no_mangle)]
+pub extern "C" fn flare_sdk_prepare(
+    handle: FlareHandle,
+    user_id: *const c_char,
+    store_config_json: *const c_char,
+    context: *mut c_void,
+    callback: FlareResultCallback,
+) -> i32 {
+    abi::catch_ffi_i32(|| {
+        let instance = match require_instance(handle) {
+            Ok(i) => i,
+            Err(e) => return e,
+        };
+
+        let user_id = match c_str_to_string(user_id) {
+            Ok(s) => s,
+            Err(code) => {
+                let ctx = CallbackContext::new(context, callback);
+                return_error(&ctx, code, "Invalid user_id");
+                return code;
+            }
+        };
+
+        let prepare_config = if store_config_json.is_null() {
+            None
+        } else {
+            match parse_json::<SdkConfigOverlay>(store_config_json) {
+                Ok(config) => Some(config),
+                Err(code) => {
+                    let ctx = CallbackContext::new(context, callback);
+                    return_error(&ctx, code, "Invalid store_config JSON");
+                    return code;
+                }
+            }
+        };
+
+        let ctx = CallbackContext::new(context, callback);
+        let inst = instance.clone();
+
+        execute_async_unit(instance, ctx, async move {
+            inst.im_session.clear().await;
+            if let Some(config) = prepare_config {
+                inst.client.init(None, Some(config)).await?;
+                inst.im_session.clear().await;
+            }
+            inst.client.prepare(&user_id, LoginDbKind::Sqlite).await
+        });
+
+        0
+    })
+}
+
+/// 连接已 [`flare_sdk_prepare`] 预热好的会话并完成首次同步（登录的网络半段）。
+#[unsafe(no_mangle)]
+pub extern "C" fn flare_sdk_connect(
+    handle: FlareHandle,
+    user_id: *const c_char,
+    token: *const c_char,
+    context: *mut c_void,
+    callback: FlareResultCallback,
+) -> i32 {
+    abi::catch_ffi_i32(|| {
+        let instance = match require_instance(handle) {
+            Ok(i) => i,
+            Err(e) => return e,
+        };
+
+        let user_id = match c_str_to_string(user_id) {
+            Ok(s) => s,
+            Err(code) => {
+                let ctx = CallbackContext::new(context, callback);
+                return_error(&ctx, code, "Invalid user_id");
+                return code;
+            }
+        };
+
+        let token = match c_str_to_string(token) {
+            Ok(s) => s,
+            Err(code) => {
+                let ctx = CallbackContext::new(context, callback);
+                return_error(&ctx, code, "Invalid token");
+                return code;
+            }
+        };
+
+        let ctx = CallbackContext::new(context, callback);
+        let inst = instance.clone();
+
+        execute_async_unit(instance, ctx, async move {
+            let apis = inst.client.connect(&user_id, Some(token.as_str())).await?;
+            inst.im_session.install(&inst.client, apis).await;
+            Ok(())
+        });
+
+        0
+    })
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn flare_sdk_logout(
     handle: FlareHandle,
@@ -305,10 +420,7 @@ pub extern "C" fn flare_sdk_data_root(
 pub extern "C" fn flare_sdk_is_connected(handle: FlareHandle) -> bool {
     abi::catch_ffi_bool(|| {
         retain_instance(handle).is_some_and(|instance| {
-            matches!(
-                instance.client.state(),
-                flare_im_core_sdk::core::SdkState::Ready
-            )
+            matches!(instance.client.state(), flare_im_core_sdk::SdkState::Ready)
         })
     })
 }
@@ -349,11 +461,13 @@ pub extern "C" fn flare_sdk_current_user_id(
     })
 }
 
+#[cfg(feature = "dev-test-token")]
 #[unsafe(no_mangle)]
-pub extern "C" fn flare_sdk_generate_test_token(
+pub extern "C" fn flare_sdk_generate_core_token(
     secret: *const c_char,
     issuer: *const c_char,
     user_id: *const c_char,
+    device_id: *const c_char,
     tenant_id: *const c_char,
     ttl_secs: u64,
 ) -> FlareString {
@@ -361,7 +475,7 @@ pub extern "C" fn flare_sdk_generate_test_token(
         let user_id = match c_str_to_string(user_id) {
             Ok(s) if !s.is_empty() => s,
             Ok(_) => {
-                tracing::warn!("flare_sdk_generate_test_token: empty user_id");
+                tracing::warn!("flare_sdk_generate_core_token: empty user_id");
                 return FlareString::default();
             }
             Err(_) => return FlareString::default(),
@@ -376,34 +490,27 @@ pub extern "C" fn flare_sdk_generate_test_token(
             Err(_) => return FlareString::default(),
         };
 
+        let device = match abi::read_c_str_opt(device_id) {
+            Ok(o) => o.filter(|s| !s.is_empty()),
+            Err(_) => return FlareString::default(),
+        };
+
         let tenant = match abi::read_c_str_opt(tenant_id) {
             Ok(o) => o.filter(|s| !s.is_empty()),
             Err(_) => return FlareString::default(),
         };
 
-        let secret_ref = if secret_s.is_empty() {
-            "insecure-secret"
-        } else {
-            secret_s.as_str()
-        };
-        let issuer_ref = if issuer_s.is_empty() {
-            "flare-im-core"
-        } else {
-            issuer_s.as_str()
-        };
-        let ttl = if ttl_secs == 0 { 3600 } else { ttl_secs };
-
-        match util_generate_test_token(
-            secret_ref,
-            issuer_ref,
-            &user_id,
-            ttl,
-            None,
-            tenant.as_deref(),
-        ) {
+        match util_generate_core_token(&CoreTokenConfig {
+            secret: secret_s,
+            issuer: issuer_s,
+            user_id,
+            ttl_secs,
+            device_id: device,
+            tenant_id: tenant,
+        }) {
             Ok(token) => string_to_flare(token),
             Err(e) => {
-                tracing::warn!(error = %e, "flare_sdk_generate_test_token failed");
+                tracing::warn!(error = %e, "flare_sdk_generate_core_token failed");
                 FlareString::default()
             }
         }

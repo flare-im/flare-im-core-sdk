@@ -8,11 +8,12 @@ use flare_im_core_sdk::client::api::{
     CapabilityApi, ConversationApi, MediaApi, MessageApi, MessageBuildApi,
 };
 use flare_im_core_sdk::client::{ConnectedApis, IMClient, SdkConfigOverlay};
-use flare_im_core_sdk_bindings_runtime::{InvokeSession, SessionSlot};
+use flare_im_core_sdk_bindings_runtime::{InvokeSession, SessionSlot, SessionTaskSlot};
 
 pub struct WasmSdkState {
     client: IMClient,
     session: SessionSlot,
+    event_bridge: SessionTaskSlot,
 }
 
 impl WasmSdkState {
@@ -20,6 +21,7 @@ impl WasmSdkState {
         Self {
             client: IMClient::new(),
             session: SessionSlot::default(),
+            event_bridge: SessionTaskSlot::default(),
         }
     }
 
@@ -43,7 +45,16 @@ impl WasmSdkState {
         self.session.clear().await;
     }
 
+    pub fn event_bridge(&self) -> SessionTaskSlot {
+        self.event_bridge.clone()
+    }
+
+    pub fn clear_event_bridge(&self) {
+        self.event_bridge.clear();
+    }
+
     pub async fn logout(&self) -> Result<()> {
+        self.clear_event_bridge();
         self.clear_session().await;
         self.client.logout().await
     }

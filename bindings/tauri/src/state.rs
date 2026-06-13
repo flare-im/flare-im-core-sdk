@@ -11,13 +11,14 @@ use flare_im_core_sdk::client::api::{
     CapabilityApi, ConversationApi, MediaApi, MessageApi, MessageBuildApi, PresenceApi,
 };
 use flare_im_core_sdk::client::{ConnectedApis, IMClient, SdkConfigOverlay};
-use flare_im_core_sdk::infrastructure::persistence::StoreProvider;
-use flare_im_core_sdk_bindings_runtime::{InvokeSession, SessionSlot};
+use flare_im_core_sdk::prelude::StoreProvider;
+use flare_im_core_sdk_bindings_runtime::{InvokeSession, SessionSlot, SessionTaskSlot};
 
 /// 由 `tauri::Builder::manage(SdkState::new())` 注入。
 pub struct SdkState {
     client: IMClient,
     session: SessionSlot,
+    event_bridge: SessionTaskSlot,
 }
 
 impl SdkState {
@@ -25,6 +26,7 @@ impl SdkState {
         Self {
             client: IMClient::new(),
             session: SessionSlot::default(),
+            event_bridge: SessionTaskSlot::default(),
         }
     }
 
@@ -54,7 +56,16 @@ impl SdkState {
         self.session.clear().await;
     }
 
+    pub fn event_bridge(&self) -> SessionTaskSlot {
+        self.event_bridge.clone()
+    }
+
+    pub fn clear_event_bridge(&self) {
+        self.event_bridge.clear();
+    }
+
     pub async fn logout(&self) -> Result<()> {
+        self.clear_event_bridge();
         self.clear_session().await;
         self.client.logout().await
     }

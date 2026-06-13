@@ -12,11 +12,12 @@ ownership, and native artifact contracts.
 ```text
 bindings/
   contract/         machine-readable L1 contract and codegen input (source of truth)
-  runtime/          shared contract metadata, JSON dispatch, and session cache
+  shared/           shared contract metadata, JSON dispatch, and session cache
   c/                universal C ABI boundary (platform glue only)
   tauri/            Tauri desktop command adapter
   uniffi/           UniFFI contract skeleton + generated types
   wasm/             wasm binding with generated contract/runtime catalog
+storage/indexeddb/  browser IndexedDB-backed WASM storage adapter (outside bindings/)
 ```
 
 ## Contract-First Boundary
@@ -32,7 +33,7 @@ make -C bindings verify
 Generated outputs (`make -C bindings codegen`):
 
 ```text
-runtime/src/generated/{contract.rs,dispatch/,direct_invoke.rs}
+shared/src/generated/{contract.rs,dispatch/,direct_invoke.rs}
 c/src/generated/{contract.rs,events.rs,errors.rs,json_dispatch.rs,invoke.rs}
 tauri/src/generated/{contract.rs,handler.rs,invoke.rs}
 wasm/src/generated/{contract.rs,bindings.rs}
@@ -59,7 +60,7 @@ Platform crates (`c/`, `tauri/`, `wasm/`, `uniffi/`) do **not** need new hand-wr
 | Tauri | `sdk_invoke(api_id, request)` + lifecycle `sdk_init` / `sdk_login` / `sdk_logout` |
 | Wasm (smoke) | `flareInvoke(runtime, api_id, request_json)` |
 
-Contract `api_id` values live in `contract/apis.json`. Routing is `runtime/src/invoke.rs` + generated dispatch.
+Contract `api_id` values live in `contract/apis.json`. Routing is `shared/src/invoke.rs` + generated dispatch.
 
 Manual glue only:
 
@@ -67,9 +68,9 @@ Manual glue only:
 contract/dispatch.json                   dispatch ops → runtime match
 contract/direct_invoke.json              IMClient/sync/presence routes → direct_invoke.rs
 contract/tools/platform_codegen.py       C json_dispatch / invoke, Tauri handler, wasm exports
-runtime/src/dispatch_support.rs          shared JSON helpers
-runtime/src/invoke.rs                    normalize_operation + invoke_api_id
-runtime/src/session.rs                   generation-aware ConnectedApis cache
+shared/src/dispatch_support.rs           shared JSON helpers
+shared/src/invoke.rs                     normalize_operation + invoke_api_id
+shared/src/session.rs                    generation-aware ConnectedApis cache
 c/src/dispatch_common.rs             C async JSON entry helpers
 c/src/{lifecycle,media,message,...}  non-JSON ABI (upload bytes, login, send_ack, …)
 tauri/src/commands/lifecycle.rs      AppHandle / event forward (not JSON invoke)
@@ -84,7 +85,7 @@ Do not edit generated files by hand.
 L3 typed platform SDK
   -> L2 runtime adapter
   -> L1 bindings/{c|tauri|wasm|uniffi}
-  -> bindings/runtime (shared dispatch + contract)
+  -> bindings/shared (shared dispatch + contract)
   -> L0 flare-im-core-sdk/src
 ```
 
@@ -108,7 +109,7 @@ Each binding crate has its own `Makefile` — run from that directory or via `-C
 
 | Directory | Typical commands |
 |-----------|------------------|
-| `bindings/runtime` | `make check` `make test` `make codegen` |
+| `bindings/shared` | `make check` `make test` `make codegen` |
 | `bindings/wasm` | `make check` `make check-thin` `make test` `make build` |
 | `bindings/c` | `make check` `make host` `make codegen` |
 | `bindings/tauri` | `make check` |
@@ -133,7 +134,7 @@ target/flare_im_core_sdk_ffi.h
 - Do not duplicate message, conversation, sync, delivery, presence, media, call,
   or plugin business rules in bindings.
 - Do not duplicate SDK operation lists in platform crates; generate from contract.
-- Keep complex C ABI payloads as core-sdk snake_case JSON.
+- Keep complex C ABI payloads as canonical camelCase SDK JSON.
 - Keep errors typed: stable code plus message, never string matching.
 - Keep lifecycle explicit: create/init/login/logout/uninit/release.
 - Keep subscriptions explicit: returned handles must be unsubscribed or released.

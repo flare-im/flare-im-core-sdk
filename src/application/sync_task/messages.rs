@@ -10,12 +10,29 @@ use tracing::debug;
 use super::super::SyncProtocolAdapter;
 use crate::core::{SyncContext, SyncFailurePolicy, SyncMode, SyncResult, SyncTask, SyncTaskResult};
 
-pub struct MessagesSyncTask(pub(crate) Arc<SyncProtocolAdapter>);
-const MAX_SYNC_CONCURRENCY: usize = 8;
+pub struct MessagesSyncTask {
+    pub(crate) handler: Arc<SyncProtocolAdapter>,
+    max_sync_concurrency: usize,
+}
+const DEFAULT_SYNC_CONCURRENCY: usize = 4;
 
 impl MessagesSyncTask {
     pub fn new(handler: Arc<SyncProtocolAdapter>) -> Self {
-        Self(handler)
+        Self::with_max_sync_concurrency(handler, DEFAULT_SYNC_CONCURRENCY)
+    }
+
+    pub fn with_max_sync_concurrency(
+        handler: Arc<SyncProtocolAdapter>,
+        max_sync_concurrency: usize,
+    ) -> Self {
+        Self {
+            handler,
+            max_sync_concurrency: Self::normalize_max_sync_concurrency(max_sync_concurrency),
+        }
+    }
+
+    pub(crate) fn normalize_max_sync_concurrency(value: usize) -> usize {
+        value.max(1)
     }
 }
 
@@ -37,7 +54,8 @@ impl SyncTask for MessagesSyncTask {
         &self,
         ctx: SyncContext,
     ) -> Pin<Box<dyn std::future::Future<Output = SyncResult<SyncTaskResult>> + Send>> {
-        let handler = self.0.clone();
+        let handler = self.handler.clone();
+        let max_sync_concurrency = self.max_sync_concurrency;
         Box::pin(async move {
             debug!(task = "messages", "sync phase: messages start");
             ctx.report_progress("syncing messages");
@@ -57,7 +75,7 @@ impl SyncTask for MessagesSyncTask {
                     )
                 }
             }))
-            .buffer_unordered(MAX_SYNC_CONCURRENCY);
+            .buffer_unordered(max_sync_concurrency);
 
             while let Some((id, result)) = jobs.next().await {
                 match result {
@@ -77,5 +95,20 @@ impl SyncTask for MessagesSyncTask {
             debug!(task = "messages", "sync phase: messages done");
             Ok(SyncTaskResult::ok())
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::MessagesSyncTask;
+
+    #[test]
+    fn max_sync_concurrency_is_never_zero() {
+        assert_eq!(MessagesSyncTask::normalize_max_sync_concurrency(0), 1);
+    }
+
+    #[test]
+    fn max_sync_concurrency_preserves_mobile_budget() {
+        assert_eq!(MessagesSyncTask::normalize_max_sync_concurrency(2), 2);
     }
 }

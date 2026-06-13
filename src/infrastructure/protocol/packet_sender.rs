@@ -12,16 +12,18 @@ use flare_core::common::protocol::{
 };
 use flare_proto::common::data_packet::Payload as DataPacketPayload;
 use flare_proto::common::{
-    Ack, CustomData, DataKind, DataPacket, Event, Message as ProtoMessage, SyncRes,
+    Ack, CapabilityPacket, CustomData, DataPacket, Event, Message as ProtoMessage,
+    RealtimeControlPacket, SyncRes,
 };
 use prost::Message;
 use tokio::sync::Mutex;
 
 use crate::infrastructure::protocol::Codec;
 use crate::shared::error::{FlareError, Result};
-use crate::shared::util::{system_time_to_prost_timestamp, timeout};
+use crate::shared::util::{now_millis, timeout};
 
 const CONTROL_SEND_TIMEOUT: Duration = Duration::from_secs(10);
+const BEST_EFFORT_CONTROL_SEND_TIMEOUT: Duration = Duration::from_millis(250);
 
 /// 上行包发送器 — Message / Event / Ack / DataPacket（同步与用户扩展）
 pub struct PacketSender {
@@ -53,8 +55,8 @@ impl PacketSender {
         if wire_event.request_id.is_none() {
             wire_event.request_id = Some(message_id.clone());
         }
-        if wire_event.created_at.is_none() {
-            wire_event.created_at = Some(system_time_to_prost_timestamp());
+        if wire_event.created_at <= 0 {
+            wire_event.created_at = now_millis() as i64;
         }
         let payload = wire_event.encode_to_vec();
         let mut guard = self.client.lock().await;
@@ -141,7 +143,6 @@ impl PacketSender {
     /// 发送用户扩展（`DataPacket` + `user_custom`）。PayloadCommand.type=Data。
     pub async fn send_custom_data(&self, data: &CustomData) -> Result<()> {
         let packet = DataPacket {
-            kind: DataKind::UserCustom as i32,
             payload: Some(DataPacketPayload::UserCustom(data.clone())),
         };
         let payload = packet.encode_to_vec();
@@ -163,6 +164,81 @@ impl PacketSender {
         Ok(())
     }
 
+    /// 发送能力包（`DataPacket` + `capability`）。PayloadCommand.type=Data；不占用 conversation_seq。
+    pub async fn send_capability_packet(&self, packet: &CapabilityPacket) -> Result<()> {
+        let data = DataPacket {
+            payload: Some(DataPacketPayload::Capability(packet.clone())),
+        };
+        let payload = data.encode_to_vec();
+        let mut guard = self.client.lock().await;
+        let client = guard.as_mut().ok_or_else(|| {
+            FlareError::localized(flare_core::common::ErrorCode::NotConnected, "未连接")
+        })?;
+        let cmd = builder::data_message(builder::generate_message_id(), payload, None, None);
+        let frame = builder::frame_with_payload_command(cmd, Reliability::AtLeastOnce);
+        timeout(CONTROL_SEND_TIMEOUT, client.send_frame(&frame))
+            .await
+            .map_err(|_| {
+                FlareError::localized(
+                    flare_core::common::ErrorCode::OperationTimeout,
+                    "capability packet send timeout",
+                )
+            })?
+            .map_err(|e| FlareError::connection_failed(e.to_string()))?;
+        Ok(())
+    }
+
+    /// 发送实时控制包（`DataPacket` + `realtime_control`）。PayloadCommand.type=Data；不占用 conversation_seq。
+    pub async fn send_realtime_control(&self, control: &RealtimeControlPacket) -> Result<()> {
+        self.send_realtime_control_with_timeout(control, CONTROL_SEND_TIMEOUT)
+            .await
+    }
+
+    /// 发送可丢弃的实时控制包。输入状态等瞬态提示不应阻塞消息发送主链路。
+    pub async fn send_realtime_control_best_effort(
+        &self,
+        control: &RealtimeControlPacket,
+    ) -> Result<()> {
+        if let Err(error) = self
+            .send_realtime_control_with_timeout(control, BEST_EFFORT_CONTROL_SEND_TIMEOUT)
+            .await
+        {
+            tracing::debug!(
+                error = %error,
+                control_type = %control.control_type,
+                "dropped best-effort realtime control packet"
+            );
+        }
+        Ok(())
+    }
+
+    async fn send_realtime_control_with_timeout(
+        &self,
+        control: &RealtimeControlPacket,
+        timeout_duration: Duration,
+    ) -> Result<()> {
+        let data = DataPacket {
+            payload: Some(DataPacketPayload::RealtimeControl(control.clone())),
+        };
+        let payload = data.encode_to_vec();
+        let mut guard = self.client.lock().await;
+        let client = guard.as_mut().ok_or_else(|| {
+            FlareError::localized(flare_core::common::ErrorCode::NotConnected, "未连接")
+        })?;
+        let cmd = builder::data_message(builder::generate_message_id(), payload, None, None);
+        let frame = builder::frame_with_payload_command(cmd, Reliability::AtLeastOnce);
+        timeout(timeout_duration, client.send_frame(&frame))
+            .await
+            .map_err(|_| {
+                FlareError::localized(
+                    flare_core::common::ErrorCode::OperationTimeout,
+                    "realtime control send timeout",
+                )
+            })?
+            .map_err(|e| FlareError::connection_failed(e.to_string()))?;
+        Ok(())
+    }
+
     /// 发送同步请求并等待 DATA 回包（网关对 DATA 为 request-response，须 `send_frame_and_wait`）。
     pub async fn send_sync_and_wait(
         &self,
@@ -170,7 +246,6 @@ impl PacketSender {
         timeout: Duration,
     ) -> Result<SyncRes> {
         let packet = DataPacket {
-            kind: DataKind::SyncRequest as i32,
             payload: Some(DataPacketPayload::SyncRequest(sync.clone())),
         };
         let payload = packet.encode_to_vec();
@@ -193,7 +268,6 @@ impl PacketSender {
     /// 发送同步请求（仅发不等；遗留路径，新代码请用 [`Self::send_sync_and_wait`]）。
     pub async fn send_sync(&self, sync: &flare_proto::common::Sync) -> Result<()> {
         let packet = DataPacket {
-            kind: DataKind::SyncRequest as i32,
             payload: Some(DataPacketPayload::SyncRequest(sync.clone())),
         };
         let payload = packet.encode_to_vec();
@@ -232,17 +306,11 @@ fn decode_sync_response_frame(frame: &Frame) -> Result<SyncRes> {
     let packet = DataPacket::decode(payload).map_err(|e| {
         FlareError::deserialization_error(format!("decode sync DataPacket response: {e}"))
     })?;
-    match (packet.kind, packet.payload) {
-        (k, Some(DataPacketPayload::SyncResponse(res))) if k == DataKind::SyncResponse as i32 => {
-            Ok(res)
-        }
-        (k, Some(DataPacketPayload::UserCustom(data)))
-            if k == DataKind::UserCustom as i32 && data.r#type == "error" =>
-        {
-            Err(FlareError::general_error(
-                String::from_utf8_lossy(&data.payload).into_owned(),
-            ))
-        }
+    match packet.payload {
+        Some(DataPacketPayload::SyncResponse(res)) => Ok(res),
+        Some(DataPacketPayload::UserCustom(data)) if data.r#type == "error" => Err(
+            FlareError::general_error(String::from_utf8_lossy(&data.payload).into_owned()),
+        ),
         _ => Err(FlareError::general_error(
             "unexpected sync response payload".to_string(),
         )),

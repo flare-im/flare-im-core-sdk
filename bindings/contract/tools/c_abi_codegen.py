@@ -22,6 +22,11 @@ def load_exports() -> list[dict[str, Any]]:
     return exports
 
 
+def wire_key(name: str) -> str:
+    parts = name.split("_")
+    return parts[0] + "".join(part[:1].upper() + part[1:] for part in parts[1:])
+
+
 def render_cstr_arg(param: str, label: str) -> str:
     msg = json.dumps(label, ensure_ascii=False)
     return f"""let {param} = match c_str_to_string({param}) {{
@@ -44,7 +49,7 @@ def render_upload_options_prelude(name: str, _key: str) -> str:
             }}
         }};
         let upload_options_value = match upload_options {{
-            Some(opts) => serde_json::json!({{ "chunk_size": opts.chunk_size }}),
+            Some(opts) => serde_json::json!({{ "chunkSize": opts.chunk_size }}),
             None => serde_json::Value::Null,
         }};"""
 
@@ -139,7 +144,7 @@ def render_params_build(args: list[dict[str, Any]]) -> list[str]:
     prelude: list[str] = []
     fields: list[str] = []
     for arg in args:
-        key = arg.get("json_key", arg["name"])
+        key = arg.get("json_key", wire_key(arg["name"]))
         name = arg["name"]
         atype = arg["type"]
         if atype == "request_json":
@@ -324,8 +329,8 @@ enum FlareSdkStateCode {{
     Reconnecting = 4,
 }}
 
-fn map_sdk_state(s: flare_im_core_sdk::core::SdkState) -> i32 {{
-    use flare_im_core_sdk::core::SdkState as S;
+fn map_sdk_state(s: flare_im_core_sdk::SdkState) -> i32 {{
+    use flare_im_core_sdk::SdkState as S;
     match s {{
         S::Disconnected => FlareSdkStateCode::Disconnected as i32,
         S::Connecting => FlareSdkStateCode::Connecting as i32,

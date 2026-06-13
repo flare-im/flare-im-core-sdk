@@ -77,15 +77,15 @@ impl SqliteConversationRepo {
                        m.sender_display_name,
                        m.server_id,
                        m.client_msg_id,
-                       m.seq,
+                       m.conversation_seq,
                        COALESCE(
                            NULLIF(TRIM(m.text), ''),
-                           NULLIF(TRIM(CASE WHEN json_valid(COALESCE(m.extra, '')) THEN json_extract(m.extra, '$.contentText') ELSE NULL END), ''),
+                           NULLIF(TRIM(CASE WHEN json_valid(COALESCE(m.attributes, '')) THEN json_extract(m.attributes, '$.contentText') ELSE NULL END), ''),
                            ''
                        ) AS preview,
                        CASE
-                           WHEN m.seq > 0 THEN COALESCE(NULLIF(m.timestamp, 0), NULLIF(m.client_timestamp, 0), NULLIF(m.sort_ts, 0), 0)
-                           ELSE max(max(COALESCE(m.sort_ts, 0), COALESCE(m.timestamp, 0)), COALESCE(m.client_timestamp, 0))
+                           WHEN m.conversation_seq > 0 THEN COALESCE(NULLIF(m.created_at, 0), NULLIF(m.client_created_at, 0), NULLIF(m.sort_ts, 0), 0)
+                           ELSE max(max(COALESCE(m.sort_ts, 0), COALESCE(m.created_at, 0)), COALESCE(m.client_created_at, 0))
                        END AS effective_at
                    FROM messages m
                    WHERE TRIM(COALESCE(m.conversation_id, '')) != ''
@@ -102,24 +102,24 @@ impl SqliteConversationRepo {
                            AND COALESCE(s.is_recalled, 0) = 0
                          ORDER BY
                              CASE
-                                 WHEN s.seq = 0
-                                  AND max(max(COALESCE(s.sort_ts, 0), COALESCE(s.timestamp, 0)), COALESCE(s.client_timestamp, 0)) >
+                                 WHEN s.conversation_seq = 0
+                                  AND max(max(COALESCE(s.sort_ts, 0), COALESCE(s.created_at, 0)), COALESCE(s.client_created_at, 0)) >
                                       COALESCE((
-                                          SELECT max(COALESCE(NULLIF(x.timestamp, 0), NULLIF(x.client_timestamp, 0), NULLIF(x.sort_ts, 0), 0))
+                                          SELECT max(COALESCE(NULLIF(x.created_at, 0), NULLIF(x.client_created_at, 0), NULLIF(x.sort_ts, 0), 0))
                                           FROM messages x
                                           WHERE x.conversation_id = s.conversation_id
-                                            AND x.seq > 0
+                                            AND x.conversation_seq > 0
                                             AND COALESCE(x.is_recalled, 0) = 0
                                       ), 0)
                                  THEN 3
-                                 WHEN s.seq > 0
+                                 WHEN s.conversation_seq > 0
                                  THEN 2
                                  ELSE 0
                              END DESC,
-                             CASE WHEN s.seq > 0 THEN s.seq ELSE 0 END DESC,
+                             CASE WHEN s.conversation_seq > 0 THEN s.conversation_seq ELSE 0 END DESC,
                              CASE
-                                 WHEN s.seq > 0 THEN COALESCE(NULLIF(s.timestamp, 0), NULLIF(s.client_timestamp, 0), NULLIF(s.sort_ts, 0), 0)
-                                 ELSE max(max(COALESCE(s.sort_ts, 0), COALESCE(s.timestamp, 0)), COALESCE(s.client_timestamp, 0))
+                                 WHEN s.conversation_seq > 0 THEN COALESCE(NULLIF(s.created_at, 0), NULLIF(s.client_created_at, 0), NULLIF(s.sort_ts, 0), 0)
+                                 ELSE max(max(COALESCE(s.sort_ts, 0), COALESCE(s.created_at, 0)), COALESCE(s.client_created_at, 0))
                              END DESC,
                              s.rowid DESC
                          LIMIT 1
@@ -178,7 +178,7 @@ impl SqliteConversationRepo {
                    0,
                    0,
                    COALESCE((
-                       SELECT MAX(COALESCE(mm.seq, 0))
+                       SELECT MAX(COALESCE(mm.conversation_seq, 0))
                        FROM messages mm
                        WHERE mm.conversation_id = lm.conversation_id
                          AND COALESCE(mm.is_recalled, 0) = 0
@@ -220,9 +220,9 @@ impl SqliteConversationRepo {
                       CASE
                           WHEN lm.rowid IS NOT NULL AND (
                                    TRIM(COALESCE(c.last_message_preview, '')) = ''
-                                OR (lm.seq > 0 AND lm.seq >= COALESCE(c.max_seq, 0))
-                                OR (lm.seq > 0 AND COALESCE(lm.effective_at, 0) > COALESCE(c.last_message_at, 0))
-                                OR (lm.seq = 0 AND COALESCE(lm.effective_at, 0) > COALESCE(c.last_message_at, 0))
+                                OR (lm.conversation_seq > 0 AND lm.conversation_seq >= COALESCE(c.max_seq, 0))
+                                OR (lm.conversation_seq > 0 AND COALESCE(lm.effective_at, 0) > COALESCE(c.last_message_at, 0))
+                                OR (lm.conversation_seq = 0 AND COALESCE(lm.effective_at, 0) > COALESCE(c.last_message_at, 0))
                                )
                               THEN COALESCE(NULLIF(lm.server_id, ''), NULLIF(lm.client_msg_id, ''), NULLIF(TRIM(c.last_message_id), ''))
                           ELSE NULLIF(TRIM(c.last_message_id), '')
@@ -230,9 +230,9 @@ impl SqliteConversationRepo {
                       CASE
                           WHEN lm.rowid IS NOT NULL AND (
                                    TRIM(COALESCE(c.last_message_preview, '')) = ''
-                                OR (lm.seq > 0 AND lm.seq >= COALESCE(c.max_seq, 0))
-                                OR (lm.seq > 0 AND COALESCE(lm.effective_at, 0) > COALESCE(c.last_message_at, 0))
-                                OR (lm.seq = 0 AND COALESCE(lm.effective_at, 0) > COALESCE(c.last_message_at, 0))
+                                OR (lm.conversation_seq > 0 AND lm.conversation_seq >= COALESCE(c.max_seq, 0))
+                                OR (lm.conversation_seq > 0 AND COALESCE(lm.effective_at, 0) > COALESCE(c.last_message_at, 0))
+                                OR (lm.conversation_seq = 0 AND COALESCE(lm.effective_at, 0) > COALESCE(c.last_message_at, 0))
                                )
                               THEN COALESCE(NULLIF(lm.sender_id, ''), NULLIF(TRIM(c.last_sender_id), ''))
                           ELSE NULLIF(TRIM(c.last_sender_id), '')
@@ -240,9 +240,9 @@ impl SqliteConversationRepo {
                       CASE
                           WHEN lm.rowid IS NOT NULL AND (
                                    TRIM(COALESCE(c.last_message_preview, '')) = ''
-                                OR (lm.seq > 0 AND lm.seq >= COALESCE(c.max_seq, 0))
-                                OR (lm.seq > 0 AND COALESCE(lm.effective_at, 0) > COALESCE(c.last_message_at, 0))
-                                OR (lm.seq = 0 AND COALESCE(lm.effective_at, 0) > COALESCE(c.last_message_at, 0))
+                                OR (lm.conversation_seq > 0 AND lm.conversation_seq >= COALESCE(c.max_seq, 0))
+                                OR (lm.conversation_seq > 0 AND COALESCE(lm.effective_at, 0) > COALESCE(c.last_message_at, 0))
+                                OR (lm.conversation_seq = 0 AND COALESCE(lm.effective_at, 0) > COALESCE(c.last_message_at, 0))
                                )
                               THEN COALESCE(NULLIF(lm.effective_at, 0), c.last_message_at)
                           ELSE c.last_message_at
@@ -250,9 +250,9 @@ impl SqliteConversationRepo {
                       CASE
                           WHEN lm.rowid IS NOT NULL AND (
                                    TRIM(COALESCE(c.last_message_preview, '')) = ''
-                                OR (lm.seq > 0 AND lm.seq >= COALESCE(c.max_seq, 0))
-                                OR (lm.seq > 0 AND COALESCE(lm.effective_at, 0) > COALESCE(c.last_message_at, 0))
-                                OR (lm.seq = 0 AND COALESCE(lm.effective_at, 0) > COALESCE(c.last_message_at, 0))
+                                OR (lm.conversation_seq > 0 AND lm.conversation_seq >= COALESCE(c.max_seq, 0))
+                                OR (lm.conversation_seq > 0 AND COALESCE(lm.effective_at, 0) > COALESCE(c.last_message_at, 0))
+                                OR (lm.conversation_seq = 0 AND COALESCE(lm.effective_at, 0) > COALESCE(c.last_message_at, 0))
                                ) THEN lm.text
                           ELSE c.last_message_preview
                       END AS last_message_preview,
@@ -263,48 +263,48 @@ impl SqliteConversationRepo {
                       c.mention_count, c.mention_me, c.badge, c.role
                FROM conversations c
                LEFT JOIN (
-                   SELECT rowid, server_id, client_msg_id, sender_id, seq,
+                   SELECT rowid, server_id, client_msg_id, sender_id, conversation_seq,
                           COALESCE(
                               NULLIF(TRIM(text), ''),
-                              NULLIF(TRIM(CASE WHEN json_valid(COALESCE(extra, '')) THEN json_extract(extra, '$.contentText') ELSE NULL END), '')
+                              NULLIF(TRIM(CASE WHEN json_valid(COALESCE(attributes, '')) THEN json_extract(attributes, '$.contentText') ELSE NULL END), '')
                           ) AS text,
                           CASE
-                              WHEN seq > 0 THEN COALESCE(NULLIF(timestamp, 0), NULLIF(client_timestamp, 0), NULLIF(sort_ts, 0), 0)
-                              ELSE max(max(COALESCE(sort_ts, 0), COALESCE(timestamp, 0)), COALESCE(client_timestamp, 0))
+                              WHEN conversation_seq > 0 THEN COALESCE(NULLIF(created_at, 0), NULLIF(client_created_at, 0), NULLIF(sort_ts, 0), 0)
+                              ELSE max(max(COALESCE(sort_ts, 0), COALESCE(created_at, 0)), COALESCE(client_created_at, 0))
                           END AS effective_at
                    FROM messages
                ) lm ON lm.rowid = (
                    SELECT m.rowid
                    FROM messages m
                    WHERE m.conversation_id = c.conversation_id
-                     AND (m.seq = 0 OR m.seq > COALESCE(c.visible_after_seq, 0))
+                     AND (m.conversation_seq = 0 OR m.conversation_seq > COALESCE(c.visible_after_seq, 0))
                      AND COALESCE(
                          NULLIF(TRIM(m.text), ''),
-                         NULLIF(TRIM(CASE WHEN json_valid(COALESCE(m.extra, '')) THEN json_extract(m.extra, '$.contentText') ELSE NULL END), '')
+                         NULLIF(TRIM(CASE WHEN json_valid(COALESCE(m.attributes, '')) THEN json_extract(m.attributes, '$.contentText') ELSE NULL END), '')
                      ) IS NOT NULL
                    ORDER BY
                             CASE
-                                WHEN m.seq = 0
-                                 AND max(max(COALESCE(m.sort_ts, 0), COALESCE(m.timestamp, 0)), COALESCE(m.client_timestamp, 0)) >
+                                WHEN m.conversation_seq = 0
+                                 AND max(max(COALESCE(m.sort_ts, 0), COALESCE(m.created_at, 0)), COALESCE(m.client_created_at, 0)) >
                                      COALESCE((
-                                         SELECT max(COALESCE(NULLIF(s.timestamp, 0), NULLIF(s.client_timestamp, 0), NULLIF(s.sort_ts, 0), 0))
+                                         SELECT max(COALESCE(NULLIF(s.created_at, 0), NULLIF(s.client_created_at, 0), NULLIF(s.sort_ts, 0), 0))
                                          FROM messages s
                                          WHERE s.conversation_id = m.conversation_id
-                                           AND s.seq > 0
+                                           AND s.conversation_seq > 0
                                            AND COALESCE(
                                                NULLIF(TRIM(s.text), ''),
-                                               NULLIF(TRIM(CASE WHEN json_valid(COALESCE(s.extra, '')) THEN json_extract(s.extra, '$.contentText') ELSE NULL END), '')
+                                               NULLIF(TRIM(CASE WHEN json_valid(COALESCE(s.attributes, '')) THEN json_extract(s.attributes, '$.contentText') ELSE NULL END), '')
                                            ) IS NOT NULL
                                      ), 0)
                                 THEN 3
-                                WHEN m.seq > 0
+                                WHEN m.conversation_seq > 0
                                 THEN 2
                                 ELSE 0
                             END DESC,
-                            CASE WHEN m.seq > 0 THEN m.seq ELSE 0 END DESC,
+                            CASE WHEN m.conversation_seq > 0 THEN m.conversation_seq ELSE 0 END DESC,
                             CASE
-                                WHEN m.seq > 0 THEN COALESCE(NULLIF(m.timestamp, 0), NULLIF(m.client_timestamp, 0), NULLIF(m.sort_ts, 0), 0)
-                                ELSE max(max(COALESCE(m.sort_ts, 0), COALESCE(m.timestamp, 0)), COALESCE(m.client_timestamp, 0))
+                                WHEN m.conversation_seq > 0 THEN COALESCE(NULLIF(m.created_at, 0), NULLIF(m.client_created_at, 0), NULLIF(m.sort_ts, 0), 0)
+                                ELSE max(max(COALESCE(m.sort_ts, 0), COALESCE(m.created_at, 0)), COALESCE(m.client_created_at, 0))
                             END DESC
                    LIMIT 1
                )
@@ -472,9 +472,9 @@ impl ConversationReader for SqliteConversationRepo {
                     SELECT 1
                     FROM messages mm
                     WHERE mm.conversation_id = c.conversation_id
-                      AND (mm.seq = 0 OR mm.seq > COALESCE(c.visible_after_seq, 0))
+                      AND (mm.conversation_seq = 0 OR mm.conversation_seq > COALESCE(c.visible_after_seq, 0))
                       AND COALESCE(mm.is_recalled, 0) = 0
-                      AND COALESCE(mm.extra, '') LIKE '%markType%'
+                      AND COALESCE(mm.attributes, '') LIKE '%markType%'
                     LIMIT 1
                 )"#,
             );
@@ -876,7 +876,7 @@ impl ConversationWriter for SqliteConversationRepo {
                    SELECT COUNT(1)
                    FROM messages m
                    WHERE m.conversation_id = conversations.conversation_id
-                     AND COALESCE(m.seq, 0) > COALESCE(conversations.last_read_seq, 0)
+                     AND COALESCE(m.conversation_seq, 0) > COALESCE(conversations.last_read_seq, 0)
                      AND COALESCE(m.sender_id, '') <> ?
                      AND COALESCE(m.is_recalled, 0) = 0
                )
@@ -1006,7 +1006,7 @@ impl ConversationWriter for SqliteConversationRepo {
     }
     async fn get_local_max_seq(&self, conversation_id: &str) -> Result<u64> {
         let row = sqlx::query(
-            r#"SELECT COALESCE(MAX(seq), 0) AS max_seq
+            r#"SELECT COALESCE(MAX(conversation_seq), 0) AS max_seq
                FROM messages
                WHERE conversation_id = ?"#,
         )
@@ -1093,25 +1093,25 @@ mod tests {
         SqliteConversationRepo::new(pool)
     }
 
-    fn conversation(conversation_id: &str, seq: u64, text: &str) -> Conversation {
+    fn conversation(conversation_id: &str, conversation_seq: u64, text: &str) -> Conversation {
         Conversation {
             conversation_id: conversation_id.to_string(),
             business_type: "chat".to_string(),
             channel_id: conversation_id.to_string(),
             display_name: conversation_id.to_string(),
-            last_message_id: Some(format!("msg-{seq}")),
+            last_message_id: Some(format!("msg-{conversation_seq}")),
             last_sender_id: Some("u1".to_string()),
-            last_message_at: Some(seq * 1000),
+            last_message_at: Some(conversation_seq * 1000),
             last_message_preview: Some(text.to_string()),
             last_message: Some(MessagePreviewElem {
-                message_id: format!("msg-{seq}"),
+                message_id: format!("msg-{conversation_seq}"),
                 sender_id: "u1".to_string(),
                 r#type: 1,
                 text: text.to_string(),
-                time: seq * 1000,
+                time: conversation_seq * 1000,
             }),
-            max_seq: seq,
-            updated_at: seq * 1000,
+            max_seq: conversation_seq,
+            updated_at: conversation_seq * 1000,
             created_at: 1,
             ..Default::default()
         }
@@ -1123,10 +1123,10 @@ mod tests {
 
         sqlx::query(
             r#"INSERT INTO messages (
-                   server_id, conversation_id, client_msg_id, sender_id, seq,
-                   timestamp, client_timestamp, conversation_type, message_type,
+                   server_id, conversation_id, client_msg_id, sender_id, conversation_seq,
+                   created_at, client_created_at, conversation_type, message_type,
                    channel_id, sender_name, sender_display_name,
-                   content, text, sort_ts, updated_at
+                   encoded_content, text, sort_ts, updated_at
                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, X'', ?, ?, ?)"#,
         )
         .bind("msg-orphan-1")
@@ -1150,10 +1150,10 @@ mod tests {
 
         sqlx::query(
             r#"INSERT INTO messages (
-                   server_id, conversation_id, client_msg_id, sender_id, seq,
-                   timestamp, client_timestamp, conversation_type, message_type,
+                   server_id, conversation_id, client_msg_id, sender_id, conversation_seq,
+                   created_at, client_created_at, conversation_type, message_type,
                    channel_id, sender_name, sender_display_name,
-                   content, text, sort_ts, updated_at
+                   encoded_content, text, sort_ts, updated_at
                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, X'', ?, ?, ?)"#,
         )
         .bind("msg-orphan-2")
@@ -1326,9 +1326,9 @@ mod tests {
 
         sqlx::query(
             r#"INSERT INTO messages (
-                   server_id, conversation_id, client_msg_id, sender_id, seq,
-                   timestamp, client_timestamp, conversation_type, message_type,
-                   channel_id, content, text, extra, sort_ts, updated_at
+                   server_id, conversation_id, client_msg_id, sender_id, conversation_seq,
+                   created_at, client_created_at, conversation_type, message_type,
+                   channel_id, encoded_content, text, attributes, sort_ts, updated_at
                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, X'', ?, ?, ?, ?)"#,
         )
         .bind("marked-msg")
@@ -1378,9 +1378,9 @@ mod tests {
 
         sqlx::query(
             r#"INSERT INTO messages (
-                   server_id, conversation_id, client_msg_id, sender_id, seq,
-                   timestamp, client_timestamp, conversation_type, message_type,
-                   channel_id, content, text, sort_ts, updated_at
+                   server_id, conversation_id, client_msg_id, sender_id, conversation_seq,
+                   created_at, client_created_at, conversation_type, message_type,
+                   channel_id, encoded_content, text, sort_ts, updated_at
                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, X'', ?, ?, ?)"#,
         )
         .bind("msg-12")
@@ -1428,9 +1428,9 @@ mod tests {
 
         sqlx::query(
             r#"INSERT INTO messages (
-                   server_id, conversation_id, client_msg_id, sender_id, seq,
-                   timestamp, client_timestamp, conversation_type, message_type,
-                   channel_id, content, text, sort_ts, updated_at
+                   server_id, conversation_id, client_msg_id, sender_id, conversation_seq,
+                   created_at, client_created_at, conversation_type, message_type,
+                   channel_id, encoded_content, text, sort_ts, updated_at
                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, X'', ?, ?, ?)"#,
         )
         .bind("msg-12")
@@ -1473,9 +1473,9 @@ mod tests {
 
         sqlx::query(
             r#"INSERT INTO messages (
-                   server_id, conversation_id, client_msg_id, sender_id, seq,
-                   timestamp, client_timestamp, conversation_type, message_type,
-                   channel_id, content, text, sort_ts, updated_at
+                   server_id, conversation_id, client_msg_id, sender_id, conversation_seq,
+                   created_at, client_created_at, conversation_type, message_type,
+                   channel_id, encoded_content, text, sort_ts, updated_at
                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, X'', ?, ?, ?)"#,
         )
         .bind("msg-12")
@@ -1516,9 +1516,9 @@ mod tests {
 
         sqlx::query(
             r#"INSERT INTO messages (
-                   server_id, conversation_id, client_msg_id, sender_id, seq,
-                   timestamp, client_timestamp, conversation_type, message_type,
-                   channel_id, content, text, extra, sort_ts, updated_at
+                   server_id, conversation_id, client_msg_id, sender_id, conversation_seq,
+                   created_at, client_created_at, conversation_type, message_type,
+                   channel_id, encoded_content, text, attributes, sort_ts, updated_at
                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, X'', NULL, ?, ?, ?)"#,
         )
         .bind("msg-12")

@@ -9,7 +9,7 @@ use hmac::{Hmac, Mac};
 use serde::Serialize;
 use sha2::Sha256;
 
-use crate::shared::error::Result;
+use crate::shared::error::{ErrorCode, FlareError, Result};
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -28,6 +28,21 @@ struct TokenClaims {
 }
 
 static JTI_SEQ: AtomicU64 = AtomicU64::new(0);
+
+/// Core access JWT signing configuration.
+///
+/// This helper is intended for local gateways, examples, and controlled test
+/// harnesses that need a gateway-compatible HS256 token. Signing material and
+/// expiry must be supplied explicitly by the caller.
+#[derive(Debug, Clone)]
+pub struct CoreTokenConfig {
+    pub secret: String,
+    pub issuer: String,
+    pub user_id: String,
+    pub ttl_secs: u64,
+    pub device_id: Option<String>,
+    pub tenant_id: Option<String>,
+}
 
 fn generate_jti() -> String {
     #[cfg(target_arch = "wasm32")]
@@ -89,23 +104,38 @@ fn sign_hs256(secret: &str, signing_input: &str) -> Result<String> {
     Ok(URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes()))
 }
 
-/// 生成测试用 JWT token（HS256）
+fn require_non_empty<'a>(field: &str, value: &'a str) -> Result<&'a str> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Err(FlareError::localized(
+            ErrorCode::ConfigurationError,
+            format!("core token {field} is required"),
+        ));
+    }
+    Ok(trimmed)
+}
+
+/// 生成 Flare IM Core 接入 JWT token（HS256）。
 ///
-/// 产出的 token 与服务端签发的 access token 字段布局一致，
-/// 可直接用于 flare-im-core access-gateway 的认证。
+/// 产出的 token 与服务端签发的 access token 字段布局一致，可直接用于
+/// flare-im-core access-gateway 的认证。调用方必须显式提供签名 secret、
+/// issuer、user_id 与过期时间，避免测试默认值进入真实集成路径。
 ///
 /// Native 与 WASM 共用同一实现（不依赖 `jsonwebtoken`）。
-pub fn generate_test_token(
-    secret: &str,
-    issuer: &str,
-    user_id: &str,
-    ttl_secs: u64,
-    device_id: Option<&str>,
-    tenant_id: Option<&str>,
-) -> Result<String> {
+pub fn generate_core_token(config: &CoreTokenConfig) -> Result<String> {
+    let secret = require_non_empty("secret", &config.secret)?;
+    let issuer = require_non_empty("issuer", &config.issuer)?;
+    let user_id = require_non_empty("user_id", &config.user_id)?;
+    if config.ttl_secs == 0 {
+        return Err(FlareError::localized(
+            ErrorCode::ConfigurationError,
+            "core token ttl_secs must be greater than zero",
+        ));
+    }
+
     let now = now_unix_secs()?;
     let iat = now as usize;
-    let exp = (now + ttl_secs.max(60)) as usize;
+    let exp = (now + config.ttl_secs.max(60)) as usize;
 
     let claims = TokenClaims {
         sub: user_id.to_string(),
@@ -113,8 +143,28 @@ pub fn generate_test_token(
         exp,
         iat,
         jti: generate_jti(),
-        device_id: device_id.map(str::to_string),
-        tenant_id: tenant_id.map(str::to_string),
+        device_id: config
+            .device_id
+            .as_deref()
+            .map(str::trim)
+            .and_then(|value| {
+                if value.is_empty() {
+                    None
+                } else {
+                    Some(value.to_string())
+                }
+            }),
+        tenant_id: config
+            .tenant_id
+            .as_deref()
+            .map(str::trim)
+            .and_then(|value| {
+                if value.is_empty() {
+                    None
+                } else {
+                    Some(value.to_string())
+                }
+            }),
     };
 
     let header = base64url_json(&serde_json::json!({
@@ -140,14 +190,14 @@ mod tests {
 
     #[test]
     fn generates_hs256_jwt_with_gateway_claims() {
-        let token = generate_test_token(
-            "insecure-secret",
-            "flare-im-core",
-            "alice",
-            3600,
-            None,
-            Some("0"),
-        )
+        let token = generate_core_token(&CoreTokenConfig {
+            secret: "gateway-secret".to_string(),
+            issuer: "flare-im-core".to_string(),
+            user_id: "alice".to_string(),
+            ttl_secs: 3600,
+            device_id: None,
+            tenant_id: Some("0".to_string()),
+        })
         .expect("token");
         assert_eq!(token.matches('.').count(), 2);
         let payload = decode_payload(&token);
@@ -159,9 +209,35 @@ mod tests {
 
     #[test]
     fn omits_optional_claims_when_absent() {
-        let token = generate_test_token("secret", "issuer", "bob", 120, None, None).expect("token");
+        let token = generate_core_token(&CoreTokenConfig {
+            secret: "secret".to_string(),
+            issuer: "issuer".to_string(),
+            user_id: "bob".to_string(),
+            ttl_secs: 120,
+            device_id: None,
+            tenant_id: None,
+        })
+        .expect("token");
         let payload = decode_payload(&token);
         assert!(payload.get("tenant_id").is_none());
         assert!(payload.get("device_id").is_none());
+    }
+
+    #[test]
+    fn rejects_missing_signing_config() {
+        let err = generate_core_token(&CoreTokenConfig {
+            secret: " ".to_string(),
+            issuer: "issuer".to_string(),
+            user_id: "alice".to_string(),
+            ttl_secs: 3600,
+            device_id: None,
+            tenant_id: None,
+        })
+        .expect_err("secret must be explicit");
+
+        assert_eq!(
+            err.code(),
+            Some(crate::shared::error::ErrorCode::ConfigurationError)
+        );
     }
 }

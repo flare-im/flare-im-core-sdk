@@ -13,6 +13,11 @@ pub mod validate;
 pub use error::RichDocV2Error;
 pub use extract::{RichDocDerived, derive_from_json_str, derive_from_value};
 pub use pipeline::{
-    NormalizeOutput, normalize_from_doc_json, normalize_from_html, normalize_from_markdown,
+    NormalizeOptions, NormalizeOutput, normalize_from_doc_json, normalize_from_html,
+    normalize_from_html_with_options, normalize_from_markdown,
+    normalize_from_markdown_with_options,
 };
-pub use validate::validate_doc_json;
+pub use validate::{
+    MAX_RICH_DOC_JSON_BYTES, MAX_RICH_DOC_NODES, MAX_RICH_DOC_SOURCE_BYTES,
+    MAX_RICH_DOC_TEXT_BYTES, validate_doc_json,
+};

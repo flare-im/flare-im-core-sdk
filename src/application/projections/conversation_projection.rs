@@ -77,7 +77,7 @@ impl ConversationProjectionApplier {
                 continue;
             }
             match latest_per_conversation.get(&message.conversation_id) {
-                Some(previous) if previous.seq >= message.seq => {}
+                Some(previous) if previous.conversation_seq >= message.conversation_seq => {}
                 _ => {
                     latest_per_conversation.insert(message.conversation_id.clone(), message);
                 }
@@ -102,11 +102,12 @@ impl ConversationProjectionApplier {
                 .as_ref()
                 .map(|conversation| conversation.max_seq)
                 .unwrap_or(0);
-            let should_update_summary = previous.is_none() || latest.seq >= previous_max_seq;
+            let should_update_summary =
+                previous.is_none() || latest.conversation_seq >= previous_max_seq;
             let conversation_max_seq = previous
                 .as_ref()
-                .map(|conversation| conversation.max_seq.max(latest.seq))
-                .unwrap_or(latest.seq);
+                .map(|conversation| conversation.max_seq.max(latest.conversation_seq))
+                .unwrap_or(latest.conversation_seq);
             if should_update_summary {
                 let _ = self
                     .stores
@@ -115,7 +116,7 @@ impl ConversationProjectionApplier {
                         &conversation_id,
                         latest.server_id(),
                         latest.sender_id(),
-                        latest.timestamp,
+                        latest.created_at,
                         latest.text_for_storage().as_deref(),
                         conversation_max_seq,
                     )
@@ -154,7 +155,7 @@ impl ConversationProjectionApplier {
                     }
                 }
             } else {
-                let is_new_message = latest.seq > previous_max_seq;
+                let is_new_message = latest.conversation_seq > previous_max_seq;
                 let is_self_message = latest.sender_id() == current_user_id;
                 if is_new_message && !is_self_message {
                     let last_read_seq = previous.as_ref().map(|c| c.last_read_seq).unwrap_or(0);
@@ -208,10 +209,13 @@ impl ConversationProjectionApplier {
             .saturating_add(previous_read.unread_count as u64);
         match unread_mode {
             UnreadApplyMode::SyncReplay => {
-                message.seq > previous_read.last_read_seq && message.seq > accounted_through
+                message.conversation_seq > previous_read.last_read_seq
+                    && message.conversation_seq > accounted_through
             }
             UnreadApplyMode::RealtimePush => {
-                if message.seq > previous_read.last_read_seq && message.seq > accounted_through {
+                if message.conversation_seq > previous_read.last_read_seq
+                    && message.conversation_seq > accounted_through
+                {
                     return true;
                 }
 
@@ -219,8 +223,8 @@ impl ConversationProjectionApplier {
                 // 但本地从未见过这条实时消息。对零未读的会话尾部新鲜消息做本地恢复。
                 previous_read.unread_count == 0
                     && previous_read.max_seq > 0
-                    && message.seq >= previous_read.max_seq
-                    && message.seq >= previous_read.last_read_seq
+                    && message.conversation_seq >= previous_read.max_seq
+                    && message.conversation_seq >= previous_read.last_read_seq
             }
         }
     }
@@ -259,7 +263,7 @@ impl ConversationProjectionApplier {
             } else {
                 Some(message.sender_id.clone())
             },
-            last_message_at: Some(message.timestamp),
+            last_message_at: Some(message.created_at),
             last_message_preview: if preview.is_empty() {
                 None
             } else {
@@ -270,11 +274,11 @@ impl ConversationProjectionApplier {
                 sender_id: message.sender_id.clone(),
                 r#type: message.message_type,
                 text: preview,
-                time: message.timestamp,
+                time: message.created_at,
             }),
-            max_seq: message.seq,
-            updated_at: message.timestamp,
-            created_at: message.timestamp,
+            max_seq: message.conversation_seq,
+            updated_at: message.created_at,
+            created_at: message.created_at,
             ..Default::default()
         };
         if conversation.channel_id.trim().is_empty()
@@ -625,7 +629,7 @@ mod tests {
         message.server_id = "server-1".to_string();
         message.conversation_id = "conv-1".to_string();
         message.sender_id = "u2".to_string();
-        message.seq = 5;
+        message.conversation_seq = 5;
 
         applier.apply_messages(&[message], "u1").await.unwrap();
 
@@ -662,7 +666,7 @@ mod tests {
         message.server_id = "server-2".to_string();
         message.conversation_id = "conv-1".to_string();
         message.sender_id = "u1".to_string();
-        message.seq = 7;
+        message.conversation_seq = 7;
 
         applier.apply_messages(&[message], "u1").await.unwrap();
 
@@ -682,13 +686,13 @@ mod tests {
         older.server_id = "server-old".to_string();
         older.conversation_id = "conv-1".to_string();
         older.sender_id = "u2".to_string();
-        older.seq = 2;
+        older.conversation_seq = 2;
 
         let mut newer = IMMessage::new(flare_proto::common::Message::default());
         newer.server_id = "server-new".to_string();
         newer.conversation_id = "conv-1".to_string();
         newer.sender_id = "u2".to_string();
-        newer.seq = 9;
+        newer.conversation_seq = 9;
 
         applier.apply_messages(&[older, newer], "u1").await.unwrap();
 
@@ -721,8 +725,8 @@ mod tests {
         message.conversation_type =
             crate::model::conversation::ConversationType::Single.to_proto_int();
         message.sender_id = "peer".to_string();
-        message.seq = 1;
-        message.timestamp = 12_345;
+        message.conversation_seq = 1;
+        message.created_at = 12_345;
 
         applier.apply_messages(&[message], "me").await.unwrap();
 
@@ -746,7 +750,7 @@ mod tests {
         message.server_id = "server-5".to_string();
         message.conversation_id = "conv-1".to_string();
         message.sender_id = "u2".to_string();
-        message.seq = 5;
+        message.conversation_seq = 5;
 
         applier.apply_messages(&[message], "u1").await.unwrap();
 
@@ -767,7 +771,7 @@ mod tests {
         message.server_id = "server-5".to_string();
         message.conversation_id = "conv-1".to_string();
         message.sender_id = "u2".to_string();
-        message.seq = 5;
+        message.conversation_seq = 5;
 
         applier.apply_messages(&[message], "u1").await.unwrap();
 
@@ -788,13 +792,13 @@ mod tests {
         first.server_id = "server-5".to_string();
         first.conversation_id = "conv-1".to_string();
         first.sender_id = "u2".to_string();
-        first.seq = 5;
+        first.conversation_seq = 5;
 
         let mut second = IMMessage::new(flare_proto::common::Message::default());
         second.server_id = "server-6".to_string();
         second.conversation_id = "conv-1".to_string();
         second.sender_id = "u2".to_string();
-        second.seq = 6;
+        second.conversation_seq = 6;
 
         applier.apply_messages(&[first], "u1").await.unwrap();
         applier.apply_messages(&[second], "u1").await.unwrap();
@@ -817,7 +821,7 @@ mod tests {
         message.server_id = "server-5".to_string();
         message.conversation_id = "conv-1".to_string();
         message.sender_id = "u2".to_string();
-        message.seq = 5;
+        message.conversation_seq = 5;
 
         applier.apply_messages(&[message], "u1").await.unwrap();
 
@@ -840,7 +844,7 @@ mod tests {
             message.server_id = format!("server-{seq}");
             message.conversation_id = "conv-1".to_string();
             message.sender_id = "u2".to_string();
-            message.seq = seq;
+            message.conversation_seq = seq;
             messages.push(message);
         }
 
@@ -865,7 +869,7 @@ mod tests {
             message.server_id = format!("server-{seq}");
             message.conversation_id = "conv-1".to_string();
             message.sender_id = "u2".to_string();
-            message.seq = seq;
+            message.conversation_seq = seq;
             messages.push(message);
         }
 
@@ -891,7 +895,7 @@ mod tests {
         message.server_id = "server-8".to_string();
         message.conversation_id = "conv-1".to_string();
         message.sender_id = "u2".to_string();
-        message.seq = 8;
+        message.conversation_seq = 8;
 
         applier
             .apply_synced_messages(&[message], "u1")
@@ -913,13 +917,13 @@ mod tests {
         newer.server_id = "server-new".to_string();
         newer.conversation_id = "conv-1".to_string();
         newer.sender_id = "u2".to_string();
-        newer.seq = 9;
+        newer.conversation_seq = 9;
 
         let mut older = IMMessage::new(flare_proto::common::Message::default());
         older.server_id = "server-old".to_string();
         older.conversation_id = "conv-1".to_string();
         older.sender_id = "u2".to_string();
-        older.seq = 2;
+        older.conversation_seq = 2;
 
         applier.apply_messages(&[newer], "u1").await.unwrap();
         applier.apply_messages(&[older], "u1").await.unwrap();

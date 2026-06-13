@@ -26,12 +26,6 @@ pub enum MessageTransportAction {
         user_id: String,
         message_ids: Vec<String>,
         read_seq: u64,
-        burn_after_read: bool,
-    },
-    Typing {
-        conversation_id: String,
-        user_id: String,
-        typing: bool,
     },
     Reaction {
         conversation_id: String,
@@ -79,9 +73,6 @@ impl MessageTransportAction {
             | Self::ReadReceipt {
                 conversation_id, ..
             }
-            | Self::Typing {
-                conversation_id, ..
-            }
             | Self::Reaction {
                 conversation_id, ..
             }
@@ -110,7 +101,7 @@ impl MessageTransportAction {
             | Self::Unpin { server_msg_id, .. }
             | Self::Mark { server_msg_id, .. }
             | Self::Unmark { server_msg_id, .. } => Some(server_msg_id),
-            Self::ReadReceipt { .. } | Self::Typing { .. } => None,
+            Self::ReadReceipt { .. } => None,
         }
     }
 }

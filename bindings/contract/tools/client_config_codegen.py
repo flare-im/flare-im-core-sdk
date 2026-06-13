@@ -6,13 +6,13 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[2]
-CONTRACT_DIR = ROOT / "contract"
+BINDINGS_ROOT = Path(__file__).resolve().parents[2]
+CONTRACT_DIR = BINDINGS_ROOT / "contract"
 CLIENT_CONFIG_JSON = CONTRACT_DIR / "client_config.json"
-RUNTIME_OUT = ROOT / "runtime" / "src" / "generated" / "client_config.rs"
-WASM_OUT = ROOT / "wasm" / "src" / "generated" / "client_config.rs"
-UNIFFI_OUT = ROOT / "uniffi" / "src" / "generated" / "client_config.rs"
-C_OUT = ROOT / "c" / "src" / "generated" / "client_config.rs"
+RUNTIME_OUT = BINDINGS_ROOT / "shared" / "src" / "generated" / "client_config.rs"
+WASM_OUT = BINDINGS_ROOT / "wasm" / "src" / "generated" / "client_config.rs"
+UNIFFI_OUT = BINDINGS_ROOT / "uniffi" / "src" / "generated" / "client_config.rs"
+C_OUT = BINDINGS_ROOT / "c" / "src" / "generated" / "client_config.rs"
 
 
 def load_doc() -> dict:

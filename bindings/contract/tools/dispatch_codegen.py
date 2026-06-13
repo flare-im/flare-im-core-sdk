@@ -7,16 +7,23 @@ import json
 from pathlib import Path
 from typing import Any
 
-ROOT = Path(__file__).resolve().parents[2]
-CONTRACT_DIR = ROOT / "contract"
+BINDINGS_ROOT = Path(__file__).resolve().parents[2]
+CONTRACT_DIR = BINDINGS_ROOT / "contract"
 DISPATCH_JSON = CONTRACT_DIR / "dispatch.json"
-DISPATCH_OUT_DIR = ROOT / "runtime" / "src" / "generated" / "dispatch"
+DISPATCH_OUT_DIR = BINDINGS_ROOT / "shared" / "src" / "generated" / "dispatch"
 
 
 def owned_clone_expr(value_expr: str) -> str:
     if value_expr.startswith("&"):
         return f"{value_expr[1:]}.clone()"
     return f"{value_expr}.clone()"
+
+
+def wire_key(name: str) -> str:
+    if name.startswith("@"):
+        return name
+    parts = name.split("_")
+    return parts[0] + "".join(part[:1].upper() + part[1:] for part in parts[1:])
 
 
 def load_dispatch() -> dict[str, Any]:
@@ -68,6 +75,7 @@ def render_arg_extract(arg: dict[str, Any], group: dict[str, Any], value_expr: s
     name = arg["name"]
     kind = arg["kind"]
     g = value_expr
+    key = arg.get("wire", wire_key(name))
 
     if name == "@value" and kind.startswith("deserialize:"):
         ty = kind.split(":", 1)[1]
@@ -79,34 +87,34 @@ def render_arg_extract(arg: dict[str, Any], group: dict[str, Any], value_expr: s
 
     if kind == "str_ref":
         v = f'{name}_s'
-        return (f'let {v} = json_string({g}, "{name}")?;', f"&{v}")
+        return (f'let {v} = json_string({g}, "{key}")?;', f"&{v}")
     if kind == "conversation_id":
         v = f"{name}_s"
         return (f"let {v} = conversation_id({g})?;", f"&{v}")
     if kind == "optional_str_ref":
         v = f"{name}_o"
-        return (f'let {v} = optional_string({g}, "{name}");', f"{v}.as_deref()")
+        return (f'let {v} = optional_string({g}, "{key}");', f"{v}.as_deref()")
     if kind == "optional_string":
         v = f"{name}_o"
-        return (f'let {v} = optional_string({g}, "{name}");', f"{v}")
+        return (f'let {v} = optional_string({g}, "{key}");', f"{v}")
     if kind == "string":
         v = f"{name}_s"
-        return (f'let {v} = json_string({g}, "{name}")?;', f"{v}")
+        return (f'let {v} = json_string({g}, "{key}")?;', f"{v}")
     if kind == "u64":
         v = f"{name}_v"
-        return (f'let {v} = json_u64({g}, "{name}")?;', f"{v}")
+        return (f'let {v} = json_u64({g}, "{key}")?;', f"{v}")
     if kind == "i64":
         v = f"{name}_v"
-        return (f'let {v} = json_i64({g}, "{name}")?;', f"{v}")
+        return (f'let {v} = json_i64({g}, "{key}")?;', f"{v}")
     if kind == "bool":
         v = f"{name}_v"
-        return (f'let {v} = json_bool({g}, "{name}")?;', f"{v}")
+        return (f'let {v} = json_bool({g}, "{key}")?;', f"{v}")
     if kind == "bool_default_false":
         v = f"{name}_v"
-        return (f'let {v} = json_bool({g}, "{name}").unwrap_or(false);', f"{v}")
+        return (f'let {v} = json_bool({g}, "{key}").unwrap_or(false);', f"{v}")
     if kind == "mark_type":
         v = f"{name}_v"
-        return (f'let {v} = parse_mark_type(json_i32({g}, "{name}")?);', f"{v}")
+        return (f'let {v} = parse_mark_type(json_i32({g}, "{key}")?);', f"{v}")
     if kind == "conversation_type":
         v = f"{name}_v"
         return (f"let {v} = conversation_type({g})?;", f"&{v}")
@@ -114,26 +122,26 @@ def render_arg_extract(arg: dict[str, Any], group: dict[str, Any], value_expr: s
         v = f"{name}_v"
         pass_as = arg.get("pass", "owned")
         expr = f"&{v}" if pass_as == "ref" else f"{v}"
-        return (f'let {v} = json_vec_string({g}, "{name}")?;', expr)
+        return (f'let {v} = json_vec_string({g}, "{key}")?;', expr)
     if kind == "vec_im_message":
         v = f"{name}_v"
-        return (f'let {v} = json_vec_message({g}, "{name}")?;', f"{v}")
+        return (f'let {v} = json_vec_message({g}, "{key}")?;', f"{v}")
     if kind == "optional_vec_string":
         v = f"{name}_v"
         return (
-            f'let {v} = optional_value::<Vec<String>>({g}, "{name}")?;',
+            f'let {v} = optional_value::<Vec<String>>({g}, "{key}")?;',
             f"{v}",
         )
     if kind == "optional_hashmap_string":
         v = f"{name}_v"
         return (
-            f'let {v} = optional_value::<std::collections::HashMap<String, String>>({g}, "{name}")?;',
+            f'let {v} = optional_value::<std::collections::HashMap<String, String>>({g}, "{key}")?;',
             f"{v}",
         )
     if kind == "optional_built_content":
         v = f"{name}_v"
         return (
-            f"""let {v} = match {g}.get("quoted_content") {{
+            f"""let {v} = match {g}.get("quotedContent") {{
             Some(v) => Some(built_content_from_value(v)?),
             None => None,
         }};""",
@@ -141,7 +149,7 @@ def render_arg_extract(arg: dict[str, Any], group: dict[str, Any], value_expr: s
         )
     if kind == "optional_u32":
         v = f"{name}_v"
-        return (f'let {v} = optional_u32({g}, "{name}");', f"{v}")
+        return (f'let {v} = optional_u32({g}, "{key}");', f"{v}")
     if kind == "im_message":
         return ("", f"message_from_params({g})?")
     if kind.startswith("deserialize:"):
@@ -175,12 +183,12 @@ def render_arg_extract(arg: dict[str, Any], group: dict[str, Any], value_expr: s
         base = g[1:] if g.startswith("&") else g
         return ("", f'{base}.get("payload").cloned().unwrap_or(serde_json::Value::Null)')
     if kind.startswith("str_any:"):
-        keys = kind.split(":", 1)[1].split(",")
+        keys = [wire_key(item) for item in kind.split(":", 1)[1].split(",")]
         v = f"{name}_s"
         keys_lit = ", ".join(json.dumps(k) for k in keys)
         return (f"let {v} = string_any({g}, &[{keys_lit}])?;", f"&{v}")
     if kind.startswith("optional_str_any:"):
-        keys = kind.split(":", 1)[1].split(",")
+        keys = [wire_key(item) for item in kind.split(":", 1)[1].split(",")]
         v = f"{name}_o"
         keys_lit = ", ".join(json.dumps(k) for k in keys)
         return (f"let {v} = optional_string_any({g}, &[{keys_lit}]);", f"{v}.as_deref()")
@@ -188,7 +196,7 @@ def render_arg_extract(arg: dict[str, Any], group: dict[str, Any], value_expr: s
         default = arg.get("default", 3600)
         v = f"{name}_v"
         return (
-            f'let {v} = optional_i32({g}, "{name}").unwrap_or({default});',
+            f'let {v} = optional_i32({g}, "{key}").unwrap_or({default});',
             f"{v}",
         )
     if kind == "i32_u32":
@@ -196,11 +204,11 @@ def render_arg_extract(arg: dict[str, Any], group: dict[str, Any], value_expr: s
         min_v = arg.get("min", 1)
         v = f"{name}_v"
         return (
-            f'let {v} = json_i32({g}, "{name}").unwrap_or({default}).max({min_v}) as u32;',
+            f'let {v} = json_i32({g}, "{key}").unwrap_or({default}).max({min_v}) as u32;',
             f"{v}",
         )
     if kind.startswith("str_ref_alt:"):
-        alts = kind.split(":", 1)[1].split(",")
+        alts = [wire_key(item) for item in kind.split(":", 1)[1].split(",")]
         v = f"{name}_s"
         inner = f"json_string({g}, {json.dumps(alts[-1])})"
         for alt in reversed(alts[:-1]):
@@ -213,22 +221,16 @@ def render_arg_extract(arg: dict[str, Any], group: dict[str, Any], value_expr: s
         return ("", "None")
     if kind == "optional_upload_options":
         v = f"{name}_o"
-        return (f"let {name}_o = optional_upload_options({g}, \"{name}\")?;", f"{name}_o")
+        return (f"let {name}_o = optional_upload_options({g}, \"{key}\")?;", f"{name}_o")
     if kind == "bytes_vec":
         v = f"{name}_v"
-        return (f'let {v} = json_bytes_vec({g}, "{name}")?;', f"{v}")
+        return (f'let {v} = json_bytes_vec({g}, "{key}")?;', f"{v}")
     if kind == "json_object":
         raise ValueError("json_object is result-only")
     raise ValueError(f"unsupported arg kind: {kind} for {name}")
 
 
 def render_operation_body(op: dict[str, Any], group: dict[str, Any]) -> list[str]:
-    if op.get("handler") == "custom_call_signal":
-        return [
-            "            dispatch_call_signal(client, params).await?;",
-            "            Ok(BindingResponse::unit())",
-        ]
-
     value_expr = "&request" if group.get("op_from_request") else "&params"
     lets: list[str] = []
     call_args: list[str] = []
@@ -313,7 +315,7 @@ def render_group(group: dict[str, Any]) -> str:
     elif gid == "conversation":
         lines += [
             "use flare_im_core_sdk::client::api::ConversationApi;",
-            "use flare_im_core_sdk::model::ConversationListQuery;",
+            "use flare_im_core_sdk::model::{BootstrapHomeTimelineRequest, ConversationListQuery, OpenConversationTimelineRequest};",
         ]
     elif gid == "media":
         lines += ["use flare_im_core_sdk::client::api::MediaApi;"]
@@ -326,7 +328,7 @@ def render_group(group: dict[str, Any]) -> str:
 
     lines += [
         "use serde_json::Value;",
-        "use flare_im_core_sdk::shared::error::Result;",
+        "use flare_im_core_sdk::Result;",
         "use crate::dispatch_support::*;",
         "use crate::{BindingResponse, binding_operation_not_supported};",
         "",
@@ -367,7 +369,10 @@ def render_group(group: dict[str, Any]) -> str:
     # main dispatch
     sig_args = [f"api: {recv['binding']}"]
     for ex in extra:
-        sig_args.append(f"{ex['name']}: {ex['binding']}")
+        name = ex["name"]
+        if group["id"] == "capability" and name == "client":
+            name = "_client"
+        sig_args.append(f"{name}: {ex['binding']}")
     if not group.get("op_from_request"):
         sig_args.append("operation: &str")
     sig_args.append(f"{value_name}: Value")

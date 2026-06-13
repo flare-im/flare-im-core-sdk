@@ -5,7 +5,7 @@
 pub use crate::generated::errors::*;
 
 use crate::types::{FlareError, FlareString};
-use flare_im_core_sdk::shared::error::FlareError as SdkError;
+use flare_im_core_sdk::FlareError as SdkError;
 
 /// 从 SDK FlareError 创建 C ABI FlareError
 #[inline]

@@ -4,12 +4,18 @@
 //!
 //! **注意**：若在 [`super::IMClient::login`] 的 `before_connect` 之前尚未挂上引擎，应优先在回调里用传入的 [`crate::core::event::EventBus`] 注册；连接后再用本文件的 `on_*` 亦可（见示例 `two_clients_chat`）。
 
-use flare_proto::common::{CallSignalEvent, MessageRecallEvent, SendAck, TypingEvent};
+use std::sync::Arc;
 
+use flare_proto::common::{CapabilityPacket, MessageRecallEvent, SendAck, TypingStatePacket};
+
+use crate::application::notification::NotificationHandler;
 use crate::client::IMClient;
 use crate::core::SdkState;
 use crate::core::SyncState;
-use crate::core::event::{SharedEvent, Subscription, SyncPhase};
+use crate::core::event::{
+    CustomEventSelector, EventFilter, FilteredEventReceiver, SdkEventKind, SdkEventType,
+    SharedEvent, Subscription, SyncPhase,
+};
 use crate::model::IMMessage;
 use crate::shared::error::Result;
 
@@ -132,6 +138,40 @@ impl IMClient {
         self.with_engine(|e| e.bus().on_notification(f))
     }
 
+    /// 只订阅某个 `NotificationContent.notification_type` 的通知。
+    pub fn on_notification_type<F>(
+        &self,
+        notification_type: impl Into<String>,
+        f: F,
+    ) -> Result<Subscription>
+    where
+        F: Fn(&IMMessage) + Send + Sync + 'static,
+    {
+        self.with_engine(|e| e.bus().on_notification_type(notification_type, f))
+    }
+
+    /// 注册一个通知处理器，处理器自身通过 [`NotificationHandler::matches`] 决定是否接收。
+    pub async fn register_notification_handler(
+        &self,
+        handler: Arc<dyn NotificationHandler>,
+    ) -> Result<()> {
+        self.notification_handlers().await?.register(handler).await;
+        Ok(())
+    }
+
+    /// 注册一个精确通知类型处理器；同一类型可注册多个处理器，都会被调用。
+    pub async fn register_notification_type_handler(
+        &self,
+        notification_type: impl Into<String>,
+        handler: Arc<dyn NotificationHandler>,
+    ) -> Result<()> {
+        self.notification_handlers()
+            .await?
+            .register_for_type(notification_type, handler)
+            .await;
+        Ok(())
+    }
+
     /// 批量新消息（如同步一批历史）；比逐条 `on_message` 更高效，适合列表差量刷新。
     pub fn on_message_batch<F>(&self, f: F) -> Result<Subscription>
     where
@@ -164,20 +204,20 @@ impl IMClient {
         self.with_engine(|e| e.bus().on_recalled(f))
     }
 
-    /// **正在输入**；参数为 `(conversation_id, Typing 事件)`，用于展示「对方正在输入…」。
+    /// **正在输入**；参数为 `(conversation_id, realtime_control.typing)`，用于展示「对方正在输入…」。
     pub fn on_typing<F>(&self, f: F) -> Result<Subscription>
     where
-        F: Fn(&str, &TypingEvent) + Send + Sync + 'static,
+        F: Fn(&str, &TypingStatePacket) + Send + Sync + 'static,
     {
         self.with_engine(|e| e.bus().on_typing(f))
     }
 
-    /// **通话信令**下行（`EVENT_CALL_SIGNAL`）；与 [`Self::send_call_signal`] 对称，参数为 `(conversation_id, CallSignalEvent)`。
-    pub fn on_call_signal<F>(&self, f: F) -> Result<Subscription>
+    /// 能力包下行（DATA capability）；RTC/通话等插件信令统一走这里。
+    pub fn on_capability<F>(&self, f: F) -> Result<Subscription>
     where
-        F: Fn(&str, &CallSignalEvent) + Send + Sync + 'static,
+        F: Fn(&str, &CapabilityPacket) + Send + Sync + 'static,
     {
-        self.with_engine(|e| e.bus().on_call_signal(f))
+        self.with_engine(|e| e.bus().on_capability(f))
     }
 
     // ========== 会话列表（元数据 / 未读 / 删除）==========
@@ -232,11 +272,78 @@ impl IMClient {
         self.with_engine(|e| e.bus().on_extension(f))
     }
 
+    /// 只订阅某个扩展源和事件类型的扩展事件。
+    pub fn on_extension_event<F>(
+        &self,
+        source: impl Into<String>,
+        event_type: impl Into<String>,
+        f: F,
+    ) -> Result<Subscription>
+    where
+        F: Fn(&str, &str, &[u8]) + Send + Sync + 'static,
+    {
+        self.with_engine(|e| e.bus().on_extension_event(source, event_type, f))
+    }
+
+    /// 只订阅某个 durable `CustomEvent`。
+    pub fn on_custom_event<F>(
+        &self,
+        selector: impl Into<CustomEventSelector>,
+        f: F,
+    ) -> Result<Subscription>
+    where
+        F: Fn(&str, &flare_proto::common::CustomEvent) + Send + Sync + 'static,
+    {
+        self.with_engine(|e| e.bus().on_custom_event(selector, f))
+    }
+
     /// **所有**领域事件的通配入口（[`SharedEvent`] = `Arc<SdkEvent>`）；适合日志、调试或统一路由；生产环境注意性能与过滤。
     pub fn on_any<F>(&self, f: F) -> Result<Subscription>
     where
         F: Fn(SharedEvent) + Send + Sync + 'static,
     {
         self.with_engine(|e| e.bus().on_any(f))
+    }
+
+    /// 按过滤器注册事件回调。多个相同过滤器的回调都会被执行。
+    pub fn on_event_filter<F>(&self, filter: impl Into<EventFilter>, f: F) -> Result<Subscription>
+    where
+        F: Fn(SharedEvent) + Send + Sync + 'static,
+    {
+        self.with_engine(|e| e.bus().on_event_filter(filter, f))
+    }
+
+    /// 按顶层事件域注册事件回调。
+    pub fn on_event_kind<F>(&self, kind: SdkEventKind, f: F) -> Result<Subscription>
+    where
+        F: Fn(SharedEvent) + Send + Sync + 'static,
+    {
+        self.with_engine(|e| e.bus().on_event_kind(kind, f))
+    }
+
+    /// 按精确事件类型注册事件回调。
+    pub fn on_event_type<F>(&self, event_type: SdkEventType, f: F) -> Result<Subscription>
+    where
+        F: Fn(SharedEvent) + Send + Sync + 'static,
+    {
+        self.with_engine(|e| e.bus().on_event_type(event_type, f))
+    }
+
+    /// 获取过滤后的原始事件接收器。
+    pub fn subscribe_event_filter(
+        &self,
+        filter: impl Into<EventFilter>,
+    ) -> Result<FilteredEventReceiver> {
+        self.with_engine(|e| e.bus().subscribe_filter(filter))
+    }
+
+    /// 获取某个顶层事件域的原始事件接收器。
+    pub fn subscribe_event_kind(&self, kind: SdkEventKind) -> Result<FilteredEventReceiver> {
+        self.with_engine(|e| e.bus().subscribe_kind(kind))
+    }
+
+    /// 获取某个精确事件类型的原始事件接收器。
+    pub fn subscribe_event_type(&self, event_type: SdkEventType) -> Result<FilteredEventReceiver> {
+        self.with_engine(|e| e.bus().subscribe_event_type(event_type))
     }
 }

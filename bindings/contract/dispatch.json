@@ -50,13 +50,13 @@
               }
             ]
           ],
-          "result": "json"
+          "result": "json_object",
+          "fields": {
+            "messages": "messages"
+          }
         },
         {
           "op": "search_by_query",
-          "aliases": [
-            "search_advanced"
-          ],
           "method": "search_by_query",
           "args": [
             [
@@ -64,7 +64,10 @@
               "deserialize:MessageSearchQuery"
             ]
           ],
-          "result": "json"
+          "result": "json_object",
+          "fields": {
+            "messages": "messages"
+          }
         },
         {
           "op": "search_in_conversation",
@@ -87,7 +90,10 @@
               }
             ]
           ],
-          "result": "json"
+          "result": "json_object",
+          "fields": {
+            "messages": "messages"
+          }
         },
         {
           "op": "list",
@@ -110,7 +116,10 @@
               }
             ]
           ],
-          "result": "json"
+          "result": "json_object",
+          "fields": {
+            "messages": "messages"
+          }
         },
         {
           "op": "send",
@@ -958,8 +967,13 @@
         {
           "op": "list",
           "method": "list",
-          "args": [],
-          "result": "json"
+          "args": [
+
+          ],
+          "result": "json_object",
+          "fields": {
+            "conversations": "conversations"
+          }
         },
         {
           "op": "list_by_query",
@@ -970,13 +984,21 @@
               "deserialize:ConversationListQuery"
             ]
           ],
-          "result": "json"
+          "result": "json_object",
+          "fields": {
+            "conversations": "conversations"
+          }
         },
         {
           "op": "list_including_archived",
           "method": "list_including_archived",
-          "args": [],
-          "result": "json"
+          "args": [
+
+          ],
+          "result": "json_object",
+          "fields": {
+            "conversations": "conversations"
+          }
         },
         {
           "op": "get",
@@ -1034,7 +1056,10 @@
               }
             ]
           ],
-          "result": "json"
+          "result": "json_object",
+          "fields": {
+            "conversations": "conversations"
+          }
         },
         {
           "op": "list_paginated",
@@ -1049,12 +1074,42 @@
               "optional_u32"
             ]
           ],
-          "result": "json"
+          "result": "json_object",
+          "fields": {
+            "conversations": "conversations"
+          }
         },
         {
           "op": "list_raw",
           "method": "list_raw",
-          "args": [],
+          "args": [
+
+          ],
+          "result": "json_object",
+          "fields": {
+            "conversations": "conversations"
+          }
+        },
+        {
+          "op": "bootstrap_home",
+          "method": "bootstrap_home",
+          "args": [
+            [
+              "@value",
+              "deserialize:BootstrapHomeTimelineRequest"
+            ]
+          ],
+          "result": "json"
+        },
+        {
+          "op": "open_timeline",
+          "method": "open_timeline",
+          "args": [
+            [
+              "@value",
+              "deserialize:OpenConversationTimelineRequest"
+            ]
+          ],
           "result": "json"
         },
         {
@@ -1075,7 +1130,9 @@
         {
           "op": "mark_all_read",
           "method": "mark_all_read",
-          "args": [],
+          "args": [
+
+          ],
           "result": "unit"
         },
         {
@@ -1251,7 +1308,9 @@
         {
           "op": "cache_stats",
           "method": "media_cache_stats",
-          "args": [],
+          "args": [
+
+          ],
           "result": "json"
         },
         {
@@ -1279,15 +1338,23 @@
         {
           "op": "clear_cache",
           "method": "clear_media_cache",
-          "args": [],
+          "args": [
+
+          ],
           "result": "unit"
         },
         {
           "op": "upload_file",
           "method": "upload_file_from_path",
           "args": [
-            ["path", "str_ref"],
-            ["options", "optional_upload_options"]
+            [
+              "path",
+              "str_ref"
+            ],
+            [
+              "options",
+              "optional_upload_options"
+            ]
           ],
           "result": "json"
         },
@@ -1295,9 +1362,18 @@
           "op": "upload_image",
           "method": "upload_image_from_path_with_progress",
           "args": [
-            ["path", "str_ref"],
-            ["options", "optional_upload_options"],
-            ["literal", "none"]
+            [
+              "path",
+              "str_ref"
+            ],
+            [
+              "options",
+              "optional_upload_options"
+            ],
+            [
+              "literal",
+              "none"
+            ]
           ],
           "result": "json"
         },
@@ -1305,9 +1381,18 @@
           "op": "upload_video",
           "method": "upload_video_from_path_with_progress",
           "args": [
-            ["path", "str_ref"],
-            ["options", "optional_upload_options"],
-            ["literal", "none"]
+            [
+              "path",
+              "str_ref"
+            ],
+            [
+              "options",
+              "optional_upload_options"
+            ],
+            [
+              "literal",
+              "none"
+            ]
           ],
           "result": "json"
         },
@@ -1315,10 +1400,22 @@
           "op": "upload_bytes",
           "method": "upload_bytes",
           "args": [
-            ["bytes", "bytes_vec"],
-            ["file_name", "str_ref"],
-            ["mime_type", "str_ref"],
-            ["options", "optional_upload_options"]
+            [
+              "bytes",
+              "bytes_vec"
+            ],
+            [
+              "file_name",
+              "str_ref"
+            ],
+            [
+              "mime_type",
+              "str_ref"
+            ],
+            [
+              "options",
+              "optional_upload_options"
+            ]
           ],
           "result": "json"
         },
@@ -1326,8 +1423,14 @@
           "op": "delete_file",
           "method": "delete_file",
           "args": [
-            ["file_id", "str_ref"],
-            ["hard_delete", "bool"]
+            [
+              "file_id",
+              "str_ref"
+            ],
+            [
+              "hard_delete",
+              "bool"
+            ]
           ],
           "result": "json_object",
           "fields": {
@@ -1337,7 +1440,9 @@
         {
           "op": "user_download_get_subfolder",
           "method": "user_download_get_subfolder",
-          "args": [],
+          "args": [
+
+          ],
           "result": "json_object",
           "fields": {
             "subfolder": "subfolder"
@@ -1405,7 +1510,9 @@
         {
           "op": "capability_list",
           "method": "list_capabilities",
-          "args": [],
+          "args": [
+
+          ],
           "result": "json"
         },
         {
@@ -1498,12 +1605,6 @@
               "str_ref"
             ]
           ],
-          "result": "unit"
-        },
-        {
-          "op": "send_call_signal",
-          "handler": "custom_call_signal",
-          "args": [],
           "result": "unit"
         }
       ]

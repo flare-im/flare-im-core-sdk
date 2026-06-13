@@ -1,9 +1,7 @@
 use crate::infrastructure::protocol::DownlinkPayload;
 use crate::shared::error::{FlareError, Result};
 use flare_proto::common::data_packet::Payload as DataPacketPayload;
-use flare_proto::common::{
-    CustomData, DataKind, DataPacket, Event, EventEnvelope, MessagePush, SyncRes,
-};
+use flare_proto::common::{CustomData, DataPacket, Event, EventEnvelope, MessagePush, SyncRes};
 use prost::Message;
 
 /// 服务端下行包解码（与 flare-proto 对齐：含 `DataPacket` 封装的同步响应与用户扩展）
@@ -27,14 +25,18 @@ impl Codec for ProtobufCodec {
             return Ok(DownlinkPayload::EventEnvelope(env));
         }
         if let Ok(packet) = DataPacket::decode(payload) {
-            match (packet.kind, packet.payload) {
-                (k, Some(DataPacketPayload::SyncResponse(res)))
-                    if k == DataKind::SyncResponse as i32 =>
-                {
+            match packet.payload {
+                Some(DataPacketPayload::SyncResponse(res)) => {
                     return Ok(DownlinkPayload::SyncResp(res));
                 }
-                (k, Some(DataPacketPayload::UserCustom(c))) if k == DataKind::UserCustom as i32 => {
+                Some(DataPacketPayload::UserCustom(c)) => {
                     return Ok(DownlinkPayload::CustomData(c));
+                }
+                Some(DataPacketPayload::Capability(c)) => {
+                    return Ok(DownlinkPayload::Capability(c));
+                }
+                Some(DataPacketPayload::RealtimeControl(control)) => {
+                    return Ok(DownlinkPayload::RealtimeControl(control));
                 }
                 _ => {}
             }

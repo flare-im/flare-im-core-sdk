@@ -2,6 +2,6 @@
 
 pub use flare_proto::common::{Event, EventType};
 pub use flare_proto::common::{
-    MarkEvent, MessageDeleteEvent, PinEvent, ReactionEvent, ReadReceiptEvent, TypingEvent,
+    MarkEvent, MessageDeleteEvent, PinEvent, ReactionEvent, ReadReceiptEvent, TypingStatePacket,
     UnmarkEvent, UnpinEvent,
 };

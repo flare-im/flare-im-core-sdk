@@ -24,6 +24,10 @@ pub use commands::{RecallMessageCommand, SendMessageCommand};
 pub use lifecycle::{
     ConversationLocalLifecycle, LocalConversationClearResult, LocalConversationVisibility,
 };
+pub use notification::{
+    InboundNotificationView, NotificationDispatchReport, NotificationHandleResult,
+    NotificationHandler, NotificationHandlerRegistry,
+};
 pub use projections::{
     ConversationDisplayProjectionApplier, ConversationDisplaySnapshot,
     UserProfileProjectionApplier, resolve_display_name,

@@ -42,6 +42,13 @@ pub enum NotificationHandleResult {
     Ignored,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct NotificationDispatchReport {
+    pub matched: usize,
+    pub handled: usize,
+    pub ignored: usize,
+}
+
 /// 业务 SDK 实现的 IM 下行 Notification 处理器。
 #[async_trait]
 pub trait NotificationHandler: Send + Sync {

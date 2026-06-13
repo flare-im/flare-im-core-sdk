@@ -1,51 +1,64 @@
-//! [`SdkCapabilityRegistry`]：按 `capability_id` 前缀解析插件并派发；并可注册 **通话信令观察者**（与总线 `on_call_signal` 联动）。
+//! [`SdkCapabilityRegistry`]：按 `capability_id` 前缀解析插件并派发；并可注册能力包观察者（与总线 `on_capability` 联动）。
 
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
-use flare_proto::common::CallSignalEvent;
+use flare_proto::common::CapabilityPacket;
 use serde_json::Value;
 
+use crate::client::api::session_guard::SessionGuard;
 use crate::client::api::{CapabilityDispatchResult, UserCapabilityGrantDto};
+use crate::core::CurrentUserIdStore;
 use crate::extension::capability::SdkCapabilityPlugin;
 use crate::shared::error::{ErrorCode, FlareError, Result};
 
-type CallSignalObserver = Arc<dyn Fn(&str, &CallSignalEvent) + Send + Sync>;
+type CapabilityObserver = Arc<dyn Fn(&str, &CapabilityPacket) + Send + Sync>;
 
 pub struct SdkCapabilityRegistry {
+    session_guard: SessionGuard,
     plugins: RwLock<HashMap<String, Arc<dyn SdkCapabilityPlugin>>>,
     namespace_index: RwLock<HashMap<String, String>>,
-    call_signal_observers: RwLock<Vec<CallSignalObserver>>,
+    capability_observers: RwLock<Vec<CapabilityObserver>>,
 }
 
 impl SdkCapabilityRegistry {
     pub fn new() -> Self {
         Self {
+            session_guard: SessionGuard::disabled("capability registry"),
             plugins: RwLock::new(HashMap::new()),
             namespace_index: RwLock::new(HashMap::new()),
-            call_signal_observers: RwLock::new(Vec::new()),
+            capability_observers: RwLock::new(Vec::new()),
         }
     }
 
-    /// 注册下行通话信令观察者（在 [`crate::core::event::EventBus::on_call_signal`] 与构建器桥接之后收到与 UI 相同的信令）。
-    pub fn register_call_signal_observer<F>(&self, f: F)
+    pub(crate) fn new_session_bound(current_user_id: CurrentUserIdStore) -> Self {
+        Self {
+            session_guard: SessionGuard::new(current_user_id, "capability registry"),
+            plugins: RwLock::new(HashMap::new()),
+            namespace_index: RwLock::new(HashMap::new()),
+            capability_observers: RwLock::new(Vec::new()),
+        }
+    }
+
+    /// 注册下行能力包观察者（在 [`crate::core::event::EventBus::on_capability`] 与构建器桥接之后收到与 UI 相同的能力包）。
+    pub fn register_capability_observer<F>(&self, f: F)
     where
-        F: Fn(&str, &CallSignalEvent) + Send + Sync + 'static,
+        F: Fn(&str, &CapabilityPacket) + Send + Sync + 'static,
     {
-        if let Ok(mut g) = self.call_signal_observers.write() {
+        if let Ok(mut g) = self.capability_observers.write() {
             g.push(Arc::new(f));
         }
     }
 
-    /// 由构建器在 `MessageEvent::CallSignal` 发布路径上调用，转发给已注册观察者。
-    pub fn dispatch_call_signal_to_observers(
+    /// 由构建器在 `MessageEvent::Capability` 发布路径上调用，转发给已注册观察者。
+    pub fn dispatch_capability_to_observers(
         &self,
         conversation_id: &str,
-        event: &CallSignalEvent,
+        packet: &CapabilityPacket,
     ) {
-        if let Ok(list) = self.call_signal_observers.read() {
+        if let Ok(list) = self.capability_observers.read() {
             for f in list.iter() {
-                f(conversation_id, event);
+                f(conversation_id, packet);
             }
         }
     }
@@ -160,6 +173,7 @@ impl SdkCapabilityRegistry {
         conversation_id: Option<&str>,
         tenant_id: Option<&str>,
     ) -> Result<CapabilityDispatchResult> {
+        self.session_guard.ensure_active().await?;
         let Some(plugin) = self.resolve_by_capability(capability_id) else {
             return Err(FlareError::localized(
                 ErrorCode::OperationNotSupported,
@@ -178,6 +192,7 @@ impl SdkCapabilityRegistry {
         tenant_id: Option<&str>,
         user_id: Option<&str>,
     ) -> Result<Vec<UserCapabilityGrantDto>> {
+        self.session_guard.ensure_active().await?;
         let Some(plugin) = self.resolve_by_capability(capability_id) else {
             return Err(FlareError::localized(
                 ErrorCode::OperationNotSupported,
@@ -198,5 +213,86 @@ impl SdkCapabilityRegistry {
 impl Default for SdkCapabilityRegistry {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use async_trait::async_trait;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tokio::sync::RwLock;
+
+    struct CountingPlugin {
+        invoke_calls: Arc<AtomicUsize>,
+        grant_calls: Arc<AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl SdkCapabilityPlugin for CountingPlugin {
+        fn plugin_id(&self) -> &'static str {
+            "test.plugin"
+        }
+
+        fn capability_namespaces(&self) -> &'static [&'static str] {
+            &["test"]
+        }
+
+        async fn invoke(
+            &self,
+            capability_id: &str,
+            _payload: Value,
+            _conversation_id: Option<&str>,
+            _tenant_id: Option<&str>,
+        ) -> Result<CapabilityDispatchResult> {
+            self.invoke_calls.fetch_add(1, Ordering::SeqCst);
+            Ok(CapabilityDispatchResult {
+                request_id: String::new(),
+                success: true,
+                plugin_id: self.plugin_id().to_string(),
+                capability_id: capability_id.to_string(),
+                data: Value::Null,
+                error: None,
+            })
+        }
+
+        async fn list_user_grants(
+            &self,
+            _tenant_id: Option<&str>,
+            _user_id: Option<&str>,
+        ) -> Result<Vec<UserCapabilityGrantDto>> {
+            self.grant_calls.fetch_add(1, Ordering::SeqCst);
+            Ok(Vec::new())
+        }
+    }
+
+    #[tokio::test]
+    async fn session_bound_registry_rejects_plugin_invocation_after_logout() {
+        let current_user_id = Arc::new(RwLock::new("alice".to_string()));
+        let registry = SdkCapabilityRegistry::new_session_bound(current_user_id.clone());
+        let invoke_calls = Arc::new(AtomicUsize::new(0));
+        let grant_calls = Arc::new(AtomicUsize::new(0));
+        registry
+            .register(Arc::new(CountingPlugin {
+                invoke_calls: invoke_calls.clone(),
+                grant_calls: grant_calls.clone(),
+            }))
+            .expect("register test plugin");
+
+        *current_user_id.write().await = String::new();
+
+        let err = registry
+            .invoke("test.echo", Value::Null, None, None)
+            .await
+            .expect_err("logged-out registry invoke must fail");
+        assert_eq!(err.code(), Some(ErrorCode::NotConnected));
+        assert_eq!(invoke_calls.load(Ordering::SeqCst), 0);
+
+        let err = registry
+            .list_user_grants_for_capability("test.echo", None, None)
+            .await
+            .expect_err("logged-out registry grants must fail");
+        assert_eq!(err.code(), Some(ErrorCode::NotConnected));
+        assert_eq!(grant_calls.load(Ordering::SeqCst), 0);
     }
 }

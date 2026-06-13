@@ -45,6 +45,7 @@ pub mod keys {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct PreviewStoragePayload {
     pub k: String,
     #[serde(default, skip_serializing_if = "Map::is_empty")]

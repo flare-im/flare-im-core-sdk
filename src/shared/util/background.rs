@@ -7,7 +7,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::task::{Context, Poll};
 
 #[cfg(not(target_arch = "wasm32"))]
+use std::sync::mpsc;
+#[cfg(not(target_arch = "wasm32"))]
 use std::thread;
+#[cfg(not(target_arch = "wasm32"))]
+use std::time::Duration;
 
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen_futures::spawn_local;
@@ -16,15 +20,15 @@ use wasm_bindgen_futures::spawn_local;
 pub struct BackgroundTask {
     cancel: Arc<AtomicBool>,
     #[cfg(not(target_arch = "wasm32"))]
-    join: Option<tokio::task::JoinHandle<()>>,
+    abort: Option<tokio::task::AbortHandle>,
 }
 
 impl BackgroundTask {
     pub fn abort(&self) {
         self.cancel.store(true, Ordering::Relaxed);
         #[cfg(not(target_arch = "wasm32"))]
-        if let Some(join) = &self.join {
-            join.abort();
+        if let Some(abort) = &self.abort {
+            abort.abort();
         }
     }
 }
@@ -114,7 +118,7 @@ where
     F: Future<Output = ()> + Send + 'static,
 {
     if tokio::runtime::Handle::try_current().is_ok() {
-        let _ = tokio::spawn(future);
+        std::mem::drop(tokio::spawn(future));
         return;
     }
     let _ = thread::Builder::new()
@@ -151,23 +155,45 @@ where
 {
     let cancel = Arc::new(AtomicBool::new(false));
     let wrapped = wrap_cancellable(future, cancel.clone());
-    let join = if tokio::runtime::Handle::try_current().is_ok() {
-        Some(tokio::spawn(wrapped))
+    let abort = if tokio::runtime::Handle::try_current().is_ok() {
+        let join = tokio::spawn(wrapped);
+        let abort = join.abort_handle();
+        drop(join);
+        Some(abort)
     } else {
-        let _ = thread::Builder::new()
+        let (tx, rx) = mpsc::sync_channel(1);
+        match thread::Builder::new()
             .name("flare-sdk-background-task".into())
             .spawn(move || {
                 let Ok(rt) = tokio::runtime::Builder::new_current_thread()
                     .enable_all()
                     .build()
                 else {
+                    let _ = tx.send(None);
                     return;
                 };
-                rt.block_on(wrapped);
-            });
-        None
+                let join = rt.spawn(wrapped);
+                let abort = join.abort_handle();
+                let _ = tx.send(Some(abort));
+                let _ = rt.block_on(join);
+            }) {
+            Ok(_) => match rx.recv_timeout(Duration::from_secs(1)) {
+                Ok(abort) => abort,
+                Err(error) => {
+                    tracing::warn!(
+                        error = %error,
+                        "background task thread did not return abort handle"
+                    );
+                    None
+                }
+            },
+            Err(error) => {
+                tracing::warn!(error = %error, "spawn background task thread failed");
+                None
+            }
+        }
     };
-    BackgroundTask { cancel, join }
+    BackgroundTask { cancel, abort }
 }
 
 /// Spawn an abortable background worker.

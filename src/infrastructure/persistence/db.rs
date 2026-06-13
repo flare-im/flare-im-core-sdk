@@ -1,7 +1,7 @@
 use crate::domain::{
     ConversationParticipantStore, ConversationStore, MediaCacheAdmin, MediaCacheStore,
     MessageStore, PendingSendReader, PendingSendWriter, SyncCursorStore, UploadManifestStore,
-    UserFileDownloadStore, UserReader, UserWriter,
+    UserFileDownloadStore, UserProfile, UserReader, UserWriter,
 };
 use std::sync::Arc;
 
@@ -43,6 +43,41 @@ impl StoreProvider {
         self.user_profiles_writer.clone().unwrap_or_else(|| {
             Arc::new(crate::infrastructure::persistence::MemoryUserProfileStore::new())
         })
+    }
+
+    pub async fn save_user_profiles(&self, profiles: &[UserProfile]) -> crate::Result<()> {
+        self.user_profiles_writer_or_memory()
+            .save_batch(profiles)
+            .await
+    }
+
+    pub async fn apply_user_profile(&self, profile: &UserProfile) -> crate::Result<Vec<String>> {
+        self.save_user_profiles(std::slice::from_ref(profile))
+            .await?;
+        self.apply_user_profile_local_views(profile).await
+    }
+
+    pub async fn apply_user_profile_local_views(
+        &self,
+        profile: &UserProfile,
+    ) -> crate::Result<Vec<String>> {
+        if let Some(participants) = &self.conversation_participants {
+            participants
+                .patch_user_display(
+                    &profile.user_id,
+                    profile.display_name(),
+                    &profile.avatar_url,
+                )
+                .await?;
+        }
+
+        self.conversations
+            .apply_user_profile_snapshot(
+                &profile.user_id,
+                profile.display_name(),
+                &profile.avatar_url,
+            )
+            .await
     }
 }
 

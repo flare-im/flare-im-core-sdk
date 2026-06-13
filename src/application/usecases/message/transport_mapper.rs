@@ -3,8 +3,9 @@ use crate::model::event::{Event, EventType};
 use flare_proto::common::event::Payload as EventPayload;
 use flare_proto::common::{
     MarkEvent, MessageDeleteEvent, MessageEditEvent, MessageRecallEvent, PinEvent, ReactionEvent,
-    ReadReceiptEvent, TypingEvent, UnmarkEvent, UnpinEvent,
+    ReadReceiptEvent, UnmarkEvent, UnpinEvent,
 };
+use prost::Message;
 
 pub fn event_from_transport_action(action: &MessageTransportAction) -> Event {
     match action {
@@ -34,7 +35,8 @@ pub fn event_from_transport_action(action: &MessageTransportAction) -> Event {
             r#type: EventType::EventMessageEdit as i32,
             payload: Some(EventPayload::Edit(MessageEditEvent {
                 server_msg_id: server_msg_id.clone(),
-                new_content: new_content.clone(),
+                new_content: flare_proto::common::MessageContent::decode(new_content.as_slice())
+                    .ok(),
                 edit_version: *edit_version,
                 reason: reason.clone(),
                 show_edited_mark: *show_edited_mark,
@@ -67,7 +69,6 @@ pub fn event_from_transport_action(action: &MessageTransportAction) -> Event {
             user_id,
             message_ids,
             read_seq,
-            burn_after_read,
         } => Event {
             conversation_id: conversation_id.clone(),
             r#type: EventType::EventReadReceipt as i32,
@@ -76,22 +77,7 @@ pub fn event_from_transport_action(action: &MessageTransportAction) -> Event {
                 user_id: user_id.clone(),
                 message_ids: message_ids.clone(),
                 read_seq: *read_seq,
-                burn_after_read: Some(*burn_after_read),
                 ..Default::default()
-            })),
-            ..Default::default()
-        },
-        MessageTransportAction::Typing {
-            conversation_id,
-            user_id,
-            typing,
-        } => Event {
-            conversation_id: conversation_id.clone(),
-            r#type: EventType::EventTyping as i32,
-            payload: Some(EventPayload::Typing(TypingEvent {
-                conversation_id: conversation_id.clone(),
-                user_id: user_id.clone(),
-                typing: *typing,
             })),
             ..Default::default()
         },

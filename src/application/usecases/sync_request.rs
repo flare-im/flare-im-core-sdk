@@ -3,9 +3,8 @@ use std::time::Duration;
 
 use flare_proto::common::{
     ConversationParticipantsSync, ConversationsSync, ConversationsSyncRes, GetSyncCursorSync,
-    QueryEventsSync, SingleConversationSync, Sync as SyncWire, SyncKind, SyncRes,
-    UpdateConversationUserSettingsSync, UpdateSyncCursorSync, sync::Payload as SyncPayload,
-    sync_res::Payload as SyncResPayload,
+    QueryEventsSync, SingleConversationSync, Sync as SyncWire, SyncRes, UpdateSyncCursorSync,
+    sync::Payload as SyncPayload, sync_res::Payload as SyncResPayload,
 };
 
 use crate::domain::{
@@ -17,9 +16,8 @@ use crate::shared::error::{FlareError, Result};
 
 const DEFAULT_TIMEOUT_SECS: u64 = 30;
 
-fn sync_wire(kind: SyncKind, payload: SyncPayload) -> SyncWire {
+fn sync_wire(payload: SyncPayload) -> SyncWire {
     SyncWire {
-        kind: kind as i32,
         device_id: String::new(),
         payload: Some(payload),
     }
@@ -47,22 +45,19 @@ impl SyncRequestUseCase {
         limit: i32,
         cursor: String,
     ) -> Result<SyncRes> {
-        let sync_event = sync_wire(
-            SyncKind::SingleConversation,
-            SyncPayload::SingleConversation(SingleConversationSync {
-                conversation_id: conversation_id.to_string(),
-                max_seq: last_seq,
-                cursor,
-                limit,
-            }),
-        );
+        let sync_event = sync_wire(SyncPayload::SingleConversation(SingleConversationSync {
+            conversation_id: conversation_id.to_string(),
+            after_conversation_seq: last_seq,
+            cursor,
+            limit,
+        }));
         self.sender
             .send_sync_and_wait(&sync_event, Duration::from_secs(DEFAULT_TIMEOUT_SECS))
             .await
     }
 
     pub async fn request_query_events(&self, req: QueryEventsSync) -> Result<SyncRes> {
-        let sync_event = sync_wire(SyncKind::QueryEvents, SyncPayload::QueryEvents(req));
+        let sync_event = sync_wire(SyncPayload::QueryEvents(req));
         self.sender
             .send_sync_and_wait(&sync_event, Duration::from_secs(QUERY_EVENTS_TIMEOUT_SECS))
             .await
@@ -72,17 +67,14 @@ impl SyncRequestUseCase {
         &self,
         req: ConversationParticipantsSync,
     ) -> Result<SyncRes> {
-        let sync_event = sync_wire(
-            SyncKind::ConversationParticipants,
-            SyncPayload::ConversationParticipants(req),
-        );
+        let sync_event = sync_wire(SyncPayload::ConversationParticipants(req));
         self.sender
             .send_sync_and_wait(&sync_event, Duration::from_secs(DEFAULT_TIMEOUT_SECS))
             .await
     }
 
     pub async fn request_get_cursor(&self, req: GetSyncCursorSync) -> Result<SyncRes> {
-        let sync_event = sync_wire(SyncKind::GetSyncCursor, SyncPayload::GetSyncCursor(req));
+        let sync_event = sync_wire(SyncPayload::GetSyncCursor(req));
         self.sender
             .send_sync_and_wait(
                 &sync_event,
@@ -92,10 +84,7 @@ impl SyncRequestUseCase {
     }
 
     pub async fn request_update_cursor(&self, req: UpdateSyncCursorSync) -> Result<SyncRes> {
-        let sync_event = sync_wire(
-            SyncKind::UpdateSyncCursor,
-            SyncPayload::UpdateSyncCursor(req),
-        );
+        let sync_event = sync_wire(SyncPayload::UpdateSyncCursor(req));
         self.sender
             .send_sync_and_wait(&sync_event, Duration::from_secs(UPDATE_CURSOR_TIMEOUT_SECS))
             .await
@@ -103,17 +92,14 @@ impl SyncRequestUseCase {
 
     pub async fn request_conversations(
         &self,
-        cursor: Option<prost_types::Timestamp>,
+        cursor: String,
         limit: i32,
     ) -> Result<ConversationsSyncRes> {
-        let sync_event = sync_wire(
-            SyncKind::Conversations,
-            SyncPayload::Conversations(ConversationsSync {
-                client_conversation_cursor: cursor,
-                limit,
-                ..Default::default()
-            }),
-        );
+        let sync_event = sync_wire(SyncPayload::Conversations(ConversationsSync {
+            cursor,
+            limit,
+            ..Default::default()
+        }));
         let resp = self
             .sender
             .send_sync_and_wait(
@@ -127,18 +113,5 @@ impl SyncRequestUseCase {
                 "unexpected conversations sync response".to_string(),
             )),
         }
-    }
-
-    pub async fn request_update_conversation_user_settings(
-        &self,
-        req: UpdateConversationUserSettingsSync,
-    ) -> Result<SyncRes> {
-        let sync_event = sync_wire(
-            SyncKind::ConversationUserSettings,
-            SyncPayload::UpdateConversationUserSettings(req),
-        );
-        self.sender
-            .send_sync_and_wait(&sync_event, Duration::from_secs(DEFAULT_TIMEOUT_SECS))
-            .await
     }
 }

@@ -125,7 +125,6 @@ impl MessageMutationService {
         conversation_id: &str,
         message_ids: Vec<String>,
         read_seq: u64,
-        burn_after_read: bool,
     ) -> MessageMutationPlan {
         MessageMutationPlan {
             transport_action: MessageTransportAction::ReadReceipt {
@@ -133,23 +132,6 @@ impl MessageMutationService {
                 user_id: actor.user_id.clone(),
                 message_ids,
                 read_seq,
-                burn_after_read,
-            },
-            local_update: MessageLocalUpdate::None,
-        }
-    }
-
-    pub fn plan_typing(
-        &self,
-        actor: &MessageActor,
-        conversation_id: &str,
-        typing: bool,
-    ) -> MessageMutationPlan {
-        MessageMutationPlan {
-            transport_action: MessageTransportAction::Typing {
-                conversation_id: conversation_id.to_string(),
-                user_id: actor.user_id.clone(),
-                typing,
             },
             local_update: MessageLocalUpdate::None,
         }

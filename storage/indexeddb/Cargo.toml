@@ -1,0 +1,22 @@
+[package]
+name = "flare-im-core-sdk-storage-indexeddb"
+version = "0.2.0"
+edition = "2024"
+rust-version = "1.94.0"
+authors = ["Flare Team"]
+license = "Apache-2.0"
+description = "Flare IM Core SDK - browser IndexedDB-backed WASM storage adapter"
+
+[lib]
+name = "flare_im_core_sdk_storage_indexeddb"
+path = "src/lib.rs"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+async-trait = "0.1"
+flare-im-core-sdk = { path = "../.." }
+js-sys = "0.3"
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde-wasm-bindgen = "0.6"
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"

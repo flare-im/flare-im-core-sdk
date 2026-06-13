@@ -7,7 +7,7 @@
 //! # 示例
 //!
 //! ```
-//! use flare_im_core_sdk::domain::conversation::id;
+//! use flare_im_core_sdk::spi as id;
 //!
 //! let cid = id::generate_single_chat_conversation_id("user_a", "user_b");
 //! assert!(cid.starts_with("1A"));

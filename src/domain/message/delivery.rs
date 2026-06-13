@@ -1,7 +1,7 @@
 use crate::model::message::MessageLocalState;
 use crate::model::message::MessageStatus;
 use crate::model::message::{IMMessage, SendAck};
-use crate::shared::util::date::prost_timestamp_to_ms;
+use flare_proto::common::{SendAccepted, SendAckDurability, send_ack};
 
 pub const REASON_PENDING_ANOTHER_ACCOUNT: &str = "pending message belongs to another account";
 pub const REASON_MAX_RETRIES_EXCEEDED: &str = "max retries exceeded";
@@ -24,7 +24,7 @@ impl From<&IMMessage> for DeliveryLocalSnapshot {
         Self {
             status: message.status,
             server_id: message.server_id.clone(),
-            seq: message.seq,
+            seq: message.conversation_seq,
             conversation_id: message.conversation_id.clone(),
         }
     }
@@ -203,18 +203,51 @@ impl MessageDeliveryService {
 
     pub fn mark_sent_from_ack(message: &IMMessage, ack: &SendAck) -> IMMessage {
         let mut sent_message = message.clone();
-        if !ack.server_msg_id.is_empty() {
-            sent_message.server_id = ack.server_msg_id.clone();
+        let Some(accepted) = Self::durable_accepted_from_ack(ack) else {
+            return sent_message;
+        };
+        if !accepted.server_msg_id.is_empty() {
+            sent_message.server_id = accepted.server_msg_id.clone();
         }
-        sent_message.seq = ack.seq;
+        sent_message.conversation_seq = accepted.conversation_seq;
         // 与下行消息时间轴对齐；否则 ACK 后仍持客户端建消息时间，`sort_ts`/首屏排序可能弱于服务端历史而掉出 LIMIT。
-        let server_ms = prost_timestamp_to_ms(ack.server_time.as_ref());
-        if server_ms > 0 {
-            sent_message.timestamp = server_ms;
-            sent_message.client_timestamp = server_ms;
+        if accepted.server_time > 0 {
+            sent_message.created_at = accepted.server_time as u64;
+            sent_message.client_created_at = accepted.server_time as u64;
         }
         Self::apply_send_ack_state(&mut sent_message);
         sent_message
+    }
+
+    pub fn accepted_from_ack(ack: &SendAck) -> Option<&SendAccepted> {
+        match ack.result.as_ref() {
+            Some(send_ack::Result::Accepted(accepted)) => Some(accepted),
+            _ => None,
+        }
+    }
+
+    pub fn durable_accepted_from_ack(ack: &SendAck) -> Option<&SendAccepted> {
+        let accepted = Self::accepted_from_ack(ack)?;
+        match accepted.durability() {
+            SendAckDurability::WalAccepted
+            | SendAckDurability::BrokerAccepted
+            | SendAckDurability::Persisted => Some(accepted),
+            SendAckDurability::Unspecified | SendAckDurability::TransientAccepted => None,
+        }
+    }
+
+    pub fn error_message_from_ack(ack: &SendAck) -> Option<String> {
+        match ack.result.as_ref() {
+            Some(send_ack::Result::Error(error)) => {
+                let detail = if error.message.trim().is_empty() {
+                    error.code.to_string()
+                } else {
+                    error.message.clone()
+                };
+                Some(detail)
+            }
+            _ => None,
+        }
     }
 
     pub fn merge_incoming_as_sent(local: Option<&IMMessage>, incoming: &IMMessage) -> IMMessage {
@@ -225,7 +258,7 @@ impl MessageDeliveryService {
             is_local: false,
             sort_ts: local
                 .map(|message| message.local_state.sort_ts)
-                .unwrap_or(incoming.local_state.sort_ts.max(incoming.timestamp)),
+                .unwrap_or(incoming.local_state.sort_ts.max(incoming.created_at)),
         };
         Self::apply_send_ack_state(&mut merged);
         merged
@@ -240,10 +273,13 @@ impl MessageDeliveryService {
     pub fn synthetic_ack(client_msg_id: &str, snapshot: &DeliveryLocalSnapshot) -> SendAck {
         SendAck {
             client_msg_id: client_msg_id.to_string(),
-            server_msg_id: snapshot.server_id.clone(),
-            seq: snapshot.seq,
             conversation_id: snapshot.conversation_id.clone(),
-            success: true,
+            result: Some(send_ack::Result::Accepted(SendAccepted {
+                server_msg_id: snapshot.server_id.clone(),
+                conversation_seq: snapshot.seq,
+                server_time: 0,
+                durability: SendAckDurability::Persisted as i32,
+            })),
             ..Default::default()
         }
     }
@@ -251,10 +287,13 @@ impl MessageDeliveryService {
     pub fn synthetic_ack_from_incoming(incoming: &IMMessage) -> SendAck {
         SendAck {
             client_msg_id: incoming.client_msg_id.clone(),
-            server_msg_id: incoming.server_id.clone(),
-            seq: incoming.seq,
             conversation_id: incoming.conversation_id.clone(),
-            success: true,
+            result: Some(send_ack::Result::Accepted(SendAccepted {
+                server_msg_id: incoming.server_id.clone(),
+                conversation_seq: incoming.conversation_seq,
+                server_time: incoming.created_at as i64,
+                durability: SendAckDurability::Persisted as i32,
+            })),
             ..Default::default()
         }
     }
@@ -266,7 +305,61 @@ mod tests {
         DeliveryLocalSnapshot, InFlightReconcileDecision, IncomingMessageConvergenceDecision,
         MessageDeliveryService, PendingDispatchDecision, RetryDecision,
     };
+    use crate::model::message::SendAck;
     use crate::model::message::{IMMessage, MessageStatus};
+    use flare_proto::common::{SendAccepted, SendAckDurability, send_ack};
+
+    fn accepted_ack(durability: SendAckDurability) -> SendAck {
+        SendAck {
+            client_msg_id: "client-1".to_string(),
+            conversation_id: "conv-1".to_string(),
+            result: Some(send_ack::Result::Accepted(SendAccepted {
+                server_msg_id: "server-1".to_string(),
+                conversation_seq: 7,
+                server_time: 123,
+                durability: durability as i32,
+            })),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn durable_accepted_ack_requires_recoverable_boundary() {
+        assert!(
+            MessageDeliveryService::durable_accepted_from_ack(&accepted_ack(
+                SendAckDurability::WalAccepted
+            ))
+            .is_some()
+        );
+        assert!(
+            MessageDeliveryService::durable_accepted_from_ack(&accepted_ack(
+                SendAckDurability::BrokerAccepted
+            ))
+            .is_some()
+        );
+        assert!(
+            MessageDeliveryService::durable_accepted_from_ack(&accepted_ack(
+                SendAckDurability::Persisted
+            ))
+            .is_some()
+        );
+    }
+
+    #[test]
+    fn transient_or_unspecified_ack_is_not_durable() {
+        assert!(
+            MessageDeliveryService::durable_accepted_from_ack(&accepted_ack(
+                SendAckDurability::TransientAccepted
+            ))
+            .is_none()
+        );
+        assert!(
+            MessageDeliveryService::durable_accepted_from_ack(&accepted_ack(
+                SendAckDurability::Unspecified
+            ))
+            .is_none()
+        );
+    }
 
     #[test]
     fn pending_dispatch_drops_cross_account_entry() {
@@ -357,14 +450,14 @@ mod tests {
         incoming.client_msg_id = "client-1".to_string();
         incoming.server_id = "server-1".to_string();
         incoming.sender_id = "u1".to_string();
-        incoming.seq = 7;
-        incoming.status = MessageStatus::Read as i32;
+        incoming.conversation_seq = 7;
+        incoming.status = MessageStatus::Persisted as i32;
         incoming.is_read = true;
 
         let merged = MessageDeliveryService::merge_incoming_as_sent(Some(&local), &incoming);
 
         assert_eq!(merged.server_id, "server-1");
-        assert_eq!(merged.seq, 7);
+        assert_eq!(merged.conversation_seq, 7);
         assert_eq!(merged.status, MessageStatus::Sent as i32);
         assert!(!merged.is_read);
         assert!(!merged.local_state.sending);
@@ -375,7 +468,7 @@ mod tests {
     #[test]
     fn send_ack_sanitizer_never_preserves_read_state() {
         let mut message = IMMessage::new(flare_proto::common::Message::default());
-        message.status = MessageStatus::Read as i32;
+        message.status = MessageStatus::Persisted as i32;
         message.is_read = true;
         message.local_state.sending = true;
         message.local_state.is_local = true;

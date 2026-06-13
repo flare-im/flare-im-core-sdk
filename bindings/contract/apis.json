@@ -2,12 +2,12 @@
   "schemaVersion": 1,
   "apiContractVersion": "flare-im-api/v1",
   "rules": [
-    "Canonical API ids use dot-separated snake_case names.",
+    "Canonical API ids are singular dot-separated operation ids matching the Rust binding runtime route.",
     "C direct functions are preferred for hot lifecycle, conversation, media, and simple message paths.",
     "C JSON dispatch is used for large or fast-evolving request shapes.",
     "Tauri commands mirror the same canonical ids but use command names prefixed with sdk_.",
     "Bindings must not implement business rules; they only validate boundary inputs and forward to core APIs.",
-    "All complex C payloads are UTF-8 JSON with core-sdk snake_case field names."
+    "All complex C payloads are UTF-8 JSON with camelCase SDK wire fields."
   ],
   "cAbi": {
     "asyncReturn": "i32 immediate_submit_code",
@@ -23,190 +23,912 @@
     {
       "id": "session",
       "methods": [
-        { "id": "sdk.create", "core": "IMClient::new", "c": "flare_sdk_create", "tauri": "SdkState::new" },
-        { "id": "sdk.dispose", "core": "registry release", "c": "flare_sdk_release", "tauri": null },
-        { "id": "sdk.hard_reset", "core": "registry hard reset", "c": "flare_sdk_hard_reset", "tauri": null },
-        { "id": "sdk.init", "core": "IMClient::init", "c": "flare_sdk_init", "tauri": "sdk_init" },
-        { "id": "sdk.uninit", "core": "IMClient::uninit", "c": "flare_sdk_uninit", "tauri": null },
-        { "id": "sdk.login", "core": "IMClient::login", "c": "flare_sdk_login", "tauri": "sdk_login" },
-        { "id": "sdk.logout", "core": "IMClient::logout", "c": "flare_sdk_logout", "tauri": "sdk_logout" },
-        { "id": "sdk.update_access_token", "core": "IMClient::update_access_token", "c": "flare_sdk_update_access_token", "tauri": "sdk_update_access_token" },
-        { "id": "diagnostics.sdk_version", "core": "crate version", "c": "flare_sdk_version", "tauri": null },
-        { "id": "diagnostics.ffi_contract_version", "core": "bindings/c contract", "c": "flare_sdk_ffi_contract_version", "tauri": null },
-        { "id": "diagnostics.data_root", "core": "IMClient::data_root", "c": "flare_sdk_data_root", "tauri": null },
-        { "id": "sdk.is_connected", "core": "IMClient::is_connected/state", "c": "flare_sdk_is_connected", "tauri": "sdk_is_connected" },
-        { "id": "sdk.session_active", "core": "IMClient::session_active_sync", "c": "flare_sdk_session_active", "tauri": null },
-        { "id": "sdk.current_user_id", "core": "IMClient::current_user_id", "c": "flare_sdk_current_user_id", "tauri": "sdk_current_user_id" },
-        { "id": "sdk.generate_test_token", "core": "IMClient::generate_test_token", "c": "flare_sdk_generate_test_token", "tauri": "sdk_generate_test_token" },
-        { "id": "connection.get_state", "core": "IMClient::state", "c": "flare_sdk_state", "tauri": "sdk_engine_state" },
-        { "id": "connection.disconnect", "core": "IMClient::disconnect", "c": "flare_sdk_disconnect", "tauri": null }
+        {
+          "id": "sdk.create",
+          "core": "IMClient::new",
+          "c": "flare_sdk_create",
+          "tauri": "SdkState::new"
+        },
+        {
+          "id": "sdk.dispose",
+          "core": "registry release",
+          "c": "flare_sdk_release",
+          "tauri": null
+        },
+        {
+          "id": "sdk.hard_reset",
+          "core": "registry hard reset",
+          "c": "flare_sdk_hard_reset",
+          "tauri": null
+        },
+        {
+          "id": "sdk.init",
+          "core": "IMClient::init",
+          "c": "flare_sdk_init",
+          "tauri": "sdk_init"
+        },
+        {
+          "id": "sdk.uninit",
+          "core": "IMClient::uninit",
+          "c": "flare_sdk_uninit",
+          "tauri": null
+        },
+        {
+          "id": "sdk.login",
+          "core": "IMClient::login",
+          "c": "flare_sdk_login",
+          "tauri": "sdk_login"
+        },
+        {
+          "id": "sdk.prepare",
+          "core": "IMClient::prepare",
+          "c": "flare_sdk_prepare",
+          "tauri": "sdk_prepare"
+        },
+        {
+          "id": "sdk.connect",
+          "core": "IMClient::connect",
+          "c": "flare_sdk_connect",
+          "tauri": "sdk_connect"
+        },
+        {
+          "id": "sdk.logout",
+          "core": "IMClient::logout",
+          "c": "flare_sdk_logout",
+          "tauri": "sdk_logout"
+        },
+        {
+          "id": "sdk.update_access_token",
+          "core": "IMClient::update_access_token",
+          "c": "flare_sdk_update_access_token",
+          "tauri": "sdk_update_access_token"
+        },
+        {
+          "id": "sdk.set_heartbeat_app_state",
+          "core": "IMClient::set_heartbeat_app_state",
+          "c": "flare_sdk_invoke_json",
+          "tauri": null
+        },
+        {
+          "id": "sdk.set_heartbeat_nat_timeout",
+          "core": "IMClient::set_heartbeat_nat_timeout",
+          "c": "flare_sdk_invoke_json",
+          "tauri": null
+        },
+        {
+          "id": "sdk.heartbeat_effective_interval",
+          "core": "IMClient::heartbeat_effective_interval",
+          "c": "flare_sdk_invoke_json",
+          "tauri": null
+        },
+        {
+          "id": "diagnostics.sdk_version",
+          "core": "crate version",
+          "c": "flare_sdk_version",
+          "tauri": null
+        },
+        {
+          "id": "diagnostics.ffi_contract_version",
+          "core": "bindings/c contract",
+          "c": "flare_sdk_ffi_contract_version",
+          "tauri": null
+        },
+        {
+          "id": "diagnostics.data_root",
+          "core": "IMClient::data_root",
+          "c": "flare_sdk_data_root",
+          "tauri": null
+        },
+        {
+          "id": "sdk.is_connected",
+          "core": "IMClient::is_connected/state",
+          "c": "flare_sdk_is_connected",
+          "tauri": "sdk_is_connected"
+        },
+        {
+          "id": "sdk.session_active",
+          "core": "IMClient::session_active_sync",
+          "c": "flare_sdk_session_active",
+          "tauri": null
+        },
+        {
+          "id": "sdk.current_user_id",
+          "core": "IMClient::current_user_id",
+          "c": "flare_sdk_current_user_id",
+          "tauri": "sdk_current_user_id"
+        },
+        {
+          "id": "sdk.generate_core_token",
+          "core": "IMClient::generate_core_token",
+          "c": "flare_sdk_invoke_json",
+          "tauri": null
+        },
+        {
+          "id": "connection.get_state",
+          "core": "IMClient::state",
+          "c": "flare_sdk_state",
+          "tauri": "sdk_engine_state"
+        },
+        {
+          "id": "connection.disconnect",
+          "core": "IMClient::disconnect",
+          "c": "flare_sdk_disconnect",
+          "tauri": null
+        }
       ]
     },
     {
       "id": "sync",
       "methods": [
-        { "id": "sync.conversation", "core": "IMClient::sync_conversation", "c": "flare_sdk_sync_conversation", "tauri": "sdk_sync_conversation" },
-        { "id": "sync.messages", "core": "IMClient::sync_messages", "c": "flare_sdk_sync_messages", "tauri": "sdk_sync_messages" },
-        { "id": "sync.mark_session_read", "core": "IMClient::mark_session_read", "c": "flare_sdk_mark_session_read", "tauri": "sdk_mark_session_read" },
-        { "id": "sync.set_conversation_input_state", "core": "IMClient::set_conversation_input_state", "c": "flare_sdk_set_conversation_input_state", "tauri": "sdk_set_conversation_input_state" }
+        {
+          "id": "sync.conversation",
+          "core": "IMClient::sync_conversation",
+          "c": "flare_sdk_sync_conversation",
+          "tauri": "sdk_sync_conversation"
+        },
+        {
+          "id": "sync.messages",
+          "core": "IMClient::sync_messages",
+          "c": "flare_sdk_sync_messages",
+          "tauri": "sdk_sync_messages"
+        },
+        {
+          "id": "sync.mark_session_read",
+          "core": "IMClient::mark_session_read",
+          "c": "flare_sdk_mark_session_read",
+          "tauri": "sdk_mark_session_read"
+        }
       ]
     },
     {
       "id": "events",
       "methods": [
-        { "id": "events.subscribe", "core": "EventBus::subscribe", "c": "flare_event_subscribe", "tauri": "sdk_login event forwarder" },
-        { "id": "events.unsubscribe", "core": "subscription cancel", "c": "flare_event_unsubscribe", "tauri": null },
-        { "id": "events.unsubscribe_all", "core": "subscription cancel all", "c": "flare_event_unsubscribe_all", "tauri": null }
+        {
+          "id": "event.subscribe",
+          "core": "EventBus::subscribe",
+          "c": "flare_event_subscribe",
+          "tauri": "sdk_login event forwarder"
+        },
+        {
+          "id": "event.unsubscribe",
+          "core": "subscription cancel",
+          "c": "flare_event_unsubscribe",
+          "tauri": null
+        },
+        {
+          "id": "event.unsubscribe_all",
+          "core": "subscription cancel all",
+          "c": "flare_event_unsubscribe_all",
+          "tauri": null
+        }
       ]
     },
     {
       "id": "presence",
       "methods": [
-        { "id": "presence.get", "core": "IMClient::get_user_presence", "c": "flare_sdk_get_user_presence", "tauri": "sdk_get_user_presence" },
-        { "id": "presence.batch_get", "core": "IMClient::batch_get_user_presence", "c": "flare_sdk_batch_get_user_presence", "tauri": "sdk_batch_get_user_presence" },
-        { "id": "presence.subscribe", "core": "IMClient::subscribe_user_presence", "c": "flare_sdk_subscribe_user_presence", "tauri": "sdk_subscribe_user_presence" }
+        {
+          "id": "presence.get",
+          "core": "IMClient::get_user_presence",
+          "c": "flare_sdk_get_user_presence",
+          "tauri": "sdk_get_user_presence"
+        },
+        {
+          "id": "presence.batch_get",
+          "core": "IMClient::batch_get_user_presence",
+          "c": "flare_sdk_batch_get_user_presence",
+          "tauri": "sdk_batch_get_user_presence"
+        },
+        {
+          "id": "presence.subscribe",
+          "core": "IMClient::subscribe_user_presence",
+          "c": "flare_sdk_subscribe_user_presence",
+          "tauri": "sdk_subscribe_user_presence"
+        }
       ]
     },
     {
-      "id": "messages.build",
+      "id": "message_builder",
       "methods": [
-        { "id": "messages.build.text", "core": "MessageBuildApi::create_text", "c": "flare_message_build_json:create_text", "tauri": "sdk_message_build_json" },
-        { "id": "messages.build.quote", "core": "MessageBuildApi::create_quote", "c": "flare_message_build_json:create_quote", "tauri": "sdk_message_build_json" },
-        { "id": "messages.build.thread_reply", "core": "MessageBuildApi::create_thread_reply", "c": "flare_message_build_json:create_thread_reply", "tauri": "sdk_message_build_json" },
-        { "id": "messages.build.forward", "core": "MessageBuildApi::create_forward", "c": "flare_message_build_json:create_forward", "tauri": "sdk_message_build_json" },
-        { "id": "messages.build.image", "core": "MessageBuildApi::create_image", "c": "flare_message_build_json:create_image", "tauri": "sdk_message_build_json" },
-        { "id": "messages.build.video", "core": "MessageBuildApi::create_video", "c": "flare_message_build_json:create_video", "tauri": "sdk_message_build_json" },
-        { "id": "messages.build.audio", "core": "MessageBuildApi::create_audio", "c": "flare_message_build_json:create_audio", "tauri": "sdk_message_build_json" },
-        { "id": "messages.build.file", "core": "MessageBuildApi::create_file", "c": "flare_message_build_json:create_file", "tauri": "sdk_message_build_json" },
-        { "id": "messages.build.emoji", "core": "MessageBuildApi::create_emoji", "c": "flare_message_build_json:create_emoji", "tauri": "sdk_message_build_json" },
-        { "id": "messages.build.location", "core": "MessageBuildApi::create_location", "c": "flare_message_build_json:create_location", "tauri": "sdk_message_build_json" },
-        { "id": "messages.build.sticker", "core": "MessageBuildApi::create_sticker", "c": "flare_message_build_json:create_sticker", "tauri": "sdk_message_build_json" },
-        { "id": "messages.build.link_card", "core": "MessageBuildApi::create_link_card", "c": "flare_message_build_json:create_link_card", "tauri": "sdk_message_build_json" },
-        { "id": "messages.build.card", "core": "MessageBuildApi::create_card", "c": "flare_message_build_json:create_card", "tauri": "sdk_message_build_json" },
-        { "id": "messages.build.mini_program", "core": "MessageBuildApi::create_mini_program", "c": "flare_message_build_json:create_mini_program", "tauri": "sdk_message_build_json" },
-        { "id": "messages.build.rich_doc", "core": "MessageBuildApi::create_rich_doc", "c": "flare_message_build_json:create_rich_doc", "tauri": "sdk_message_build_json" },
-        { "id": "messages.build.system", "core": "MessageBuildApi::create_system", "c": "flare_message_build_json:create_system", "tauri": "sdk_message_build_json" },
-        { "id": "messages.build.notification", "core": "MessageBuildApi::create_notification", "c": "flare_message_build_json:create_notification", "tauri": "sdk_message_build_json" },
-        { "id": "messages.build.vote", "core": "MessageBuildApi::create_vote", "c": "flare_message_build_json:create_vote", "tauri": "sdk_message_build_json" },
-        { "id": "messages.build.task", "core": "MessageBuildApi::create_task", "c": "flare_message_build_json:create_task", "tauri": "sdk_message_build_json" },
-        { "id": "messages.build.schedule", "core": "MessageBuildApi::create_schedule", "c": "flare_message_build_json:create_schedule", "tauri": "sdk_message_build_json" },
-        { "id": "messages.build.announcement", "core": "MessageBuildApi::create_announcement", "c": "flare_message_build_json:create_announcement", "tauri": "sdk_message_build_json" },
-        { "id": "messages.build.custom", "core": "MessageBuildApi::create_custom", "c": "flare_message_build_json:create_custom", "tauri": "sdk_message_build_json" },
-        { "id": "messages.build.placeholder", "core": "MessageBuildApi::create_placeholder", "c": "flare_message_build_json:create_placeholder", "tauri": "sdk_message_build_json" },
-        { "id": "messages.build.with_content", "core": "MessageBuildApi::create_with_content", "c": "flare_message_build_json:create_with_content", "tauri": "sdk_message_build_json" }
+        {
+          "id": "message_builder.create_text",
+          "core": "MessageBuildApi::create_text",
+          "c": "flare_message_build_json:create_text",
+          "tauri": "sdk_message_build_json"
+        },
+        {
+          "id": "message_builder.create_quote",
+          "core": "MessageBuildApi::create_quote",
+          "c": "flare_message_build_json:create_quote",
+          "tauri": "sdk_message_build_json"
+        },
+        {
+          "id": "message_builder.create_thread_reply",
+          "core": "MessageBuildApi::create_thread_reply",
+          "c": "flare_message_build_json:create_thread_reply",
+          "tauri": "sdk_message_build_json"
+        },
+        {
+          "id": "message_builder.create_forward",
+          "core": "MessageBuildApi::create_forward",
+          "c": "flare_message_build_json:create_forward",
+          "tauri": "sdk_message_build_json"
+        },
+        {
+          "id": "message_builder.create_image",
+          "core": "MessageBuildApi::create_image",
+          "c": "flare_message_build_json:create_image",
+          "tauri": "sdk_message_build_json"
+        },
+        {
+          "id": "message_builder.create_video",
+          "core": "MessageBuildApi::create_video",
+          "c": "flare_message_build_json:create_video",
+          "tauri": "sdk_message_build_json"
+        },
+        {
+          "id": "message_builder.create_audio",
+          "core": "MessageBuildApi::create_audio",
+          "c": "flare_message_build_json:create_audio",
+          "tauri": "sdk_message_build_json"
+        },
+        {
+          "id": "message_builder.create_file",
+          "core": "MessageBuildApi::create_file",
+          "c": "flare_message_build_json:create_file",
+          "tauri": "sdk_message_build_json"
+        },
+        {
+          "id": "message_builder.create_emoji",
+          "core": "MessageBuildApi::create_emoji",
+          "c": "flare_message_build_json:create_emoji",
+          "tauri": "sdk_message_build_json"
+        },
+        {
+          "id": "message_builder.create_location",
+          "core": "MessageBuildApi::create_location",
+          "c": "flare_message_build_json:create_location",
+          "tauri": "sdk_message_build_json"
+        },
+        {
+          "id": "message_builder.create_sticker",
+          "core": "MessageBuildApi::create_sticker",
+          "c": "flare_message_build_json:create_sticker",
+          "tauri": "sdk_message_build_json"
+        },
+        {
+          "id": "message_builder.create_link_card",
+          "core": "MessageBuildApi::create_link_card",
+          "c": "flare_message_build_json:create_link_card",
+          "tauri": "sdk_message_build_json"
+        },
+        {
+          "id": "message_builder.create_card",
+          "core": "MessageBuildApi::create_card",
+          "c": "flare_message_build_json:create_card",
+          "tauri": "sdk_message_build_json"
+        },
+        {
+          "id": "message_builder.create_mini_program",
+          "core": "MessageBuildApi::create_mini_program",
+          "c": "flare_message_build_json:create_mini_program",
+          "tauri": "sdk_message_build_json"
+        },
+        {
+          "id": "message_builder.create_rich_doc",
+          "core": "MessageBuildApi::create_rich_doc",
+          "c": "flare_message_build_json:create_rich_doc",
+          "tauri": "sdk_message_build_json"
+        },
+        {
+          "id": "message_builder.create_system",
+          "core": "MessageBuildApi::create_system",
+          "c": "flare_message_build_json:create_system",
+          "tauri": "sdk_message_build_json"
+        },
+        {
+          "id": "message_builder.create_notification",
+          "core": "MessageBuildApi::create_notification",
+          "c": "flare_message_build_json:create_notification",
+          "tauri": "sdk_message_build_json"
+        },
+        {
+          "id": "message_builder.create_vote",
+          "core": "MessageBuildApi::create_vote",
+          "c": "flare_message_build_json:create_vote",
+          "tauri": "sdk_message_build_json"
+        },
+        {
+          "id": "message_builder.create_task",
+          "core": "MessageBuildApi::create_task",
+          "c": "flare_message_build_json:create_task",
+          "tauri": "sdk_message_build_json"
+        },
+        {
+          "id": "message_builder.create_schedule",
+          "core": "MessageBuildApi::create_schedule",
+          "c": "flare_message_build_json:create_schedule",
+          "tauri": "sdk_message_build_json"
+        },
+        {
+          "id": "message_builder.create_announcement",
+          "core": "MessageBuildApi::create_announcement",
+          "c": "flare_message_build_json:create_announcement",
+          "tauri": "sdk_message_build_json"
+        },
+        {
+          "id": "message_builder.create_custom",
+          "core": "MessageBuildApi::create_custom",
+          "c": "flare_message_build_json:create_custom",
+          "tauri": "sdk_message_build_json"
+        },
+        {
+          "id": "message_builder.create_placeholder",
+          "core": "MessageBuildApi::create_placeholder",
+          "c": "flare_message_build_json:create_placeholder",
+          "tauri": "sdk_message_build_json"
+        },
+        {
+          "id": "message_builder.create_with_content",
+          "core": "MessageBuildApi::create_with_content",
+          "c": "flare_message_build_json:create_with_content",
+          "tauri": "sdk_message_build_json"
+        }
       ]
     },
     {
-      "id": "messages",
+      "id": "message",
       "methods": [
-        { "id": "messages.create_text_direct", "core": "MessageBuildApi::create_text", "c": "flare_message_create_text", "tauri": "sdk_message_build_json" },
-        { "id": "messages.send", "core": "MessageApi::send", "c": ["flare_message_send", "flare_message_dispatch_json:send"], "tauri": "sdk_message_dispatch_json" },
-        { "id": "messages.send_no_oss", "core": "MessageApi::send_no_oss", "c": "flare_message_dispatch_json:send_no_oss", "tauri": "sdk_message_dispatch_json" },
-        { "id": "messages.recall", "core": "MessageApi::recall", "c": ["flare_message_recall", "flare_message_dispatch_json:recall"], "tauri": "sdk_message_dispatch_json" },
-        { "id": "messages.edit_text_by_message_id", "core": "MessageApi::edit_text_by_message_id", "c": "flare_message_dispatch_json:edit_text_by_message_id", "tauri": "sdk_message_dispatch_json" },
-        { "id": "messages.delete", "core": "MessageApi::delete", "c": ["flare_message_delete", "flare_message_dispatch_json:delete"], "tauri": "sdk_message_dispatch_json" },
-        { "id": "messages.delete_for_self", "core": "MessageApi::delete_for_self", "c": "flare_message_dispatch_json:delete_for_self", "tauri": "sdk_message_dispatch_json" },
-        { "id": "messages.delete_for_everyone", "core": "MessageApi::delete_for_everyone", "c": "flare_message_dispatch_json:delete_for_everyone", "tauri": "sdk_message_dispatch_json" },
-        { "id": "messages.mark_read", "core": "MessageApi::mark_read", "c": "flare_message_dispatch_json:mark_read", "tauri": "sdk_message_dispatch_json" },
-        { "id": "messages.mark_read_with_ids", "core": "MessageApi::mark_read_with_ids", "c": "flare_message_dispatch_json:mark_read_with_ids", "tauri": "sdk_message_dispatch_json" },
-        { "id": "messages.mark_read_and_burn", "core": "MessageApi::mark_read_and_burn", "c": "flare_message_dispatch_json:mark_read_and_burn", "tauri": "sdk_message_dispatch_json" },
-        { "id": "messages.typing", "core": "MessageApi::typing", "c": "flare_message_dispatch_json:typing", "tauri": "sdk_message_dispatch_json" },
-        { "id": "messages.add_reaction", "core": "MessageApi::add_reaction", "c": "flare_message_dispatch_json:add_reaction", "tauri": "sdk_message_dispatch_json" },
-        { "id": "messages.remove_reaction", "core": "MessageApi::remove_reaction", "c": "flare_message_dispatch_json:remove_reaction", "tauri": "sdk_message_dispatch_json" },
-        { "id": "messages.pin", "core": "MessageApi::pin", "c": "flare_message_dispatch_json:pin", "tauri": "sdk_message_dispatch_json" },
-        { "id": "messages.unpin", "core": "MessageApi::unpin", "c": "flare_message_dispatch_json:unpin", "tauri": "sdk_message_dispatch_json" },
-        { "id": "messages.pin_by_message_id", "core": "MessageApi::pin_by_message_id", "c": "flare_message_dispatch_json:pin_by_message_id", "tauri": "sdk_message_dispatch_json" },
-        { "id": "messages.unpin_by_message_id", "core": "MessageApi::unpin_by_message_id", "c": "flare_message_dispatch_json:unpin_by_message_id", "tauri": "sdk_message_dispatch_json" },
-        { "id": "messages.mark", "core": "MessageApi::mark", "c": "flare_message_dispatch_json:mark", "tauri": "sdk_message_dispatch_json" },
-        { "id": "messages.mark_with_color", "core": "MessageApi::mark_with_color", "c": "flare_message_dispatch_json:mark_with_color", "tauri": "sdk_message_dispatch_json" },
-        { "id": "messages.unmark", "core": "MessageApi::unmark", "c": "flare_message_dispatch_json:unmark", "tauri": "sdk_message_dispatch_json" },
-        { "id": "messages.mark_by_message_id", "core": "MessageApi::mark_by_message_id", "c": "flare_message_dispatch_json:mark_by_message_id", "tauri": "sdk_message_dispatch_json" },
-        { "id": "messages.unmark_by_message_id", "core": "MessageApi::unmark_by_message_id", "c": "flare_message_dispatch_json:unmark_by_message_id", "tauri": "sdk_message_dispatch_json" },
-        { "id": "messages.get", "core": "MessageApi::get", "c": "flare_message_dispatch_json:get", "tauri": "sdk_message_dispatch_json" },
-        { "id": "messages.get_raw", "core": "MessageApi::get_raw", "c": "flare_message_dispatch_json:get_raw", "tauri": "sdk_message_dispatch_json" },
-        { "id": "messages.list", "core": "MessageApi::list", "c": "flare_message_list", "tauri": "sdk_list_messages" },
-        { "id": "messages.search", "core": "MessageApi::search", "c": "flare_message_dispatch_json:search", "tauri": "sdk_message_dispatch_json" },
-        { "id": "messages.search_by_query", "core": "MessageApi::search_by_query", "c": ["flare_message_dispatch_json:search_by_query", "flare_message_dispatch_json:search_advanced"], "tauri": "sdk_message_dispatch_json" },
-        { "id": "messages.search_in_conversation", "core": "MessageApi::search_in_conversation", "c": "flare_message_dispatch_json:search_in_conversation", "tauri": "sdk_message_dispatch_json" }
+        {
+          "id": "message.create_text",
+          "core": "MessageBuildApi::create_text",
+          "c": "flare_message_create_text",
+          "tauri": "sdk_message_build_json"
+        },
+        {
+          "id": "message.send",
+          "core": "MessageApi::send",
+          "c": [
+            "flare_message_send",
+            "flare_message_dispatch_json:send"
+          ],
+          "tauri": "sdk_message_dispatch_json"
+        },
+        {
+          "id": "message.send_no_oss",
+          "core": "MessageApi::send_no_oss",
+          "c": "flare_message_dispatch_json:send_no_oss",
+          "tauri": "sdk_message_dispatch_json"
+        },
+        {
+          "id": "message.recall",
+          "core": "MessageApi::recall",
+          "c": [
+            "flare_message_recall",
+            "flare_message_dispatch_json:recall"
+          ],
+          "tauri": "sdk_message_dispatch_json"
+        },
+        {
+          "id": "message.edit_text_by_message_id",
+          "core": "MessageApi::edit_text_by_message_id",
+          "c": "flare_message_dispatch_json:edit_text_by_message_id",
+          "tauri": "sdk_message_dispatch_json"
+        },
+        {
+          "id": "message.delete",
+          "core": "MessageApi::delete",
+          "c": [
+            "flare_message_delete",
+            "flare_message_dispatch_json:delete"
+          ],
+          "tauri": "sdk_message_dispatch_json"
+        },
+        {
+          "id": "message.delete_for_self",
+          "core": "MessageApi::delete_for_self",
+          "c": "flare_message_dispatch_json:delete_for_self",
+          "tauri": "sdk_message_dispatch_json"
+        },
+        {
+          "id": "message.delete_for_everyone",
+          "core": "MessageApi::delete_for_everyone",
+          "c": "flare_message_dispatch_json:delete_for_everyone",
+          "tauri": "sdk_message_dispatch_json"
+        },
+        {
+          "id": "message.mark_read",
+          "core": "MessageApi::mark_read",
+          "c": "flare_message_dispatch_json:mark_read",
+          "tauri": "sdk_message_dispatch_json"
+        },
+        {
+          "id": "message.mark_read_with_ids",
+          "core": "MessageApi::mark_read_with_ids",
+          "c": "flare_message_dispatch_json:mark_read_with_ids",
+          "tauri": "sdk_message_dispatch_json"
+        },
+        {
+          "id": "message.mark_read_and_burn",
+          "core": "MessageApi::mark_read_and_burn",
+          "c": "flare_message_dispatch_json:mark_read_and_burn",
+          "tauri": "sdk_message_dispatch_json"
+        },
+        {
+          "id": "message.typing",
+          "core": "MessageApi::typing",
+          "c": "flare_message_dispatch_json:typing",
+          "tauri": "sdk_message_dispatch_json"
+        },
+        {
+          "id": "message.add_reaction",
+          "core": "MessageApi::add_reaction",
+          "c": "flare_message_dispatch_json:add_reaction",
+          "tauri": "sdk_message_dispatch_json"
+        },
+        {
+          "id": "message.remove_reaction",
+          "core": "MessageApi::remove_reaction",
+          "c": "flare_message_dispatch_json:remove_reaction",
+          "tauri": "sdk_message_dispatch_json"
+        },
+        {
+          "id": "message.pin",
+          "core": "MessageApi::pin",
+          "c": "flare_message_dispatch_json:pin",
+          "tauri": "sdk_message_dispatch_json"
+        },
+        {
+          "id": "message.unpin",
+          "core": "MessageApi::unpin",
+          "c": "flare_message_dispatch_json:unpin",
+          "tauri": "sdk_message_dispatch_json"
+        },
+        {
+          "id": "message.pin_by_message_id",
+          "core": "MessageApi::pin_by_message_id",
+          "c": "flare_message_dispatch_json:pin_by_message_id",
+          "tauri": "sdk_message_dispatch_json"
+        },
+        {
+          "id": "message.unpin_by_message_id",
+          "core": "MessageApi::unpin_by_message_id",
+          "c": "flare_message_dispatch_json:unpin_by_message_id",
+          "tauri": "sdk_message_dispatch_json"
+        },
+        {
+          "id": "message.mark",
+          "core": "MessageApi::mark",
+          "c": "flare_message_dispatch_json:mark",
+          "tauri": "sdk_message_dispatch_json"
+        },
+        {
+          "id": "message.mark_with_color",
+          "core": "MessageApi::mark_with_color",
+          "c": "flare_message_dispatch_json:mark_with_color",
+          "tauri": "sdk_message_dispatch_json"
+        },
+        {
+          "id": "message.unmark",
+          "core": "MessageApi::unmark",
+          "c": "flare_message_dispatch_json:unmark",
+          "tauri": "sdk_message_dispatch_json"
+        },
+        {
+          "id": "message.mark_by_message_id",
+          "core": "MessageApi::mark_by_message_id",
+          "c": "flare_message_dispatch_json:mark_by_message_id",
+          "tauri": "sdk_message_dispatch_json"
+        },
+        {
+          "id": "message.unmark_by_message_id",
+          "core": "MessageApi::unmark_by_message_id",
+          "c": "flare_message_dispatch_json:unmark_by_message_id",
+          "tauri": "sdk_message_dispatch_json"
+        },
+        {
+          "id": "message.get",
+          "core": "MessageApi::get",
+          "c": "flare_message_dispatch_json:get",
+          "tauri": "sdk_message_dispatch_json"
+        },
+        {
+          "id": "message.get_raw",
+          "core": "MessageApi::get_raw",
+          "c": "flare_message_dispatch_json:get_raw",
+          "tauri": "sdk_message_dispatch_json"
+        },
+        {
+          "id": "message.list",
+          "core": "MessageApi::list",
+          "c": "flare_message_list",
+          "tauri": "sdk_list_messages"
+        },
+        {
+          "id": "message.search",
+          "core": "MessageApi::search",
+          "c": "flare_message_dispatch_json:search",
+          "tauri": "sdk_message_dispatch_json"
+        },
+        {
+          "id": "message.search_by_query",
+          "core": "MessageApi::search_by_query",
+          "c": "flare_message_dispatch_json:search_by_query",
+          "tauri": "sdk_message_dispatch_json"
+        },
+        {
+          "id": "message.search_in_conversation",
+          "core": "MessageApi::search_in_conversation",
+          "c": "flare_message_dispatch_json:search_in_conversation",
+          "tauri": "sdk_message_dispatch_json"
+        }
       ]
     },
     {
-      "id": "conversations",
+      "id": "conversation",
       "methods": [
-        { "id": "conversations.list", "core": "ConversationApi::list", "c": "flare_conversation_dispatch_json:list", "tauri": "sdk_conversation_dispatch_json" },
-        { "id": "conversations.list_by_query", "core": "ConversationApi::list_by_query", "c": "flare_conversation_dispatch_json:list_by_query", "tauri": "sdk_conversation_dispatch_json" },
-        { "id": "conversations.list_including_archived", "core": "ConversationApi::list_including_archived", "c": "flare_conversation_dispatch_json:list_including_archived", "tauri": "sdk_conversation_dispatch_json" },
-        { "id": "conversations.get", "core": "ConversationApi::get", "c": "flare_conversation_dispatch_json:get", "tauri": "sdk_conversation_dispatch_json" },
-        { "id": "conversations.get_one", "core": "ConversationApi::get_one", "c": "flare_conversation_dispatch_json:get_one", "tauri": "sdk_conversation_dispatch_json" },
-        { "id": "conversations.get_group_by_user_ids", "core": "ConversationApi::get_group_by_user_ids", "c": "flare_conversation_dispatch_json:get_group_by_user_ids", "tauri": "sdk_conversation_dispatch_json" },
-        { "id": "conversations.get_multiple", "core": "ConversationApi::get_multiple", "c": "flare_conversation_dispatch_json:get_multiple", "tauri": "sdk_conversation_dispatch_json" },
-        { "id": "conversations.list_paginated", "core": "ConversationApi::list_paginated", "c": "flare_conversation_dispatch_json:list_paginated", "tauri": "sdk_conversation_dispatch_json" },
-        { "id": "conversations.list_raw", "core": "ConversationApi::list_raw", "c": "flare_conversation_dispatch_json:list_raw", "tauri": "sdk_conversation_dispatch_json" },
-        { "id": "conversations.mark_read", "core": "ConversationApi::mark_read", "c": "flare_conversation_dispatch_json:mark_read", "tauri": "sdk_conversation_dispatch_json" },
-        { "id": "conversations.mark_all_read", "core": "ConversationApi::mark_all_read", "c": "flare_conversation_dispatch_json:mark_all_read", "tauri": "sdk_conversation_dispatch_json" },
-        { "id": "conversations.delete", "core": "ConversationApi::delete", "c": "flare_conversation_dispatch_json:delete", "tauri": "sdk_conversation_dispatch_json" },
-        { "id": "conversations.set_pinned", "core": "ConversationApi::set_pinned", "c": "flare_conversation_dispatch_json:set_pinned", "tauri": "sdk_conversation_dispatch_json" },
-        { "id": "conversations.set_muted", "core": "ConversationApi::set_muted", "c": "flare_conversation_dispatch_json:set_muted", "tauri": "sdk_conversation_dispatch_json" },
-        { "id": "conversations.set_archived", "core": "ConversationApi::set_archived", "c": "flare_conversation_dispatch_json:set_archived", "tauri": "sdk_conversation_dispatch_json" },
-        { "id": "conversations.mark_unread", "core": "ConversationApi::mark_unread", "c": "flare_conversation_dispatch_json:mark_unread", "tauri": "sdk_conversation_dispatch_json" },
-        { "id": "conversations.update_draft", "core": "ConversationApi::update_draft", "c": "flare_conversation_dispatch_json:update_draft", "tauri": "sdk_conversation_dispatch_json" },
-        { "id": "conversations.clear_local_chat_history", "core": "ConversationApi::clear_local_chat_history", "c": "flare_conversation_dispatch_json:clear_local_chat_history", "tauri": "sdk_conversation_dispatch_json" }
+        {
+          "id": "conversation.list",
+          "core": "ConversationApi::list",
+          "c": "flare_conversation_dispatch_json:list",
+          "tauri": "sdk_conversation_dispatch_json"
+        },
+        {
+          "id": "conversation.list_by_query",
+          "core": "ConversationApi::list_by_query",
+          "c": "flare_conversation_dispatch_json:list_by_query",
+          "tauri": "sdk_conversation_dispatch_json"
+        },
+        {
+          "id": "conversation.list_including_archived",
+          "core": "ConversationApi::list_including_archived",
+          "c": "flare_conversation_dispatch_json:list_including_archived",
+          "tauri": "sdk_conversation_dispatch_json"
+        },
+        {
+          "id": "conversation.get",
+          "core": "ConversationApi::get",
+          "c": "flare_conversation_dispatch_json:get",
+          "tauri": "sdk_conversation_dispatch_json"
+        },
+        {
+          "id": "conversation.get_one",
+          "core": "ConversationApi::get_one",
+          "c": "flare_conversation_dispatch_json:get_one",
+          "tauri": "sdk_conversation_dispatch_json"
+        },
+        {
+          "id": "conversation.get_group_by_user_ids",
+          "core": "ConversationApi::get_group_by_user_ids",
+          "c": "flare_conversation_dispatch_json:get_group_by_user_ids",
+          "tauri": "sdk_conversation_dispatch_json"
+        },
+        {
+          "id": "conversation.get_multiple",
+          "core": "ConversationApi::get_multiple",
+          "c": "flare_conversation_dispatch_json:get_multiple",
+          "tauri": "sdk_conversation_dispatch_json"
+        },
+        {
+          "id": "conversation.list_paginated",
+          "core": "ConversationApi::list_paginated",
+          "c": "flare_conversation_dispatch_json:list_paginated",
+          "tauri": "sdk_conversation_dispatch_json"
+        },
+        {
+          "id": "conversation.list_raw",
+          "core": "ConversationApi::list_raw",
+          "c": "flare_conversation_dispatch_json:list_raw",
+          "tauri": "sdk_conversation_dispatch_json"
+        },
+        {
+          "id": "conversation.mark_read",
+          "core": "ConversationApi::mark_read",
+          "c": "flare_conversation_dispatch_json:mark_read",
+          "tauri": "sdk_conversation_dispatch_json"
+        },
+        {
+          "id": "conversation.mark_all_read",
+          "core": "ConversationApi::mark_all_read",
+          "c": "flare_conversation_dispatch_json:mark_all_read",
+          "tauri": "sdk_conversation_dispatch_json"
+        },
+        {
+          "id": "conversation.delete",
+          "core": "ConversationApi::delete",
+          "c": "flare_conversation_dispatch_json:delete",
+          "tauri": "sdk_conversation_dispatch_json"
+        },
+        {
+          "id": "conversation.set_pinned",
+          "core": "ConversationApi::set_pinned",
+          "c": "flare_conversation_dispatch_json:set_pinned",
+          "tauri": "sdk_conversation_dispatch_json"
+        },
+        {
+          "id": "conversation.set_muted",
+          "core": "ConversationApi::set_muted",
+          "c": "flare_conversation_dispatch_json:set_muted",
+          "tauri": "sdk_conversation_dispatch_json"
+        },
+        {
+          "id": "conversation.set_archived",
+          "core": "ConversationApi::set_archived",
+          "c": "flare_conversation_dispatch_json:set_archived",
+          "tauri": "sdk_conversation_dispatch_json"
+        },
+        {
+          "id": "conversation.mark_unread",
+          "core": "ConversationApi::mark_unread",
+          "c": "flare_conversation_dispatch_json:mark_unread",
+          "tauri": "sdk_conversation_dispatch_json"
+        },
+        {
+          "id": "conversation.update_draft",
+          "core": "ConversationApi::update_draft",
+          "c": "flare_conversation_dispatch_json:update_draft",
+          "tauri": "sdk_conversation_dispatch_json"
+        },
+        {
+          "id": "conversation.clear_local_chat_history",
+          "core": "ConversationApi::clear_local_chat_history",
+          "c": "flare_conversation_dispatch_json:clear_local_chat_history",
+          "tauri": "sdk_conversation_dispatch_json"
+        }
       ]
     },
     {
       "id": "media",
       "methods": [
-        { "id": "media.upload_file", "core": "MediaApi::upload_file_from_path", "c": "flare_media_upload_file", "tauri": "sdk_media_upload_file" },
-        { "id": "media.upload_image", "core": "MediaApi::upload_image_from_path_with_progress", "c": "flare_media_upload_image", "tauri": "sdk_media_upload_image" },
-        { "id": "media.upload_video", "core": "MediaApi::upload_video_from_path_with_progress", "c": "flare_media_upload_video", "tauri": "sdk_media_upload_video" },
-        { "id": "media.upload_bytes", "core": "MediaApi::upload_bytes", "c": "flare_media_upload_bytes", "tauri": null },
-        { "id": "media.delete_file", "core": "MediaApi::delete_file", "c": "flare_media_delete_file", "tauri": "sdk_media_delete_file" },
-        { "id": "media.get_file_url", "core": "MediaApi::get_file_url", "c": "flare_media_dispatch_json:get_url", "tauri": "sdk_media_dispatch_json" },
-        { "id": "media.temp_download_url", "core": "MediaApi::get_temp_url_for_file_download", "c": "flare_media_dispatch_json:temp_download_url", "tauri": "sdk_media_dispatch_json" },
-        { "id": "media.resolve_access", "core": "MediaApi::resolve_media_access", "c": "flare_media_dispatch_json:resolve_access", "tauri": "sdk_media_dispatch_json" },
-        { "id": "media.cache_remote", "core": "MediaApi::cache_remote_media", "c": "flare_media_dispatch_json:cache_remote", "tauri": "sdk_media_dispatch_json" },
-        { "id": "media.cache_stats", "core": "MediaApi::media_cache_stats", "c": "flare_media_dispatch_json:cache_stats", "tauri": "sdk_media_dispatch_json" },
-        { "id": "media.set_cache_max_bytes", "core": "MediaApi::set_media_cache_max_bytes", "c": "flare_media_dispatch_json:set_cache_max_bytes", "tauri": "sdk_media_dispatch_json" },
-        { "id": "media.set_cache_root", "core": "MediaApi::set_media_cache_root", "c": "flare_media_dispatch_json:set_cache_root", "tauri": "sdk_media_dispatch_json" },
-        { "id": "media.clear_cache", "core": "MediaApi::clear_media_cache", "c": "flare_media_dispatch_json:clear_cache", "tauri": "sdk_media_dispatch_json" },
-        { "id": "media.user_download_get_subfolder", "core": "MediaApi::user_download_get_subfolder", "c": "flare_media_dispatch_json:user_download_get_subfolder", "tauri": "sdk_media_dispatch_json" },
-        { "id": "media.user_download_set_subfolder", "core": "MediaApi::user_download_set_subfolder", "c": "flare_media_dispatch_json:user_download_set_subfolder", "tauri": "sdk_media_dispatch_json" },
-        { "id": "media.user_download_get_saved_path", "core": "MediaApi::user_download_get_saved_path", "c": "flare_media_dispatch_json:user_download_get_saved_path", "tauri": "sdk_media_dispatch_json" },
-        { "id": "media.user_download_delete_record", "core": "MediaApi::user_download_delete_record", "c": "flare_media_dispatch_json:user_download_delete_record", "tauri": "sdk_media_dispatch_json" },
-        { "id": "media.cancel_user_file_download", "core": "MediaApi::cancel_user_file_download", "c": "flare_media_cancel_user_file_download", "tauri": "sdk_cancel_user_file_download" },
-        { "id": "media.download_file_to_downloads", "core": "MediaApi::download_file_to_user_downloads_folder", "c": "flare_media_download_file_to_downloads", "tauri": "sdk_download_file_to_downloads" }
+        {
+          "id": "media.upload_file",
+          "core": "MediaApi::upload_file_from_path",
+          "c": "flare_media_upload_file",
+          "tauri": "sdk_media_upload_file"
+        },
+        {
+          "id": "media.upload_image",
+          "core": "MediaApi::upload_image_from_path_with_progress",
+          "c": "flare_media_upload_image",
+          "tauri": "sdk_media_upload_image"
+        },
+        {
+          "id": "media.upload_video",
+          "core": "MediaApi::upload_video_from_path_with_progress",
+          "c": "flare_media_upload_video",
+          "tauri": "sdk_media_upload_video"
+        },
+        {
+          "id": "media.upload_bytes",
+          "core": "MediaApi::upload_bytes",
+          "c": "flare_media_upload_bytes",
+          "tauri": null
+        },
+        {
+          "id": "media.delete_file",
+          "core": "MediaApi::delete_file",
+          "c": "flare_media_delete_file",
+          "tauri": "sdk_media_delete_file"
+        },
+        {
+          "id": "media.get_url",
+          "core": "MediaApi::get_file_url",
+          "c": "flare_media_dispatch_json:get_url",
+          "tauri": "sdk_media_dispatch_json"
+        },
+        {
+          "id": "media.temp_download_url",
+          "core": "MediaApi::get_temp_url_for_file_download",
+          "c": "flare_media_dispatch_json:temp_download_url",
+          "tauri": "sdk_media_dispatch_json"
+        },
+        {
+          "id": "media.resolve_access",
+          "core": "MediaApi::resolve_media_access",
+          "c": "flare_media_dispatch_json:resolve_access",
+          "tauri": "sdk_media_dispatch_json"
+        },
+        {
+          "id": "media.cache_remote",
+          "core": "MediaApi::cache_remote_media",
+          "c": "flare_media_dispatch_json:cache_remote",
+          "tauri": "sdk_media_dispatch_json"
+        },
+        {
+          "id": "media.cache_stats",
+          "core": "MediaApi::media_cache_stats",
+          "c": "flare_media_dispatch_json:cache_stats",
+          "tauri": "sdk_media_dispatch_json"
+        },
+        {
+          "id": "media.set_cache_max_bytes",
+          "core": "MediaApi::set_media_cache_max_bytes",
+          "c": "flare_media_dispatch_json:set_cache_max_bytes",
+          "tauri": "sdk_media_dispatch_json"
+        },
+        {
+          "id": "media.set_cache_root",
+          "core": "MediaApi::set_media_cache_root",
+          "c": "flare_media_dispatch_json:set_cache_root",
+          "tauri": "sdk_media_dispatch_json"
+        },
+        {
+          "id": "media.clear_cache",
+          "core": "MediaApi::clear_media_cache",
+          "c": "flare_media_dispatch_json:clear_cache",
+          "tauri": "sdk_media_dispatch_json"
+        },
+        {
+          "id": "media.user_download_get_subfolder",
+          "core": "MediaApi::user_download_get_subfolder",
+          "c": "flare_media_dispatch_json:user_download_get_subfolder",
+          "tauri": "sdk_media_dispatch_json"
+        },
+        {
+          "id": "media.user_download_set_subfolder",
+          "core": "MediaApi::user_download_set_subfolder",
+          "c": "flare_media_dispatch_json:user_download_set_subfolder",
+          "tauri": "sdk_media_dispatch_json"
+        },
+        {
+          "id": "media.user_download_get_saved_path",
+          "core": "MediaApi::user_download_get_saved_path",
+          "c": "flare_media_dispatch_json:user_download_get_saved_path",
+          "tauri": "sdk_media_dispatch_json"
+        },
+        {
+          "id": "media.user_download_delete_record",
+          "core": "MediaApi::user_download_delete_record",
+          "c": "flare_media_dispatch_json:user_download_delete_record",
+          "tauri": "sdk_media_dispatch_json"
+        },
+        {
+          "id": "media.cancel_user_file_download",
+          "core": "MediaApi::cancel_user_file_download",
+          "c": "flare_media_cancel_user_file_download",
+          "tauri": "sdk_cancel_user_file_download"
+        },
+        {
+          "id": "media.download_file_to_downloads",
+          "core": "MediaApi::download_file_to_user_downloads_folder",
+          "c": "flare_media_download_file_to_downloads",
+          "tauri": "sdk_download_file_to_downloads"
+        }
       ]
     },
     {
-      "id": "capabilities",
+      "id": "capability",
       "methods": [
-        { "id": "capabilities.list", "core": "CapabilityApi::list_capabilities", "c": "flare_capability_dispatch_json:capability_list", "tauri": "sdk_message_dispatch_json" },
-        { "id": "capabilities.list_user", "core": "CapabilityApi::list_user_capabilities", "c": "flare_capability_dispatch_json:capability_list_user", "tauri": "sdk_message_dispatch_json" },
-        { "id": "capabilities.dispatch", "core": "CapabilityApi::dispatch", "c": "flare_capability_dispatch_json:capability_dispatch", "tauri": "sdk_message_dispatch_json" },
-        { "id": "capabilities.grant", "core": "CapabilityApi::grant_user_capability", "c": "flare_capability_dispatch_json:capability_grant", "tauri": "sdk_message_dispatch_json" },
-        { "id": "capabilities.revoke", "core": "CapabilityApi::revoke_user_capability", "c": "flare_capability_dispatch_json:capability_revoke", "tauri": "sdk_message_dispatch_json" },
-        { "id": "call.send_signal", "core": "IMClient::send_call_signal", "c": "flare_capability_dispatch_json:send_call_signal", "tauri": "sdk_message_dispatch_json" },
-        { "id": "rtc.start_audio", "core": "CapabilityApi::rtc_start_audio", "c": "capability_dispatch payload", "tauri": "sdk_rtc_start_audio" },
-        { "id": "rtc.start_video", "core": "CapabilityApi::rtc_start_video", "c": "capability_dispatch payload", "tauri": "sdk_rtc_start_video" },
-        { "id": "rtc.accept_call", "core": "CapabilityApi::rtc_accept_call", "c": "capability_dispatch payload", "tauri": "sdk_rtc_accept_call" },
-        { "id": "rtc.reject_call", "core": "CapabilityApi::rtc_reject_call", "c": "capability_dispatch payload", "tauri": "sdk_rtc_reject_call" },
-        { "id": "rtc.end_call", "core": "CapabilityApi::rtc_end_call", "c": "capability_dispatch payload", "tauri": "sdk_rtc_end_call" },
-        { "id": "rtc.sfu_join_room", "core": "CapabilityApi::rtc_sfu_join_room", "c": "capability_dispatch payload", "tauri": "sdk_rtc_sfu_join_room" },
-        { "id": "rtc.sfu_leave_room", "core": "CapabilityApi::rtc_sfu_leave_room", "c": "capability_dispatch payload", "tauri": "sdk_rtc_sfu_leave_room" },
-        { "id": "rtc.sfu_handle_sdp_offer", "core": "CapabilityApi::rtc_sfu_handle_sdp_offer", "c": "capability_dispatch payload", "tauri": "sdk_rtc_sfu_handle_sdp_offer" },
-        { "id": "rtc.sfu_add_ice_candidate", "core": "CapabilityApi::rtc_sfu_add_ice_candidate", "c": "capability_dispatch payload", "tauri": "sdk_rtc_sfu_add_ice_candidate" },
-        { "id": "rtc.sfu_get_room_state", "core": "CapabilityApi::rtc_sfu_get_room_state", "c": "capability_dispatch payload", "tauri": "sdk_rtc_sfu_get_room_state" },
-        { "id": "rtc.sfu_set_subscription", "core": "CapabilityApi::rtc_sfu_set_subscription", "c": "capability_dispatch payload", "tauri": "sdk_rtc_sfu_set_subscription" }
+        {
+          "id": "capability.list",
+          "core": "CapabilityApi::list_capabilities",
+          "c": "flare_capability_dispatch_json:capability_list",
+          "tauri": "sdk_message_dispatch_json"
+        },
+        {
+          "id": "capability.list_user",
+          "core": "CapabilityApi::list_user_capabilities",
+          "c": "flare_capability_dispatch_json:capability_list_user",
+          "tauri": "sdk_message_dispatch_json"
+        },
+        {
+          "id": "capability.dispatch",
+          "core": "CapabilityApi::dispatch",
+          "c": "flare_capability_dispatch_json:capability_dispatch",
+          "tauri": "sdk_message_dispatch_json"
+        },
+        {
+          "id": "capability.grant",
+          "core": "CapabilityApi::grant_user_capability",
+          "c": "flare_capability_dispatch_json:capability_grant",
+          "tauri": "sdk_message_dispatch_json"
+        },
+        {
+          "id": "capability.revoke",
+          "core": "CapabilityApi::revoke_user_capability",
+          "c": "flare_capability_dispatch_json:capability_revoke",
+          "tauri": "sdk_message_dispatch_json"
+        },
+        {
+          "id": "rtc.start_audio",
+          "core": "CapabilityApi::rtc_start_audio",
+          "c": "capability_dispatch payload",
+          "tauri": "sdk_rtc_start_audio"
+        },
+        {
+          "id": "rtc.start_video",
+          "core": "CapabilityApi::rtc_start_video",
+          "c": "capability_dispatch payload",
+          "tauri": "sdk_rtc_start_video"
+        },
+        {
+          "id": "rtc.accept_call",
+          "core": "CapabilityApi::rtc_accept_call",
+          "c": "capability_dispatch payload",
+          "tauri": "sdk_rtc_accept_call"
+        },
+        {
+          "id": "rtc.reject_call",
+          "core": "CapabilityApi::rtc_reject_call",
+          "c": "capability_dispatch payload",
+          "tauri": "sdk_rtc_reject_call"
+        },
+        {
+          "id": "rtc.end_call",
+          "core": "CapabilityApi::rtc_end_call",
+          "c": "capability_dispatch payload",
+          "tauri": "sdk_rtc_end_call"
+        },
+        {
+          "id": "rtc.sfu_join_room",
+          "core": "CapabilityApi::rtc_sfu_join_room",
+          "c": "capability_dispatch payload",
+          "tauri": "sdk_rtc_sfu_join_room"
+        },
+        {
+          "id": "rtc.sfu_leave_room",
+          "core": "CapabilityApi::rtc_sfu_leave_room",
+          "c": "capability_dispatch payload",
+          "tauri": "sdk_rtc_sfu_leave_room"
+        },
+        {
+          "id": "rtc.sfu_handle_sdp_offer",
+          "core": "CapabilityApi::rtc_sfu_handle_sdp_offer",
+          "c": "capability_dispatch payload",
+          "tauri": "sdk_rtc_sfu_handle_sdp_offer"
+        },
+        {
+          "id": "rtc.sfu_add_ice_candidate",
+          "core": "CapabilityApi::rtc_sfu_add_ice_candidate",
+          "c": "capability_dispatch payload",
+          "tauri": "sdk_rtc_sfu_add_ice_candidate"
+        },
+        {
+          "id": "rtc.sfu_get_room_state",
+          "core": "CapabilityApi::rtc_sfu_get_room_state",
+          "c": "capability_dispatch payload",
+          "tauri": "sdk_rtc_sfu_get_room_state"
+        },
+        {
+          "id": "rtc.sfu_set_subscription",
+          "core": "CapabilityApi::rtc_sfu_set_subscription",
+          "c": "capability_dispatch payload",
+          "tauri": "sdk_rtc_sfu_set_subscription"
+        }
       ]
     },
     {
       "id": "rich_doc_v2",
       "methods": [
-        { "id": "rich_doc_v2.normalize_from_markdown", "core": "rich_doc_v2::normalize_from_markdown", "c": "flare_message_build_json:create_rich_doc", "tauri": "sdk_rich_doc_v2_normalize_from_markdown" },
-        { "id": "rich_doc_v2.normalize_from_html", "core": "rich_doc_v2::normalize_from_html", "c": "flare_message_build_json:create_rich_doc", "tauri": "sdk_rich_doc_v2_normalize_from_html" },
-        { "id": "rich_doc_v2.normalize_from_doc_json", "core": "rich_doc_v2::normalize_from_doc_json", "c": "flare_message_build_json:create_rich_doc", "tauri": "sdk_rich_doc_v2_normalize_from_doc_json" },
-        { "id": "rich_doc_v2.create_message", "core": "MessageBuildApi::create_rich_doc", "c": "flare_message_build_json:create_rich_doc", "tauri": "sdk_rich_doc_v2_create_message" },
-        { "id": "rich_doc_v2.edit_message", "core": "MessageApi::edit_rich_doc_by_message_id", "c": "flare_message_dispatch_json:edit_rich_doc_by_message_id", "tauri": "sdk_rich_doc_v2_edit_message" }
+        {
+          "id": "rich_doc_v2.normalize_from_markdown",
+          "core": "rich_doc_v2::normalize_from_markdown",
+          "c": "flare_message_build_json:create_rich_doc",
+          "tauri": "sdk_rich_doc_v2_normalize_from_markdown"
+        },
+        {
+          "id": "rich_doc_v2.normalize_from_html",
+          "core": "rich_doc_v2::normalize_from_html",
+          "c": "flare_message_build_json:create_rich_doc",
+          "tauri": "sdk_rich_doc_v2_normalize_from_html"
+        },
+        {
+          "id": "rich_doc_v2.normalize_from_doc_json",
+          "core": "rich_doc_v2::normalize_from_doc_json",
+          "c": "flare_message_build_json:create_rich_doc",
+          "tauri": "sdk_rich_doc_v2_normalize_from_doc_json"
+        },
+        {
+          "id": "rich_doc_v2.create_message",
+          "core": "MessageBuildApi::create_rich_doc",
+          "c": "flare_message_build_json:create_rich_doc",
+          "tauri": "sdk_rich_doc_v2_create_message"
+        },
+        {
+          "id": "rich_doc_v2.edit_message",
+          "core": "MessageApi::edit_rich_doc_by_message_id",
+          "c": "flare_message_dispatch_json:edit_rich_doc_by_message_id",
+          "tauri": "sdk_rich_doc_v2_edit_message"
+        }
       ]
     }
   ]

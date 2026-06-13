@@ -26,10 +26,10 @@ pub fn message_visible_after_clear(message: &IMMessage, cleared_through_seq: u64
     if cleared_through_seq == 0 {
         return true;
     }
-    if message.seq == 0 {
+    if message.conversation_seq == 0 {
         return true;
     }
-    message.seq > cleared_through_seq
+    message.conversation_seq > cleared_through_seq
 }
 
 pub fn filter_messages_after_clear(

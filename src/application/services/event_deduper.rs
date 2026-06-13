@@ -8,11 +8,6 @@ const DEFAULT_DEDUPE_CAPACITY: usize = 4096;
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 enum EventDedupeKey {
     EventId(String),
-    EventSeq {
-        conversation_id: String,
-        event_type: i32,
-        seq: u64,
-    },
     Seq {
         conversation_id: String,
         event_type: i32,
@@ -88,20 +83,11 @@ fn dedupe_key_for_event(event: &flare_proto::common::Event) -> Option<EventDedup
     if !event.event_id.trim().is_empty() {
         return Some(EventDedupeKey::EventId(event.event_id.clone()));
     }
-    if let Some(event_seq) = event.event_seq
-        && event_seq > 0
-    {
-        return Some(EventDedupeKey::EventSeq {
-            conversation_id: event.conversation_id.clone(),
-            event_type: event.r#type,
-            seq: event_seq,
-        });
-    }
-    if event.seq > 0 {
+    if event.conversation_seq > 0 {
         return Some(EventDedupeKey::Seq {
             conversation_id: event.conversation_id.clone(),
             event_type: event.r#type,
-            seq: event.seq,
+            seq: event.conversation_seq,
         });
     }
     if let Some(request_id) = &event.request_id

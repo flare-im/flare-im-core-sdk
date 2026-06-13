@@ -32,7 +32,7 @@ impl SendMessageCommand {
             chain.notify_send_error(&msg, &error, &ctx).await;
             return Err(error);
         }
-        msg.materialize_content_bytes_from_elem();
+        msg.materialize_encoded_content_from_elem();
         let proto = msg.to_proto();
         if let Err(error) = sender
             .send_message(&proto, Duration::from_secs(TIMEOUT_SECS))
@@ -47,10 +47,9 @@ impl SendMessageCommand {
         }
         let ack = SendAck {
             client_msg_id: msg.client_msg_id.clone(),
-            server_msg_id: msg.server_id.clone(),
-            seq: msg.seq,
-            success: true,
-            ..Default::default()
+            conversation_id: msg.conversation_id.clone(),
+            ack_id: None,
+            result: None,
         };
         chain.after_send(&msg, Some(&ack), &ctx).await;
         Ok(ack)
@@ -68,7 +67,7 @@ impl SendMessageCommand {
             chain.notify_send_error(&msg, &error, &ctx).await;
             return Err(error);
         }
-        msg.materialize_content_bytes_from_elem();
+        msg.materialize_encoded_content_from_elem();
         if chain.has_message_interceptors() {
             if let Err(error) = queue.enqueue(msg.clone()).await {
                 chain.notify_send_error(&msg, &error, &ctx).await;

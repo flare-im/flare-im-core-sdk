@@ -1,7 +1,261 @@
 //! SQLite 表结构初始化，供 `create_pool` 后调用。
 
 use crate::shared::error::{ErrorCode, FlareError, Result};
-use sqlx::SqlitePool;
+use sqlx::{Row, SqlitePool};
+
+const CURRENT_SCHEMA_VERSION: i64 = 2;
+
+fn db_err(e: sqlx::Error) -> FlareError {
+    FlareError::localized(ErrorCode::DatabaseError, e.to_string())
+}
+
+async fn current_user_version(pool: &SqlitePool) -> Result<i64> {
+    sqlx::query_scalar::<_, i64>("PRAGMA user_version")
+        .fetch_one(pool)
+        .await
+        .map_err(db_err)
+}
+
+async fn set_user_version(pool: &SqlitePool, version: i64) -> Result<()> {
+    sqlx::query(&format!("PRAGMA user_version = {version}"))
+        .execute(pool)
+        .await
+        .map_err(db_err)?;
+    Ok(())
+}
+
+async fn column_exists(pool: &SqlitePool, table: &str, column: &str) -> Result<bool> {
+    let rows = sqlx::query(&format!("PRAGMA table_info({table})"))
+        .fetch_all(pool)
+        .await
+        .map_err(db_err)?;
+    Ok(rows
+        .iter()
+        .filter_map(|row| row.try_get::<String, _>("name").ok())
+        .any(|name| name == column))
+}
+
+async fn ensure_column(
+    pool: &SqlitePool,
+    table: &str,
+    column: &str,
+    definition: &str,
+) -> Result<()> {
+    if column_exists(pool, table, column).await? {
+        return Ok(());
+    }
+    sqlx::query(&format!("ALTER TABLE {table} ADD COLUMN {definition}"))
+        .execute(pool)
+        .await
+        .map_err(db_err)?;
+    Ok(())
+}
+
+async fn create_messages_fts(pool: &SqlitePool) -> Result<()> {
+    sqlx::query(
+        r#"CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
+            server_id UNINDEXED,
+            conversation_id UNINDEXED,
+            text,
+            tokenize='trigram'
+        )"#,
+    )
+    .execute(pool)
+    .await
+    .map_err(db_err)?;
+    Ok(())
+}
+
+async fn ensure_current_message_columns(pool: &SqlitePool) -> Result<()> {
+    for (column, definition) in [
+        ("client_msg_id", "client_msg_id TEXT NOT NULL DEFAULT ''"),
+        ("sender_id", "sender_id TEXT NOT NULL DEFAULT ''"),
+        ("source", "source INTEGER NOT NULL DEFAULT 0"),
+        (
+            "conversation_seq",
+            "conversation_seq INTEGER NOT NULL DEFAULT 0",
+        ),
+        ("created_at", "created_at INTEGER NOT NULL DEFAULT 0"),
+        (
+            "client_created_at",
+            "client_created_at INTEGER NOT NULL DEFAULT 0",
+        ),
+        (
+            "conversation_type",
+            "conversation_type INTEGER NOT NULL DEFAULT 0",
+        ),
+        ("message_type", "message_type INTEGER NOT NULL DEFAULT 0"),
+        ("channel_id", "channel_id TEXT NOT NULL DEFAULT ''"),
+        ("sender_name", "sender_name TEXT NOT NULL DEFAULT ''"),
+        ("sender_avatar", "sender_avatar TEXT NOT NULL DEFAULT ''"),
+        (
+            "sender_display_name",
+            "sender_display_name TEXT NOT NULL DEFAULT ''",
+        ),
+        (
+            "encoded_content",
+            "encoded_content BLOB NOT NULL DEFAULT X''",
+        ),
+        ("status", "status INTEGER NOT NULL DEFAULT 0"),
+        (
+            "retention_policy",
+            "retention_policy BLOB NOT NULL DEFAULT X''",
+        ),
+        (
+            "retention_state",
+            "retention_state BLOB NOT NULL DEFAULT X''",
+        ),
+        ("is_read", "is_read INTEGER NOT NULL DEFAULT 0"),
+        ("is_recalled", "is_recalled INTEGER NOT NULL DEFAULT 0"),
+        ("is_edited", "is_edited INTEGER NOT NULL DEFAULT 0"),
+        ("reply_to", "reply_to TEXT"),
+        ("quote_preview", "quote_preview TEXT"),
+        ("mention_users", "mention_users TEXT"),
+        ("mention_all", "mention_all INTEGER NOT NULL DEFAULT 0"),
+        ("attributes", "attributes TEXT"),
+        ("extensions", "extensions TEXT"),
+        ("version", "version INTEGER NOT NULL DEFAULT 0"),
+        ("updated_at", "updated_at INTEGER NOT NULL DEFAULT 0"),
+        ("text", "text TEXT"),
+        ("sending", "sending INTEGER NOT NULL DEFAULT 0"),
+        ("failed", "failed INTEGER NOT NULL DEFAULT 0"),
+        ("is_local", "is_local INTEGER NOT NULL DEFAULT 0"),
+        ("sort_ts", "sort_ts INTEGER NOT NULL DEFAULT 0"),
+    ] {
+        ensure_column(pool, "messages", column, definition).await?;
+    }
+    Ok(())
+}
+
+async fn ensure_current_conversation_columns(pool: &SqlitePool) -> Result<()> {
+    for (column, definition) in [
+        (
+            "conversation_type",
+            "conversation_type INTEGER NOT NULL DEFAULT 1",
+        ),
+        (
+            "business_type",
+            "business_type TEXT NOT NULL DEFAULT 'chat'",
+        ),
+        ("channel_id", "channel_id TEXT NOT NULL DEFAULT ''"),
+        ("members_count", "members_count INTEGER NOT NULL DEFAULT 0"),
+        ("display_name", "display_name TEXT NOT NULL DEFAULT ''"),
+        ("avatar_url", "avatar_url TEXT NOT NULL DEFAULT ''"),
+        ("remark", "remark TEXT"),
+        ("description", "description TEXT"),
+        ("last_message_id", "last_message_id TEXT"),
+        ("last_sender_id", "last_sender_id TEXT"),
+        ("last_message_at", "last_message_at INTEGER"),
+        ("last_message_preview", "last_message_preview TEXT"),
+        (
+            "last_sender_nickname",
+            "last_sender_nickname TEXT NOT NULL DEFAULT ''",
+        ),
+        (
+            "last_sender_avatar_url",
+            "last_sender_avatar_url TEXT NOT NULL DEFAULT ''",
+        ),
+        ("unread_count", "unread_count INTEGER NOT NULL DEFAULT 0"),
+        ("last_read_seq", "last_read_seq INTEGER NOT NULL DEFAULT 0"),
+        ("max_seq", "max_seq INTEGER NOT NULL DEFAULT 0"),
+        (
+            "visible_after_seq",
+            "visible_after_seq INTEGER NOT NULL DEFAULT 0",
+        ),
+        ("is_pinned", "is_pinned INTEGER NOT NULL DEFAULT 0"),
+        ("is_muted", "is_muted INTEGER NOT NULL DEFAULT 0"),
+        ("is_archived", "is_archived INTEGER NOT NULL DEFAULT 0"),
+        ("version", "version INTEGER NOT NULL DEFAULT 0"),
+        ("updated_at", "updated_at INTEGER NOT NULL DEFAULT 0"),
+        ("created_at", "created_at INTEGER NOT NULL DEFAULT 0"),
+        ("updated_at_ts", "updated_at_ts INTEGER"),
+        ("ext", "ext TEXT"),
+        ("draft", "draft TEXT"),
+        ("mention_count", "mention_count INTEGER NOT NULL DEFAULT 0"),
+        ("mention_me", "mention_me INTEGER NOT NULL DEFAULT 0"),
+        ("badge", "badge TEXT"),
+        ("role", "role TEXT"),
+    ] {
+        ensure_column(pool, "conversations", column, definition).await?;
+    }
+    Ok(())
+}
+
+async fn backfill_messages_fts(pool: &SqlitePool) -> Result<()> {
+    sqlx::query("DELETE FROM messages_fts")
+        .execute(pool)
+        .await
+        .map_err(db_err)?;
+
+    sqlx::query(
+        r#"INSERT INTO messages_fts(server_id, conversation_id, text)
+           SELECT server_id, conversation_id, search_text
+           FROM (
+               SELECT
+                   server_id,
+                   conversation_id,
+                   COALESCE(
+                       NULLIF(TRIM(text), ''),
+                       CASE
+                           WHEN json_valid(attributes)
+                           THEN NULLIF(TRIM(json_extract(attributes, '$.contentText')), '')
+                           ELSE NULL
+                       END,
+                       ''
+                   ) AS search_text
+               FROM messages
+           )
+           WHERE search_text <> ''"#,
+    )
+    .execute(pool)
+    .await
+    .map_err(db_err)?;
+    Ok(())
+}
+
+async fn migrate_to_v1(pool: &SqlitePool) -> Result<()> {
+    ensure_current_message_columns(pool).await?;
+    ensure_current_conversation_columns(pool).await?;
+    create_messages_fts(pool).await?;
+    backfill_messages_fts(pool).await
+}
+
+async fn migrate_to_v2(pool: &SqlitePool) -> Result<()> {
+    ensure_current_message_columns(pool).await?;
+    ensure_current_conversation_columns(pool).await?;
+    create_messages_fts(pool).await?;
+    backfill_messages_fts(pool).await
+}
+
+async fn run_migrations(pool: &SqlitePool) -> Result<()> {
+    let mut version = current_user_version(pool).await?;
+    if version > CURRENT_SCHEMA_VERSION {
+        tracing::warn!(
+            current = version,
+            supported = CURRENT_SCHEMA_VERSION,
+            "SQLite schema version is newer than this SDK"
+        );
+        return Ok(());
+    }
+
+    let upgraded_from_empty = version < 1;
+    if upgraded_from_empty {
+        migrate_to_v1(pool).await?;
+        set_user_version(pool, 1).await?;
+        version = 1;
+    }
+
+    if version < 2 {
+        if !upgraded_from_empty {
+            migrate_to_v2(pool).await?;
+        }
+        set_user_version(pool, 2).await?;
+        version = 2;
+    }
+
+    debug_assert_eq!(version, CURRENT_SCHEMA_VERSION);
+    Ok(())
+}
 
 /// 创建所有仓储所需表（messages / conversations / pending_sends / user_profiles / sync_cursors / sync_conversation_cursors）
 pub async fn init_schema(pool: &SqlitePool) -> Result<()> {
@@ -12,23 +266,19 @@ pub async fn init_schema(pool: &SqlitePool) -> Result<()> {
             client_msg_id TEXT NOT NULL DEFAULT '',
             sender_id TEXT NOT NULL DEFAULT '',
             source INTEGER NOT NULL DEFAULT 0,
-            seq INTEGER NOT NULL DEFAULT 0,
-            timestamp INTEGER NOT NULL DEFAULT 0,
-            client_timestamp INTEGER NOT NULL DEFAULT 0,
+            conversation_seq INTEGER NOT NULL DEFAULT 0,
+            created_at INTEGER NOT NULL DEFAULT 0,
+            client_created_at INTEGER NOT NULL DEFAULT 0,
             conversation_type INTEGER NOT NULL DEFAULT 0,
             message_type INTEGER NOT NULL DEFAULT 0,
             channel_id TEXT NOT NULL DEFAULT '',
             sender_name TEXT NOT NULL DEFAULT '',
             sender_avatar TEXT NOT NULL DEFAULT '',
             sender_display_name TEXT NOT NULL DEFAULT '',
-            content BLOB NOT NULL,
+            encoded_content BLOB NOT NULL,
             status INTEGER NOT NULL DEFAULT 0,
-            burn_enabled INTEGER NOT NULL DEFAULT 0,
-            burn_after_read_seconds INTEGER,
-            burn_status INTEGER NOT NULL DEFAULT 0,
-            first_read_at INTEGER,
-            burn_at INTEGER,
-            burned_at INTEGER,
+            retention_policy BLOB NOT NULL DEFAULT X'',
+            retention_state BLOB NOT NULL DEFAULT X'',
             is_read INTEGER NOT NULL DEFAULT 0,
             is_recalled INTEGER NOT NULL DEFAULT 0,
             is_edited INTEGER NOT NULL DEFAULT 0,
@@ -36,7 +286,7 @@ pub async fn init_schema(pool: &SqlitePool) -> Result<()> {
             quote_preview TEXT,
             mention_users TEXT,
             mention_all INTEGER NOT NULL DEFAULT 0,
-            extra TEXT,
+            attributes TEXT,
             extensions TEXT,
             version INTEGER NOT NULL DEFAULT 0,
             updated_at INTEGER NOT NULL DEFAULT 0,
@@ -51,9 +301,11 @@ pub async fn init_schema(pool: &SqlitePool) -> Result<()> {
     .await
     .map_err(|e| FlareError::localized(ErrorCode::DatabaseError, e.to_string()))?;
 
+    ensure_current_message_columns(pool).await?;
+
     sqlx::query(
         r#"CREATE INDEX IF NOT EXISTS idx_messages_conv_seq
-           ON messages(conversation_id, seq DESC)"#,
+           ON messages(conversation_id, conversation_seq DESC)"#,
     )
     .execute(pool)
     .await
@@ -137,6 +389,8 @@ pub async fn init_schema(pool: &SqlitePool) -> Result<()> {
     .execute(pool)
     .await
     .map_err(|e| FlareError::localized(ErrorCode::DatabaseError, e.to_string()))?;
+
+    ensure_current_conversation_columns(pool).await?;
 
     sqlx::query(
         r#"CREATE INDEX IF NOT EXISTS idx_conversations_sort
@@ -388,5 +642,68 @@ pub async fn init_schema(pool: &SqlitePool) -> Result<()> {
     .await
     .map_err(|e| FlareError::localized(ErrorCode::DatabaseError, e.to_string()))?;
 
+    run_migrations(pool).await?;
+
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{column_exists, current_user_version, init_schema};
+    use crate::domain::ConversationReader;
+    use sqlx::SqlitePool;
+
+    #[tokio::test]
+    async fn init_schema_migrates_legacy_v1_messages_without_conversation_seq() {
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        sqlx::query(
+            r#"CREATE TABLE messages (
+                server_id TEXT PRIMARY KEY,
+                conversation_id TEXT NOT NULL,
+                encoded_content BLOB NOT NULL DEFAULT X'',
+                attributes TEXT,
+                text TEXT
+            )"#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query("PRAGMA user_version = 1")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        init_schema(&pool).await.unwrap();
+
+        assert!(
+            column_exists(&pool, "messages", "conversation_seq")
+                .await
+                .unwrap()
+        );
+        assert_eq!(current_user_version(&pool).await.unwrap(), 2);
+
+        sqlx::query(
+            r#"INSERT INTO messages (
+                   server_id, conversation_id, sender_id, text, sort_ts, updated_at
+               ) VALUES (?, ?, ?, ?, ?, ?)"#,
+        )
+        .bind("legacy-msg-1")
+        .bind("legacy-conv")
+        .bind("peer-1")
+        .bind("legacy preview")
+        .bind(1_000_i64)
+        .bind(1_000_i64)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let repo = super::super::conversation_repo::SqliteConversationRepo::new(pool);
+        let conversations = repo.list().await.unwrap();
+        assert_eq!(conversations.len(), 1);
+        assert_eq!(conversations[0].conversation_id, "legacy-conv");
+        assert_eq!(
+            conversations[0].last_message_preview.as_deref(),
+            Some("legacy preview")
+        );
+    }
 }

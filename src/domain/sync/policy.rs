@@ -12,9 +12,9 @@ impl SyncPolicy {
                 EventType::EventMessageRecall as i32,
                 EventType::EventMessageEdit as i32,
                 EventType::EventMessageDelete as i32,
-                EventType::EventMessageBurnScheduled as i32,
-                EventType::EventMessageBurned as i32,
-                EventType::EventMessageHardDeleted as i32,
+                EventType::EventMessageRetentionScheduled as i32,
+                EventType::EventMessageRetentionExpired as i32,
+                EventType::EventMessageRetentionPurged as i32,
                 EventType::EventReaction as i32,
                 EventType::EventPin as i32,
                 EventType::EventUnpin as i32,
@@ -89,11 +89,11 @@ mod tests {
     use crate::model::event::EventType;
 
     #[test]
-    fn critical_event_query_plan_includes_burn_lifecycle_events() {
+    fn critical_event_query_plan_includes_retention_lifecycle_events() {
         let event_types = SyncPolicy::critical_event_query_plan().event_types;
-        assert!(event_types.contains(&(EventType::EventMessageBurnScheduled as i32)));
-        assert!(event_types.contains(&(EventType::EventMessageBurned as i32)));
-        assert!(event_types.contains(&(EventType::EventMessageHardDeleted as i32)));
+        assert!(event_types.contains(&(EventType::EventMessageRetentionScheduled as i32)));
+        assert!(event_types.contains(&(EventType::EventMessageRetentionExpired as i32)));
+        assert!(event_types.contains(&(EventType::EventMessageRetentionPurged as i32)));
     }
 
     #[test]
