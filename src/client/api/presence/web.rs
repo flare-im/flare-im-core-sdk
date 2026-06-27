@@ -7,19 +7,34 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, RwLock};
 
 use crate::client::api::session_guard::SessionGuard;
-use crate::core::event::{EventBus, MessageEvent, SdkEvent};
 use crate::infrastructure::transport::http::http_client::HttpRequestContext;
 use crate::infrastructure::transport::http::{
     HttpApiResponse, HttpClient, unwrap_api_response, unwrap_void_api_response,
 };
+use crate::kernel::event::{EventBus, MessageEvent, SdkEvent};
 use crate::shared::error::{ErrorCode, FlareError, Result};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConnectionQualityDto {
+    pub rtt_ms: i64,
+    pub packet_loss_rate: f64,
+    pub last_measured_at: i64,
+    pub network_type: String,
+    pub signal_strength: i32,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DevicePresenceDto {
     pub device_id: String,
     pub platform: String,
+    pub model: String,
+    pub os_version: String,
     pub last_active_time_ms: i64,
+    pub priority: i32,
+    pub token_version: i64,
+    pub connection_quality: Option<ConnectionQualityDto>,
     pub conversation_id: String,
     pub gateway_id: String,
     pub server_id: String,
@@ -53,11 +68,30 @@ struct LogoutPresenceHttpRequest {
     conversation_id: String,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ListUserDevicesHttpResponse {
+    devices: Vec<DevicePresenceDto>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct KickDeviceHttpRequest {
+    reason: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct KickDeviceHttpResponse {
+    success: bool,
+}
+
 #[derive(Clone)]
 pub struct PresenceApi {
     session_guard: SessionGuard,
     http: HttpClient,
     current_user_id: Arc<RwLock<String>>,
+    device_id: String,
     cache: Arc<RwLock<HashMap<String, UserPresenceDto>>>,
     cache_owner_user_id: Arc<RwLock<Option<String>>>,
     subscribed_user_ids: Arc<Mutex<HashSet<String>>>,
@@ -67,6 +101,7 @@ impl PresenceApi {
     pub fn new(
         http_base_url: impl Into<String>,
         current_user_id: Arc<RwLock<String>>,
+        device_id: impl Into<String>,
         default_tenant_id: impl Into<String>,
         http_request_context: Arc<HttpRequestContext>,
         bus: EventBus,
@@ -111,7 +146,12 @@ impl PresenceApi {
                         devices: vec![DevicePresenceDto {
                             device_id: String::new(),
                             platform: String::new(),
+                            model: String::new(),
+                            os_version: String::new(),
                             last_active_time_ms: chrono::Utc::now().timestamp_millis(),
+                            priority: 0,
+                            token_version: 0,
+                            connection_quality: None,
                             conversation_id,
                             gateway_id: String::new(),
                             server_id: String::new(),
@@ -127,6 +167,7 @@ impl PresenceApi {
             session_guard: SessionGuard::new(current_user_id.clone(), "presence"),
             http: HttpClient::with_context(http_base_url, http_request_context),
             current_user_id,
+            device_id: device_id.into().trim().to_string(),
             cache,
             cache_owner_user_id,
             subscribed_user_ids: Arc::new(Mutex::new(HashSet::new())),
@@ -280,6 +321,50 @@ impl PresenceApi {
         Ok(out)
     }
 
+    pub async fn list_current_user_devices(&self) -> Result<Vec<DevicePresenceDto>> {
+        let api = self.clone();
+        self.session_guard
+            .run_with_user(move |session_user_id| async move {
+                let user_id = session_user_id
+                    .ok_or_else(|| FlareError::localized(ErrorCode::NotConnected, "未连接"))?;
+                let path = format!("/api/v1/presence/users/{user_id}/devices");
+                let body: HttpApiResponse<ListUserDevicesHttpResponse> =
+                    api.http.get(&path, None).await?;
+                let data = unwrap_api_response(body, "list user devices")?;
+                Ok(data.devices)
+            })
+            .await
+    }
+
+    pub async fn get_device(&self, device_id: &str) -> Result<DevicePresenceDto> {
+        let device_id = device_id.trim();
+        if device_id.is_empty() {
+            return Err(FlareError::localized(
+                ErrorCode::InvalidParameter,
+                "sdk.presence.device_id_required",
+            ));
+        }
+        let path = format!("/api/v1/presence/devices/{device_id}");
+        let body: HttpApiResponse<DevicePresenceDto> = self.http.get(&path, None).await?;
+        unwrap_api_response(body, "get device")
+    }
+
+    pub async fn kick_device(&self, device_id: &str, reason: &str) -> Result<bool> {
+        let device_id = device_id.trim();
+        if device_id.is_empty() {
+            return Err(FlareError::localized(
+                ErrorCode::InvalidParameter,
+                "sdk.presence.device_id_required",
+            ));
+        }
+        let req = KickDeviceHttpRequest {
+            reason: reason.trim().to_string(),
+        };
+        let path = format!("/api/v1/presence/devices/{device_id}/kick");
+        let body: HttpApiResponse<KickDeviceHttpResponse> = self.http.post(&path, &req).await?;
+        Ok(unwrap_api_response(body, "kick device")?.success)
+    }
+
     pub async fn logout_current_device_presence(&self) -> Result<()> {
         let user_id = self.current_user_id.read().await.trim().to_string();
         if user_id.is_empty() {
@@ -294,13 +379,13 @@ impl PresenceApi {
             return Ok(());
         }
 
+        let device_id = self.device_id.trim();
+        if device_id.is_empty() {
+            return Ok(());
+        }
+
         let presence = self.fetch_user_presence_unbound(&user_id).await?;
-        let Some(device) = presence
-            .devices
-            .into_iter()
-            .filter(|device| !device.conversation_id.trim().is_empty())
-            .max_by_key(|device| device.last_active_time_ms)
-        else {
+        let Some(device) = current_device_presence(presence.devices, device_id) else {
             self.cache.write().await.clear();
             return Ok(());
         };
@@ -325,6 +410,19 @@ impl PresenceApi {
         }
         Ok(())
     }
+}
+
+fn current_device_presence(
+    devices: Vec<DevicePresenceDto>,
+    device_id: &str,
+) -> Option<DevicePresenceDto> {
+    let device_id = device_id.trim();
+    if device_id.is_empty() {
+        return None;
+    }
+    devices.into_iter().find(|device| {
+        device.device_id.trim() == device_id && !device.conversation_id.trim().is_empty()
+    })
 }
 
 #[cfg(test)]
@@ -364,7 +462,18 @@ mod tests {
             "devices": [{
                 "deviceId": "d1",
                 "platform": "web",
+                "model": "Mac",
+                "osVersion": "14",
                 "lastActiveTimeMs": 99,
+                "priority": 2,
+                "tokenVersion": 7,
+                "connectionQuality": {
+                    "rttMs": 12,
+                    "packetLossRate": 0.25,
+                    "lastMeasuredAt": 42,
+                    "networkType": "wifi",
+                    "signalStrength": 4
+                },
                 "conversationId": "c1",
                 "gatewayId": "gw1",
                 "serverId": "srv1"
@@ -374,5 +483,60 @@ mod tests {
         assert_eq!(dto.user_id, "alice");
         assert!(dto.is_online);
         assert_eq!(dto.devices[0].conversation_id, "c1");
+        assert_eq!(
+            dto.devices[0]
+                .connection_quality
+                .as_ref()
+                .map(|q| q.network_type.as_str()),
+            Some("wifi")
+        );
+    }
+
+    fn device(
+        device_id: &str,
+        conversation_id: &str,
+        last_active_time_ms: i64,
+    ) -> DevicePresenceDto {
+        DevicePresenceDto {
+            device_id: device_id.to_string(),
+            platform: "web".to_string(),
+            model: "Browser".to_string(),
+            os_version: "macOS".to_string(),
+            last_active_time_ms,
+            priority: 2,
+            token_version: 1,
+            connection_quality: None,
+            conversation_id: conversation_id.to_string(),
+            gateway_id: "gateway".to_string(),
+            server_id: "server".to_string(),
+        }
+    }
+
+    #[test]
+    fn current_device_presence_selects_exact_device_id_not_recent_device() {
+        let selected = current_device_presence(
+            vec![
+                device("device-b", "conn-b", 300),
+                device("device-a", "conn-a", 100),
+            ],
+            "device-a",
+        )
+        .expect("current device");
+
+        assert_eq!(selected.device_id, "device-a");
+        assert_eq!(selected.conversation_id, "conn-a");
+    }
+
+    #[test]
+    fn current_device_presence_requires_active_conversation_id() {
+        let selected = current_device_presence(
+            vec![
+                device("device-a", "", 300),
+                device("device-b", "conn-b", 100),
+            ],
+            "device-a",
+        );
+
+        assert!(selected.is_none());
     }
 }

@@ -521,7 +521,7 @@ impl CapabilityApi {
         .fail_if_unsuccessful()
     }
 
-    #[cfg(all(not(target_arch = "wasm32"), feature = "plugin-call"))]
+    #[cfg(not(target_arch = "wasm32"))]
     pub async fn rtc_sfu_set_subscription(
         &self,
         request: RtcSfuSubscriptionRequest,
@@ -545,7 +545,7 @@ impl CapabilityApi {
         .fail_if_unsuccessful()
     }
 
-    #[cfg(all(not(target_arch = "wasm32"), feature = "plugin-call"))]
+    #[cfg(not(target_arch = "wasm32"))]
     pub async fn rtc_sfu_get_room_state(
         &self,
         conversation_id: &str,

@@ -1,0 +1,352 @@
+{
+  "$defs": {
+    "Conversation": {
+      "description": "SDK 层会话类型：内部统一使用，从 proto ConversationSummary 获取后即转换为此类型。\n与 message.rs 的 IMMessage 一致：扁平字段、serde camelCase。",
+      "properties": {
+        "avatarUrl": {
+          "default": "",
+          "type": "string"
+        },
+        "badge": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "businessType": {
+          "default": "",
+          "type": "string"
+        },
+        "channelId": {
+          "default": "",
+          "description": "会话路由 ID：单聊为对方 user_id；群/频道为业务 channel（与 proto `channel_id` 一致）",
+          "type": "string"
+        },
+        "conversationId": {
+          "default": "",
+          "type": "string"
+        },
+        "conversationType": {
+          "$ref": "#/$defs/ConversationType",
+          "default": "unspecified"
+        },
+        "createdAt": {
+          "default": 0,
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "displayName": {
+          "default": "",
+          "description": "展示名（列表主标题）",
+          "type": "string"
+        },
+        "draft": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "ext": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {},
+          "description": "扩展键值（与 proto ext 对应）",
+          "type": "object"
+        },
+        "isArchived": {
+          "default": false,
+          "type": "boolean"
+        },
+        "isMuted": {
+          "default": false,
+          "type": "boolean"
+        },
+        "isPinned": {
+          "default": false,
+          "type": "boolean"
+        },
+        "lastMessage": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MessagePreviewElem"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "lastMessageAt": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "lastMessageId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "lastMessagePreview": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "lastReadSeq": {
+          "default": 0,
+          "description": "已读序列号（与 read_seq 同义）",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "lastSenderAvatarUrl": {
+          "default": "",
+          "description": "最后一条消息发送者头像 URL",
+          "type": "string"
+        },
+        "lastSenderId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "lastSenderNickname": {
+          "default": "",
+          "description": "最后一条消息发送者展示名（列表用）",
+          "type": "string"
+        },
+        "maxSeq": {
+          "default": 0,
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "memberPreview": {
+          "default": [],
+          "description": "摘要级成员预览，最多少量成员，不能作为完整成员列表使用。",
+          "items": {
+            "$ref": "#/$defs/ConversationParticipant"
+          },
+          "type": "array"
+        },
+        "membersCount": {
+          "default": 0,
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "mentionCount": {
+          "default": 0,
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "mentionMe": {
+          "default": false,
+          "type": "boolean"
+        },
+        "participantVersion": {
+          "default": 0,
+          "description": "服务端成员读模型版本。完整成员通过独立 participants 同步拉取。",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "participants": {
+          "default": [],
+          "description": "已按需同步到本地的完整成员快照；会话摘要同步不会填充该字段。",
+          "items": {
+            "$ref": "#/$defs/ConversationParticipant"
+          },
+          "type": "array"
+        },
+        "peerReadSeq": {
+          "default": 0,
+          "description": "对端（其他成员）最大已读序列号；用于发送方已读双勾在重连/重登后恢复。\n由服务端同步摘要 `ext.peer_read_seq` 下发并持久化。",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "remark": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "role": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "unreadCount": {
+          "default": 0,
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "updatedAt": {
+          "default": 0,
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "updatedAtTs": {
+          "description": "更新时间戳（毫秒，用于排序/筛选）",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "version": {
+          "default": 0,
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "visibleAfterSeq": {
+          "default": 0,
+          "description": "当前用户的历史可见边界；seq <= visible_after_seq 的消息不可见，不参与冷启动回灌。",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
+    "ConversationParticipant": {
+      "description": "SDK 本地会话参与者快照。单聊不依赖该结构；群聊/频道/客服等非单聊用它支撑群通话、成员面板和后续设置页。",
+      "properties": {
+        "attributes": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {},
+          "type": "object"
+        },
+        "joinedAt": {
+          "default": 0,
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "muted": {
+          "default": false,
+          "type": "boolean"
+        },
+        "nickname": {
+          "default": "",
+          "type": "string"
+        },
+        "pinned": {
+          "default": false,
+          "type": "boolean"
+        },
+        "roles": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "userId": {
+          "default": "",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "ConversationType": {
+      "enum": [
+        "unspecified",
+        "single",
+        "group",
+        "ai",
+        "system",
+        "customer",
+        "temp",
+        "channel",
+        "broadcast"
+      ],
+      "type": "string"
+    },
+    "MessagePreviewElem": {
+      "properties": {
+        "messageId": {
+          "type": "string"
+        },
+        "senderId": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        },
+        "time": {
+          "description": "毫秒时间戳",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "type": {
+          "format": "int32",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "messageId",
+        "senderId",
+        "type",
+        "text",
+        "time"
+      ],
+      "type": "object"
+    },
+    "TimelineSyncState": {
+      "enum": [
+        "localReady",
+        "synced",
+        "partial"
+      ],
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "conversations": {
+      "items": {
+        "$ref": "#/$defs/Conversation"
+      },
+      "type": "array"
+    },
+    "syncState": {
+      "$ref": "#/$defs/TimelineSyncState"
+    },
+    "totalUnread": {
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "conversations",
+    "totalUnread",
+    "syncState"
+  ],
+  "title": "HomeTimelineSnapshot",
+  "type": "object",
+  "xFlareGeneratedBy": "flare-im-core-sdk-xtask",
+  "xFlareRustType": "HomeTimelineSnapshot"
+}

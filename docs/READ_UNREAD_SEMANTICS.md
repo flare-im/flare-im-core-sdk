@@ -43,7 +43,7 @@
 
 ### 用户已读
 
-业务层只能通过 SDK 的 `mark_session_read(conversation_id, read_seq)` 表达“用户看到了”。SDK 会：
+业务层只能通过 SDK 的 `conversation.mark_read(conversation_id, read_seq)` 表达“用户看到了”。SDK 会：
 
 1. 本地更新会话读位与未读数。
 2. 更新消息已读状态。
@@ -70,3 +70,4 @@
 - 重启后没读却显示无未读：通常是 delivery ack 被误当 read ack，服务端提前推进了 `last_read_seq`。
 - 在线收到消息未读不增加：通常是消息投影没有发布 `UnreadCountChanged`，或本地把新消息误判为已见过。
 - 未读出现很大的数字：通常是用 `max_seq - last_read_seq` 把历史 seq 缺口也算进了未读。
+

@@ -1,10 +1,11 @@
 //! SDK 查询对象：客户端只传筛选条件，业务筛选语义集中在 core-sdk。
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::model::conversation::ConversationType;
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub enum MessageSearchKind {
     /// 消息记录页签：不额外限制消息类型。
@@ -20,7 +21,7 @@ pub enum MessageSearchKind {
     File,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
 #[serde(rename_all = "camelCase")]
 pub struct MessageSearchQuery {
@@ -83,7 +84,7 @@ impl MessageSearchQuery {
     }
 }
 
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
 #[serde(rename_all = "camelCase")]
 pub struct ConversationListQuery {

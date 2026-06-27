@@ -1,4 +1,4 @@
-use crate::domain::models::PendingSendVo;
+use crate::domain::PendingSendVo;
 use crate::shared::error::Result;
 use async_trait::async_trait;
 

@@ -15,12 +15,8 @@ use crate::infrastructure::protocol::{Codec, PacketSender, ProtobufCodec};
 use crate::shared::error::{ErrorCode, FlareError, Result};
 use crate::shared::util::timeout;
 
-fn sdk_device_info(user_id: &str) -> DeviceInfo {
-    #[cfg(not(target_arch = "wasm32"))]
-    let device_id = format!("sdk-{}-{}", user_id, std::process::id());
-    #[cfg(target_arch = "wasm32")]
-    let device_id = format!("sdk-{}-web-{}", user_id, uuid::Uuid::new_v4());
-
+fn sdk_device_info(config: &SdkConfig) -> DeviceInfo {
+    let device_id = config.effective_device_id();
     #[cfg(not(target_arch = "wasm32"))]
     let platform = DevicePlatform::PC;
     #[cfg(not(target_arch = "wasm32"))]
@@ -68,7 +64,7 @@ impl SocketTransport {
         listener: Arc<dyn MessageListener>,
         ready_notify: Arc<Notify>,
     ) -> Result<()> {
-        let device = sdk_device_info(user_id);
+        let device = sdk_device_info(&self.config);
 
         let ws_url = self.config.ws_url.as_deref().ok_or_else(|| {
             FlareError::localized(ErrorCode::ConfigurationError, "ws_url not configured")
@@ -84,6 +80,7 @@ impl SocketTransport {
             .with_listener(listener)
             .with_device_info(device)
             .with_format(SerializationFormat::Protobuf)
+            .with_tls(self.config.core_tls_config())
             .with_connect_timeout(Duration::from_secs(self.config.connect_timeout_secs()));
 
         if let Some(secs) = self.config.reconnect_interval_secs {

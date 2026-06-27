@@ -12,14 +12,15 @@ use crate::application::notification::NotificationHandler;
 use crate::application::{
     ConversationLocalLifecycle, LocalConversationClearResult, LocalConversationVisibility,
 };
-use crate::core::SyncTask;
-use crate::core::event::{ConversationEvent, EventBus, SdkEvent};
 use crate::domain::{ConversationIdentityService, UserProfile};
 use crate::infrastructure::persistence::StoreProvider;
+use crate::kernel::SyncTask;
+use crate::kernel::event::{ConversationEvent, EventBus, SdkEvent};
 use crate::model::{Conversation, IMMessage};
 use crate::shared::error::Result;
 
 pub mod capability;
+pub mod encryption;
 pub mod middleware;
 
 use capability::SdkCapabilityPlugin;

@@ -8,6 +8,11 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use super::upload_shared::{
+    build_control_headers as shared_build_control_headers, build_upload_metadata,
+    build_upload_parts, build_upload_parts_from_manifest, compute_bytes_fingerprints,
+    infer_file_type, random_upload_id, upload_file_to_uploaded_media,
+};
 use async_trait::async_trait;
 #[cfg(not(target_arch = "wasm32"))]
 use futures_util::StreamExt;
@@ -23,8 +28,8 @@ use crate::application::callbacks::{
 };
 use crate::domain::{
     DirectUploadTransportKindVo, MediaCacheAdmin, MediaCacheEntryVo, MediaCacheStore,
-    MediaUploadManifestVo, MediaUploadPartVo, UploadManifestState, UploadManifestStore,
-    UploadSourceKind, UserFileDownloadStore,
+    MediaUploadManifestVo, UploadManifestState, UploadManifestStore, UploadSourceKind,
+    UserFileDownloadStore,
 };
 use crate::infrastructure::transport::{
     CommitDirectUploadPartsHttpRequest, CommitDirectUploadPartsHttpResponse,
@@ -32,8 +37,8 @@ use crate::infrastructure::transport::{
     DirectUploadTransportKindHttp, GetDirectUploadStatusHttpResponse, GetFileUrlHttpRequest,
     GetFileUrlHttpResponse, HttpApiResponse, HttpClient, InitiateDirectUploadHttpRequest,
     InitiateDirectUploadHttpResponse, PresignDirectUploadPartsHttpRequest,
-    PresignDirectUploadPartsHttpResponse, UploadFileHttpResponse, UploadFileMetadataHttp,
-    UploadedPartInfoHttp, unwrap_api_response,
+    PresignDirectUploadPartsHttpResponse, UploadFileHttpResponse, UploadedPartInfoHttp,
+    unwrap_api_response,
 };
 use crate::model::{MediaAccessUrl, MediaResolvedAccess, UploadOptions, UploadedMedia};
 use crate::platform::ports::media::{
@@ -41,6 +46,8 @@ use crate::platform::ports::media::{
     MediaUploaderPort, ProcessedMedia, UploadProgressSink,
 };
 use crate::shared::error::{ErrorCode, FlareError, Result};
+
+const MAX_CONCURRENT_DIRECT_UPLOAD_PARTS: usize = 4;
 
 #[derive(Clone)]
 pub struct MediaService {
@@ -63,6 +70,13 @@ struct NewUploadManifest<'a> {
     file_fingerprint: &'a str,
     head_tail_sha256: &'a str,
     full_sha256: Option<String>,
+}
+
+struct UploadedDirectPart {
+    part_number: u32,
+    size: u64,
+    sha256: String,
+    etag: String,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -166,6 +180,19 @@ impl MediaService {
             .upload_file_from_path_with_progress(path, options, on_progress)
             .await?;
         Ok(media)
+    }
+
+    pub async fn upload_bytes_with_progress(
+        &self,
+        bytes: Vec<u8>,
+        file_name: String,
+        mime_type: String,
+        options: Option<UploadOptions>,
+        on_progress: Option<UploadProgressCallback>,
+    ) -> Result<UploadedMedia> {
+        let options = options.unwrap_or_default();
+        self.upload_bytes_direct(&bytes, file_name, mime_type, options, on_progress.as_ref())
+            .await
     }
 
     pub async fn delete_file(&self, file_id: &str, hard_delete: bool) -> Result<bool> {
@@ -454,7 +481,7 @@ impl MediaService {
             if let Some(store) = &self.upload_manifest_store {
                 store.upsert_manifest(&manifest).await?;
                 if manifest.transport_kind == Some(DirectUploadTransportKindVo::MultipartPut) {
-                    let parts = build_upload_parts(&manifest);
+                    let parts = build_upload_parts_from_manifest(&manifest);
                     store
                         .replace_parts(&manifest.local_upload_id, &parts)
                         .await?;
@@ -474,9 +501,6 @@ impl MediaService {
                         "single put upload_url missing in upload manifest",
                     )
                 })?;
-                let payload = tokio::fs::read(path)
-                    .await
-                    .map_err(|e| FlareError::general_error(format!("read file failed: {e}")))?;
                 emit_progress(
                     on_progress,
                     UploadProgress {
@@ -493,7 +517,7 @@ impl MediaService {
                 put_headers.insert("Content-Type".to_string(), mime_type.clone());
                 let _ = self
                     .http
-                    .put_bytes_full_url(&upload_url, &payload, &put_headers)
+                    .put_file_full_url(&upload_url, path, size as u64, &put_headers)
                     .await?;
                 emit_progress(
                     on_progress,
@@ -529,7 +553,7 @@ impl MediaService {
                 let mut parts = if let Some(store) = &self.upload_manifest_store {
                     let existing = store.list_parts(&manifest.local_upload_id).await?;
                     if existing.is_empty() {
-                        let generated = build_upload_parts(&manifest);
+                        let generated = build_upload_parts_from_manifest(&manifest);
                         store
                             .replace_parts(&manifest.local_upload_id, &generated)
                             .await?;
@@ -538,7 +562,7 @@ impl MediaService {
                         existing
                     }
                 } else {
-                    build_upload_parts(&manifest)
+                    build_upload_parts_from_manifest(&manifest)
                 };
 
                 for server_part in status.uploaded_parts {
@@ -584,11 +608,62 @@ impl MediaService {
                         .map(|part| part.size)
                         .sum::<u64>();
 
-                    for part in parts.iter_mut().filter(|part| !part.uploaded) {
-                        let presigned_part =
-                            presigned_map.get(&part.part_number).ok_or_else(|| {
-                                FlareError::general_error("missing presigned url for upload part")
-                            })?;
+                    let upload_path = Arc::new(path.to_path_buf());
+                    let upload_jobs = parts
+                        .iter()
+                        .filter(|part| !part.uploaded)
+                        .map(|part| {
+                            let presigned_part = presigned_map
+                                .get(&part.part_number)
+                                .cloned()
+                                .ok_or_else(|| {
+                                    FlareError::general_error(
+                                        "missing presigned url for upload part",
+                                    )
+                                })?;
+                            Ok((part.clone(), presigned_part))
+                        })
+                        .collect::<Result<Vec<_>>>()?;
+                    let mut upload_stream = futures_util::stream::iter(
+                        upload_jobs.into_iter().map(|(part, presigned_part)| {
+                            let http = self.http.clone();
+                            let upload_path = Arc::clone(&upload_path);
+                            async move {
+                                let data =
+                                    read_part_bytes(upload_path.as_path(), part.offset, part.size)
+                                        .await?;
+                                let sha256 = hex::encode(Sha256::digest(&data));
+                                let headers_map = http
+                                    .put_bytes_full_url(
+                                        &presigned_part.upload_url,
+                                        &data,
+                                        &presigned_part.headers,
+                                    )
+                                    .await?;
+                                let etag = headers_map
+                                    .get("etag")
+                                    .cloned()
+                                    .or_else(|| headers_map.get("ETag").cloned())
+                                    .ok_or_else(|| {
+                                        FlareError::general_error(
+                                            "object storage response missing ETag",
+                                        )
+                                    })?;
+                                Ok::<UploadedDirectPart, FlareError>(UploadedDirectPart {
+                                    part_number: part.part_number,
+                                    size: part.size,
+                                    sha256,
+                                    etag,
+                                })
+                            }
+                        }),
+                    )
+                    .buffer_unordered(MAX_CONCURRENT_DIRECT_UPLOAD_PARTS);
+
+                    let mut uploaded_parts = Vec::new();
+                    while let Some(result) = upload_stream.next().await {
+                        let uploaded_part = result?;
+                        uploaded_bytes = uploaded_bytes.saturating_add(uploaded_part.size);
                         emit_progress(
                             on_progress,
                             UploadProgress {
@@ -597,49 +672,46 @@ impl MediaService {
                                 phase: UploadPhase::Uploading,
                                 uploaded_bytes,
                                 total_bytes: size as u64,
-                                chunk_index: Some(part.part_number - 1),
+                                chunk_index: Some(uploaded_part.part_number - 1),
                                 total_chunks: Some(manifest.total_parts),
                             },
                         );
-                        let data = read_part_bytes(path, part.offset, part.size).await?;
-                        part.sha256 = hex::encode(Sha256::digest(&data));
-                        let headers_map = self
-                            .http
-                            .put_bytes_full_url(
-                                &presigned_part.upload_url,
-                                &data,
-                                &presigned_part.headers,
-                            )
-                            .await?;
-                        let etag = headers_map
-                            .get("etag")
-                            .cloned()
-                            .or_else(|| headers_map.get("ETag").cloned())
-                            .ok_or_else(|| {
-                                FlareError::general_error("object storage response missing ETag")
-                            })?;
+                        uploaded_parts.push(uploaded_part);
+                    }
+
+                    if !uploaded_parts.is_empty() {
+                        let commit_parts = uploaded_parts
+                            .iter()
+                            .map(|part| UploadedPartInfoHttp {
+                                part_number: part.part_number,
+                                etag: part.etag.clone(),
+                                size: part.size as i64,
+                                sha256: Some(part.sha256.clone()),
+                            })
+                            .collect::<Vec<_>>();
                         let commit_body: HttpApiResponse<CommitDirectUploadPartsHttpResponse> =
                             self.http
                                 .post_with_headers(
                                     "/api/v1/medias/uploads/commit-parts",
                                     &CommitDirectUploadPartsHttpRequest {
                                         upload_id: upload_id.clone(),
-                                        parts: vec![UploadedPartInfoHttp {
-                                            part_number: part.part_number,
-                                            etag: etag.clone(),
-                                            size: part.size as i64,
-                                            sha256: Some(part.sha256.clone()),
-                                        }],
+                                        parts: commit_parts,
                                     },
                                     &headers,
                                 )
                                 .await?;
-                        let _ = unwrap_api_response(commit_body, "commit direct upload part")?;
-                        part.uploaded = true;
-                        part.etag = Some(etag);
-                        uploaded_bytes = uploaded_bytes.saturating_add(part.size);
-                        if let Some(store) = &self.upload_manifest_store {
-                            store.upsert_part(part).await?;
+                        let _ = unwrap_api_response(commit_body, "commit direct upload parts")?;
+
+                        let uploaded_map = uploaded_parts
+                            .into_iter()
+                            .map(|part| (part.part_number, part))
+                            .collect::<HashMap<_, _>>();
+                        for part in parts.iter_mut().filter(|part| !part.uploaded) {
+                            if let Some(uploaded) = uploaded_map.get(&part.part_number) {
+                                part.uploaded = true;
+                                part.sha256 = uploaded.sha256.clone();
+                                part.etag = Some(uploaded.etag.clone());
+                            }
                         }
                     }
                 }
@@ -699,11 +771,323 @@ impl MediaService {
         ))
     }
 
+    async fn upload_bytes_direct(
+        &self,
+        bytes: &[u8],
+        file_name: String,
+        mime_type: String,
+        options: UploadOptions,
+        on_progress: Option<&UploadProgressCallback>,
+    ) -> Result<UploadedMedia> {
+        if file_name.trim().is_empty() {
+            return Err(FlareError::localized(
+                ErrorCode::InvalidParameter,
+                "upload_bytes requires file_name",
+            ));
+        }
+        if mime_type.trim().is_empty() {
+            return Err(FlareError::localized(
+                ErrorCode::InvalidParameter,
+                "upload_bytes requires mime_type",
+            ));
+        }
+        let user_id = self.current_user_id.read().await.clone();
+        let size = i64::try_from(bytes.len())
+            .map_err(|_| FlareError::general_error("upload payload too large"))?;
+        let file_type = infer_file_type(&mime_type);
+        let (file_fingerprint, head_tail_sha256, full_sha256) = compute_bytes_fingerprints(bytes);
+        let local_upload_id = random_upload_id("native-bytes");
+
+        emit_progress(
+            on_progress,
+            UploadProgress {
+                file_name: file_name.clone(),
+                upload_id: local_upload_id.clone(),
+                phase: UploadPhase::Preparing,
+                uploaded_bytes: 0,
+                total_bytes: bytes.len() as u64,
+                chunk_index: None,
+                total_chunks: None,
+            },
+        );
+
+        let headers = self.build_control_headers(&local_upload_id);
+        let body: HttpApiResponse<InitiateDirectUploadHttpResponse> = self
+            .http
+            .post_with_headers(
+                "/api/v1/medias/uploads/initiate",
+                &InitiateDirectUploadHttpRequest {
+                    metadata: build_upload_metadata(
+                        file_name.clone(),
+                        mime_type.clone(),
+                        size,
+                        file_type,
+                        local_upload_id.clone(),
+                        user_id,
+                    ),
+                    desired_part_size: i64::try_from(options.chunk_size)
+                        .map_err(|_| FlareError::general_error("invalid part size"))?,
+                    file_fingerprint,
+                    head_tail_sha256,
+                    full_sha256: full_sha256.unwrap_or_default(),
+                },
+                &headers,
+            )
+            .await?;
+        let init = unwrap_api_response(body, "initiate direct upload")?;
+        if !init.success {
+            return Err(FlareError::localized(
+                ErrorCode::GeneralError,
+                init.error_message
+                    .unwrap_or_else(|| "initiate direct upload failed".to_string()),
+            ));
+        }
+
+        let upload_id = init.upload_id.clone();
+        match init.transport_kind {
+            DirectUploadTransportKindHttp::SinglePut => {
+                let upload_url = init.upload_url.clone().ok_or_else(|| {
+                    FlareError::localized(ErrorCode::GeneralError, "single put upload_url missing")
+                })?;
+                emit_progress(
+                    on_progress,
+                    UploadProgress {
+                        file_name: file_name.clone(),
+                        upload_id: upload_id.clone(),
+                        phase: UploadPhase::Uploading,
+                        uploaded_bytes: 0,
+                        total_bytes: bytes.len() as u64,
+                        chunk_index: Some(0),
+                        total_chunks: Some(1),
+                    },
+                );
+                let mut put_headers = HashMap::new();
+                put_headers.insert("Content-Type".to_string(), mime_type.clone());
+                self.http
+                    .put_bytes_full_url(&upload_url, bytes, &put_headers)
+                    .await?;
+            }
+            DirectUploadTransportKindHttp::MultipartPut => {
+                self.upload_multipart_bytes(
+                    bytes,
+                    &upload_id,
+                    &file_name,
+                    init.part_size.max(1) as u64,
+                    init.total_parts.max(1),
+                    on_progress,
+                )
+                .await?;
+            }
+        }
+
+        emit_progress(
+            on_progress,
+            UploadProgress {
+                file_name: file_name.clone(),
+                upload_id: upload_id.clone(),
+                phase: UploadPhase::Completing,
+                uploaded_bytes: bytes.len() as u64,
+                total_bytes: bytes.len() as u64,
+                chunk_index: None,
+                total_chunks: Some(init.total_parts.max(1)),
+            },
+        );
+
+        let complete_body: HttpApiResponse<UploadFileHttpResponse> = self
+            .http
+            .post_with_headers(
+                "/api/v1/medias/uploads/complete",
+                &CompleteDirectUploadHttpRequest {
+                    upload_id: upload_id.clone(),
+                },
+                &self.build_control_headers(&upload_id),
+            )
+            .await?;
+        let data = unwrap_api_response(complete_body, "complete direct upload")?;
+        if !data.success {
+            return Err(FlareError::localized(
+                ErrorCode::GeneralError,
+                data.error_message
+                    .unwrap_or_else(|| "complete direct upload failed".to_string()),
+            ));
+        }
+
+        emit_progress(
+            on_progress,
+            UploadProgress {
+                file_name: file_name.clone(),
+                upload_id,
+                phase: UploadPhase::Finished,
+                uploaded_bytes: bytes.len() as u64,
+                total_bytes: bytes.len() as u64,
+                chunk_index: None,
+                total_chunks: Some(init.total_parts.max(1)),
+            },
+        );
+
+        Ok(upload_file_to_uploaded_media(
+            data, file_name, mime_type, size,
+        ))
+    }
+
+    async fn upload_multipart_bytes(
+        &self,
+        bytes: &[u8],
+        upload_id: &str,
+        file_name: &str,
+        part_size: u64,
+        total_parts: u32,
+        on_progress: Option<&UploadProgressCallback>,
+    ) -> Result<()> {
+        let headers = self.build_control_headers(upload_id);
+        let status_body: HttpApiResponse<GetDirectUploadStatusHttpResponse> = self
+            .http
+            .get_with_headers(
+                "/api/v1/medias/uploads/status",
+                Some(&HashMap::from([(
+                    "upload_id".to_string(),
+                    upload_id.to_string(),
+                )])),
+                &headers,
+            )
+            .await?;
+        let status = unwrap_api_response(status_body, "get direct upload status")?;
+        let mut parts = build_upload_parts(bytes.len() as u64, part_size, total_parts, upload_id);
+        for server_part in status.uploaded_parts {
+            if let Some(part) = parts
+                .iter_mut()
+                .find(|part| part.part_number == server_part.part_number)
+            {
+                part.uploaded = true;
+                part.etag = Some(server_part.etag);
+            }
+        }
+
+        let missing = parts
+            .iter()
+            .filter(|part| !part.uploaded)
+            .map(|part| part.part_number)
+            .collect::<Vec<_>>();
+        if missing.is_empty() {
+            return Ok(());
+        }
+
+        let presign_body: HttpApiResponse<PresignDirectUploadPartsHttpResponse> = self
+            .http
+            .post_with_headers(
+                "/api/v1/medias/uploads/presign-parts",
+                &PresignDirectUploadPartsHttpRequest {
+                    upload_id: upload_id.to_string(),
+                    part_numbers: missing,
+                    expires_in: 3600,
+                },
+                &headers,
+            )
+            .await?;
+        let presigned = unwrap_api_response(presign_body, "presign direct upload parts")?;
+        let presigned_map = presigned
+            .parts
+            .into_iter()
+            .map(|part| (part.part_number, part))
+            .collect::<HashMap<_, _>>();
+
+        let mut uploaded_bytes = parts
+            .iter()
+            .filter(|part| part.uploaded)
+            .map(|part| part.size)
+            .sum::<u64>();
+        let upload_jobs = parts
+            .iter()
+            .filter(|part| !part.uploaded)
+            .map(|part| {
+                let presigned_part =
+                    presigned_map
+                        .get(&part.part_number)
+                        .cloned()
+                        .ok_or_else(|| {
+                            FlareError::general_error("missing presigned url for upload part")
+                        })?;
+                Ok((part.clone(), presigned_part))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let mut upload_stream =
+            futures_util::stream::iter(upload_jobs.into_iter().map(|(part, presigned_part)| {
+                let http = self.http.clone();
+                let data = bytes[part.offset as usize..(part.offset + part.size) as usize].to_vec();
+                async move {
+                    let sha256 = hex::encode(Sha256::digest(&data));
+                    let headers_map = http
+                        .put_bytes_full_url(
+                            &presigned_part.upload_url,
+                            &data,
+                            &presigned_part.headers,
+                        )
+                        .await?;
+                    let etag = headers_map
+                        .get("etag")
+                        .cloned()
+                        .or_else(|| headers_map.get("ETag").cloned())
+                        .ok_or_else(|| {
+                            FlareError::general_error("object storage response missing ETag")
+                        })?;
+                    Ok::<UploadedDirectPart, FlareError>(UploadedDirectPart {
+                        part_number: part.part_number,
+                        size: part.size,
+                        sha256,
+                        etag,
+                    })
+                }
+            }))
+            .buffer_unordered(MAX_CONCURRENT_DIRECT_UPLOAD_PARTS);
+
+        let mut uploaded_parts = Vec::new();
+        while let Some(result) = upload_stream.next().await {
+            let uploaded_part = result?;
+            uploaded_bytes = uploaded_bytes.saturating_add(uploaded_part.size);
+            emit_progress(
+                on_progress,
+                UploadProgress {
+                    file_name: file_name.to_string(),
+                    upload_id: upload_id.to_string(),
+                    phase: UploadPhase::Uploading,
+                    uploaded_bytes,
+                    total_bytes: bytes.len() as u64,
+                    chunk_index: Some(uploaded_part.part_number - 1),
+                    total_chunks: Some(total_parts),
+                },
+            );
+            uploaded_parts.push(uploaded_part);
+        }
+
+        if uploaded_parts.is_empty() {
+            return Ok(());
+        }
+        let commit_parts = uploaded_parts
+            .iter()
+            .map(|part| UploadedPartInfoHttp {
+                part_number: part.part_number,
+                etag: part.etag.clone(),
+                size: part.size as i64,
+                sha256: Some(part.sha256.clone()),
+            })
+            .collect::<Vec<_>>();
+        let commit_body: HttpApiResponse<CommitDirectUploadPartsHttpResponse> = self
+            .http
+            .post_with_headers(
+                "/api/v1/medias/uploads/commit-parts",
+                &CommitDirectUploadPartsHttpRequest {
+                    upload_id: upload_id.to_string(),
+                    parts: commit_parts,
+                },
+                &headers,
+            )
+            .await?;
+        let _ = unwrap_api_response(commit_body, "commit direct upload parts")?;
+        Ok(())
+    }
+
     fn build_control_headers(&self, trace_seed: &str) -> HashMap<String, String> {
-        HashMap::from([(
-            "x-trace-id".to_string(),
-            format!("sdk-upload-{trace_seed}-{}", rand::random::<u32>()),
-        )])
+        shared_build_control_headers(trace_seed)
     }
 
     fn new_manifest(&self, input: NewUploadManifest<'_>) -> MediaUploadManifestVo {
@@ -790,6 +1174,18 @@ impl MediaUploaderPort for MediaService {
         options: Option<UploadOptions>,
         progress: Option<UploadProgressSink>,
     ) -> Result<UploadedMedia> {
+        if let Some(bytes) = media.payload {
+            let progress = progress.map(|sink| Arc::new(sink) as UploadProgressCallback);
+            return self
+                .upload_bytes_with_progress(
+                    bytes,
+                    media.metadata.file_name,
+                    media.metadata.mime_type,
+                    options,
+                    progress,
+                )
+                .await;
+        }
         let local_path = local_path_from_media_source(&media.source)?;
         let progress = progress.map(|sink| Arc::new(sink) as UploadProgressCallback);
         self.upload_file_from_path_with_progress(Path::new(&local_path), options, progress)
@@ -927,23 +1323,6 @@ async fn compute_file_fingerprints(path: &Path) -> Result<(String, String, Optio
             .map_err(|e| FlareError::general_error(format!("read file tail failed: {e}")))?;
     }
 
-    let mut full_file = tokio::fs::File::open(path)
-        .await
-        .map_err(|e| FlareError::general_error(format!("open file failed: {e}")))?;
-    let mut full_hasher = Sha256::new();
-    let mut buffer = vec![0_u8; 256 * 1024];
-    loop {
-        let read = full_file
-            .read(&mut buffer)
-            .await
-            .map_err(|e| FlareError::general_error(format!("stream read failed: {e}")))?;
-        if read == 0 {
-            break;
-        }
-        full_hasher.update(&buffer[..read]);
-    }
-    let full_sha256 = hex::encode(full_hasher.finalize());
-
     let head_hash = hex::encode(Sha256::digest(&head));
     let tail_hash = hex::encode(Sha256::digest(&tail));
     let head_tail_sha256 = hex::encode(Sha256::digest(
@@ -953,29 +1332,7 @@ async fn compute_file_fingerprints(path: &Path) -> Result<(String, String, Optio
         format!("{file_size}:{head_hash}:{tail_hash}").as_bytes(),
     ));
 
-    Ok((fingerprint, head_tail_sha256, Some(full_sha256)))
-}
-
-fn build_upload_parts(manifest: &MediaUploadManifestVo) -> Vec<MediaUploadPartVo> {
-    let total_parts = manifest.total_parts.max(1);
-    let part_size = u64::from(manifest.part_size.max(1));
-    let mut parts = Vec::with_capacity(total_parts as usize);
-    for idx in 0..total_parts {
-        let part_number = idx + 1;
-        let offset = u64::from(idx) * part_size;
-        let remaining = manifest.file_size.saturating_sub(offset);
-        let size = remaining.min(part_size);
-        parts.push(MediaUploadPartVo {
-            local_upload_id: manifest.local_upload_id.clone(),
-            part_number,
-            offset,
-            size,
-            sha256: String::new(),
-            etag: None,
-            uploaded: false,
-        });
-    }
-    parts
+    Ok((fingerprint, head_tail_sha256, None))
 }
 
 async fn read_part_bytes(path: &Path, offset: u64, size: u64) -> Result<Vec<u8>> {
@@ -1000,60 +1357,6 @@ fn now_ms() -> i64 {
 fn emit_progress(on_progress: Option<&UploadProgressCallback>, progress: UploadProgress) {
     if let Some(cb) = on_progress {
         cb(progress);
-    }
-}
-
-fn random_upload_id(prefix: &str) -> String {
-    format!(
-        "{prefix}-{}-{}",
-        chrono::Utc::now().timestamp_millis(),
-        rand::random::<u32>()
-    )
-}
-
-fn upload_file_to_uploaded_media(
-    data: UploadFileHttpResponse,
-    fallback_file_name: String,
-    fallback_mime_type: String,
-    fallback_size: i64,
-) -> UploadedMedia {
-    let (resolved_name, resolved_mime, resolved_size) = if let Some(info) = data.info {
-        (info.file_name, info.mime_type, info.size)
-    } else {
-        (fallback_file_name, fallback_mime_type, fallback_size)
-    };
-    UploadedMedia {
-        file_id: data.file_id,
-        file_name: resolved_name,
-        mime_type: resolved_mime,
-        size: resolved_size,
-        url: data.url,
-        cdn_url: data.cdn_url,
-    }
-}
-
-fn build_upload_metadata(
-    file_name: String,
-    mime_type: String,
-    file_size: i64,
-    file_type: i32,
-    upload_id: String,
-    user_id: String,
-) -> UploadFileMetadataHttp {
-    UploadFileMetadataHttp {
-        file_name,
-        mime_type,
-        file_size,
-        file_type,
-        upload_id: upload_id.clone(),
-        metadata: HashMap::new(),
-        user_id,
-        trace_id: upload_id,
-        namespace: "im.message".to_string(),
-        business_tag: "chat_attachment".to_string(),
-        bucket: String::new(),
-        object_key: String::new(),
-        labels: HashMap::new(),
     }
 }
 
@@ -1164,7 +1467,7 @@ impl MediaService {
             })?;
 
             let safe_name = sanitize_user_download_file_name(&display_file_name);
-            let dest_path = unique_user_download_destination(&dir, &safe_name);
+            let dest_path = checked_user_download_destination(&dir, &safe_name)?;
 
             let sp = source_path
                 .as_deref()
@@ -1339,14 +1642,64 @@ fn emit_file_download_progress(
 
 #[cfg(not(target_arch = "wasm32"))]
 fn sanitize_user_download_file_name(name: &str) -> String {
-    let base = name.trim();
+    let base = name
+        .trim()
+        .rsplit(['/', '\\'])
+        .find(|segment| !segment.trim().is_empty())
+        .map(str::trim)
+        .unwrap_or("");
     if base.is_empty() {
         return "download".to_string();
     }
-    base.replace(['/', '\\', '?', '%', '*', ':', '|', '"', '<', '>'], "_")
+    let sanitized = base
         .chars()
+        .map(|ch| {
+            if ch.is_control() || matches!(ch, '?' | '%' | '*' | ':' | '|' | '"' | '<' | '>') {
+                '_'
+            } else {
+                ch
+            }
+        })
         .take(200)
-        .collect()
+        .collect::<String>();
+    let sanitized = sanitized.trim_matches([' ', '.']).to_string();
+    if sanitized.is_empty() || sanitized == "." || sanitized == ".." {
+        return "download".to_string();
+    }
+    if is_windows_reserved_file_name(&sanitized) {
+        return format!("{sanitized}_");
+    }
+    sanitized
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn is_windows_reserved_file_name(name: &str) -> bool {
+    let stem = name.split('.').next().unwrap_or(name).to_ascii_lowercase();
+    matches!(
+        stem.as_str(),
+        "con"
+            | "prn"
+            | "aux"
+            | "nul"
+            | "com1"
+            | "com2"
+            | "com3"
+            | "com4"
+            | "com5"
+            | "com6"
+            | "com7"
+            | "com8"
+            | "com9"
+            | "lpt1"
+            | "lpt2"
+            | "lpt3"
+            | "lpt4"
+            | "lpt5"
+            | "lpt6"
+            | "lpt7"
+            | "lpt8"
+            | "lpt9"
+    )
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -1359,6 +1712,24 @@ fn resolve_user_download_source_path(raw: &str) -> std::path::PathBuf {
         return pb;
     }
     PathBuf::from(t)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn checked_user_download_destination(dir: &Path, file_name: &str) -> Result<PathBuf> {
+    let dest = unique_user_download_destination(dir, file_name);
+    ensure_user_download_destination_in_dir(dir, dest)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn ensure_user_download_destination_in_dir(dir: &Path, dest: PathBuf) -> Result<PathBuf> {
+    if dest.starts_with(dir) && dest.parent().is_some_and(|parent| parent == dir) {
+        Ok(dest)
+    } else {
+        Err(FlareError::localized(
+            ErrorCode::InvalidParameter,
+            "download destination escapes user download directory",
+        ))
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -1408,29 +1779,87 @@ mod user_download_policy_tests {
 
         assert_eq!(err.code(), Some(ErrorCode::ResourceExhausted));
     }
+
+    #[test]
+    fn sanitizes_user_download_file_name_to_safe_basename() {
+        assert_eq!(
+            sanitize_user_download_file_name("../../etc/passwd"),
+            "passwd"
+        );
+        assert_eq!(
+            sanitize_user_download_file_name(r"C:\tmp\payload?.txt"),
+            "payload_.txt"
+        );
+        assert_eq!(sanitize_user_download_file_name(".."), "download");
+        assert_eq!(sanitize_user_download_file_name(".hidden."), "hidden");
+        assert_eq!(sanitize_user_download_file_name("CON.txt"), "CON.txt_");
+        assert_eq!(
+            sanitize_user_download_file_name("bad\u{0000}\u{001f}name.txt"),
+            "bad__name.txt"
+        );
+    }
+
+    #[test]
+    fn rejects_download_destination_outside_user_download_dir() {
+        let dir = Path::new("/tmp/flare-downloads");
+
+        assert!(
+            ensure_user_download_destination_in_dir(dir, dir.join("safe.txt")).is_ok(),
+            "direct child path should be accepted"
+        );
+        assert!(
+            ensure_user_download_destination_in_dir(dir, PathBuf::from("/tmp/evil.txt")).is_err(),
+            "sibling path must be rejected"
+        );
+        assert!(
+            ensure_user_download_destination_in_dir(dir, dir.join("nested").join("evil.txt"))
+                .is_err(),
+            "nested path must be rejected because downloads are saved as basenames"
+        );
+    }
 }
 
 /// 选择用于下载/展示的 HTTP 地址。
 ///
 /// `flare-media` 对私有对象：`url` 为 S3 预签名链接，`cdn_url` 常为 `cdn_base + object_path`（无签名）。
-/// 旧逻辑优先 `cdn_url` 会导致浏览器 GET 未授权路径返回 **403**。若 `url` 明显为预签名，必须优先使用。
-fn is_likely_aws_presigned_get_url(url: &str) -> bool {
-    let u = url.trim();
-    u.contains("X-Amz-Algorithm=")
-        || u.contains("X-Amz-Signature=")
-        || u.contains("AWSAccessKeyId=")
-}
-
+/// 因此 `url` 是权威访问地址，`cdn_url` 只作为后备展示 hint。
 fn pick_download_url(access: &MediaAccessUrl) -> &str {
     let u = access.url.trim();
-    let c = access.cdn_url.as_deref().unwrap_or("").trim();
-    if !u.is_empty() && is_likely_aws_presigned_get_url(u) {
+    if !u.is_empty() {
         return u;
     }
-    if !c.is_empty() {
-        return c;
+    access.cdn_url.as_deref().unwrap_or("").trim()
+}
+
+#[cfg(test)]
+mod media_access_url_selection_tests {
+    use super::*;
+
+    #[test]
+    fn pick_download_url_prefers_core_media_url_over_cdn_hint() {
+        let access = MediaAccessUrl {
+            url: "http://127.0.0.1:29000/flare-media/private.png?X-Amz-Signature=ok".to_string(),
+            cdn_url: Some("http://127.0.0.1:29000/flare-media/private.png".to_string()),
+        };
+
+        assert_eq!(
+            pick_download_url(&access),
+            "http://127.0.0.1:29000/flare-media/private.png?X-Amz-Signature=ok"
+        );
     }
-    u
+
+    #[test]
+    fn pick_download_url_uses_cdn_hint_only_when_core_url_is_absent() {
+        let access = MediaAccessUrl {
+            url: " ".to_string(),
+            cdn_url: Some("http://127.0.0.1:29000/flare-media/public.png".to_string()),
+        };
+
+        assert_eq!(
+            pick_download_url(&access),
+            "http://127.0.0.1:29000/flare-media/public.png"
+        );
+    }
 }
 
 fn infer_mime_from_url_or_octet_stream(url: &str, bytes: &[u8]) -> String {
@@ -1495,23 +1924,6 @@ fn infer_mime_type(file_name: &str) -> String {
     }
 }
 
-fn infer_file_type(mime: &str) -> i32 {
-    if mime.starts_with("image/") {
-        1
-    } else if mime.starts_with("video/") {
-        2
-    } else if mime.starts_with("audio/") {
-        3
-    } else if mime == "application/pdf"
-        || mime.starts_with("application/")
-        || mime.starts_with("text/")
-    {
-        4
-    } else {
-        5
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1547,7 +1959,7 @@ mod tests {
             updated_at_ms: 0,
         };
 
-        let parts = build_upload_parts(&manifest);
+        let parts = build_upload_parts_from_manifest(&manifest);
         assert_eq!(parts.len(), 3);
         assert_eq!(
             (parts[0].part_number, parts[0].offset, parts[0].size),
@@ -1569,10 +1981,5 @@ mod tests {
         assert_eq!(infer_mime_type("clip.mp4"), "video/mp4");
         assert_eq!(infer_mime_type("voice.mp3"), "audio/mpeg");
         assert_eq!(infer_mime_type("report.pdf"), "application/pdf");
-        assert_eq!(infer_file_type("image/png"), 1);
-        assert_eq!(infer_file_type("video/mp4"), 2);
-        assert_eq!(infer_file_type("audio/mpeg"), 3);
-        assert_eq!(infer_file_type("application/pdf"), 4);
-        assert_eq!(infer_file_type("application/octet-stream"), 4);
     }
 }

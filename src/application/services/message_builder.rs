@@ -1,14 +1,32 @@
 //! 消息构建服务：封装 `ContentBuilder + MessageBuilder` 组合，产出 `IMMessage`。
 
-use crate::model::content_builder::{BuiltContent, ContentBuilder, DEFAULT_STICKER_DISPLAY_SIDE};
+use crate::content::MessageBuilder;
+use crate::content::message_elem::{elem_plain_summary, elem_to_message_content};
+use crate::content::url_safety::is_safe_remote_url;
+use crate::content::{BuiltContent, ContentBuilder, DEFAULT_STICKER_DISPLAY_SIDE};
 use crate::model::message::IMMessage;
-use crate::model::message_builder::MessageBuilder;
-use crate::model::message_elem::{elem_plain_summary, elem_to_message_content};
 use crate::shared::error::{ErrorCode, FlareError, Result};
 use flare_proto::common::{ForwardItem, ForwardMode, ImageInfo};
 use std::collections::HashMap;
 
 pub struct MessageBuilderService;
+
+fn validate_optional_remote_url(field: &'static str, value: Option<&str>) -> Result<()> {
+    let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(());
+    };
+    validate_required_remote_url(field, value)
+}
+
+fn validate_required_remote_url(field: &'static str, value: &str) -> Result<()> {
+    if is_safe_remote_url(value) {
+        return Ok(());
+    }
+    Err(FlareError::localized(
+        ErrorCode::InvalidParameter,
+        format!("{field}.invalid_url"),
+    ))
+}
 
 #[derive(Clone, Debug)]
 pub struct BuildLocationRequest {
@@ -330,6 +348,10 @@ impl MessageBuilderService {
     }
 
     pub fn build_location(request: BuildLocationRequest) -> Result<IMMessage> {
+        validate_optional_remote_url(
+            "sdk.message.location.snapshot_url",
+            request.snapshot_url.as_deref(),
+        )?;
         Self::build_with_content(
             request.conversation_id,
             request.sender_id,
@@ -345,6 +367,7 @@ impl MessageBuilderService {
     }
 
     pub fn build_card(request: BuildCardRequest) -> Result<IMMessage> {
+        validate_optional_remote_url("sdk.message.card.avatar", Some(request.avatar.as_str()))?;
         Self::build_with_content(
             request.conversation_id,
             request.sender_id,
@@ -388,6 +411,7 @@ impl MessageBuilderService {
             b = b.package_id(p);
         }
         if let Some(u) = request.url.as_deref().filter(|s| !s.trim().is_empty()) {
+            validate_required_remote_url("sdk.message.sticker.url", u)?;
             b = b.url(u);
         }
         let w = if request.width > 0 {
@@ -431,6 +455,7 @@ impl MessageBuilderService {
     }
 
     pub fn build_link_card(request: BuildLinkCardRequest) -> Result<IMMessage> {
+        validate_required_remote_url("sdk.message.link_card.url", request.url.as_str())?;
         let mut b = ContentBuilder::link_card(request.url);
         if let Some(t) = request
             .title
@@ -454,6 +479,7 @@ impl MessageBuilderService {
             .map(str::trim)
             .filter(|s| !s.is_empty())
         {
+            validate_required_remote_url("sdk.message.link_card.thumbnail_url", u)?;
             b = b.link_card_thumbnail_url(u);
         }
         if let Some(s) = request
@@ -496,6 +522,7 @@ impl MessageBuilderService {
             .map(str::trim)
             .filter(|s| !s.is_empty())
         {
+            validate_required_remote_url("sdk.message.app_card.thumbnail_url", u)?;
             b = b.mini_program_thumbnail_url(u);
         }
         if let Some(e) = request.extra.filter(|m| !m.is_empty()) {
@@ -694,4 +721,485 @@ fn forward_item_from_source(source: &IMMessage) -> Result<ForwardItem> {
         plain_text: plain,
         content: Some(inner_mc),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::content::message_elem::Elem;
+    use crate::content::rich_doc_v2::pipeline::CONTENT_SCHEMA_RICH_DOC;
+    use flare_proto::common::{ImageFormat, MessageType};
+
+    fn link_request(url: &str) -> BuildLinkCardRequest {
+        BuildLinkCardRequest {
+            conversation_id: "conv-1".to_string(),
+            sender_id: "sender-1".to_string(),
+            url: url.to_string(),
+            channel_id: None,
+            title: None,
+            description: None,
+            thumbnail_url: None,
+            site_name: None,
+        }
+    }
+
+    fn image_info(id: &str) -> ImageInfo {
+        ImageInfo {
+            uuid: id.to_string(),
+            image_id: id.to_string(),
+            url: format!("https://flare.test/{id}.jpg"),
+            mime_type: "image/jpeg".to_string(),
+            size: 1024,
+            width: 320,
+            height: 180,
+            format: ImageFormat::Jpeg as i32,
+            animated: false,
+            blurhash: String::new(),
+        }
+    }
+
+    fn elem_kind(message: &IMMessage) -> &'static str {
+        match message.content.as_ref().expect("message content") {
+            Elem::Text(_) => "text",
+            Elem::Image(_) => "image",
+            Elem::Video(_) => "video",
+            Elem::Audio(_) => "audio",
+            Elem::File(_) => "file",
+            Elem::Location(_) => "location",
+            Elem::Card(_) => "card",
+            Elem::Sticker(_) => "sticker",
+            Elem::Emoji(_) => "emoji",
+            Elem::Quote(_) => "quote",
+            Elem::LinkCard(_) => "link_card",
+            Elem::Forward(_) => "forward",
+            Elem::Thread(_) => "thread",
+            Elem::MiniProgram(_) => "mini_program",
+            Elem::RichText(_) => "rich_text",
+            Elem::ImageGroup(_) => "image_group",
+            Elem::System(_) => "system",
+            Elem::Notification(_) => "notification",
+            Elem::Vote(_) => "vote",
+            Elem::Task(_) => "task",
+            Elem::Schedule(_) => "schedule",
+            Elem::Announcement(_) => "announcement",
+            Elem::Custom(_) => "custom",
+            Elem::Placeholder(_) => "placeholder",
+        }
+    }
+
+    fn assert_message_shape(
+        name: &str,
+        message: &IMMessage,
+        expected_type: MessageType,
+        expected_elem: &'static str,
+    ) {
+        assert_eq!(message.conversation_id, "conv-1", "{name}: conversation id");
+        assert_eq!(message.sender_id, "sender-1", "{name}: sender id");
+        assert_eq!(
+            message.message_type, expected_type as i32,
+            "{name}: message_type"
+        );
+        assert_eq!(elem_kind(message), expected_elem, "{name}: elem kind");
+    }
+
+    #[test]
+    fn build_all_supported_message_types_to_strong_elem_contracts() {
+        let source =
+            MessageBuilderService::build_text("conv-src", "sender-1", "source", None, false)
+                .expect("source text");
+        let quoted = ContentBuilder::text("quoted source").build();
+        let rich_doc_json = r#"{"type":"doc","version":2,"children":[]}"#;
+        let mut extra = HashMap::new();
+        extra.insert("scope".to_string(), "all".to_string());
+
+        let cases: Vec<(&str, MessageType, &'static str, IMMessage)> = vec![
+            (
+                "text",
+                MessageType::Text,
+                "text",
+                MessageBuilderService::build_text("conv-1", "sender-1", "hello", None, true)
+                    .expect("text"),
+            ),
+            (
+                "quote",
+                MessageType::Quote,
+                "quote",
+                MessageBuilderService::build_quote(
+                    "conv-1",
+                    "sender-1",
+                    "quoted-message-1",
+                    "reply",
+                    Some("alice"),
+                    Some("quoted source"),
+                    Some(quoted.clone()),
+                )
+                .expect("quote"),
+            ),
+            (
+                "thread",
+                MessageType::Thread,
+                "thread",
+                MessageBuilderService::build_thread_reply(
+                    "conv-1", "sender-1", "thread-1", "reply",
+                )
+                .expect("thread"),
+            ),
+            (
+                "forward",
+                MessageType::Forward,
+                "forward",
+                MessageBuilderService::build_forward(
+                    "conv-1",
+                    "sender-1",
+                    false,
+                    "forward",
+                    std::slice::from_ref(&source),
+                )
+                .expect("forward"),
+            ),
+            (
+                "image",
+                MessageType::Image,
+                "image",
+                MessageBuilderService::build_image("conv-1", "sender-1", "image-1", None)
+                    .expect("image"),
+            ),
+            (
+                "image_with_thumbnail",
+                MessageType::Image,
+                "image",
+                MessageBuilderService::build_image_with_thumbnail(
+                    "conv-1",
+                    "sender-1",
+                    "image-source-1",
+                    "image-thumbnail-1",
+                    None,
+                )
+                .expect("image thumbnail"),
+            ),
+            (
+                "image_group",
+                MessageType::ImageGroup,
+                "image_group",
+                MessageBuilderService::build_image_group(
+                    "conv-1",
+                    "sender-1",
+                    vec![image_info("image-a"), image_info("image-b")],
+                    "album",
+                    HashMap::new(),
+                    None,
+                )
+                .expect("image group"),
+            ),
+            (
+                "video",
+                MessageType::Video,
+                "video",
+                MessageBuilderService::build_video("conv-1", "sender-1", "video-1", None)
+                    .expect("video"),
+            ),
+            (
+                "audio",
+                MessageType::Audio,
+                "audio",
+                MessageBuilderService::build_audio("conv-1", "sender-1", "audio-1", None)
+                    .expect("audio"),
+            ),
+            (
+                "file",
+                MessageType::File,
+                "file",
+                MessageBuilderService::build_file("conv-1", "sender-1", "file-1", None)
+                    .expect("file"),
+            ),
+            (
+                "location",
+                MessageType::Location,
+                "location",
+                MessageBuilderService::build_location(BuildLocationRequest {
+                    conversation_id: "conv-1".to_string(),
+                    sender_id: "sender-1".to_string(),
+                    longitude: 120.1,
+                    latitude: 30.2,
+                    address: "Hangzhou".to_string(),
+                    title: "Office".to_string(),
+                    zoom: Some(16),
+                    snapshot_url: Some("https://flare.test/map.png".to_string()),
+                    snapshot_local_path: None,
+                    channel_id: None,
+                })
+                .expect("location"),
+            ),
+            (
+                "card",
+                MessageType::Card,
+                "card",
+                MessageBuilderService::build_card(BuildCardRequest {
+                    conversation_id: "conv-1".to_string(),
+                    sender_id: "sender-1".to_string(),
+                    id: "user-1".to_string(),
+                    card_type: "user".to_string(),
+                    title: "Alice".to_string(),
+                    subtitle: "Engineer".to_string(),
+                    avatar: "https://flare.test/avatar.png".to_string(),
+                    channel_id: None,
+                })
+                .expect("card"),
+            ),
+            (
+                "sticker",
+                MessageType::Sticker,
+                "sticker",
+                MessageBuilderService::build_sticker_with(BuildStickerRequest {
+                    conversation_id: "conv-1".to_string(),
+                    sender_id: "sender-1".to_string(),
+                    sticker_id: "sticker-1".to_string(),
+                    channel_id: None,
+                    package_id: Some("pack-1".to_string()),
+                    url: Some("https://flare.test/sticker.webp".to_string()),
+                    width: 128,
+                    height: 128,
+                    sticker_format: Some("webp".to_string()),
+                })
+                .expect("sticker"),
+            ),
+            (
+                "emoji",
+                MessageType::Emoji,
+                "emoji",
+                MessageBuilderService::build_emoji("conv-1", "sender-1", "🙂", None)
+                    .expect("emoji"),
+            ),
+            (
+                "link_card",
+                MessageType::LinkCard,
+                "link_card",
+                MessageBuilderService::build_link_card(BuildLinkCardRequest {
+                    conversation_id: "conv-1".to_string(),
+                    sender_id: "sender-1".to_string(),
+                    url: "https://flare.test/post".to_string(),
+                    channel_id: None,
+                    title: Some("Post".to_string()),
+                    description: Some("A post".to_string()),
+                    thumbnail_url: Some("https://flare.test/thumb.png".to_string()),
+                    site_name: Some("Flare".to_string()),
+                })
+                .expect("link card"),
+            ),
+            (
+                "mini_program",
+                MessageType::AppCard,
+                "mini_program",
+                MessageBuilderService::build_mini_program(BuildMiniProgramRequest {
+                    conversation_id: "conv-1".to_string(),
+                    sender_id: "sender-1".to_string(),
+                    app_id: "flare.todo".to_string(),
+                    channel_id: None,
+                    title: Some("Todo".to_string()),
+                    page_path: Some("/home".to_string()),
+                    thumbnail_url: Some("https://flare.test/app.png".to_string()),
+                    extra: Some(extra.clone()),
+                })
+                .expect("mini program"),
+            ),
+            (
+                "rich_doc",
+                MessageType::RichText,
+                "rich_text",
+                MessageBuilderService::build_rich_doc(BuildRichDocRequest {
+                    conversation_id: "conv-1".to_string(),
+                    sender_id: "sender-1".to_string(),
+                    doc_json: rich_doc_json.to_string(),
+                    content_schema: CONTENT_SCHEMA_RICH_DOC.to_string(),
+                    plain_text: "doc".to_string(),
+                    channel_id: None,
+                    input_format: Some("markdown".to_string()),
+                    input_format_version: Some(2),
+                    source_payload: Some(extra.clone()),
+                    title: Some("Doc".to_string()),
+                    search_text: Some("doc".to_string()),
+                    render_hints_json: Some("{}".to_string()),
+                })
+                .expect("rich doc"),
+            ),
+            (
+                "system",
+                MessageType::System,
+                "system",
+                MessageBuilderService::build_system(
+                    "conv-1",
+                    "sender-1",
+                    "member_joined",
+                    "joined",
+                )
+                .expect("system"),
+            ),
+            (
+                "notification",
+                MessageType::Notification,
+                "notification",
+                MessageBuilderService::build_notification("conv-1", "sender-1", "Notice", "Body")
+                    .expect("notification"),
+            ),
+            (
+                "vote",
+                MessageType::AppCard,
+                "vote",
+                MessageBuilderService::build_vote(
+                    "conv-1",
+                    "sender-1",
+                    "vote-1",
+                    "Vote",
+                    vec!["A".to_string(), "B".to_string()],
+                    None,
+                    Some(vec!["u1".to_string(), "u2".to_string()]),
+                )
+                .expect("vote"),
+            ),
+            (
+                "task",
+                MessageType::AppCard,
+                "task",
+                MessageBuilderService::build_task(
+                    "conv-1",
+                    "sender-1",
+                    "task-1",
+                    "Task",
+                    None,
+                    Some("open"),
+                    Some(vec!["u1".to_string()]),
+                )
+                .expect("task"),
+            ),
+            (
+                "schedule",
+                MessageType::AppCard,
+                "schedule",
+                MessageBuilderService::build_schedule(BuildScheduleRequest {
+                    conversation_id: "conv-1".to_string(),
+                    sender_id: "sender-1".to_string(),
+                    schedule_id: "schedule-1".to_string(),
+                    title: "Standup".to_string(),
+                    channel_id: None,
+                    start_time_ms: 1_782_000_000_000,
+                    end_time_ms: 1_782_003_600_000,
+                    participant_user_ids: Some(vec!["u1".to_string()]),
+                })
+                .expect("schedule"),
+            ),
+            (
+                "announcement",
+                MessageType::AppCard,
+                "announcement",
+                MessageBuilderService::build_announcement(
+                    "conv-1",
+                    "sender-1",
+                    "Announcement",
+                    "Body",
+                )
+                .expect("announcement"),
+            ),
+            (
+                "custom",
+                MessageType::Custom,
+                "custom",
+                MessageBuilderService::build_custom("conv-1", "sender-1", "biz.custom", None)
+                    .expect("custom"),
+            ),
+            (
+                "placeholder",
+                MessageType::Placeholder,
+                "placeholder",
+                MessageBuilderService::build_placeholder("conv-1", "sender-1", "encrypted")
+                    .expect("placeholder"),
+            ),
+        ];
+
+        for (name, expected_type, expected_elem, message) in cases {
+            assert_message_shape(name, &message, expected_type, expected_elem);
+        }
+    }
+
+    #[test]
+    fn built_notification_roundtrips_through_binding_message_json() {
+        let message =
+            MessageBuilderService::build_notification("conv-1", "sender-1", "Notice", "Body")
+                .expect("notification");
+
+        let value = serde_json::to_value(&message).expect("serialize notification message");
+        assert_eq!(value["content"]["contentType"], "notification");
+        assert_eq!(value["content"]["title"], "Notice");
+        assert_eq!(value["content"]["body"], "Body");
+
+        let decoded: IMMessage =
+            serde_json::from_value(value).expect("deserialize binding notification message");
+
+        assert_message_shape(
+            "notification",
+            &decoded,
+            MessageType::Notification,
+            "notification",
+        );
+    }
+
+    #[test]
+    fn build_message_type_constraints_are_enforced() {
+        let quoted_missing = MessageBuilderService::build_quote(
+            "conv-1", "sender-1", "quoted-1", "reply", None, None, None,
+        )
+        .expect_err("quote requires quoted content");
+        assert_eq!(quoted_missing.code(), Some(ErrorCode::InvalidParameter));
+
+        let empty_group = MessageBuilderService::build_image_group(
+            "conv-1",
+            "sender-1",
+            vec![],
+            "album",
+            HashMap::new(),
+            None,
+        )
+        .expect_err("image group requires images");
+        assert_eq!(empty_group.code(), Some(ErrorCode::InvalidParameter));
+
+        let source_a = MessageBuilderService::build_text("conv-src", "sender-1", "a", None, false)
+            .expect("source a");
+        let source_b = MessageBuilderService::build_text("conv-src", "sender-1", "b", None, false)
+            .expect("source b");
+        let bad_forward = MessageBuilderService::build_forward(
+            "conv-1",
+            "sender-1",
+            false,
+            "forward",
+            &[source_a, source_b],
+        )
+        .expect_err("single forward requires exactly one source");
+        assert_eq!(bad_forward.code(), Some(ErrorCode::InvalidParameter));
+    }
+
+    #[test]
+    fn build_link_card_rejects_unsafe_url() {
+        let err = MessageBuilderService::build_link_card(link_request("javascript:alert(1)"))
+            .expect_err("unsafe link card url must fail");
+
+        assert_eq!(err.code(), Some(ErrorCode::InvalidParameter));
+    }
+
+    #[test]
+    fn build_link_card_rejects_unsafe_thumbnail_url() {
+        let mut request = link_request("https://flare.test/post");
+        request.thumbnail_url = Some("data:text/html,<script></script>".to_string());
+
+        let err = MessageBuilderService::build_link_card(request)
+            .expect_err("unsafe thumbnail url must fail");
+
+        assert_eq!(err.code(), Some(ErrorCode::InvalidParameter));
+    }
+
+    #[test]
+    fn build_link_card_accepts_https_urls() {
+        let mut request = link_request("https://flare.test/post");
+        request.thumbnail_url = Some("https://flare.test/thumb.png".to_string());
+
+        MessageBuilderService::build_link_card(request).expect("https urls must pass");
+    }
 }

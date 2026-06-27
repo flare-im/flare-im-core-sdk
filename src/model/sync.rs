@@ -1,9 +1,10 @@
 use std::collections::{BTreeMap, HashMap};
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 /// Version stamp used by sync summary reconciliation.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(default, rename_all = "camelCase")]
 pub struct ConversationVersion {
     pub conversation_id: String,
@@ -11,14 +12,14 @@ pub struct ConversationVersion {
 }
 
 /// Request for summary sync with client-known conversation versions.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(default, rename_all = "camelCase")]
 pub struct SyncConversationSummariesRequest {
     pub known_versions: Vec<ConversationVersion>,
 }
 
 /// Conversations whose local version is missing or newer than the caller's snapshot.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(default, rename_all = "camelCase")]
 pub struct SyncConversationSummariesResponse {
     pub changed_conversations: Vec<ConversationVersion>,

@@ -21,12 +21,6 @@ pub enum MessageTransportAction {
         notify_others: bool,
         target_user_id: Option<String>,
     },
-    ReadReceipt {
-        conversation_id: String,
-        user_id: String,
-        message_ids: Vec<String>,
-        read_seq: u64,
-    },
     Reaction {
         conversation_id: String,
         server_msg_id: String,
@@ -38,10 +32,13 @@ pub enum MessageTransportAction {
         conversation_id: String,
         server_msg_id: String,
         pinned_by: String,
+        scope: i32,
     },
     Unpin {
         conversation_id: String,
         server_msg_id: String,
+        unpinned_by: String,
+        scope: i32,
     },
     Mark {
         conversation_id: String,
@@ -68,9 +65,6 @@ impl MessageTransportAction {
                 conversation_id, ..
             }
             | Self::Delete {
-                conversation_id, ..
-            }
-            | Self::ReadReceipt {
                 conversation_id, ..
             }
             | Self::Reaction {
@@ -101,7 +95,6 @@ impl MessageTransportAction {
             | Self::Unpin { server_msg_id, .. }
             | Self::Mark { server_msg_id, .. }
             | Self::Unmark { server_msg_id, .. } => Some(server_msg_id),
-            Self::ReadReceipt { .. } => None,
         }
     }
 }

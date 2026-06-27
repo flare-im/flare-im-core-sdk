@@ -8,8 +8,8 @@ use std::sync::Arc;
 use crate::application::usecases::{
     ConversationCommandUseCase, ConversationViewAssembler, MessageViewAssembler,
 };
-use crate::core::CurrentUserIdStore;
-use crate::core::event::{ConversationEvent, EventBus, SdkEvent};
+use crate::kernel::CurrentUserIdStore;
+use crate::kernel::event::{ConversationEvent, EventBus, SdkEvent};
 use crate::model::conversation::ConversationType;
 use crate::model::{
     BootstrapHomeTimelineRequest, Conversation, ConversationListQuery,
@@ -164,10 +164,11 @@ impl ConversationApi {
                 has_more: false,
             });
         }
-        let messages = self
+        let mut messages = self
             .message_view_assembler
             .list(conversation_id, 0, limit)
             .await?;
+        messages.sort_by(crate::model::IMMessage::compare_for_timeline_asc);
         let conversation = self.view_assembler.get(conversation_id).await?;
         let has_more = messages.len() >= limit as usize;
         Ok(ConversationTimelineSnapshot {
@@ -175,6 +176,31 @@ impl ConversationApi {
             messages,
             has_more,
         })
+    }
+
+    pub(crate) async fn hydrate_timeline_messages(
+        &self,
+        messages: &mut [crate::model::IMMessage],
+    ) -> Result<()> {
+        self.message_view_assembler
+            .hydrate_messages_for_view(messages)
+            .await
+    }
+
+    pub(crate) async fn timeline_page(
+        &self,
+        conversation_id: &str,
+        before_seq: u64,
+        limit: u32,
+    ) -> Result<Vec<crate::model::IMMessage>> {
+        self.ensure_session_active().await?;
+        let conversation_id = conversation_id.trim();
+        if conversation_id.is_empty() {
+            return Ok(Vec::new());
+        }
+        self.message_view_assembler
+            .list(conversation_id, before_seq, normalized_message_limit(limit))
+            .await
     }
 
     pub async fn mark_read(&self, conversation_id: &str, read_seq: u64) -> Result<()> {
@@ -190,11 +216,6 @@ impl ConversationApi {
             },
         ));
         Ok(())
-    }
-
-    pub async fn mark_all_read(&self) -> Result<()> {
-        self.ensure_session_active().await?;
-        self.command_use_case.mark_all_read().await
     }
 
     pub async fn delete(&self, conversation_id: &str) -> Result<()> {

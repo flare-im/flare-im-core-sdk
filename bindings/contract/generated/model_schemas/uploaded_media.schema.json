@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "cdnUrl": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "fileId": {
+      "type": "string"
+    },
+    "fileName": {
+      "type": "string"
+    },
+    "mimeType": {
+      "type": "string"
+    },
+    "size": {
+      "format": "int64",
+      "type": "integer"
+    },
+    "url": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "fileId",
+    "fileName",
+    "mimeType",
+    "size"
+  ],
+  "title": "UploadedMedia",
+  "type": "object",
+  "xFlareGeneratedBy": "flare-im-core-sdk-xtask",
+  "xFlareRustType": "UploadedMedia"
+}

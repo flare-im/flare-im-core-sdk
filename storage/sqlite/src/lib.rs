@@ -92,7 +92,7 @@ fn pool_options() -> SqlitePoolOptions {
         .ok()
         .and_then(|s| s.parse::<u32>().ok())
         .filter(|n| (1..=256).contains(n))
-        .unwrap_or(20);
+        .unwrap_or(1);
 
     SqlitePoolOptions::new()
         .max_connections(max)
@@ -102,8 +102,8 @@ fn pool_options() -> SqlitePoolOptions {
 
 /// 创建 SQLite 连接池（不建表）
 ///
-/// 默认 `max_connections = 20`：单库写仍串行，但可减少「池耗尽 → 长时间等连接」导致的
-/// `sqlx::pool::acquire` 与 `PRAGMA foreign_keys` 等初始化被拖慢。
+/// 默认 `max_connections = 1`：嵌入式客户端优先保证本地写入串行，避免同进程多连接互相抢
+/// SQLite 写锁。服务端或专项压测可通过 `FLARE_SQLITE_MAX_CONNECTIONS` 显式放开。
 pub async fn create_pool(database_url: &str) -> AnyhowResult<SqlitePool> {
     create_pool_with_security(database_url, SqliteSecurityConfig::default()).await
 }
@@ -115,6 +115,9 @@ pub async fn create_pool_with_security(
 ) -> AnyhowResult<SqlitePool> {
     let mut options = connect_options(database_url)?;
     if let Some(key) = security.encryption_key() {
+        if key.trim().is_empty() {
+            anyhow::bail!("SQLite encryption key must not be empty");
+        }
         options = options.pragma("key", key.to_string());
     }
 
@@ -193,6 +196,18 @@ mod tests {
 
         assert!(debug.contains("<redacted>"));
         assert!(!debug.contains("very-secret-key"));
+    }
+
+    #[tokio::test]
+    async fn encrypted_pool_rejects_empty_key_before_opening() {
+        let encrypted = create_pool_with_security(
+            "sqlite::memory:",
+            SqliteSecurityConfig::new().with_encryption_key("   "),
+        )
+        .await;
+
+        let err = encrypted.expect_err("empty key rejected");
+        assert!(err.to_string().contains("must not be empty"));
     }
 
     #[tokio::test]

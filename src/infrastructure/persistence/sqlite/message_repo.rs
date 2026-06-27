@@ -9,9 +9,13 @@ use prost::Message as ProstMessage;
 use sqlx::{QueryBuilder, Row, Sqlite, SqlitePool, Transaction};
 use tracing::debug;
 
+use crate::content::message_elem::{
+    AudioInfoElem, ImageInfoElem, TextElem, VideoInfoElem, elem_preview_storage_payload,
+};
 use crate::domain::{
     EditApplyResult, MessageDeliveryService, MessageReader, MessageStore, MessageWriter,
-    OperationApplyResult, local_cleared_through_seq, message_visible_after_clear,
+    OperationApplyResult, local_cleared_through_seq, merge_message_event_attributes,
+    message_visible_after_clear,
 };
 use crate::model::conversation::ConversationType;
 use crate::model::message::{
@@ -22,10 +26,37 @@ use crate::model::search::{SqliteKeywordSearch, sqlite_keyword_search};
 use crate::model::{
     Elem, IMMessage, MessageSearchKind, MessageSearchQuery, decode_content_bytes,
     decoded_content_to_elem,
-    message_elem::{AudioInfoElem, ImageInfoElem, TextElem, VideoInfoElem},
 };
 use crate::shared::error::{ErrorCode, FlareError, Result};
+use crate::shared::util::time::now_millis;
 use flare_proto::common::{ContentVisibility, MessageStatus, MessageType};
+
+use super::identity_repair;
+
+const MESSAGE_SAVE_BATCH_INSERT_CHUNK_SIZE: usize = 20;
+const MESSAGE_REACTION_INSERT_CHUNK_SIZE: usize = 100;
+
+struct MessagePersistRow<'a> {
+    message: &'a IMMessage,
+    attributes_json: String,
+    mention_users_json: String,
+    extensions_json: String,
+    text: Option<String>,
+    search_text: Option<String>,
+}
+
+impl<'a> MessagePersistRow<'a> {
+    fn from_message(message: &'a IMMessage) -> Self {
+        Self {
+            message,
+            attributes_json: serde_json::to_string(&message.attributes).unwrap_or_default(),
+            mention_users_json: serde_json::to_string(&message.mention_users).unwrap_or_default(),
+            extensions_json: extensions_to_json(&message.extensions),
+            text: message_preview_for_storage(message),
+            search_text: message_search_text_for_storage(message),
+        }
+    }
+}
 
 fn parse_extra(s: Option<&str>) -> HashMap<String, String> {
     let s = match s {
@@ -103,14 +134,17 @@ fn effective_sort_ts_for_persist(message: &IMMessage) -> i64 {
 }
 
 fn message_preview_for_storage(message: &IMMessage) -> Option<String> {
-    message.text_for_storage().or_else(|| {
-        message
-            .attributes
-            .get("contentText")
-            .map(|s| s.trim())
-            .filter(|s| !crate::model::preview_storage::is_redundant_content_text_extra(s))
-            .map(str::to_string)
-    })
+    message
+        .text_for_storage()
+        .or_else(|| preview_for_content_bytes(&message.encoded_content))
+        .or_else(|| {
+            message
+                .attributes
+                .get("contentText")
+                .map(|s| s.trim())
+                .filter(|s| !crate::content::preview_storage::is_redundant_content_text_extra(s))
+                .map(str::to_string)
+        })
 }
 
 fn push_search_part(out: &mut String, value: &str) {
@@ -345,6 +379,58 @@ async fn upsert_message_fts_tx(
     Ok(())
 }
 
+async fn upsert_message_fts_rows_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    rows: &[MessagePersistRow<'_>],
+) -> Result<()> {
+    if rows.is_empty() {
+        return Ok(());
+    }
+
+    let mut delete_qb =
+        QueryBuilder::<Sqlite>::new("DELETE FROM messages_fts WHERE server_id IN (");
+    {
+        let mut separated = delete_qb.separated(", ");
+        for row in rows {
+            separated.push_bind(&row.message.server_id);
+        }
+    }
+    delete_qb.push(")");
+    delete_qb
+        .build()
+        .execute(&mut **tx)
+        .await
+        .map_err(sqlx_err)?;
+
+    let searchable = rows
+        .iter()
+        .filter_map(|row| {
+            row.search_text
+                .as_deref()
+                .map(str::trim)
+                .filter(|text| !text.is_empty())
+                .map(|text| (row, text))
+        })
+        .collect::<Vec<_>>();
+    if searchable.is_empty() {
+        return Ok(());
+    }
+
+    let mut insert_qb =
+        QueryBuilder::<Sqlite>::new("INSERT INTO messages_fts(server_id, conversation_id, text) ");
+    insert_qb.push_values(searchable, |mut b, (row, text)| {
+        b.push_bind(&row.message.server_id)
+            .push_bind(&row.message.conversation_id)
+            .push_bind(text);
+    });
+    insert_qb
+        .build()
+        .execute(&mut **tx)
+        .await
+        .map_err(sqlx_err)?;
+    Ok(())
+}
+
 async fn merge_reactions_to_server_id_tx(
     tx: &mut Transaction<'_, Sqlite>,
     old_server_id: &str,
@@ -425,6 +511,118 @@ async fn remove_conflicting_client_msg_rows_tx(
         .await
         .map_err(sqlx_err)?;
     Ok(())
+}
+
+async fn insert_message_rows_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    rows: &[MessagePersistRow<'_>],
+) -> Result<()> {
+    if rows.is_empty() {
+        return Ok(());
+    }
+
+    let mut merged_attributes_json = Vec::with_capacity(rows.len());
+    for row in rows {
+        let incoming = parse_extra(Some(&row.attributes_json));
+        let existing_attributes = existing_message_attributes_tx(tx, row).await?;
+        let merged = match existing_attributes {
+            Some(raw) => merge_message_event_attributes(incoming, parse_extra(Some(&raw))),
+            None => incoming,
+        };
+        merged_attributes_json.push(extra_to_json(&merged));
+    }
+
+    let mut qb = QueryBuilder::<Sqlite>::new(
+        r#"INSERT OR REPLACE INTO messages (
+           server_id, conversation_id, client_msg_id, sender_id, source, conversation_seq, created_at, client_created_at,
+           conversation_type, message_type, channel_id, sender_name, sender_avatar,
+           sender_display_name, encoded_content, status,
+           retention_policy, retention_state,
+           is_read, is_recalled, is_edited,
+           reply_to, quote_preview, mention_users, mention_all, attributes, extensions, version, updated_at, text,
+           sending, failed, is_local, sort_ts)
+        "#,
+    );
+    qb.push_values(rows.iter().enumerate(), |mut b, (index, row)| {
+        let m = row.message;
+        b.push_bind(&m.server_id)
+            .push_bind(&m.conversation_id)
+            .push_bind(&m.client_msg_id)
+            .push_bind(&m.sender_id)
+            .push_bind(m.source)
+            .push_bind(m.conversation_seq as i64)
+            .push_bind(m.created_at as i64)
+            .push_bind(m.client_created_at as i64)
+            .push_bind(m.conversation_type)
+            .push_bind(m.message_type)
+            .push_bind(&m.channel_id)
+            .push_bind(&m.sender_name)
+            .push_bind(&m.sender_avatar)
+            .push_bind(&m.sender_display_name)
+            .push_bind(&m.encoded_content)
+            .push_bind(m.status)
+            .push_bind(encode_optional_proto(&m.retention_policy))
+            .push_bind(encode_optional_proto(&m.retention_state))
+            .push_bind(if m.is_read { 1i32 } else { 0 })
+            .push_bind(if m.is_recalled { 1i32 } else { 0 })
+            .push_bind(if m.is_edited { 1i32 } else { 0 })
+            .push_bind(&m.reply_to)
+            .push_bind(&m.quote_preview)
+            .push_bind(&row.mention_users_json)
+            .push_bind(if m.mention_all { 1i32 } else { 0 })
+            .push_bind(&merged_attributes_json[index])
+            .push_bind(&row.extensions_json)
+            .push_bind(m.version as i64)
+            .push_bind(m.updated_at as i64)
+            .push_bind(row.text.as_deref())
+            .push_bind(if m.local_state.sending { 1i32 } else { 0 })
+            .push_bind(if m.local_state.failed { 1i32 } else { 0 })
+            .push_bind(if m.local_state.is_local { 1i32 } else { 0 })
+            .push_bind(effective_sort_ts_for_persist(m));
+    });
+    qb.build().execute(&mut **tx).await.map_err(sqlx_err)?;
+    Ok(())
+}
+
+async fn existing_message_attributes_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    row: &MessagePersistRow<'_>,
+) -> Result<Option<String>> {
+    let server_id = row.message.server_id.trim();
+    let client_msg_id = row.message.client_msg_id.trim();
+    let existing = if !server_id.is_empty() && !client_msg_id.is_empty() {
+        sqlx::query(
+            r#"SELECT attributes FROM messages
+               WHERE server_id = ? OR client_msg_id = ?
+               LIMIT 1"#,
+        )
+        .bind(server_id)
+        .bind(client_msg_id)
+        .fetch_optional(&mut **tx)
+        .await
+        .map_err(sqlx_err)?
+    } else if !server_id.is_empty() {
+        sqlx::query("SELECT attributes FROM messages WHERE server_id = ? LIMIT 1")
+            .bind(server_id)
+            .fetch_optional(&mut **tx)
+            .await
+            .map_err(sqlx_err)?
+    } else if !client_msg_id.is_empty() {
+        sqlx::query("SELECT attributes FROM messages WHERE client_msg_id = ? LIMIT 1")
+            .bind(client_msg_id)
+            .fetch_optional(&mut **tx)
+            .await
+            .map_err(sqlx_err)?
+    } else {
+        None
+    };
+
+    if let Some(row) = existing {
+        let raw: Option<String> = row.try_get("attributes").map_err(sqlx_err)?;
+        Ok(raw)
+    } else {
+        Ok(None)
+    }
 }
 
 async fn delete_message_fts_by_message_id_tx(
@@ -524,17 +722,21 @@ fn message_type_values_for_search(kinds: &[MessageSearchKind]) -> Vec<i32> {
     values
 }
 
-/// 从 `MessageContent` 字节解码后仅取 Text 正文，供编辑等路径更新 `messages.text`（会话列表/预览列为 JSON 载荷，见 [`IMMessage::text_for_storage`]）。
+/// 从 `MessageContent` 字节解码为 `messages.text` 的标准 preview 载荷。
 fn text_for_sqlite_from_content_bytes(bytes: &[u8]) -> Option<String> {
+    preview_for_content_bytes(bytes)
+}
+
+fn preview_for_content_bytes(bytes: &[u8]) -> Option<String> {
     decode_content_bytes(bytes)
         .ok()
         .and_then(|decoded| decoded_content_to_elem(&decoded))
         .and_then(|elem| {
-            if let Elem::Text(t) = elem {
-                Some(t.text)
-            } else {
-                None
+            let payload = elem_preview_storage_payload(&elem);
+            if payload.is_empty_for_last_preview() {
+                return None;
             }
+            serde_json::to_string(&payload).ok()
         })
 }
 
@@ -704,6 +906,8 @@ impl SqliteMessageRepo {
                 sending: sending != 0,
                 failed: failed != 0,
                 is_local: is_local != 0,
+                uploading: false,
+                upload_progress: 0,
                 sort_ts: sort_ts.max(0) as u64,
             },
         })
@@ -790,6 +994,11 @@ impl MessageReader for SqliteMessageRepo {
         before_seq: u64,
         limit: u32,
     ) -> Result<Vec<IMMessage>> {
+        identity_repair::repair_single_chat_message_alias_for_conversation(
+            &self.pool,
+            conversation_id,
+        )
+        .await?;
         // 与 `before_seq_for_sqlite` 一致：`0` / `>= i64::MAX` 表示「最新一页」游标。
         let is_latest_window = before_seq == 0 || before_seq >= i64::MAX as u64;
         let bound = before_seq_for_sqlite(before_seq);
@@ -989,10 +1198,7 @@ fn extensions_to_json(ext: &HashMap<String, Vec<u8>>) -> String {
 }
 
 fn now_ms_i64() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
+    now_millis().min(i64::MAX as u64) as i64
 }
 
 async fn refresh_reactions_json_snapshot(pool: &SqlitePool, message_id: &str) -> Result<()> {
@@ -1282,6 +1488,83 @@ async fn replace_reaction_snapshot_tx(
     Ok(())
 }
 
+async fn replace_reaction_snapshot_rows_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    rows: &[MessagePersistRow<'_>],
+) -> Result<()> {
+    let snapshot_rows = rows
+        .iter()
+        .filter(|row| {
+            let message = row.message;
+            !message.server_id.is_empty()
+                && (has_reaction_snapshot_in_attributes(&message.attributes)
+                    || !message.reactions.is_empty())
+        })
+        .collect::<Vec<_>>();
+    if snapshot_rows.is_empty() {
+        return Ok(());
+    }
+
+    let mut delete_qb =
+        QueryBuilder::<Sqlite>::new("DELETE FROM message_reactions WHERE message_server_id IN (");
+    {
+        let mut separated = delete_qb.separated(", ");
+        for row in &snapshot_rows {
+            separated.push_bind(&row.message.server_id);
+        }
+    }
+    delete_qb.push(")");
+    delete_qb
+        .build()
+        .execute(&mut **tx)
+        .await
+        .map_err(sqlx_err)?;
+
+    let now = now_ms_i64();
+    let mut entries = Vec::new();
+    for row in snapshot_rows {
+        let message = row.message;
+        for reaction in &message.reactions {
+            if reaction.emoji.trim().is_empty() {
+                continue;
+            }
+            for uid in &reaction.user_ids {
+                if uid.trim().is_empty() {
+                    continue;
+                }
+                entries.push((
+                    message.server_id.as_str(),
+                    message.conversation_id.as_str(),
+                    reaction.emoji.as_str(),
+                    uid.as_str(),
+                ));
+            }
+        }
+    }
+
+    for chunk in entries.chunks(MESSAGE_REACTION_INSERT_CHUNK_SIZE) {
+        let mut insert_qb = QueryBuilder::<Sqlite>::new(
+            r#"INSERT OR REPLACE INTO message_reactions
+               (message_server_id, conversation_id, emoji, user_id, created_at, updated_at) "#,
+        );
+        insert_qb.push_values(chunk, |mut b, entry| {
+            b.push_bind(entry.0)
+                .push_bind(entry.1)
+                .push_bind(entry.2)
+                .push_bind(entry.3)
+                .push_bind(now)
+                .push_bind(now);
+        });
+        insert_qb
+            .build()
+            .execute(&mut **tx)
+            .await
+            .map_err(sqlx_err)?;
+    }
+
+    Ok(())
+}
+
 async fn refresh_conversation_snapshot_after_message_delete_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     conversation_id: &str,
@@ -1410,7 +1693,7 @@ impl MessageWriter for SqliteMessageRepo {
             .begin()
             .await
             .map_err(|e| FlareError::localized(ErrorCode::DatabaseError, e.to_string()))?;
-        let mut latest_per_conversation: HashMap<&str, &IMMessage> = HashMap::new();
+        let mut rows = Vec::with_capacity(persistable.len());
         for m in persistable {
             remove_conflicting_client_msg_rows_tx(
                 &mut tx,
@@ -1419,76 +1702,40 @@ impl MessageWriter for SqliteMessageRepo {
                 &m.conversation_id,
             )
             .await?;
-            let extra_json = serde_json::to_string(&m.attributes).unwrap_or_default();
-            let mention_users_json = serde_json::to_string(&m.mention_users).unwrap_or_default();
-            let extensions_json = extensions_to_json(&m.extensions);
-            let text = message_preview_for_storage(m);
-            let search_text = message_search_text_for_storage(m);
-            sqlx::query(
-                r#"INSERT OR REPLACE INTO messages (
-                   server_id, conversation_id, client_msg_id, sender_id, source, conversation_seq, created_at, client_created_at,
-                   conversation_type, message_type, channel_id, sender_name, sender_avatar,
-                   sender_display_name, encoded_content, status,
-                   retention_policy, retention_state,
-                   is_read, is_recalled, is_edited,
-                   reply_to, quote_preview, mention_users, mention_all, attributes, extensions, version, updated_at, text,
-                   sending, failed, is_local, sort_ts)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"#,
-            )
-            .bind(&m.server_id)
-            .bind(&m.conversation_id)
-            .bind(&m.client_msg_id)
-            .bind(&m.sender_id)
-            .bind(m.source)
-            .bind(m.conversation_seq as i64)
-            .bind(m.created_at as i64)
-            .bind(m.client_created_at as i64)
-            .bind(m.conversation_type)
-            .bind(m.message_type)
-            .bind(&m.channel_id)
-            .bind(&m.sender_name)
-            .bind(&m.sender_avatar)
-            .bind(&m.sender_display_name)
-            .bind(&m.encoded_content)
-            .bind(m.status)
-            .bind(encode_optional_proto(&m.retention_policy))
-            .bind(encode_optional_proto(&m.retention_state))
-            .bind(if m.is_read { 1i32 } else { 0 })
-            .bind(if m.is_recalled { 1i32 } else { 0 })
-            .bind(if m.is_edited { 1i32 } else { 0 })
-            .bind(&m.reply_to)
-            .bind(&m.quote_preview)
-            .bind(&mention_users_json)
-            .bind(if m.mention_all { 1i32 } else { 0 })
-            .bind(&extra_json)
-            .bind(&extensions_json)
-            .bind(m.version as i64)
-            .bind(m.updated_at as i64)
-            .bind(text.as_deref())
-            .bind(if m.local_state.sending { 1i32 } else { 0 })
-            .bind(if m.local_state.failed { 1i32 } else { 0 })
-            .bind(if m.local_state.is_local { 1i32 } else { 0 })
-            .bind(effective_sort_ts_for_persist(m))
-            .execute(&mut *tx)
-            .await
-            .map_err(|e| FlareError::localized(ErrorCode::DatabaseError, e.to_string()))?;
-            upsert_message_fts_tx(
-                &mut tx,
-                &m.server_id,
-                &m.conversation_id,
-                search_text.as_deref(),
-            )
-            .await?;
-            replace_reaction_snapshot_tx(&mut tx, m).await?;
 
-            let conv_id = m.conversation_id.trim();
-            if conv_id.is_empty() {
-                continue;
+            let client_msg_id = m.client_msg_id.trim();
+            let server_id = m.server_id.trim();
+            if !server_id.is_empty() {
+                rows.retain(|row: &MessagePersistRow<'_>| {
+                    let row_server_id = row.message.server_id.trim();
+                    let row_client_msg_id = row.message.client_msg_id.trim();
+                    if row_server_id == server_id {
+                        return false;
+                    }
+                    client_msg_id.is_empty()
+                        || row_client_msg_id != client_msg_id
+                        || row_server_id == server_id
+                });
             }
-            match latest_per_conversation.get(conv_id) {
-                Some(prev) if !should_replace_conversation_projection(prev, m) => {}
-                _ => {
-                    latest_per_conversation.insert(conv_id, m);
+            rows.push(MessagePersistRow::from_message(m));
+        }
+
+        let mut latest_per_conversation: HashMap<&str, &IMMessage> = HashMap::new();
+        for chunk in rows.chunks(MESSAGE_SAVE_BATCH_INSERT_CHUNK_SIZE) {
+            insert_message_rows_tx(&mut tx, chunk).await?;
+            upsert_message_fts_rows_tx(&mut tx, chunk).await?;
+            replace_reaction_snapshot_rows_tx(&mut tx, chunk).await?;
+            for row in chunk {
+                let m = row.message;
+                let conv_id = m.conversation_id.trim();
+                if conv_id.is_empty() {
+                    continue;
+                }
+                match latest_per_conversation.get(conv_id) {
+                    Some(prev) if !should_replace_conversation_projection(prev, m) => {}
+                    _ => {
+                        latest_per_conversation.insert(conv_id, m);
+                    }
                 }
             }
         }
@@ -1531,10 +1778,7 @@ impl MessageWriter for SqliteMessageRepo {
     }
 
     async fn update_content(&self, message_id: &str, new_content: Vec<u8>) -> Result<bool> {
-        let now_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as i64)
-            .unwrap_or(0);
+        let now_ms = now_ms_i64();
         let text = text_for_sqlite_from_content_bytes(&new_content);
         let search_text = search_text_for_content_bytes(&new_content).or_else(|| text.clone());
         let mut tx = self
@@ -1638,6 +1882,40 @@ impl MessageWriter for SqliteMessageRepo {
             .await
             .map_err(|e| FlareError::localized(ErrorCode::DatabaseError, e.to_string()))?;
         Ok(())
+    }
+
+    async fn rewrite_conversation_id(
+        &self,
+        from_conversation_id: &str,
+        to_conversation_id: &str,
+    ) -> Result<u64> {
+        let from = from_conversation_id.trim();
+        let to = to_conversation_id.trim();
+        if from.is_empty() || to.is_empty() || from == to {
+            return Ok(0);
+        }
+        let mut tx = self.pool.begin().await.map_err(sqlx_err)?;
+        let result =
+            sqlx::query("UPDATE messages SET conversation_id = ? WHERE conversation_id = ?")
+                .bind(to)
+                .bind(from)
+                .execute(&mut *tx)
+                .await
+                .map_err(sqlx_err)?;
+        sqlx::query("UPDATE messages_fts SET conversation_id = ? WHERE conversation_id = ?")
+            .bind(to)
+            .bind(from)
+            .execute(&mut *tx)
+            .await
+            .map_err(sqlx_err)?;
+        sqlx::query("UPDATE message_reactions SET conversation_id = ? WHERE conversation_id = ?")
+            .bind(to)
+            .bind(from)
+            .execute(&mut *tx)
+            .await
+            .map_err(sqlx_err)?;
+        tx.commit().await.map_err(sqlx_err)?;
+        Ok(result.rows_affected())
     }
 
     async fn update_after_ack(&self, client_msg_id: &str, message: &IMMessage) -> Result<()> {
@@ -2700,13 +2978,16 @@ where
 mod tests {
     use super::SqliteMessageRepo;
     use crate::domain::{
-        ConversationReader, EditApplyResult, MessageReader, MessageStore, MessageWriter,
-        OperationApplyResult,
+        ConversationReader, ConversationWriter, EditApplyResult, MessageReader, MessageStore,
+        MessageWriter, OperationApplyResult,
     };
     use crate::infrastructure::persistence::sqlite::conversation_repo::SqliteConversationRepo;
     use crate::infrastructure::persistence::sqlite_init_schema;
+    use crate::model::conversation::ConversationType;
     use crate::model::message::{MessageStatus, ReactionAction};
-    use crate::model::{IMMessage, MessageSearchKind, MessageSearchQuery, MessageType};
+    use crate::model::{
+        Conversation, IMMessage, MessageSearchKind, MessageSearchQuery, MessageType,
+    };
     use sqlx::SqlitePool;
 
     async fn make_repo() -> SqliteMessageRepo {
@@ -2732,13 +3013,57 @@ mod tests {
         message.created_at = created_at;
         message.client_created_at = created_at;
         message.content = Some(crate::model::Elem::Text(
-            crate::model::message_elem::TextElem {
+            crate::content::message_elem::TextElem {
                 text: text.to_string(),
                 mentions: Vec::new(),
             },
         ));
         message.materialize_encoded_content_from_elem();
         message
+    }
+
+    #[tokio::test]
+    async fn get_by_conversation_repairs_single_chat_channel_alias_messages() {
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        sqlite_init_schema(&pool).await.unwrap();
+        let message_repo = SqliteMessageRepo::new(pool.clone());
+        let conversation_repo = SqliteConversationRepo::new(pool.clone());
+
+        let mut conversation = Conversation::from_conversation_id("cid-canonical".to_string());
+        conversation.conversation_type = ConversationType::Single;
+        conversation.channel_id = "peer-12".to_string();
+        conversation.display_name = "peer-12".to_string();
+        conversation.unread_count = 17;
+        conversation.max_seq = 17;
+        conversation_repo.save_one(&conversation).await.unwrap();
+
+        let mut message = text_message(
+            "server-alias-window",
+            "peer-12",
+            "peer-12",
+            17,
+            17_000,
+            "hello-from-peer",
+        );
+        message.conversation_type = ConversationType::Single.to_proto_int();
+        message.channel_id = "peer-12".to_string();
+        message_repo.save_one(&message).await.unwrap();
+
+        let messages = message_repo
+            .get_by_conversation("cid-canonical", 0, 20)
+            .await
+            .unwrap();
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].conversation_id, "cid-canonical");
+        assert_eq!(messages[0].server_id, "server-alias-window");
+
+        assert!(
+            message_repo
+                .get_by_conversation("peer-12", 0, 20)
+                .await
+                .unwrap()
+                .is_empty()
+        );
     }
 
     fn file_message(
@@ -2761,7 +3086,7 @@ mod tests {
         message.client_created_at = created_at;
         message.message_type = MessageType::File as i32;
         message.content = Some(crate::model::Elem::File(
-            crate::model::message_elem::FileElem {
+            crate::content::message_elem::FileElem {
                 file_id: format!("file-{server_id}"),
                 file_name: file_name.to_string(),
                 mime_type: mime_type.to_string(),
@@ -3497,6 +3822,68 @@ mod tests {
         );
         assert_eq!(
             after_new
+                .attributes
+                .get("lastPinEventSeq")
+                .map(String::as_str),
+            Some("11")
+        );
+    }
+
+    #[tokio::test]
+    async fn save_batch_preserves_pin_event_attributes_when_snapshot_omits_them() {
+        let repo = make_repo().await;
+        let mut message = IMMessage::new(flare_proto::common::Message::default());
+        message.server_id = "server-2-persist".to_string();
+        message.client_msg_id = "client-2-persist".to_string();
+        message.conversation_id = "conv-1".to_string();
+        message.sender_id = "u1".to_string();
+        repo.save_batch(&[message.clone()]).await.unwrap();
+
+        let applied = repo
+            .apply_pin_event("server-2-persist", true, Some(10))
+            .await
+            .unwrap();
+        assert_eq!(applied, OperationApplyResult::Applied);
+
+        let mut snapshot = message.clone();
+        snapshot.attributes.clear();
+        snapshot.updated_at = 20;
+        repo.save_batch(&[snapshot]).await.unwrap();
+
+        let after_snapshot = repo.get("server-2-persist").await.unwrap().unwrap();
+        assert_eq!(
+            after_snapshot.attributes.get("pinned").map(String::as_str),
+            Some("true")
+        );
+        assert_eq!(
+            after_snapshot
+                .attributes
+                .get("lastPinEventSeq")
+                .map(String::as_str),
+            Some("10")
+        );
+
+        let unapplied = repo
+            .apply_pin_event("server-2-persist", false, Some(11))
+            .await
+            .unwrap();
+        assert_eq!(unapplied, OperationApplyResult::Applied);
+
+        let mut second_snapshot = message;
+        second_snapshot.attributes.clear();
+        second_snapshot.updated_at = 30;
+        repo.save_batch(&[second_snapshot]).await.unwrap();
+
+        let after_unpin_snapshot = repo.get("server-2-persist").await.unwrap().unwrap();
+        assert_eq!(
+            after_unpin_snapshot
+                .attributes
+                .get("pinned")
+                .map(String::as_str),
+            Some("false")
+        );
+        assert_eq!(
+            after_unpin_snapshot
                 .attributes
                 .get("lastPinEventSeq")
                 .map(String::as_str),

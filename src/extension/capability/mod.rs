@@ -8,15 +8,16 @@
 //! 通话相关 `rtc.*` capability_id 与 JSON payload 由 core SDK 维护，并统一走 DATA capability。
 
 pub mod call_event;
-mod isolation;
+mod manifest;
 mod plugin;
 mod registry;
 pub mod rtc_ids;
 
 mod plugins;
 
-pub use isolation::{
-    CORE_RESERVED_CAPABILITY_NAMESPACES, is_reserved_namespace, reserved_namespaces_of_plugin,
+pub use manifest::{
+    SdkPluginEventManifest, SdkPluginManifest, SdkPluginOperationManifest,
+    SdkPluginPermissionManifest, SdkPluginUiKitManifest,
 };
 pub use plugin::SdkCapabilityPlugin;
 pub use registry::SdkCapabilityRegistry;

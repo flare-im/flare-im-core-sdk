@@ -20,6 +20,95 @@ pub enum OperationApplyResult {
     NotFound,
 }
 
+pub(crate) fn message_attribute_seq(attributes: &HashMap<String, String>, key: &str) -> u64 {
+    attributes
+        .get(key)
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(0)
+}
+
+fn preserve_attribute_if_missing(
+    incoming: &mut HashMap<String, String>,
+    existing: &HashMap<String, String>,
+    key: &str,
+) {
+    if incoming.contains_key(key) {
+        return;
+    }
+    if let Some(value) = existing.get(key) {
+        incoming.insert(key.to_string(), value.clone());
+    }
+}
+
+pub(crate) fn merge_message_event_attributes(
+    mut incoming: HashMap<String, String>,
+    existing: HashMap<String, String>,
+) -> HashMap<String, String> {
+    let existing_pin_seq = message_attribute_seq(&existing, "lastPinEventSeq");
+    let incoming_pin_seq = message_attribute_seq(&incoming, "lastPinEventSeq");
+    if existing_pin_seq > incoming_pin_seq {
+        if let Some(pinned) = existing.get("pinned") {
+            incoming.insert("pinned".to_string(), pinned.clone());
+        } else {
+            incoming.remove("pinned");
+        }
+        incoming.insert("lastPinEventSeq".to_string(), existing_pin_seq.to_string());
+    } else {
+        preserve_attribute_if_missing(&mut incoming, &existing, "pinned");
+        preserve_attribute_if_missing(&mut incoming, &existing, "lastPinEventSeq");
+    }
+
+    let existing_mark_seq_keys = existing
+        .keys()
+        .filter(|key| key.starts_with("lastMarkEventSeq:"))
+        .cloned()
+        .collect::<Vec<_>>();
+    for seq_key in existing_mark_seq_keys {
+        let existing_seq = message_attribute_seq(&existing, &seq_key);
+        let incoming_seq = message_attribute_seq(&incoming, &seq_key);
+        if existing_seq > incoming_seq {
+            incoming.insert(seq_key.clone(), existing_seq.to_string());
+            if let Some(mark_type) = existing.get("markType") {
+                incoming.insert("markType".to_string(), mark_type.clone());
+            } else {
+                incoming.remove("markType");
+            }
+            if let Some(mark_color) = existing.get("markColor") {
+                incoming.insert("markColor".to_string(), mark_color.clone());
+            } else {
+                incoming.remove("markColor");
+            }
+        } else {
+            preserve_attribute_if_missing(&mut incoming, &existing, &seq_key);
+        }
+    }
+    preserve_attribute_if_missing(&mut incoming, &existing, "markType");
+    preserve_attribute_if_missing(&mut incoming, &existing, "markColor");
+
+    preserve_attribute_if_missing(&mut incoming, &existing, "reactionsJson");
+    for seq_key in existing
+        .keys()
+        .filter(|key| key.starts_with("lastReactionEventSeq:"))
+        .cloned()
+        .collect::<Vec<_>>()
+    {
+        preserve_attribute_if_missing(&mut incoming, &existing, &seq_key);
+    }
+
+    for seq_key in [
+        "lastRetentionScheduledEventSeq",
+        "lastRetentionExpiredEventSeq",
+        "lastRetentionPurgedEventSeq",
+    ] {
+        preserve_attribute_if_missing(&mut incoming, &existing, seq_key);
+    }
+    preserve_attribute_if_missing(&mut incoming, &existing, "retention_event");
+    preserve_attribute_if_missing(&mut incoming, &existing, "retention_expired_at");
+    preserve_attribute_if_missing(&mut incoming, &existing, "retention_purged_at");
+
+    incoming
+}
+
 /// 消息查询（只读）
 #[async_trait]
 pub trait MessageReader: Send + Sync {
@@ -85,6 +174,13 @@ pub trait MessageWriter: Send + Sync {
     /// 更新消息正文；`Ok(true)` 表示至少更新了一行（`server_id` 或 `client_msg_id` 命中）。
     async fn update_content(&self, message_id: &str, new_content: Vec<u8>) -> Result<bool>;
     async fn delete(&self, message_id: &str) -> Result<()>;
+
+    /// 将本地存量消息从错误会话 ID 迁移到规范会话 ID。
+    async fn rewrite_conversation_id(
+        &self,
+        from_conversation_id: &str,
+        to_conversation_id: &str,
+    ) -> Result<u64>;
 
     /// 发送 ACK 后更新：删除以 client_msg_id 为 server_id 的乐观写入行，再写入带 server_msg_id/seq 的终态消息（原子化，保证主键从 client_msg_id 迁移到 server_msg_id）
     async fn update_after_ack(&self, client_msg_id: &str, message: &IMMessage) -> Result<()>;

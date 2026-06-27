@@ -1,0 +1,10 @@
+import CFlareImCoreSdkFFI
+
+public typealias FlareHandle = CFlareImCoreSdkFFI.FlareHandle
+public typealias FlareSubscriptionHandle = CFlareImCoreSdkFFI.FlareSubscriptionHandle
+public typealias FlareString = CFlareImCoreSdkFFI.FlareString
+public typealias FlareBytesView = CFlareImCoreSdkFFI.FlareBytesView
+public typealias FlareError = CFlareImCoreSdkFFI.FlareError
+public typealias FlareResultCallback = CFlareImCoreSdkFFI.FlareResultCallback
+public typealias FlareEventCallback = CFlareImCoreSdkFFI.FlareEventCallback
+public typealias FlareEventBatchCallback = CFlareImCoreSdkFFI.FlareEventBatchCallback

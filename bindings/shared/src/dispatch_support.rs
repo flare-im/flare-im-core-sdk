@@ -11,12 +11,41 @@ use flare_im_core_sdk::client::HeartbeatAppState;
 use flare_im_core_sdk::client::api::{
     CreateLocationRequest, CreateRichDocRequest, CreateStickerRequest, EditRichDocRequest,
 };
-use flare_im_core_sdk::model::content_builder::BuiltContent;
+use flare_im_core_sdk::content::content_builder::BuiltContent;
+use flare_im_core_sdk::content::message_elem::{Elem, elem_to_message_content};
 use flare_im_core_sdk::model::conversation::ConversationType;
 use flare_im_core_sdk::model::media::UploadOptions;
 use flare_im_core_sdk::model::message::{IMMessage, MarkType, SendAck};
-use flare_im_core_sdk::model::message_elem::{Elem, elem_to_message_content};
-use flare_proto::common::MessageType;
+#[cfg(not(target_arch = "wasm32"))]
+use flare_im_core_sdk::{ErrorCode, FlareError};
+use flare_proto::common::{ImageFormat, ImageInfo, MessageType};
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ImageGroupBuildItem {
+    image_id: String,
+    #[serde(default)]
+    url: Option<String>,
+    #[serde(default)]
+    mime_type: Option<String>,
+    #[serde(default)]
+    size: Option<i64>,
+    #[serde(default)]
+    width: Option<i32>,
+    #[serde(default)]
+    height: Option<i32>,
+    #[serde(default)]
+    format: Option<i32>,
+    #[serde(default)]
+    animated: Option<bool>,
+    #[serde(default)]
+    blurhash: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct DispatchOperationRequest {
+    op: String,
+}
 
 pub fn json<T: serde::Serialize>(value: T) -> Result<BindingResponse> {
     serde_json::to_value(value)
@@ -26,7 +55,38 @@ pub fn json<T: serde::Serialize>(value: T) -> Result<BindingResponse> {
         })
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+pub async fn run_cpu_bound<T, F>(label: &'static str, work: F) -> Result<T>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T> + Send + 'static,
+{
+    tokio::task::spawn_blocking(work).await.map_err(|error| {
+        FlareError::localized(
+            ErrorCode::InternalError,
+            format!("{label} blocking worker failed: {error}"),
+        )
+    })?
+}
+
+#[cfg(target_arch = "wasm32")]
+pub async fn run_cpu_bound<T, F>(_label: &'static str, work: F) -> Result<T>
+where
+    F: FnOnce() -> Result<T>,
+{
+    work()
+}
+
+fn canonical_send_ack_id(ack: &SendAck) -> &str {
+    ack.ack_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(ack.client_msg_id.as_str())
+}
+
 pub fn json_send_ack(ack: SendAck) -> Result<BindingResponse> {
+    let ack_id = canonical_send_ack_id(&ack).to_string();
     let (server_msg_id, seq, timestamp, success, error_code, error_message) =
         match ack.result.as_ref() {
             Some(flare_proto::common::send_ack::Result::Accepted(accepted)) => (
@@ -59,7 +119,7 @@ pub fn json_send_ack(ack: SendAck) -> Result<BindingResponse> {
         "serverId": server_msg_id,
         "seq": seq,
         "conversationId": ack.conversation_id,
-        "ackId": ack.ack_id,
+        "ackId": ack_id,
         "timestamp": timestamp,
         "success": success,
         "errorCode": error_code,
@@ -111,7 +171,10 @@ pub fn optional_string_any(value: &Value, keys: &[&str]) -> Option<String> {
 pub fn json_u64(value: &Value, key: &str) -> Result<u64> {
     value
         .get(key)
-        .and_then(|x| x.as_u64().or_else(|| x.as_i64().map(|i| i as u64)))
+        .and_then(|x| {
+            x.as_u64()
+                .or_else(|| x.as_i64().and_then(|i| u64::try_from(i).ok()))
+        })
         .ok_or_else(|| binding_invalid_parameter(format!("missing or invalid JSON field: {key}")))
 }
 
@@ -126,7 +189,7 @@ pub fn json_i32(value: &Value, key: &str) -> Result<i32> {
     value
         .get(key)
         .and_then(Value::as_i64)
-        .map(|i| i as i32)
+        .and_then(|i| i32::try_from(i).ok())
         .ok_or_else(|| binding_invalid_parameter(format!("missing or invalid JSON field: {key}")))
 }
 
@@ -144,8 +207,16 @@ pub fn json_bool(value: &Value, key: &str) -> Result<bool> {
         .ok_or_else(|| binding_invalid_parameter(format!("missing or invalid JSON field: {key}")))
 }
 
-pub fn optional_bool(value: &Value, key: &str) -> Option<bool> {
-    value.get(key).and_then(Value::as_bool)
+pub fn optional_bool(value: &Value, key: &str) -> Result<Option<bool>> {
+    let Some(raw) = value.get(key) else {
+        return Ok(None);
+    };
+    if raw.is_null() {
+        return Ok(None);
+    }
+    raw.as_bool()
+        .map(Some)
+        .ok_or_else(|| binding_invalid_parameter(format!("invalid JSON bool field: {key}")))
 }
 
 pub fn optional_upload_options(value: &Value, key: &str) -> Result<Option<UploadOptions>> {
@@ -204,6 +275,95 @@ pub fn json_vec_message(value: &Value, key: &str) -> Result<Vec<IMMessage>> {
     arr.iter().map(|v| from_value(v.clone(), key)).collect()
 }
 
+fn non_negative_i64(value: Option<i64>, label: &str) -> Result<i64> {
+    match value {
+        Some(v) if v < 0 => Err(binding_invalid_parameter(format!(
+            "{label} must be greater than or equal to zero"
+        ))),
+        Some(v) => Ok(v),
+        None => Ok(0),
+    }
+}
+
+fn non_negative_i32(value: Option<i32>, label: &str) -> Result<i32> {
+    match value {
+        Some(v) if v < 0 => Err(binding_invalid_parameter(format!(
+            "{label} must be greater than or equal to zero"
+        ))),
+        Some(v) => Ok(v),
+        None => Ok(0),
+    }
+}
+
+fn image_format_or_default(value: Option<i32>) -> Result<i32> {
+    let format = value.unwrap_or(ImageFormat::Unspecified as i32);
+    ImageFormat::try_from(format).map(|_| format).map_err(|_| {
+        binding_invalid_parameter(format!("invalid payload.images[].format: {format}"))
+    })
+}
+
+pub fn image_group_images(value: &Value) -> Result<Vec<ImageInfo>> {
+    let payload = value.get("payload").ok_or_else(|| {
+        binding_invalid_parameter("missing payload for image group message build")
+    })?;
+    let items = payload
+        .get("images")
+        .cloned()
+        .ok_or_else(|| binding_invalid_parameter("missing payload.images for image group"))?;
+    let items: Vec<ImageGroupBuildItem> = from_value(items, "payload.images")?;
+    items
+        .into_iter()
+        .map(|item| {
+            let image_id = item.image_id.trim().to_string();
+            if image_id.is_empty() {
+                return Err(binding_invalid_parameter(
+                    "payload.images[].imageId must not be empty",
+                ));
+            }
+            Ok(ImageInfo {
+                uuid: image_id.clone(),
+                image_id,
+                url: item.url.unwrap_or_default(),
+                mime_type: item.mime_type.unwrap_or_default(),
+                size: non_negative_i64(item.size, "payload.images[].size")?,
+                width: non_negative_i32(item.width, "payload.images[].width")?,
+                height: non_negative_i32(item.height, "payload.images[].height")?,
+                format: image_format_or_default(item.format)?,
+                animated: item.animated.unwrap_or_default(),
+                blurhash: item.blurhash.unwrap_or_default(),
+            })
+        })
+        .collect()
+}
+
+pub fn image_group_description(value: &Value) -> String {
+    value
+        .get("payload")
+        .and_then(|payload| {
+            payload
+                .get("description")
+                .or_else(|| payload.get("title"))
+                .and_then(Value::as_str)
+        })
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .unwrap_or_default()
+        .to_string()
+}
+
+pub fn image_group_metadata(value: &Value) -> Result<HashMap<String, String>> {
+    let Some(payload) = value.get("payload") else {
+        return Ok(HashMap::new());
+    };
+    payload
+        .get("metadata")
+        .or_else(|| payload.get("attributes"))
+        .cloned()
+        .map(|metadata| from_value(metadata, "payload.metadata"))
+        .transpose()
+        .map(|metadata| metadata.unwrap_or_default())
+}
+
 pub fn optional_value<T: for<'de> Deserialize<'de>>(value: &Value, key: &str) -> Result<Option<T>> {
     value
         .get(key)
@@ -212,18 +372,43 @@ pub fn optional_value<T: for<'de> Deserialize<'de>>(value: &Value, key: &str) ->
         .transpose()
 }
 
-pub fn optional_u32(value: &Value, key: &str) -> Option<u32> {
-    value
-        .get(key)
-        .and_then(Value::as_u64)
+pub fn optional_u32(value: &Value, key: &str) -> Result<Option<u32>> {
+    let Some(raw) = value.get(key) else {
+        return Ok(None);
+    };
+    if raw.is_null() {
+        return Ok(None);
+    }
+    raw.as_u64()
         .and_then(|v| u32::try_from(v).ok())
+        .map(Some)
+        .ok_or_else(|| binding_invalid_parameter(format!("invalid JSON u32 field: {key}")))
 }
 
-pub fn optional_i32(value: &Value, key: &str) -> Option<i32> {
-    value
-        .get(key)
-        .and_then(Value::as_i64)
+pub fn optional_i32(value: &Value, key: &str) -> Result<Option<i32>> {
+    let Some(raw) = value.get(key) else {
+        return Ok(None);
+    };
+    if raw.is_null() {
+        return Ok(None);
+    }
+    raw.as_i64()
         .and_then(|v| i32::try_from(v).ok())
+        .map(Some)
+        .ok_or_else(|| binding_invalid_parameter(format!("invalid JSON i32 field: {key}")))
+}
+
+fn optional_u8_strict(value: &Value, key: &str) -> Result<Option<u8>> {
+    let Some(raw) = value.get(key) else {
+        return Ok(None);
+    };
+    if raw.is_null() {
+        return Ok(None);
+    }
+    raw.as_u64()
+        .and_then(|v| u8::try_from(v).ok())
+        .map(Some)
+        .ok_or_else(|| binding_invalid_parameter(format!("invalid JSON u8 field: {key}")))
 }
 
 pub fn heartbeat_app_state(value: &Value, key: &str) -> Result<HeartbeatAppState> {
@@ -257,20 +442,65 @@ pub fn heartbeat_app_state(value: &Value, key: &str) -> Result<HeartbeatAppState
 }
 
 pub fn message_from_params(params: &Value) -> Result<IMMessage> {
-    serde_json::from_value(params.clone())
-        .or_else(|_| {
-            params
-                .get("message")
-                .cloned()
-                .ok_or_else(|| serde_json::Error::io(std::io::Error::other("missing message")))
-                .and_then(serde_json::from_value)
-        })
-        .map_err(|_| binding_invalid_parameter("missing or invalid JSON message"))
+    match serde_json::from_value(params.clone()) {
+        Ok(message) => Ok(message),
+        Err(top_level_error) => {
+            let Some(message_value) = params.get("message").cloned() else {
+                return Err(binding_invalid_parameter(format!(
+                    "missing or invalid JSON message: {top_level_error}; missing message"
+                )));
+            };
+            serde_json::from_value(message_value).map_err(|wrapped_error| {
+                binding_invalid_parameter(format!(
+                    "missing or invalid JSON message: {wrapped_error}; wrapper: {top_level_error}"
+                ))
+            })
+        }
+    }
+}
+
+pub fn message_from_json_str(params_json: &str) -> Result<IMMessage> {
+    match serde_json::from_str(params_json) {
+        Ok(message) => Ok(message),
+        Err(top_level_error) => {
+            let params = serde_json::from_str::<Value>(params_json).map_err(|params_error| {
+                binding_invalid_parameter(format!(
+                    "missing or invalid JSON message: {top_level_error}; invalid params JSON: {params_error}"
+                ))
+            })?;
+            let Some(message_value) = params.get("message").cloned() else {
+                return Err(binding_invalid_parameter(format!(
+                    "missing or invalid JSON message: {top_level_error}; missing message"
+                )));
+            };
+            serde_json::from_value(message_value).map_err(|wrapped_error| {
+                binding_invalid_parameter(format!(
+                    "missing or invalid JSON message: {wrapped_error}; wrapper: {top_level_error}"
+                ))
+            })
+        }
+    }
 }
 
 pub fn from_value<T: for<'de> Deserialize<'de>>(value: Value, label: &str) -> Result<T> {
     serde_json::from_value(value)
         .map_err(|e| binding_invalid_parameter(format!("invalid {label}: {e}")))
+}
+
+pub fn from_json_str<T: for<'de> Deserialize<'de>>(json: &str, label: &str) -> Result<T> {
+    serde_json::from_str(json)
+        .map_err(|e| binding_invalid_parameter(format!("invalid {label}: {e}")))
+}
+
+pub fn dispatch_params_from_json(json: &str) -> Result<Value> {
+    serde_json::from_str(json)
+        .map_err(|e| binding_invalid_parameter(format!("invalid dispatch params JSON: {e}")))
+}
+
+pub fn dispatch_operation_from_json(json: &str) -> Result<String> {
+    serde_json::from_str::<DispatchOperationRequest>(json)
+        .map(|request| request.op)
+        .map_err(|e| binding_invalid_parameter(format!("invalid dispatch op: {e}")))
 }
 
 pub fn parse_mark_type(value: i32) -> MarkType {
@@ -289,7 +519,9 @@ pub fn conversation_type(value: &Value) -> Result<ConversationType> {
         ));
     };
     if let Some(v) = raw.as_i64() {
-        return Ok(ConversationType::from_proto_int(v as i32));
+        return i32::try_from(v)
+            .map(ConversationType::from_proto_int)
+            .map_err(|_| binding_invalid_parameter("invalid conversationType enum index"));
     }
     if let Some(v) = raw.as_str() {
         return Ok(ConversationType::from(v));
@@ -344,10 +576,7 @@ pub fn build_create_location_request(params: Value) -> Result<CreateLocationRequ
         latitude: json_f64(&params, "latitude")?,
         address: optional_string(&params, "address").unwrap_or_default(),
         title: optional_string(&params, "title").unwrap_or_default(),
-        zoom: params
-            .get("zoom")
-            .and_then(Value::as_u64)
-            .map(|z| z.min(255) as u8),
+        zoom: optional_u8_strict(&params, "zoom")?,
         snapshot_url: optional_string(&params, "snapshotUrl"),
         snapshot_local_path: optional_string(&params, "snapshotLocalPath"),
     })
@@ -359,14 +588,8 @@ pub fn build_create_sticker_request(params: Value) -> Result<CreateStickerReques
         sticker_id: json_string(&params, "stickerId")?,
         package_id: optional_string(&params, "packageId"),
         url: optional_string(&params, "url"),
-        width: params
-            .get("width")
-            .and_then(Value::as_i64)
-            .map(|i| i as i32),
-        height: params
-            .get("height")
-            .and_then(Value::as_i64)
-            .map(|i| i as i32),
+        width: optional_i32(&params, "width")?,
+        height: optional_i32(&params, "height")?,
         sticker_format: optional_string(&params, "stickerFormat"),
     })
 }
@@ -438,7 +661,50 @@ impl From<CreateRichDocJson> for CreateRichDocRequest {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use flare_im_core_sdk::model::{
+        CloseViewRequest, CloseViewResponse, ConversationTimelineSnapshot, Elem,
+        HomeTimelineSnapshot, IMMessage, LoadOlderTimelineViewRequest,
+        OpenConversationListViewRequest, OpenTimelineViewRequest, ViewLoadOlderResponse,
+        ViewOpenResponse, ViewUpdate,
+    };
+    use serde::de::DeserializeOwned;
     use serde_json::json;
+
+    fn assert_binding_wire_type<T>()
+    where
+        T: serde::Serialize + DeserializeOwned,
+    {
+    }
+
+    #[test]
+    fn core_sdk_binding_wire_types_implement_canonical_serde_contract() {
+        assert_binding_wire_type::<IMMessage>();
+        assert_binding_wire_type::<Elem>();
+        assert_binding_wire_type::<OpenTimelineViewRequest>();
+        assert_binding_wire_type::<LoadOlderTimelineViewRequest>();
+        assert_binding_wire_type::<OpenConversationListViewRequest>();
+        assert_binding_wire_type::<CloseViewRequest>();
+        assert_binding_wire_type::<HomeTimelineSnapshot>();
+        assert_binding_wire_type::<ConversationTimelineSnapshot>();
+        assert_binding_wire_type::<ViewOpenResponse>();
+        assert_binding_wire_type::<ViewLoadOlderResponse>();
+        assert_binding_wire_type::<ViewUpdate>();
+        assert_binding_wire_type::<CloseViewResponse>();
+    }
+
+    #[test]
+    fn send_ack_response_uses_client_msg_id_when_ack_id_is_absent() {
+        let response = json_send_ack(SendAck {
+            client_msg_id: "client-1".to_string(),
+            conversation_id: "conversation-1".to_string(),
+            ack_id: None,
+            result: None,
+        })
+        .expect("send ack JSON should serialize");
+
+        assert_eq!(response.payload["ackId"], "client-1");
+        assert_ne!(response.payload["ackId"], serde_json::Value::Null);
+    }
 
     #[test]
     fn heartbeat_app_state_accepts_string_wire_values() {
@@ -467,5 +733,126 @@ mod tests {
         assert!(heartbeat_app_state(&json!({ "appState": "inactive" }), "appState").is_err());
         assert!(heartbeat_app_state(&json!({ "appState": 2 }), "appState").is_err());
         assert!(heartbeat_app_state(&json!({ "appState": true }), "appState").is_err());
+    }
+
+    #[test]
+    fn json_u64_rejects_negative_numbers() {
+        let input = json!({ "readSeq": -1 });
+
+        assert!(json_u64(&input, "readSeq").is_err());
+    }
+
+    #[test]
+    fn json_u64_accepts_valid_unsigned_numbers() {
+        let input = json!({ "readSeq": 42 });
+
+        assert_eq!(json_u64(&input, "readSeq").unwrap(), 42);
+    }
+
+    #[test]
+    fn json_i32_rejects_out_of_range_numbers() {
+        let too_large = json!({ "markType": i64::from(i32::MAX) + 1 });
+        let too_small = json!({ "markType": i64::from(i32::MIN) - 1 });
+
+        assert!(json_i32(&too_large, "markType").is_err());
+        assert!(json_i32(&too_small, "markType").is_err());
+    }
+
+    #[test]
+    fn json_i32_accepts_valid_signed_numbers() {
+        let input = json!({ "markType": -1 });
+
+        assert_eq!(json_i32(&input, "markType").unwrap(), -1);
+    }
+
+    #[test]
+    fn conversation_type_rejects_out_of_range_enum_index() {
+        let input = json!({ "conversationType": i64::from(i32::MAX) + 1 });
+
+        assert!(conversation_type(&input).is_err());
+    }
+
+    #[test]
+    fn build_create_location_request_rejects_out_of_range_zoom() {
+        let input = json!({
+            "conversationId": "conv-1",
+            "longitude": 120.0,
+            "latitude": 30.0,
+            "zoom": 256,
+        });
+
+        assert!(build_create_location_request(input).is_err());
+    }
+
+    #[test]
+    fn build_create_sticker_request_rejects_out_of_range_dimensions() {
+        let input = json!({
+            "conversationId": "conv-1",
+            "stickerId": "sticker-1",
+            "width": i64::from(i32::MAX) + 1,
+        });
+
+        assert!(build_create_sticker_request(input).is_err());
+    }
+
+    #[test]
+    fn optional_u32_rejects_invalid_present_value() {
+        let input = json!({ "limit": -1 });
+
+        assert!(optional_u32(&input, "limit").is_err());
+    }
+
+    #[test]
+    fn optional_bool_rejects_invalid_present_value() {
+        let input = json!({ "merge": "false" });
+
+        assert!(optional_bool(&input, "merge").is_err());
+    }
+
+    #[test]
+    fn image_group_images_rejects_unknown_format() {
+        let input = json!({
+            "payload": {
+                "images": [{
+                    "imageId": "img-1",
+                    "format": 9999
+                }]
+            }
+        });
+
+        assert!(image_group_images(&input).is_err());
+    }
+
+    #[test]
+    fn image_group_images_rejects_negative_dimensions_and_size() {
+        for image in [
+            json!({ "imageId": "img-1", "size": -1 }),
+            json!({ "imageId": "img-1", "width": -1 }),
+            json!({ "imageId": "img-1", "height": -1 }),
+        ] {
+            let input = json!({ "payload": { "images": [image] } });
+            assert!(image_group_images(&input).is_err());
+        }
+    }
+
+    #[test]
+    fn image_group_images_accepts_valid_image_metadata() {
+        let input = json!({
+            "payload": {
+                "images": [{
+                    "imageId": "img-1",
+                    "size": 123,
+                    "width": 640,
+                    "height": 480,
+                    "format": ImageFormat::Png as i32,
+                    "animated": false
+                }]
+            }
+        });
+
+        let images = image_group_images(&input).unwrap();
+        assert_eq!(images.len(), 1);
+        assert_eq!(images[0].image_id, "img-1");
+        assert_eq!(images[0].format, ImageFormat::Png as i32);
     }
 }

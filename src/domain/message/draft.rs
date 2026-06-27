@@ -16,7 +16,7 @@ impl Default for MessageDraftService {
 }
 
 impl MessageDraftService {
-    pub fn prepare_outbound_message(
+    pub fn prepare_outbound_identity(
         &self,
         actor: &MessageActor,
         mut message: IMMessage,
@@ -39,7 +39,20 @@ impl MessageDraftService {
         if message.client_created_at == 0 {
             message.client_created_at = message.created_at;
         }
-        self.content_policy.validate_outbound_message(&message)?;
+        Ok(message)
+    }
+
+    pub fn validate_outbound_message(&self, message: &IMMessage) -> Result<()> {
+        self.content_policy.validate_outbound_message(message)
+    }
+
+    pub fn prepare_outbound_message(
+        &self,
+        actor: &MessageActor,
+        message: IMMessage,
+    ) -> Result<IMMessage> {
+        let message = self.prepare_outbound_identity(actor, message)?;
+        self.validate_outbound_message(&message)?;
         Ok(message)
     }
 }

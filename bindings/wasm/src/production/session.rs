@@ -1,6 +1,5 @@
 //! Production wasm session — mirrors Tauri `SdkState`.
 
-use std::future::Future;
 use std::sync::Arc;
 
 use flare_im_core_sdk::Result;
@@ -85,30 +84,28 @@ impl InvokeSession for WasmSdkState {
         self.client.clone()
     }
 
-    fn message_api(&self) -> impl Future<Output = Result<MessageApi>> + Send {
-        async move { WasmSdkState::message_api(self).await }
+    async fn message_api(&self) -> Result<MessageApi> {
+        WasmSdkState::message_api(self).await
     }
 
-    fn message_build_api(&self) -> impl Future<Output = Result<Arc<MessageBuildApi>>> + Send {
-        async move { WasmSdkState::message_build_api(self).await }
+    async fn message_build_api(&self) -> Result<Arc<MessageBuildApi>> {
+        WasmSdkState::message_build_api(self).await
     }
 
-    fn conversation_api(&self) -> impl Future<Output = Result<ConversationApi>> + Send {
-        async move { WasmSdkState::conversation_api(self).await }
+    async fn conversation_api(&self) -> Result<ConversationApi> {
+        WasmSdkState::conversation_api(self).await
     }
 
-    fn media_api(&self) -> impl Future<Output = Result<Arc<MediaApi>>> + Send {
-        async move { WasmSdkState::media_api(self).await }
+    async fn media_api(&self) -> Result<Arc<MediaApi>> {
+        WasmSdkState::media_api(self).await
     }
 
-    fn capability_api(&self) -> impl Future<Output = Result<Arc<CapabilityApi>>> + Send {
-        async move { WasmSdkState::capability_api(self).await }
+    async fn capability_api(&self) -> Result<Arc<CapabilityApi>> {
+        WasmSdkState::capability_api(self).await
     }
 
-    fn after_disconnect(&self) -> impl Future<Output = ()> + Send {
-        async move {
-            WasmSdkState::clear_session(self).await;
-        }
+    async fn after_disconnect(&self) {
+        WasmSdkState::clear_session(self).await;
     }
 }
 

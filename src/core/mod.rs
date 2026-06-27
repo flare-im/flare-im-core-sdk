@@ -1,34 +1,22 @@
-//! 核心引擎层
+//! Legacy crate-internal core facade.
 //!
-//! 架构：`API → Command/Query → EventBus → (Connection | Sync | Message) → FSM → Repository → Storage → Network`
+//! Real implementations live in `kernel/` and `runtime/`. This module keeps
+//! the old crate-internal paths stable while T-09 removes the historical
+//! `core -> application` ownership cycle.
 //!
-//! - **状态集中**：状态仅在 FSM 与 Actor 中（Connection FSM、Sync FSM、ReliableQueue 消息状态）
-//! - **通信事件化**：模块间只通过 EventBus 通信，Dispatcher 仅做 Packet → Event 路由
-//! - **单一职责**：SyncManager 只负责同步；消息/会话 API 直接委托 application usecases，`SyncProtocolAdapter` 仅作协议适配
+//! New code should import from `crate::kernel` or `crate::runtime` according to
+//! ownership.
 
-mod dispatcher;
-mod engine;
-pub mod event;
-mod fsm;
-mod reliable_queue;
-mod sync;
+pub mod event {
+    pub use crate::kernel::event::*;
+}
 
-pub use dispatcher::Dispatcher;
-pub(crate) use engine::SdkEngineConfig;
-pub use engine::{SdkEngine, SdkState};
-pub use fsm::{
-    ConnectionEvent, ConnectionFsm, ConnectionState, MessageState, MessageStateEvent,
-    MessageStateFsm, SyncFsm, SyncState, SyncTransition,
+pub use crate::kernel::{
+    ConnectionEvent, ConnectionFsm, ConnectionState, ConversationSummarySync, CurrentUserIdStore,
+    MessageState, MessageStateEvent, MessageStateFsm, SessionSyncRunner, SyncContext,
+    SyncFailurePolicy, SyncFsm, SyncManager, SyncMode, SyncPhase, SyncProgress, SyncReason,
+    SyncResponseHandler, SyncResult, SyncRunContext, SyncScope, SyncState, SyncTask,
+    SyncTaskResult, SyncTransition, SyncTrigger, SyncVisibility,
 };
-pub(crate) use reliable_queue::{ReliableSendQueue, ReliableSendQueueConfig};
-pub use sync::{
-    ConversationSummarySync, SessionSyncRunner, SyncContext, SyncFailurePolicy, SyncManager,
-    SyncMode, SyncPhase, SyncProgress, SyncReason, SyncResponseHandler, SyncResult, SyncRunContext,
-    SyncScope, SyncTask, SyncTaskResult, SyncTrigger, SyncVisibility,
-};
-
-use std::sync::Arc;
-use tokio::sync::RwLock;
-
-/// 当前用户 ID 存储（连接后由引擎写入）
-pub type CurrentUserIdStore = Arc<RwLock<String>>;
+pub use crate::runtime::{Dispatcher, SdkEngine, SdkState};
+pub(crate) use crate::runtime::{ReliableSendQueue, ReliableSendQueueConfig, SdkEngineConfig};

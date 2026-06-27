@@ -18,6 +18,7 @@ mod session;
 pub mod types;
 
 pub use types::{
-    FlareBytes, FlareBytesView, FlareError, FlareEventCallback, FlareHandle, FlareProgressCallback,
-    FlareResultCallback, FlareString, FlareStringView, FlareSubscriptionHandle, FlareTaskHandle,
+    FlareBytes, FlareBytesView, FlareError, FlareEventBatchCallback, FlareEventCallback,
+    FlareHandle, FlareProgressCallback, FlareResultCallback, FlareString, FlareStringView,
+    FlareSubscriptionHandle, FlareTaskHandle,
 };

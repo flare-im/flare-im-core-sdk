@@ -16,6 +16,7 @@ pub use media_cache_repository::MediaCacheStore;
 pub use message_repository::{
     EditApplyResult, MessageReader, MessageStore, MessageWriter, OperationApplyResult,
 };
+pub(crate) use message_repository::{merge_message_event_attributes, message_attribute_seq};
 pub use pending_send_repository::{PendingSendReader, PendingSendWriter};
 pub use sync_cursor_repository::{SyncCursorReader, SyncCursorStore, SyncCursorWriter};
 pub use upload_manifest_repository::UploadManifestStore;

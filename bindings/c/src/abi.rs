@@ -143,3 +143,29 @@ pub fn catch_ffi_flare_string(f: impl FnOnce() -> FlareString) -> FlareString {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn catch_ffi_i32_converts_panic_to_stable_error_code() {
+        let code = catch_ffi_i32(|| panic!("injected FFI panic"));
+
+        assert_eq!(code, FLARE_ERR_FFI_PANIC);
+    }
+
+    #[test]
+    fn catch_ffi_return_guards_convert_panic_to_safe_defaults() {
+        assert!(!catch_ffi_bool(|| panic!("injected bool FFI panic")));
+        assert_eq!(catch_ffi_handle(|| panic!("injected handle FFI panic")), 0);
+        assert_eq!(
+            catch_ffi_subscription_handle(|| panic!("injected subscription FFI panic")),
+            0
+        );
+
+        let value = catch_ffi_flare_string(|| panic!("injected string FFI panic"));
+        assert!(value.ptr.is_null());
+        assert_eq!(value.len, 0);
+    }
+}

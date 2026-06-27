@@ -208,6 +208,26 @@ impl MessageWriter for MemoryMessageStore {
         Ok(())
     }
 
+    async fn rewrite_conversation_id(
+        &self,
+        from_conversation_id: &str,
+        to_conversation_id: &str,
+    ) -> Result<u64> {
+        let from = from_conversation_id.trim();
+        let to = to_conversation_id.trim();
+        if from.is_empty() || to.is_empty() || from == to {
+            return Ok(0);
+        }
+        let mut count = 0;
+        for msg in self.data.write().await.values_mut() {
+            if msg.conversation_id == from {
+                msg.conversation_id = to.to_string();
+                count += 1;
+            }
+        }
+        Ok(count)
+    }
+
     async fn update_after_ack(&self, client_msg_id: &str, message: &IMMessage) -> Result<()> {
         let mut data = self.data.write().await;
         data.remove(client_msg_id);
@@ -349,6 +369,25 @@ impl ConversationWriter for MemoryConversationStore {
     async fn delete(&self, conversation_id: &str) -> Result<()> {
         let mut data = self.data.write().await;
         data.remove(conversation_id);
+        Ok(())
+    }
+
+    async fn merge_conversation_identity(
+        &self,
+        from_conversation_id: &str,
+        to_conversation_id: &str,
+    ) -> Result<()> {
+        let from = from_conversation_id.trim();
+        let to = to_conversation_id.trim();
+        if from.is_empty() || to.is_empty() || from == to {
+            return Ok(());
+        }
+        let mut data = self.data.write().await;
+        let Some(mut source) = data.remove(from) else {
+            return Ok(());
+        };
+        source.conversation_id = to.to_string();
+        data.entry(to.to_string()).or_insert(source);
         Ok(())
     }
 

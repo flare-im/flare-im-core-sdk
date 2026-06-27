@@ -69,6 +69,28 @@ pub async fn fetch_bytes(
     context_headers: HashMap<String, String>,
     extra_headers: Option<&HashMap<String, String>>,
 ) -> Result<Vec<u8>> {
+    let (bytes, _) = fetch_bytes_with_headers(
+        method,
+        url,
+        query,
+        body,
+        content_type,
+        context_headers,
+        extra_headers,
+    )
+    .await?;
+    Ok(bytes)
+}
+
+pub async fn fetch_bytes_with_headers(
+    method: &str,
+    url: String,
+    query: Option<&HashMap<String, String>>,
+    body: Option<Vec<u8>>,
+    content_type: Option<&str>,
+    context_headers: HashMap<String, String>,
+    extra_headers: Option<&HashMap<String, String>>,
+) -> Result<(Vec<u8>, HashMap<String, String>)> {
     let url = append_query(url, query);
     let window =
         web_sys::window().ok_or_else(|| FlareError::system("browser window unavailable"))?;
@@ -94,7 +116,7 @@ pub async fn fetch_bytes(
         .map_err(|e| FlareError::system(format!("http request init failed: {e:?}")))?;
     let resp_value = JsFuture::from(window.fetch_with_request(&request))
         .await
-        .map_err(|e| FlareError::system(format!("http fetch failed: {e:?}")))?;
+        .map_err(|e| FlareError::system(format!("http fetch failed: {method} {url}: {e:?}")))?;
     let resp: Response = resp_value
         .dyn_into()
         .map_err(|e| FlareError::system(format!("http response cast failed: {e:?}")))?;
@@ -110,6 +132,7 @@ pub async fn fetch_bytes(
         .unwrap_or_default();
         return Err(http_error_from_response_status(status, &body));
     }
+    let response_headers = collect_response_headers(resp.headers())?;
     let buffer = JsFuture::from(
         resp.array_buffer()
             .map_err(|e| FlareError::system(format!("http read body failed: {e:?}")))?,
@@ -117,7 +140,29 @@ pub async fn fetch_bytes(
     .await
     .map_err(|e| FlareError::system(format!("http read body failed: {e:?}")))?;
     let array = Uint8Array::new(&buffer);
-    Ok(array.to_vec())
+    Ok((array.to_vec(), response_headers))
+}
+
+fn collect_response_headers(headers: Headers) -> Result<HashMap<String, String>> {
+    let mut out = HashMap::new();
+    let iterator = js_sys::try_iter(headers.as_ref())
+        .map_err(|e| FlareError::system(format!("http response headers iter failed: {e:?}")))?
+        .ok_or_else(|| FlareError::system("http response headers are not iterable"))?;
+    for item in iterator {
+        let entry = item
+            .map_err(|e| FlareError::system(format!("http response header item failed: {e:?}")))?;
+        let pair = js_sys::Array::from(&entry);
+        if pair.length() < 2 {
+            continue;
+        }
+        let key = pair.get(0).as_string().unwrap_or_default();
+        if key.is_empty() {
+            continue;
+        }
+        let value = pair.get(1).as_string().unwrap_or_default();
+        out.insert(key, value);
+    }
+    Ok(out)
 }
 
 pub async fn fetch_json<T>(

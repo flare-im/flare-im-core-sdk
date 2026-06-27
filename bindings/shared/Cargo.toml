@@ -17,7 +17,12 @@ flare-proto = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+tokio = { workspace = true }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+tokio = { version = "1", default-features = false, features = ["macros", "rt", "sync", "time"] }
+
 [features]
 default = []
 dev-test-token = ["flare-im-core-sdk/dev-test-token"]
-plugin-call = ["flare-im-core-sdk/plugin-call"]

@@ -10,9 +10,7 @@
       "symbol": "flare_sdk_disconnect",
       "api_id": "connection.disconnect",
       "kind": "invoke_unit",
-      "args": [
-
-      ]
+      "args": []
     },
     {
       "symbol": "flare_sdk_sync_conversation",
@@ -41,37 +39,6 @@
         {
           "name": "limit",
           "type": "i32"
-        }
-      ]
-    },
-    {
-      "symbol": "flare_sdk_mark_session_read",
-      "api_id": "sync.mark_session_read",
-      "kind": "invoke_unit",
-      "args": [
-        {
-          "name": "conversation_id",
-          "type": "c_str"
-        },
-        {
-          "name": "read_seq",
-          "type": "u64"
-        }
-      ]
-    },
-    {
-      "symbol": "flare_sdk_set_conversation_input_state",
-      "api_id": "message.typing",
-      "kind": "invoke_unit",
-      "args": [
-        {
-          "name": "conversation_id",
-          "type": "c_str"
-        },
-        {
-          "name": "is_typing",
-          "type": "bool",
-          "json_key": "typing"
         }
       ]
     },
@@ -275,7 +242,7 @@
     {
       "symbol": "flare_media_cancel_user_file_download",
       "api_id": "media.cancel_user_file_download",
-      "kind": "sync_bool_invoke",
+      "kind": "invoke_json",
       "args": [
         {
           "name": "download_key",

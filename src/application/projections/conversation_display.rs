@@ -187,6 +187,8 @@ pub fn resolve_display_name(
         ConversationType::System => "系统通知",
         ConversationType::Customer => "客服",
         ConversationType::Temp => "临时会话",
+        ConversationType::Channel => "频道",
+        ConversationType::Broadcast => "广播",
         ConversationType::Single | ConversationType::Unspecified => "单聊",
     }
     .to_string()

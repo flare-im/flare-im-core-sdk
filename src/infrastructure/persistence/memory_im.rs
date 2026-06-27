@@ -11,11 +11,14 @@ use super::empty_stores::MemorySyncCursorStore;
 use super::memory::{MemoryPendingSendStore, MemoryUserProfileStore};
 use crate::domain::{
     ConversationReader, ConversationWriter, MessageReader, MessageStore, MessageWriter,
+    OperationApplyResult, merge_incoming_conversation_summary, merge_message_event_attributes,
+    message_attribute_seq,
 };
 use crate::model::Conversation;
 use crate::model::IMMessage;
+use crate::model::message::ReactionEntry;
 use crate::model::{decode_content_bytes, decoded_content_to_elem};
-use crate::shared::error::Result;
+use crate::shared::error::{ErrorCode, FlareError, Result};
 use flare_proto::common::MessageStatus;
 
 pub struct MemoryMessageStore {
@@ -47,6 +50,17 @@ impl MemoryMessageStore {
             return;
         }
         data.retain(|key, stored| key == keep_key || stored.client_msg_id != client_msg_id);
+    }
+
+    fn get_mut_by_any_message_id<'a>(
+        data: &'a mut HashMap<String, IMMessage>,
+        message_id: &str,
+    ) -> Option<&'a mut IMMessage> {
+        if data.contains_key(message_id) {
+            return data.get_mut(message_id);
+        }
+        data.values_mut()
+            .find(|message| message.server_id == message_id || message.client_msg_id == message_id)
     }
 }
 
@@ -157,8 +171,23 @@ impl MessageWriter for MemoryMessageStore {
         let mut data = self.data.write().await;
         for msg in messages {
             let key = Self::storage_key(msg);
+            let existing_attributes = data
+                .get(&key)
+                .or_else(|| {
+                    data.values().find(|stored| {
+                        (!msg.server_id.trim().is_empty() && stored.server_id == msg.server_id)
+                            || (!msg.client_msg_id.trim().is_empty()
+                                && stored.client_msg_id == msg.client_msg_id)
+                    })
+                })
+                .map(|stored| stored.attributes.clone());
+            let mut next = msg.clone();
+            if let Some(existing_attributes) = existing_attributes {
+                next.attributes =
+                    merge_message_event_attributes(next.attributes, existing_attributes);
+            }
             Self::remove_conflicting_client_msg_rows(&mut data, &msg.client_msg_id, &key);
-            data.insert(key, msg.clone());
+            data.insert(key, next);
         }
         Ok(())
     }
@@ -218,6 +247,26 @@ impl MessageWriter for MemoryMessageStore {
         Ok(())
     }
 
+    async fn rewrite_conversation_id(
+        &self,
+        from_conversation_id: &str,
+        to_conversation_id: &str,
+    ) -> Result<u64> {
+        let from = from_conversation_id.trim();
+        let to = to_conversation_id.trim();
+        if from.is_empty() || to.is_empty() || from == to {
+            return Ok(0);
+        }
+        let mut count = 0;
+        for message in self.data.write().await.values_mut() {
+            if message.conversation_id == from {
+                message.conversation_id = to.to_string();
+                count += 1;
+            }
+        }
+        Ok(count)
+    }
+
     async fn update_after_ack(&self, client_msg_id: &str, message: &IMMessage) -> Result<()> {
         let mut data = self.data.write().await;
         let mut message = message.clone();
@@ -234,16 +283,186 @@ impl MessageWriter for MemoryMessageStore {
     }
 }
 
-impl MessageStore for MemoryMessageStore {}
+#[async_trait]
+impl MessageStore for MemoryMessageStore {
+    async fn mark_outgoing_read_upto_seq(
+        &self,
+        conversation_id: &str,
+        sender_user_id: &str,
+        read_seq: u64,
+    ) -> Result<()> {
+        let conversation_id = conversation_id.trim();
+        let sender_user_id = sender_user_id.trim();
+        if conversation_id.is_empty() || sender_user_id.is_empty() || read_seq == 0 {
+            return Ok(());
+        }
+
+        let created = MessageStatus::Created as i32;
+        let sent = MessageStatus::Sent as i32;
+        let persisted = MessageStatus::Persisted as i32;
+        let mut data = self.data.write().await;
+        for message in data.values_mut() {
+            if message.conversation_id == conversation_id
+                && message.sender_id == sender_user_id
+                && message.conversation_seq > 0
+                && message.conversation_seq <= read_seq
+                && matches!(message.status, status if status == created || status == sent || status == persisted)
+            {
+                if message.status == created {
+                    message.status = sent;
+                }
+                message.is_read = true;
+            }
+        }
+        Ok(())
+    }
+
+    async fn reconcile_outgoing_read_by_peer_seq(
+        &self,
+        conversation_id: &str,
+        sender_user_id: &str,
+        peer_read_seq: u64,
+    ) -> Result<()> {
+        let conversation_id = conversation_id.trim();
+        let sender_user_id = sender_user_id.trim();
+        if conversation_id.is_empty() || sender_user_id.is_empty() {
+            return Ok(());
+        }
+        if peer_read_seq > 0 {
+            self.mark_outgoing_read_upto_seq(conversation_id, sender_user_id, peer_read_seq)
+                .await?;
+        }
+
+        let mut data = self.data.write().await;
+        for message in data.values_mut() {
+            if message.conversation_id == conversation_id
+                && message.sender_id == sender_user_id
+                && message.conversation_seq > peer_read_seq
+                && message.is_read
+            {
+                message.is_read = false;
+            }
+        }
+        Ok(())
+    }
+
+    async fn apply_reaction(
+        &self,
+        _conversation_id: &str,
+        message_server_id: &str,
+        user_id: &str,
+        emoji: &str,
+        action: i32,
+    ) -> Result<()> {
+        let target = message_server_id.trim();
+        if target.is_empty() || user_id.trim().is_empty() || emoji.trim().is_empty() {
+            return Ok(());
+        }
+        let mut data = self.data.write().await;
+        if let Some(message) = data.get_mut(target) {
+            message.apply_reaction_change(user_id.trim(), emoji.trim(), action);
+            return Ok(());
+        }
+        for message in data.values_mut() {
+            if message.server_id == target || message.client_msg_id == target {
+                message.apply_reaction_change(user_id.trim(), emoji.trim(), action);
+                break;
+            }
+        }
+        Ok(())
+    }
+
+    async fn list_reactions(
+        &self,
+        message_server_ids: &[String],
+    ) -> Result<HashMap<String, Vec<ReactionEntry>>> {
+        let data = self.data.read().await;
+        let mut out = HashMap::new();
+        for id in message_server_ids {
+            let target = id.trim();
+            if target.is_empty() || out.contains_key(target) {
+                continue;
+            }
+            let message = data.get(target).or_else(|| {
+                data.values()
+                    .find(|message| message.server_id == target || message.client_msg_id == target)
+            });
+            let Some(message) = message else {
+                continue;
+            };
+            if message.reactions.is_empty() {
+                continue;
+            }
+            if !message.server_id.trim().is_empty() {
+                out.insert(message.server_id.clone(), message.reactions.clone());
+            }
+            if !message.client_msg_id.trim().is_empty() {
+                out.insert(message.client_msg_id.clone(), message.reactions.clone());
+            }
+        }
+        Ok(out)
+    }
+
+    async fn set_message_flag(
+        &self,
+        message_id: &str,
+        flag_key: &str,
+        enabled: bool,
+    ) -> Result<()> {
+        let target = message_id.trim();
+        let key = flag_key.trim();
+        if target.is_empty() || key.is_empty() {
+            return Ok(());
+        }
+        let value = if enabled { "true" } else { "false" }.to_string();
+        let mut data = self.data.write().await;
+        if let Some(message) = Self::get_mut_by_any_message_id(&mut data, target) {
+            message.attributes.insert(key.to_string(), value);
+        }
+        Ok(())
+    }
+
+    async fn apply_pin_event(
+        &self,
+        message_id: &str,
+        enabled: bool,
+        event_seq: Option<u64>,
+    ) -> Result<OperationApplyResult> {
+        let target = message_id.trim();
+        if target.is_empty() {
+            return Ok(OperationApplyResult::NotFound);
+        }
+        let mut data = self.data.write().await;
+        let Some(message) = Self::get_mut_by_any_message_id(&mut data, target) else {
+            return Ok(OperationApplyResult::NotFound);
+        };
+        if let Some(seq) = event_seq {
+            let current_seq = message_attribute_seq(&message.attributes, "lastPinEventSeq");
+            if seq < current_seq {
+                return Ok(OperationApplyResult::IgnoredStale);
+            }
+            message
+                .attributes
+                .insert("lastPinEventSeq".to_string(), seq.to_string());
+        }
+        message.attributes.insert(
+            "pinned".to_string(),
+            if enabled { "true" } else { "false" }.to_string(),
+        );
+        Ok(OperationApplyResult::Applied)
+    }
+}
 
 pub struct MemoryConversationStore {
     data: RwLock<HashMap<String, Conversation>>,
+    materialized_max_seq: RwLock<HashMap<String, u64>>,
 }
 
 impl MemoryConversationStore {
     pub fn new() -> Self {
         Self {
             data: RwLock::new(HashMap::new()),
+            materialized_max_seq: RwLock::new(HashMap::new()),
         }
     }
 }
@@ -278,9 +497,19 @@ impl ConversationReader for MemoryConversationStore {
 #[async_trait]
 impl ConversationWriter for MemoryConversationStore {
     async fn save_batch(&self, conversations: &[Conversation]) -> Result<()> {
+        for conversation in conversations {
+            if conversation.conversation_id.trim().is_empty() {
+                return Err(FlareError::localized(
+                    ErrorCode::InvalidParameter,
+                    "conversationId 不能为空",
+                ));
+            }
+        }
+
         let mut data = self.data.write().await;
         for conv in conversations {
-            data.insert(conv.conversation_id.clone(), conv.clone());
+            let merged = merge_incoming_conversation_summary(data.get(&conv.conversation_id), conv);
+            data.insert(merged.conversation_id.clone(), merged);
         }
         Ok(())
     }
@@ -361,6 +590,78 @@ impl ConversationWriter for MemoryConversationStore {
 
     async fn delete(&self, conversation_id: &str) -> Result<()> {
         self.data.write().await.remove(conversation_id);
+        self.materialized_max_seq
+            .write()
+            .await
+            .remove(conversation_id);
+        Ok(())
+    }
+
+    async fn merge_conversation_identity(
+        &self,
+        from_conversation_id: &str,
+        to_conversation_id: &str,
+    ) -> Result<()> {
+        let from = from_conversation_id.trim();
+        let to = to_conversation_id.trim();
+        if from.is_empty() || to.is_empty() || from == to {
+            return Ok(());
+        }
+        {
+            let mut data = self.data.write().await;
+            let Some(mut source) = data.remove(from) else {
+                return Ok(());
+            };
+            source.conversation_id = to.to_string();
+            match data.get_mut(to) {
+                Some(target) => {
+                    if target.channel_id.trim().is_empty() {
+                        target.channel_id = source.channel_id;
+                    }
+                    if target.display_name.trim().is_empty() {
+                        target.display_name = source.display_name;
+                    }
+                    if target.avatar_url.trim().is_empty() {
+                        target.avatar_url = source.avatar_url;
+                    }
+                    if target.remark.is_none() {
+                        target.remark = source.remark;
+                    }
+                    if target.draft.is_none() {
+                        target.draft = source.draft;
+                    }
+                    if source.max_seq > target.max_seq {
+                        target.max_seq = source.max_seq;
+                        target.last_message_id = source.last_message_id;
+                        target.last_sender_id = source.last_sender_id;
+                        target.last_message_at = source.last_message_at;
+                        target.last_message_preview = source.last_message_preview;
+                    }
+                    target.unread_count = target.unread_count.max(source.unread_count);
+                    target.last_read_seq = target.last_read_seq.max(source.last_read_seq);
+                    target.visible_after_seq =
+                        target.visible_after_seq.max(source.visible_after_seq);
+                    target.is_pinned |= source.is_pinned;
+                    target.is_muted |= source.is_muted;
+                    target.is_archived |= source.is_archived;
+                    target.version = target.version.max(source.version);
+                    target.updated_at = target.updated_at.max(source.updated_at);
+                    target.updated_at_ts = target.updated_at_ts.max(source.updated_at_ts);
+                    for (key, value) in source.ext {
+                        target.ext.entry(key).or_insert(value);
+                    }
+                }
+                None => {
+                    data.insert(to.to_string(), source);
+                }
+            }
+        }
+        let mut max_seq = self.materialized_max_seq.write().await;
+        let source_seq = max_seq.remove(from).unwrap_or_default();
+        if source_seq > 0 {
+            let target_seq = max_seq.entry(to.to_string()).or_default();
+            *target_seq = (*target_seq).max(source_seq);
+        }
         Ok(())
     }
 
@@ -379,6 +680,10 @@ impl ConversationWriter for MemoryConversationStore {
                 crate::domain::set_local_cleared_through_seq(&mut conv.ext, cleared_through_seq);
             }
         }
+        self.materialized_max_seq
+            .write()
+            .await
+            .remove(conversation_id);
         Ok(())
     }
 
@@ -393,11 +698,21 @@ impl ConversationWriter for MemoryConversationStore {
     ) -> Result<()> {
         let mut data = self.data.write().await;
         if let Some(c) = data.get_mut(conversation_id) {
-            c.last_message_id = Some(last_message_id.to_string());
-            c.last_sender_id = Some(last_sender_id.to_string());
-            c.last_message_at = Some(last_message_at);
-            c.last_message_preview = last_message_preview.map(String::from);
-            c.max_seq = max_seq;
+            let current_seq = c.max_seq;
+            let current_time = c.last_message_at.unwrap_or(0);
+            let should_replace = max_seq >= current_seq || last_message_at >= current_time;
+            if should_replace {
+                c.last_message_id = Some(last_message_id.to_string());
+                c.last_sender_id = Some(last_sender_id.to_string());
+                c.last_message_at = Some(last_message_at);
+                c.last_message_preview = last_message_preview.map(String::from);
+            }
+            c.max_seq = c.max_seq.max(max_seq);
+        }
+        if max_seq > 0 {
+            let mut materialized = self.materialized_max_seq.write().await;
+            let current = materialized.entry(conversation_id.to_string()).or_default();
+            *current = (*current).max(max_seq);
         }
         Ok(())
     }
@@ -412,11 +727,11 @@ impl ConversationWriter for MemoryConversationStore {
 
     async fn get_local_max_seq(&self, conversation_id: &str) -> Result<u64> {
         Ok(self
-            .data
+            .materialized_max_seq
             .read()
             .await
             .get(conversation_id)
-            .map(|conv| conv.max_seq)
+            .copied()
             .unwrap_or_default())
     }
 }
@@ -443,9 +758,13 @@ pub fn in_memory_im_provider() -> StoreProvider {
 
 #[cfg(test)]
 mod tests {
-    use super::MemoryMessageStore;
-    use crate::domain::{MessageReader, MessageWriter};
-    use crate::model::IMMessage;
+    use super::{MemoryConversationStore, MemoryMessageStore};
+    use crate::domain::{
+        ConversationReader, ConversationWriter, MessageReader, MessageStore, MessageWriter,
+        OperationApplyResult,
+    };
+    use crate::model::{Conversation, IMMessage};
+    use crate::shared::error::ErrorCode;
     use flare_proto::common::MessageStatus;
 
     fn local_message(server_id: &str, client_msg_id: &str) -> IMMessage {
@@ -514,5 +833,394 @@ mod tests {
             .unwrap();
         assert_eq!(timeline.len(), 1);
         assert_eq!(timeline[0].server_id, "server-memory-ack-1");
+    }
+
+    #[tokio::test]
+    async fn read_receipt_marks_outgoing_messages_read() {
+        let store = MemoryMessageStore::new();
+        let mut first = local_message("server-memory-read-1", "client-memory-read-1");
+        first.conversation_id = "conv-memory-read-receipt".to_string();
+        first.conversation_seq = 1;
+        first.status = MessageStatus::Created as i32;
+        let mut second = local_message("server-memory-read-2", "client-memory-read-2");
+        second.conversation_id = "conv-memory-read-receipt".to_string();
+        second.conversation_seq = 2;
+        second.status = MessageStatus::Persisted as i32;
+        let mut unread_tail = local_message("server-memory-read-3", "client-memory-read-3");
+        unread_tail.conversation_id = "conv-memory-read-receipt".to_string();
+        unread_tail.conversation_seq = 3;
+        unread_tail.status = MessageStatus::Sent as i32;
+
+        store
+            .save_batch(&[first, second, unread_tail])
+            .await
+            .unwrap();
+        store
+            .mark_outgoing_read_upto_seq("conv-memory-read-receipt", "u1", 2)
+            .await
+            .unwrap();
+
+        let first = store.get("server-memory-read-1").await.unwrap().unwrap();
+        let second = store.get("server-memory-read-2").await.unwrap().unwrap();
+        let tail = store.get("server-memory-read-3").await.unwrap().unwrap();
+        assert!(first.is_read);
+        assert_eq!(first.status, MessageStatus::Sent as i32);
+        assert!(second.is_read);
+        assert_eq!(second.status, MessageStatus::Persisted as i32);
+        assert!(!tail.is_read);
+    }
+
+    #[tokio::test]
+    async fn reconcile_outgoing_read_by_peer_seq_downgrades_polluted_tail() {
+        let store = MemoryMessageStore::new();
+        let mut first = local_message("server-memory-peer-read-1", "client-memory-peer-read-1");
+        first.conversation_id = "conv-memory-peer-read".to_string();
+        first.conversation_seq = 1;
+        first.status = MessageStatus::Sent as i32;
+        first.is_read = true;
+        let mut tail = local_message("server-memory-peer-read-2", "client-memory-peer-read-2");
+        tail.conversation_id = "conv-memory-peer-read".to_string();
+        tail.conversation_seq = 2;
+        tail.status = MessageStatus::Sent as i32;
+        tail.is_read = true;
+
+        store.save_batch(&[first, tail]).await.unwrap();
+        store
+            .reconcile_outgoing_read_by_peer_seq("conv-memory-peer-read", "u1", 1)
+            .await
+            .unwrap();
+
+        let first = store
+            .get("server-memory-peer-read-1")
+            .await
+            .unwrap()
+            .unwrap();
+        let tail = store
+            .get("server-memory-peer-read-2")
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(first.is_read);
+        assert!(!tail.is_read);
+    }
+
+    #[tokio::test]
+    async fn reaction_updates_are_visible_by_server_and_client_message_id() {
+        let store = MemoryMessageStore::new();
+        let message = local_message("server-memory-reaction-1", "client-memory-reaction-1");
+        store.save_one(&message).await.unwrap();
+
+        store
+            .apply_reaction(
+                "conv-memory-dupe",
+                "server-memory-reaction-1",
+                "u2",
+                "thumbsup",
+                flare_proto::common::ReactionAction::Add as i32,
+            )
+            .await
+            .unwrap();
+
+        let reactions = store
+            .list_reactions(&[
+                "server-memory-reaction-1".to_string(),
+                "client-memory-reaction-1".to_string(),
+            ])
+            .await
+            .unwrap();
+        let by_server = reactions
+            .get("server-memory-reaction-1")
+            .expect("server id reaction");
+        let by_client = reactions
+            .get("client-memory-reaction-1")
+            .expect("client id reaction");
+        assert_eq!(by_server[0].emoji, "thumbsup");
+        assert_eq!(by_server[0].user_ids, vec!["u2".to_string()]);
+        assert_eq!(by_client[0].count, 1);
+
+        store
+            .apply_reaction(
+                "conv-memory-dupe",
+                "server-memory-reaction-1",
+                "u2",
+                "thumbsup",
+                flare_proto::common::ReactionAction::Remove as i32,
+            )
+            .await
+            .unwrap();
+
+        let reactions = store
+            .list_reactions(&["server-memory-reaction-1".to_string()])
+            .await
+            .unwrap();
+        assert!(reactions.is_empty());
+    }
+
+    #[tokio::test]
+    async fn save_batch_preserves_pin_event_attributes() {
+        let store = MemoryMessageStore::new();
+        let message = local_message("server-memory-pin-1", "client-memory-pin-1");
+        store.save_one(&message).await.unwrap();
+
+        let applied = store
+            .apply_pin_event("server-memory-pin-1", true, Some(10))
+            .await
+            .unwrap();
+        assert_eq!(applied, OperationApplyResult::Applied);
+
+        let mut snapshot = message.clone();
+        snapshot.attributes.clear();
+        store.save_one(&snapshot).await.unwrap();
+
+        let after_snapshot = store
+            .get("server-memory-pin-1")
+            .await
+            .unwrap()
+            .expect("message");
+        assert_eq!(
+            after_snapshot.attributes.get("pinned").map(String::as_str),
+            Some("true")
+        );
+        assert_eq!(
+            after_snapshot
+                .attributes
+                .get("lastPinEventSeq")
+                .map(String::as_str),
+            Some("10")
+        );
+
+        let stale = store
+            .apply_pin_event("server-memory-pin-1", false, Some(9))
+            .await
+            .unwrap();
+        assert_eq!(stale, OperationApplyResult::IgnoredStale);
+        let after_stale = store
+            .get("server-memory-pin-1")
+            .await
+            .unwrap()
+            .expect("message");
+        assert_eq!(
+            after_stale.attributes.get("pinned").map(String::as_str),
+            Some("true")
+        );
+
+        let newer = store
+            .apply_pin_event("server-memory-pin-1", false, Some(11))
+            .await
+            .unwrap();
+        assert_eq!(newer, OperationApplyResult::Applied);
+        store.save_one(&snapshot).await.unwrap();
+        let after_unpin_snapshot = store
+            .get("server-memory-pin-1")
+            .await
+            .unwrap()
+            .expect("message");
+        assert_eq!(
+            after_unpin_snapshot
+                .attributes
+                .get("pinned")
+                .map(String::as_str),
+            Some("false")
+        );
+        assert_eq!(
+            after_unpin_snapshot
+                .attributes
+                .get("lastPinEventSeq")
+                .map(String::as_str),
+            Some("11")
+        );
+    }
+
+    #[tokio::test]
+    async fn conversation_save_batch_rejects_blank_conversation_id() {
+        let store = MemoryConversationStore::new();
+        let conversation = Conversation::from_conversation_id("   ".to_string());
+
+        let err = store
+            .save_batch(&[conversation])
+            .await
+            .expect_err("blank conversation id must be rejected");
+
+        assert_eq!(err.code(), Some(ErrorCode::InvalidParameter));
+    }
+
+    #[tokio::test]
+    async fn conversation_save_batch_does_not_roll_back_local_read_position() {
+        let store = MemoryConversationStore::new();
+        let mut local = Conversation::from_conversation_id("conv-memory-read".to_string());
+        local.max_seq = 310;
+        local.last_read_seq = 310;
+        local.unread_count = 0;
+        store.save_one(&local).await.unwrap();
+
+        let mut stale = Conversation::from_conversation_id("conv-memory-read".to_string());
+        stale.max_seq = 310;
+        stale.last_read_seq = 20;
+        stale.unread_count = 17;
+        store.save_one(&stale).await.unwrap();
+
+        let stored = store
+            .get("conv-memory-read")
+            .await
+            .unwrap()
+            .expect("conversation");
+        assert_eq!(stored.max_seq, 310);
+        assert_eq!(stored.last_read_seq, 310);
+        assert_eq!(stored.unread_count, 0);
+    }
+
+    #[tokio::test]
+    async fn conversation_save_batch_does_not_clear_local_latest_message_with_empty_summary() {
+        let store = MemoryConversationStore::new();
+        let mut local = Conversation::from_conversation_id("conv-memory-latest".to_string());
+        local.max_seq = 100;
+        local.last_message_id = Some("msg-100".to_string());
+        local.last_sender_id = Some("u2".to_string());
+        local.last_message_at = Some(12_000);
+        local.last_message_preview = Some("latest".to_string());
+        store.save_one(&local).await.unwrap();
+
+        let mut stale = Conversation::from_conversation_id("conv-memory-latest".to_string());
+        stale.max_seq = 100;
+        stale.last_read_seq = 90;
+        stale.unread_count = 10;
+        store.save_one(&stale).await.unwrap();
+
+        let stored = store
+            .get("conv-memory-latest")
+            .await
+            .unwrap()
+            .expect("conversation");
+        assert_eq!(stored.last_message_id.as_deref(), Some("msg-100"));
+        assert_eq!(stored.last_sender_id.as_deref(), Some("u2"));
+        assert_eq!(stored.last_message_at, Some(12_000));
+        assert_eq!(stored.last_message_preview.as_deref(), Some("latest"));
+    }
+
+    #[tokio::test]
+    async fn local_max_seq_tracks_materialized_messages_not_remote_summary() {
+        let store = MemoryConversationStore::new();
+        let mut summary = Conversation::from_conversation_id("conv-memory-seq".to_string());
+        summary.max_seq = 8;
+        summary.unread_count = 8;
+        store.save_batch(&[summary]).await.unwrap();
+
+        assert_eq!(
+            store.get("conv-memory-seq").await.unwrap().unwrap().max_seq,
+            8
+        );
+        assert_eq!(store.get_local_max_seq("conv-memory-seq").await.unwrap(), 0);
+
+        store
+            .update_last_message(
+                "conv-memory-seq",
+                "server-memory-seq-3",
+                "alice",
+                1_000,
+                Some("latest"),
+                3,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            store.get("conv-memory-seq").await.unwrap().unwrap().max_seq,
+            8
+        );
+        assert_eq!(store.get_local_max_seq("conv-memory-seq").await.unwrap(), 3);
+    }
+
+    #[tokio::test]
+    async fn local_zero_seq_message_updates_preview_without_rolling_back_server_seq() {
+        let store = MemoryConversationStore::new();
+        let mut conversation =
+            Conversation::from_conversation_id("conv-memory-preview".to_string());
+        conversation.max_seq = 8;
+        conversation.last_message_at = Some(1_000);
+        conversation.last_message_preview = Some("server-latest".to_string());
+        store.save_one(&conversation).await.unwrap();
+
+        store
+            .update_last_message(
+                "conv-memory-preview",
+                "client-local-1",
+                "alice",
+                2_000,
+                Some("local pending"),
+                0,
+            )
+            .await
+            .unwrap();
+
+        let updated = store
+            .get("conv-memory-preview")
+            .await
+            .unwrap()
+            .expect("conversation");
+        assert_eq!(updated.max_seq, 8);
+        assert_eq!(updated.last_message_id.as_deref(), Some("client-local-1"));
+        assert_eq!(
+            updated.last_message_preview.as_deref(),
+            Some("local pending")
+        );
+
+        store
+            .update_last_message(
+                "conv-memory-preview",
+                "client-stale-1",
+                "alice",
+                1_500,
+                Some("stale local"),
+                0,
+            )
+            .await
+            .unwrap();
+
+        let updated = store
+            .get("conv-memory-preview")
+            .await
+            .unwrap()
+            .expect("conversation");
+        assert_eq!(updated.last_message_id.as_deref(), Some("client-local-1"));
+        assert_eq!(
+            updated.last_message_preview.as_deref(),
+            Some("local pending")
+        );
+    }
+
+    #[tokio::test]
+    async fn update_last_message_accepts_newer_time_when_summary_max_seq_is_ahead() {
+        let store = MemoryConversationStore::new();
+        let mut summary =
+            Conversation::from_conversation_id("conv-memory-summary-ahead".to_string());
+        summary.max_seq = 99;
+        summary.last_message_id = Some("msg-11".to_string());
+        summary.last_sender_id = Some("u1".to_string());
+        summary.last_message_at = Some(11_000);
+        summary.last_message_preview = Some("stale-summary".to_string());
+        store.save_one(&summary).await.unwrap();
+
+        store
+            .update_last_message(
+                "conv-memory-summary-ahead",
+                "msg-12",
+                "u2",
+                12_345,
+                Some("111"),
+                12,
+            )
+            .await
+            .unwrap();
+
+        let loaded = store
+            .get("conv-memory-summary-ahead")
+            .await
+            .unwrap()
+            .expect("conversation");
+        assert_eq!(loaded.max_seq, 99);
+        assert_eq!(loaded.last_message_id.as_deref(), Some("msg-12"));
+        assert_eq!(loaded.last_sender_id.as_deref(), Some("u2"));
+        assert_eq!(loaded.last_message_at, Some(12_345));
+        assert_eq!(loaded.last_message_preview.as_deref(), Some("111"));
     }
 }

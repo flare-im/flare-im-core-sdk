@@ -16,12 +16,13 @@ flare-proto = { path = "../../../flare-proto" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 tauri = { version = "2.10.1", features = ["macos-private-api"] }
-tokio = { version = "1", features = ["full"] }
+tokio = { version = "1", default-features = false, features = ["macros", "rt", "sync", "time"] }
 tracing = "0.1"
 uuid = { version = "1", features = ["v4"] }
 
 [features]
 default = []
+quic = ["flare-im-core-sdk/quic"]
 dev-test-token = [
     "flare-im-core-sdk/dev-test-token",
     "flare-im-core-sdk-bindings-runtime/dev-test-token",

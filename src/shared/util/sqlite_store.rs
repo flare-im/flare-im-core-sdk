@@ -17,6 +17,9 @@ use crate::infrastructure::persistence::{
     SqliteMessageRepo, SqlitePendingSendRepo, SqliteSyncCursorRepo, SqliteUploadManifestRepo,
     SqliteUserFileDownloadRepo, SqliteUserProfileRepo, StoreProvider, sqlite_init_schema,
 };
+use crate::platform::ports::storage::{
+    SecureKeyDescriptor, SecureKeyStore, load_or_create_local_database_key,
+};
 use crate::shared::error::ErrorCode;
 use crate::shared::error::Result;
 use crate::shared::util::paths::{resolve_media_cache_dir_next_to_db, resolve_user_db_path};
@@ -108,6 +111,15 @@ pub async fn open_sqlite_store_provider_with_security(
     })
 }
 
+/// Builds SQLCipher security config from the platform secure key store.
+pub async fn sqlite_security_config_from_secure_key_store(
+    key_store: &dyn SecureKeyStore,
+    descriptor: &SecureKeyDescriptor,
+) -> Result<SqliteSecurityConfig> {
+    let secret = load_or_create_local_database_key(key_store, descriptor).await?;
+    Ok(SqliteSecurityConfig::new().with_encryption_key(hex::encode(secret.expose_secret())))
+}
+
 /// 在 `data_root` 下按用户目录打开库（路径规则见 [`crate::shared::util::paths::resolve_user_db_path`]）。
 pub async fn open_sqlite_store_for_user(
     base_data_dir: &std::path::Path,
@@ -182,9 +194,29 @@ pub async fn open_sqlite_store_for_user_with_security(
     open_sqlite_store_provider_with_security(&database_url, Some(&cache_dir), security).await
 }
 
+/// 在 `data_root` 下按用户目录打开加密 SQLite 库，并从平台 `SecureKeyStore` 首启生成/后续复用 DB key。
+pub async fn open_sqlite_store_for_user_with_secure_key_store(
+    base_data_dir: &std::path::Path,
+    user_id: &str,
+    key_namespace: &str,
+    tenant_id: &str,
+    key_name: Option<&str>,
+    key_store: &dyn SecureKeyStore,
+) -> Result<StoreProvider> {
+    let descriptor = SecureKeyDescriptor::new(
+        key_namespace,
+        tenant_id,
+        user_id,
+        key_name.unwrap_or("local_database.v1"),
+    );
+    let security = sqlite_security_config_from_secure_key_store(key_store, &descriptor).await?;
+    open_sqlite_store_for_user_with_security(base_data_dir, user_id, security).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::platform::ports::storage::{LOCAL_DATABASE_KEY_BYTES, VolatileSecureKeyStore};
 
     #[tokio::test]
     async fn open_sqlite_store_for_user_supports_data_root_with_spaces() {
@@ -203,5 +235,27 @@ mod tests {
                 .exists()
         );
         let _ = tokio::fs::remove_dir_all(root).await;
+    }
+
+    #[tokio::test]
+    async fn sqlite_security_config_loads_or_creates_secure_key() {
+        let store = VolatileSecureKeyStore::new();
+        let descriptor = SecureKeyDescriptor::local_database("flare", "0", "hugo");
+
+        let first = sqlite_security_config_from_secure_key_store(&store, &descriptor)
+            .await
+            .expect("first security config");
+        let second = sqlite_security_config_from_secure_key_store(&store, &descriptor)
+            .await
+            .expect("second security config");
+        let stored = store
+            .get_secret(&descriptor)
+            .await
+            .expect("load stored key")
+            .expect("stored key");
+
+        assert!(first.is_encryption_required());
+        assert_eq!(format!("{first:?}"), format!("{second:?}"));
+        assert_eq!(stored.expose_secret().len(), LOCAL_DATABASE_KEY_BYTES);
     }
 }

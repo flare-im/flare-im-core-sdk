@@ -2,9 +2,19 @@ use crate::domain::{MessageActor, MessageTransportAction, ResolvedMessage};
 use crate::model::message::{MarkType, ReactionAction};
 use crate::shared::error::{ErrorCode, FlareError, Result};
 
-const DELETE_TYPE_SOFT: i32 = 1;
-const DELETE_SCOPE_USER_PRIVATE: i32 = 1;
-const DELETE_SCOPE_CONVERSATION_GLOBAL: i32 = 2;
+pub(crate) const DELETE_TYPE_SOFT: i32 = 1;
+pub(crate) const DELETE_SCOPE_USER_PRIVATE: i32 = 1;
+pub(crate) const DELETE_SCOPE_CONVERSATION_GLOBAL: i32 = 2;
+pub(crate) const MESSAGE_PIN_SCOPE_CONVERSATION: i32 = 0;
+pub(crate) const MESSAGE_PIN_SCOPE_SELF: i32 = 1;
+
+pub(crate) fn normalize_message_pin_scope(scope: i32) -> i32 {
+    if scope == MESSAGE_PIN_SCOPE_SELF {
+        MESSAGE_PIN_SCOPE_SELF
+    } else {
+        MESSAGE_PIN_SCOPE_CONVERSATION
+    }
+}
 
 #[derive(Debug, Clone)]
 pub enum MessageLocalUpdate {
@@ -12,6 +22,10 @@ pub enum MessageLocalUpdate {
     UpdateContent {
         message_id: String,
         new_content: Vec<u8>,
+    },
+    SetPinned {
+        message_id: String,
+        pinned: bool,
     },
     Delete {
         message_id: String,
@@ -119,24 +133,6 @@ impl MessageMutationService {
         })
     }
 
-    pub fn plan_read_receipt(
-        &self,
-        actor: &MessageActor,
-        conversation_id: &str,
-        message_ids: Vec<String>,
-        read_seq: u64,
-    ) -> MessageMutationPlan {
-        MessageMutationPlan {
-            transport_action: MessageTransportAction::ReadReceipt {
-                conversation_id: conversation_id.to_string(),
-                user_id: actor.user_id.clone(),
-                message_ids,
-                read_seq,
-            },
-            local_update: MessageLocalUpdate::None,
-        }
-    }
-
     pub fn plan_reaction(
         &self,
         actor: &MessageActor,
@@ -162,24 +158,42 @@ impl MessageMutationService {
         actor: &MessageActor,
         conversation_id: &str,
         server_msg_id: &str,
+        scope: i32,
     ) -> MessageMutationPlan {
+        let scope = normalize_message_pin_scope(scope);
         MessageMutationPlan {
             transport_action: MessageTransportAction::Pin {
                 conversation_id: conversation_id.to_string(),
                 server_msg_id: server_msg_id.to_string(),
                 pinned_by: actor.user_id.clone(),
+                scope,
             },
-            local_update: MessageLocalUpdate::None,
+            local_update: MessageLocalUpdate::SetPinned {
+                message_id: server_msg_id.to_string(),
+                pinned: true,
+            },
         }
     }
 
-    pub fn plan_unpin(&self, conversation_id: &str, server_msg_id: &str) -> MessageMutationPlan {
+    pub fn plan_unpin(
+        &self,
+        actor: &MessageActor,
+        conversation_id: &str,
+        server_msg_id: &str,
+        scope: i32,
+    ) -> MessageMutationPlan {
+        let scope = normalize_message_pin_scope(scope);
         MessageMutationPlan {
             transport_action: MessageTransportAction::Unpin {
                 conversation_id: conversation_id.to_string(),
                 server_msg_id: server_msg_id.to_string(),
+                unpinned_by: actor.user_id.clone(),
+                scope,
             },
-            local_update: MessageLocalUpdate::None,
+            local_update: MessageLocalUpdate::SetPinned {
+                message_id: server_msg_id.to_string(),
+                pinned: false,
+            },
         }
     }
 
@@ -227,7 +241,121 @@ mod tests {
     use super::{MessageLocalUpdate, MessageMutationService};
     use crate::domain::{MessageActor, MessageTransportAction, ResolvedMessage};
     use crate::model::IMMessage;
+    use crate::model::message::{MarkType, ReactionAction};
     use flare_proto::common::Message;
+
+    fn resolved_message(sender_id: &str) -> ResolvedMessage {
+        let mut message = IMMessage::new(Message::default());
+        message.conversation_id = "c1".to_string();
+        message.server_id = "s1".to_string();
+        message.sender_id = sender_id.to_string();
+        ResolvedMessage::new(message)
+    }
+
+    #[test]
+    fn edit_produces_edit_transport_and_local_content_update() {
+        let service = MessageMutationService;
+        let new_content = vec![1, 2, 3];
+
+        let plan = service.plan_edit("c1", &resolved_message("u1"), new_content.clone());
+
+        match plan.transport_action {
+            MessageTransportAction::Edit {
+                conversation_id,
+                server_msg_id,
+                new_content: transport_content,
+                edit_version,
+                show_edited_mark,
+                ..
+            } => {
+                assert_eq!(conversation_id, "c1");
+                assert_eq!(server_msg_id, "s1");
+                assert_eq!(transport_content, new_content);
+                assert_eq!(edit_version, 0);
+                assert!(show_edited_mark);
+            }
+            _ => panic!("expected edit transport action"),
+        }
+
+        match plan.local_update {
+            MessageLocalUpdate::UpdateContent {
+                message_id,
+                new_content: local_content,
+            } => {
+                assert_eq!(message_id, "s1");
+                assert_eq!(local_content, vec![1, 2, 3]);
+            }
+            _ => panic!("expected local content update"),
+        }
+    }
+
+    #[test]
+    fn reaction_produces_reaction_transport_without_local_shadow_update() {
+        let service = MessageMutationService;
+        let actor = MessageActor::require("u1".to_string()).unwrap();
+
+        let plan = service.plan_reaction(&actor, "c1", "s1", "👍", ReactionAction::Add);
+
+        match plan.transport_action {
+            MessageTransportAction::Reaction {
+                conversation_id,
+                server_msg_id,
+                user_id,
+                emoji,
+                action,
+            } => {
+                assert_eq!(conversation_id, "c1");
+                assert_eq!(server_msg_id, "s1");
+                assert_eq!(user_id, "u1");
+                assert_eq!(emoji, "👍");
+                assert_eq!(action, ReactionAction::Add as i32);
+            }
+            _ => panic!("expected reaction transport action"),
+        }
+        assert!(matches!(plan.local_update, MessageLocalUpdate::None));
+    }
+
+    #[test]
+    fn mark_and_unmark_produce_typed_transport_actions_without_local_shadow_update() {
+        let service = MessageMutationService;
+        let actor = MessageActor::require("u1".to_string()).unwrap();
+
+        let mark = service.plan_mark(&actor, "c1", "s1", MarkType::Todo, "#7c3aed");
+        match mark.transport_action {
+            MessageTransportAction::Mark {
+                conversation_id,
+                server_msg_id,
+                user_id,
+                mark_type,
+                color,
+            } => {
+                assert_eq!(conversation_id, "c1");
+                assert_eq!(server_msg_id, "s1");
+                assert_eq!(user_id, "u1");
+                assert_eq!(mark_type, MarkType::Todo as i32);
+                assert_eq!(color, "#7c3aed");
+            }
+            _ => panic!("expected mark transport action"),
+        }
+        assert!(matches!(mark.local_update, MessageLocalUpdate::None));
+
+        let unmark = service.plan_unmark(&actor, "c1", "s1", MarkType::Todo);
+        match unmark.transport_action {
+            MessageTransportAction::Unmark {
+                conversation_id,
+                server_msg_id,
+                user_id,
+                mark_type,
+            } => {
+                assert_eq!(conversation_id, "c1");
+                assert_eq!(server_msg_id, "s1");
+                assert_eq!(user_id, "u1");
+                assert_eq!(mark_type, MarkType::Todo as i32);
+            }
+            _ => panic!("expected unmark transport action"),
+        }
+        assert!(matches!(unmark.local_update, MessageLocalUpdate::None));
+    }
 
     #[test]
     fn delete_for_everyone_requires_sender_match_actor() {
@@ -247,16 +375,9 @@ mod tests {
     fn delete_for_self_produces_delete_transport_and_local_delete() {
         let service = MessageMutationService;
         let actor = MessageActor::require("u1".to_string()).unwrap();
-        let mut message = IMMessage::new(Message::default());
-        message.conversation_id = "c1".to_string();
-        message.server_id = "s1".to_string();
-        message.sender_id = "u1".to_string();
 
-        let plan = service.plan_delete_for_self(
-            &actor,
-            &ResolvedMessage::new(message),
-            Some("r".to_string()),
-        );
+        let plan =
+            service.plan_delete_for_self(&actor, &resolved_message("u1"), Some("r".to_string()));
 
         match plan.transport_action {
             MessageTransportAction::Delete {
@@ -275,6 +396,83 @@ mod tests {
         match plan.local_update {
             MessageLocalUpdate::Delete { message_id } => assert_eq!(message_id, "s1"),
             _ => panic!("expected local delete update"),
+        }
+    }
+
+    #[test]
+    fn pin_produces_pin_transport_and_local_flag_update() {
+        let service = MessageMutationService;
+        let actor = MessageActor::require("u1".to_string()).unwrap();
+
+        let plan = service.plan_pin(&actor, "c1", "s1", super::MESSAGE_PIN_SCOPE_SELF);
+
+        match plan.transport_action {
+            MessageTransportAction::Pin {
+                conversation_id,
+                server_msg_id,
+                pinned_by,
+                scope,
+            } => {
+                assert_eq!(conversation_id, "c1");
+                assert_eq!(server_msg_id, "s1");
+                assert_eq!(pinned_by, "u1");
+                assert_eq!(scope, super::MESSAGE_PIN_SCOPE_SELF);
+            }
+            _ => panic!("expected pin transport action"),
+        }
+
+        match plan.local_update {
+            MessageLocalUpdate::SetPinned { message_id, pinned } => {
+                assert_eq!(message_id, "s1");
+                assert!(pinned);
+            }
+            _ => panic!("expected local pinned update"),
+        }
+    }
+
+    #[test]
+    fn unpin_produces_unpin_transport_and_local_flag_update() {
+        let service = MessageMutationService;
+        let actor = MessageActor::require("u1".to_string()).unwrap();
+
+        let plan = service.plan_unpin(&actor, "c1", "s1", super::MESSAGE_PIN_SCOPE_SELF);
+
+        match plan.transport_action {
+            MessageTransportAction::Unpin {
+                conversation_id,
+                server_msg_id,
+                unpinned_by,
+                scope,
+            } => {
+                assert_eq!(conversation_id, "c1");
+                assert_eq!(server_msg_id, "s1");
+                assert_eq!(unpinned_by, "u1");
+                assert_eq!(scope, super::MESSAGE_PIN_SCOPE_SELF);
+            }
+            _ => panic!("expected unpin transport action"),
+        }
+
+        match plan.local_update {
+            MessageLocalUpdate::SetPinned { message_id, pinned } => {
+                assert_eq!(message_id, "s1");
+                assert!(!pinned);
+            }
+            _ => panic!("expected local unpinned update"),
+        }
+    }
+
+    #[test]
+    fn pin_scope_defaults_to_conversation_scope_when_invalid() {
+        let service = MessageMutationService;
+        let actor = MessageActor::require("u1".to_string()).unwrap();
+
+        let plan = service.plan_pin(&actor, "c1", "s1", 99);
+
+        match plan.transport_action {
+            MessageTransportAction::Pin { scope, .. } => {
+                assert_eq!(scope, super::MESSAGE_PIN_SCOPE_CONVERSATION);
+            }
+            _ => panic!("expected pin transport action"),
         }
     }
 }

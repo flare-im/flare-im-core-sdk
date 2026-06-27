@@ -1,8 +1,8 @@
-//! [`IMClient`] 事件订阅：一律委托 [`crate::core::event::EventBus`]，与消息/会话领域对齐。
+//! [`IMClient`] 事件订阅：一律委托 [`crate::kernel::event::EventBus`]，与消息/会话领域对齐。
 //!
 //! 专业 SDK 常见形态是「单入口 + 类型化 on_*」；实现保持薄转发即可，不必按域拆多个源文件。
 //!
-//! **注意**：若在 [`super::IMClient::login`] 的 `before_connect` 之前尚未挂上引擎，应优先在回调里用传入的 [`crate::core::event::EventBus`] 注册；连接后再用本文件的 `on_*` 亦可（见示例 `two_clients_chat`）。
+//! **注意**：若在 [`super::IMClient::login`] 的 `before_connect` 之前尚未挂上引擎，应优先在回调里用传入的 [`crate::kernel::event::EventBus`] 注册；连接后再用本文件的 `on_*` 亦可（见示例 `two_clients_chat`）。
 
 use std::sync::Arc;
 
@@ -10,9 +10,9 @@ use flare_proto::common::{CapabilityPacket, MessageRecallEvent, SendAck, TypingS
 
 use crate::application::notification::NotificationHandler;
 use crate::client::IMClient;
-use crate::core::SdkState;
-use crate::core::SyncState;
-use crate::core::event::{
+use crate::kernel::SdkState;
+use crate::kernel::SyncState;
+use crate::kernel::event::{
     CustomEventSelector, EventFilter, FilteredEventReceiver, SdkEventKind, SdkEventType,
     SharedEvent, Subscription, SyncPhase,
 };

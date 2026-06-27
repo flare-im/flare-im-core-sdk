@@ -2,7 +2,7 @@
 //!
 //! This crate is an IPC adapter over the shared binding runtime. Dedicated
 //! commands are limited to lifecycle paths that need `AppHandle` or host state;
-//! all normal SDK operations go through generated `sdk_invoke`.
+//! all normal SDK operations go through generated `sdk_invoke_json`.
 
 pub mod commands;
 pub mod convert;
@@ -17,7 +17,7 @@ pub mod model {
     pub struct SdkInitArgs {
         #[serde(default)]
         pub environment: Option<String>,
-        #[serde(default)]
+        #[serde(default, rename = "sdkConfig")]
         pub sdk_config: Option<SdkConfigOverlay>,
     }
 

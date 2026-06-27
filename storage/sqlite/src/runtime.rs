@@ -5,8 +5,8 @@ use std::sync::Arc;
 use anyhow::Result as AnyhowResult;
 use sqlx::SqlitePool;
 
-use crate::create_pool;
 use crate::schema_registry;
+use crate::{SqliteSecurityConfig, create_pool, create_pool_with_security};
 
 /// SQLite 存储运行时：持有连接池，创建后执行所有已注册的 schema 初始化。
 #[derive(Clone)]
@@ -18,6 +18,16 @@ impl SqliteRuntime {
     /// 创建连接池并执行所有 [register_schema_init] 的初始化器，返回运行时。
     pub async fn open(database_url: &str) -> AnyhowResult<Arc<Self>> {
         let pool = create_pool(database_url).await?;
+        schema_registry::run_registered_schema_inits(&pool).await?;
+        Ok(Arc::new(Self { pool }))
+    }
+
+    /// 创建连接池、应用 SQLCipher 安全配置并执行所有 schema 初始化器。
+    pub async fn open_with_security(
+        database_url: &str,
+        security: SqliteSecurityConfig,
+    ) -> AnyhowResult<Arc<Self>> {
+        let pool = create_pool_with_security(database_url, security).await?;
         schema_registry::run_registered_schema_inits(&pool).await?;
         Ok(Arc::new(Self { pool }))
     }

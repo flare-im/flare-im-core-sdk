@@ -39,10 +39,16 @@ pub fn normalize_operation(operation: &str, request: Value) -> NormalizedOperati
         };
     }
 
+    if operation == "message_builder.dispatch" {
+        return NormalizedOperation {
+            name: "message.build".to_string(),
+            request,
+        };
+    }
+
     match operation {
         "sync.conversation" => alias("sync.conversation", request),
         "sync.messages" => alias("sync.messages", request),
-        "sync.mark_session_read" => alias("sync.mark_session_read", request),
         "rich_doc_v2.create_message" => NormalizedOperation {
             name: "message.build".to_string(),
             request: with_default_op(request, "create_rich_doc"),
@@ -97,9 +103,9 @@ mod tests {
 
     #[test]
     fn leaves_removed_client_aliases_unmapped() {
-        let op = normalize_operation("client.login", json!({ "user_id": "u1" }));
+        let op = normalize_operation("client.login", json!({ "userId": "u1" }));
         assert_eq!(op.name, "client.login");
-        assert_eq!(op.request["user_id"], "u1");
+        assert_eq!(op.request["userId"], "u1");
     }
 
     #[test]
@@ -123,8 +129,20 @@ mod tests {
     }
 
     #[test]
+    fn maps_message_builder_typed_dispatch_to_message_build() {
+        let op = normalize_operation(
+            "message_builder.dispatch",
+            json!({ "op": "create_text", "conversationId": "c1", "text": "hello" }),
+        );
+        assert_eq!(op.name, "message.build");
+        assert_eq!(op.request["op"], "create_text");
+        assert_eq!(op.request["conversationId"], "c1");
+        assert_eq!(op.request["text"], "hello");
+    }
+
+    #[test]
     fn maps_sync_contract_ids_to_direct_routes() {
-        let op = normalize_operation("sync.messages", json!({ "conversation_id": "c1" }));
+        let op = normalize_operation("sync.messages", json!({ "conversationId": "c1" }));
         assert_eq!(op.name, "sync.messages");
         let op = normalize_operation("connection.get_state", Value::Null);
         assert_eq!(op.name, "connection.get_state");

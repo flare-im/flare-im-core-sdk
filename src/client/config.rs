@@ -1,13 +1,29 @@
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use flare_core::common::config_types::TransportProtocol as CoreTransport;
+use flare_core::common::config_types::{
+    TlsConfig as CoreTlsConfig, TransportProtocol as CoreTransport,
+};
 
 use crate::shared::util::RELIABLE_QUEUE_MAX_IN_FLIGHT;
+use std::{path::PathBuf, sync::LazyLock};
+
+static DEFAULT_DEVICE_ID: LazyLock<String> = LazyLock::new(|| {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        format!("sdk-device-{}", std::process::id())
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        format!("sdk-web-{}", uuid::Uuid::new_v4())
+    }
+});
 
 /// Wire transport kind for init overlay and protocol race ordering.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum TransportKind {
+    #[serde(rename = "websocket")]
     WebSocket,
     Quic,
 }
@@ -38,11 +54,12 @@ impl TransportKind {
 ///
 /// Browser/WASM must use WebSocket because QUIC/native protocol racing is not
 /// available in the browser sandbox. Native targets can keep protocol racing.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum TransportPolicy {
     #[default]
     Auto,
+    #[serde(rename = "websocket_only")]
     WebSocketOnly,
     ProtocolRace,
 }
@@ -51,7 +68,7 @@ pub enum TransportPolicy {
 ///
 /// The profile only supplies defaults. Explicit numeric config fields still win,
 /// so production apps can tune one knob without forking the whole profile.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum SdkResourceProfile {
     /// Balanced defaults for desktop and server-like hosts.
@@ -104,9 +121,19 @@ pub struct SdkConfig {
     pub ws_url: Option<String>,
     pub quic_url: Option<String>,
     pub http_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub media_storage_proxy_prefix: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub media_storage_proxy_targets: Vec<String>,
     pub capability_url: Option<String>,
     pub online_url: Option<String>,
     pub tenant_id: Option<String>,
+    /// Stable client device id used by connection metadata and sync cursors.
+    ///
+    /// When omitted, the SDK derives a runtime id for the current process or
+    /// web session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device_id: Option<String>,
     pub connect_timeout_secs: Option<u64>,
     pub reconnect_interval_secs: Option<u64>,
     pub max_reconnect_attempts: Option<u32>,
@@ -127,6 +154,12 @@ pub struct SdkConfig {
     pub ack_timeout_secs: Option<u64>,
     pub ack_max_retries: Option<u32>,
     pub ack_max_in_flight: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tls_ca_cert_path: Option<String>,
+    #[serde(default)]
+    pub tls_spki_sha256_pins: Vec<String>,
+    #[serde(default)]
+    pub tls_certificate_sha256_pins: Vec<String>,
     pub enable_metrics: bool,
 }
 
@@ -222,6 +255,30 @@ impl SdkConfig {
             _ => Some(ws),
         }
     }
+
+    pub fn core_tls_config(&self) -> CoreTlsConfig {
+        let mut tls = CoreTlsConfig::none()
+            .with_spki_sha256_pins(self.tls_spki_sha256_pins.clone())
+            .with_certificate_sha256_pins(self.tls_certificate_sha256_pins.clone());
+        if let Some(path) = self
+            .tls_ca_cert_path
+            .as_deref()
+            .map(str::trim)
+            .filter(|path| !path.is_empty())
+        {
+            tls = tls.with_ca_cert(PathBuf::from(path));
+        }
+        tls
+    }
+
+    pub fn effective_device_id(&self) -> String {
+        self.device_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+            .map(ToOwned::to_owned)
+            .unwrap_or_else(|| DEFAULT_DEVICE_ID.clone())
+    }
 }
 
 #[cfg(test)]
@@ -276,6 +333,38 @@ mod tests {
         assert_eq!(config.runtime_resources().event_dedupe_capacity, 256);
         assert_eq!(config.runtime_resources().message_dedupe_capacity, 512);
     }
+
+    #[test]
+    fn core_tls_config_carries_ca_cert_path_and_pins() {
+        let config = SdkConfig {
+            tls_ca_cert_path: Some("/tmp/flare-ca.crt".to_string()),
+            tls_spki_sha256_pins: vec!["spki-sha256/current".to_string()],
+            tls_certificate_sha256_pins: vec!["sha256/legacy".to_string()],
+            ..SdkConfig::default()
+        };
+
+        let tls = config.core_tls_config();
+
+        assert_eq!(
+            tls.ca_cert_path.as_deref(),
+            Some(std::path::Path::new("/tmp/flare-ca.crt"))
+        );
+        assert_eq!(tls.spki_sha256_pins, vec!["spki-sha256/current"]);
+        assert_eq!(tls.certificate_sha256_pins, vec!["sha256/legacy"]);
+        assert!(tls.has_certificate_pins());
+    }
+
+    #[test]
+    fn effective_device_id_prefers_explicit_value_and_has_default() {
+        let default_id = SdkConfig::default().effective_device_id();
+        assert!(!default_id.trim().is_empty());
+
+        let explicit = SdkConfig {
+            device_id: Some("device-42".to_string()),
+            ..SdkConfig::default()
+        };
+        assert_eq!(explicit.effective_device_id(), "device-42");
+    }
 }
 
 impl Default for SdkConfig {
@@ -284,9 +373,12 @@ impl Default for SdkConfig {
             ws_url: Some("ws://localhost:8080".into()),
             quic_url: None,
             http_url: Some("http://localhost:50050".into()),
+            media_storage_proxy_prefix: None,
+            media_storage_proxy_targets: Vec::new(),
             capability_url: Some("http://localhost:50110".into()),
             online_url: Some("http://localhost:50061".into()),
             tenant_id: Some("0".into()),
+            device_id: None,
             connect_timeout_secs: Some(30),
             reconnect_interval_secs: Some(5),
             max_reconnect_attempts: None,
@@ -302,6 +394,9 @@ impl Default for SdkConfig {
             ack_timeout_secs: Some(10),
             ack_max_retries: Some(3),
             ack_max_in_flight: Some(RELIABLE_QUEUE_MAX_IN_FLIGHT),
+            tls_ca_cert_path: None,
+            tls_spki_sha256_pins: Vec::new(),
+            tls_certificate_sha256_pins: Vec::new(),
             enable_metrics: false,
         }
     }
@@ -341,6 +436,12 @@ impl SdkConfigBuilder {
     /// 设置默认租户 ID（能力授权 gRPC 与编排器默认 `0` 对齐）。
     pub fn tenant_id(mut self, tenant_id: impl Into<String>) -> Self {
         self.config.tenant_id = Some(tenant_id.into());
+        self
+    }
+
+    /// 设置稳定设备 ID，用于多端在线、同步游标与服务端设备态。
+    pub fn device_id(mut self, device_id: impl Into<String>) -> Self {
+        self.config.device_id = Some(device_id.into());
         self
     }
     /// 设置连接超时（秒）。
@@ -406,6 +507,21 @@ impl SdkConfigBuilder {
     /// 设置可靠发送队列最大在途消息数。
     pub fn ack_max_in_flight(mut self, n: usize) -> Self {
         self.config.ack_max_in_flight = Some(n);
+        self
+    }
+    /// 设置客户端用于验证服务端证书的 CA/自签名证书路径。
+    pub fn tls_ca_cert_path(mut self, path: impl Into<String>) -> Self {
+        self.config.tls_ca_cert_path = Some(path.into());
+        self
+    }
+    /// 设置 SPKI SHA-256 pins；可同时传当前 pin 与轮换 pin。
+    pub fn tls_spki_sha256_pins(mut self, pins: Vec<String>) -> Self {
+        self.config.tls_spki_sha256_pins = pins;
+        self
+    }
+    /// 设置旧整证书 SHA-256 pins；新接入优先使用 [`Self::tls_spki_sha256_pins`]。
+    pub fn tls_certificate_sha256_pins(mut self, pins: Vec<String>) -> Self {
+        self.config.tls_certificate_sha256_pins = pins;
         self
     }
     /// 是否开启 SDK 指标采集。

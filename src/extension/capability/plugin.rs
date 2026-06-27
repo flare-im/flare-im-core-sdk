@@ -6,10 +6,16 @@ use serde_json::Value;
 use crate::client::api::{CapabilityDispatchResult, UserCapabilityGrantDto};
 use crate::shared::error::Result;
 
+use super::manifest::SdkPluginManifest;
+
 #[async_trait]
 pub trait SdkCapabilityPlugin: Send + Sync {
     fn plugin_id(&self) -> &'static str;
     fn capability_namespaces(&self) -> &'static [&'static str];
+
+    fn manifest(&self) -> SdkPluginManifest {
+        SdkPluginManifest::builtin(self.plugin_id(), self.capability_namespaces())
+    }
 
     async fn invoke(
         &self,

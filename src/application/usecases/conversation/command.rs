@@ -3,10 +3,10 @@ use std::sync::Arc;
 use crate::application::adapters::SyncProtocolAdapter;
 use crate::application::sync_task::ConversationUserSettingsPatch;
 use crate::application::{ConversationLocalLifecycle, LocalConversationVisibility};
-use crate::core::CurrentUserIdStore;
 use crate::domain::{
     ConversationIdentityService, ConversationReadService, ConversationStore, SyncCursorStore,
 };
+use crate::kernel::{CurrentUserIdStore, SessionSyncRunner};
 use crate::model::conversation::ConversationType;
 use crate::model::{
     Conversation, ConversationParticipant, mark_settings_dirty, user_settings_version,
@@ -20,6 +20,7 @@ pub struct ConversationCommandUseCase {
     identity_service: ConversationIdentityService,
     read_service: ConversationReadService,
     settings_sync: Option<Arc<SyncProtocolAdapter>>,
+    read_ack_sync: Option<Arc<dyn SessionSyncRunner>>,
 }
 
 impl ConversationCommandUseCase {
@@ -35,6 +36,9 @@ impl ConversationCommandUseCase {
             current_user_id,
             identity_service: ConversationIdentityService,
             read_service: ConversationReadService,
+            read_ack_sync: settings_sync
+                .as_ref()
+                .map(|sync| Arc::clone(sync) as Arc<dyn SessionSyncRunner>),
             settings_sync,
         }
     }
@@ -51,15 +55,14 @@ impl ConversationCommandUseCase {
         self.store.save_batch(&[conversation.clone()]).await?;
         if let Some(sync) = &self.settings_sync {
             let base = user_settings_version(&conversation);
-            let _ = sync
-                .push_conversation_user_settings(conversation_id, base, patch)
-                .await;
+            sync.push_conversation_user_settings(conversation_id, base, patch)
+                .await?;
         }
         Ok(())
     }
 
     pub async fn current_user_id(&self) -> Result<String> {
-        let uid = self.current_user_id.read().await.clone();
+        let uid = self.current_user_id.read().await.trim().to_string();
         if uid.is_empty() {
             return Err(FlareError::localized(ErrorCode::NotConnected, "未连接"));
         }
@@ -163,7 +166,12 @@ impl ConversationCommandUseCase {
     }
 
     pub async fn mark_read(&self, conversation_id: &str, read_seq: u64) -> Result<u32> {
-        let current_user_id = self.current_user_id().await?;
+        if read_seq == 0 {
+            return Err(FlareError::localized(
+                ErrorCode::InvalidParameter,
+                "read_seq must be greater than 0",
+            ));
+        }
         let Some(current) = self.store.get(conversation_id).await? else {
             return Ok(0);
         };
@@ -175,6 +183,14 @@ impl ConversationCommandUseCase {
         let decision = self
             .read_service
             .plan_mark_read(&current, local_max_seq, read_seq);
+
+        if decision.next_read_seq > 0
+            && let Some(sync) = &self.read_ack_sync
+        {
+            sync.send_read_ack(conversation_id, decision.next_read_seq)
+                .await?;
+        }
+
         self.store
             .update_unread(
                 conversation_id,
@@ -183,7 +199,8 @@ impl ConversationCommandUseCase {
             )
             .await?;
 
-        if decision.should_recompute_local_unread {
+        let current_user_id = self.current_user_id.read().await.trim().to_string();
+        if decision.should_recompute_local_unread && !current_user_id.is_empty() {
             let _ = self
                 .store
                 .recompute_unread_for_user(conversation_id, &current_user_id)
@@ -193,17 +210,6 @@ impl ConversationCommandUseCase {
             }
         }
         Ok(decision.unread_count)
-    }
-
-    pub async fn mark_all_read(&self) -> Result<()> {
-        self.current_user_id().await?;
-        let list = self.store.list().await?;
-        for conversation in list {
-            let _ = self
-                .mark_read(conversation.conversation_id(), conversation.max_seq())
-                .await;
-        }
-        Ok(())
     }
 
     pub async fn delete(&self, conversation_id: &str) -> Result<()> {
@@ -305,5 +311,131 @@ impl ConversationCommandUseCase {
             channel_id,
         );
         self.store.save_batch(&[summary]).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::future::Future;
+    use std::pin::Pin;
+    use std::sync::Arc;
+
+    use tokio::sync::RwLock;
+
+    use super::*;
+    use crate::domain::{ConversationReader, ConversationWriter};
+    use crate::infrastructure::persistence::memory_im::MemoryConversationStore;
+    use crate::model::Conversation;
+
+    struct FakeSessionSyncRunner {
+        fail_read_ack: bool,
+    }
+
+    impl SessionSyncRunner for FakeSessionSyncRunner {
+        fn request_message_sync(
+            &self,
+            _conversation_id: &str,
+        ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + '_>> {
+            Box::pin(async { Ok(()) })
+        }
+
+        fn request_message_sync_from_seq(
+            &self,
+            _conversation_id: &str,
+            _last_seq: u64,
+            _limit: i32,
+        ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + '_>> {
+            Box::pin(async { Ok(()) })
+        }
+
+        fn send_read_ack(
+            &self,
+            _conversation_id: &str,
+            _read_seq: u64,
+        ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + '_>> {
+            Box::pin(async move {
+                if self.fail_read_ack {
+                    Err(FlareError::localized(
+                        ErrorCode::NetworkConnectionLost,
+                        "read ack failed",
+                    ))
+                } else {
+                    Ok(())
+                }
+            })
+        }
+
+        fn request_participants_sync(
+            &self,
+            _conversation_id: &str,
+            _limit: i32,
+        ) -> Pin<Box<dyn Future<Output = Result<Vec<ConversationParticipant>>> + Send + '_>>
+        {
+            Box::pin(async { Ok(Vec::new()) })
+        }
+    }
+
+    fn command_use_case(
+        store: Arc<MemoryConversationStore>,
+        read_ack_sync: Arc<dyn SessionSyncRunner>,
+    ) -> ConversationCommandUseCase {
+        ConversationCommandUseCase {
+            store,
+            cursors: None,
+            current_user_id: Arc::new(RwLock::new("hugo".to_string())),
+            identity_service: ConversationIdentityService,
+            read_service: ConversationReadService,
+            settings_sync: None,
+            read_ack_sync: Some(read_ack_sync),
+        }
+    }
+
+    async fn save_unread_conversation(store: &MemoryConversationStore) {
+        let conversation = Conversation {
+            conversation_id: "conv-read".to_string(),
+            max_seq: 8,
+            last_read_seq: 3,
+            unread_count: 5,
+            ..Default::default()
+        };
+        store.save_batch(&[conversation]).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn mark_read_does_not_clear_local_unread_when_read_ack_fails() {
+        let store = Arc::new(MemoryConversationStore::new());
+        save_unread_conversation(&store).await;
+        let use_case = command_use_case(
+            Arc::clone(&store),
+            Arc::new(FakeSessionSyncRunner {
+                fail_read_ack: true,
+            }),
+        );
+
+        let err = use_case.mark_read("conv-read", 8).await.unwrap_err();
+
+        assert_eq!(err.code(), Some(ErrorCode::NetworkConnectionLost));
+        let stored = store.get("conv-read").await.unwrap().unwrap();
+        assert_eq!(stored.unread_count, 5);
+        assert_eq!(stored.last_read_seq, 3);
+    }
+
+    #[tokio::test]
+    async fn mark_read_clears_local_unread_after_read_ack_succeeds() {
+        let store = Arc::new(MemoryConversationStore::new());
+        save_unread_conversation(&store).await;
+        let use_case = command_use_case(
+            Arc::clone(&store),
+            Arc::new(FakeSessionSyncRunner {
+                fail_read_ack: false,
+            }),
+        );
+
+        let unread = use_case.mark_read("conv-read", 8).await.unwrap();
+
+        assert_eq!(unread, 0);
+        let stored = store.get("conv-read").await.unwrap().unwrap();
+        assert_eq!(stored.unread_count, 0);
+        assert_eq!(stored.last_read_seq, 8);
     }
 }

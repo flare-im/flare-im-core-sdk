@@ -1,18 +1,23 @@
 //! WASM store provider: memory hot path + optional JS IndexedDB persistence.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use flare_im_core_sdk::Result;
 use flare_im_core_sdk::model::Conversation;
 use flare_im_core_sdk::model::IMMessage;
+use flare_im_core_sdk::model::MessagePreviewElem;
+use flare_im_core_sdk::model::message::ReactionEntry;
 use flare_im_core_sdk::storage::{
     ConversationReader, ConversationWriter, MessageReader, MessageStore, MessageWriter,
-    PendingSendReader, PendingSendVo, PendingSendWriter, SyncCursorReader, SyncCursorWriter,
+    OperationApplyResult, PendingSendReader, PendingSendVo, PendingSendWriter, SyncCursorReader,
+    SyncCursorWriter,
 };
 use flare_im_core_sdk::storage::{MemoryConversationStore, MemoryMessageStore};
 use flare_im_core_sdk::storage::{MemoryPendingSendStore, MemoryUserProfileStore};
 use flare_im_core_sdk::storage::{MemorySyncCursorStore, StoreProvider, in_memory_im_provider};
+use wasm_bindgen::JsCast;
 
 use super::host::{
     delete_conversation, delete_message, delete_pending_send, load_snapshot, persist_conversation,
@@ -24,6 +29,30 @@ where
     F: std::future::Future<Output = ()> + 'static,
 {
     wasm_bindgen_futures::spawn_local(future);
+}
+
+fn log_storage_error(operation: &str, error: &flare_im_core_sdk::FlareError) {
+    log_storage_console("error", operation, &error.to_string());
+}
+
+fn log_storage_console(level: &str, operation: &str, detail: &str) {
+    let global = js_sys::global();
+    let Ok(console) = js_sys::Reflect::get(&global, &wasm_bindgen::JsValue::from_str("console"))
+    else {
+        return;
+    };
+    let Ok(error_fn) = js_sys::Reflect::get(&console, &wasm_bindgen::JsValue::from_str(level))
+    else {
+        return;
+    };
+    let Some(error_fn) = error_fn.dyn_ref::<js_sys::Function>() else {
+        return;
+    };
+    let _ = error_fn.call2(
+        &console,
+        &wasm_bindgen::JsValue::from_str("[flare-core-storage]"),
+        &wasm_bindgen::JsValue::from_str(&format!("{operation}: {detail}")),
+    );
 }
 
 fn persist_conversation_spawn(user_id: &str, conversation: Conversation) {
@@ -43,11 +72,13 @@ fn persist_cursor_spawn(user_id: &str, key: String, value: String) {
 struct PersistingMessageStore {
     user_id: String,
     inner: Arc<MemoryMessageStore>,
+    conversations: Arc<MemoryConversationStore>,
 }
 
 struct PersistingConversationStore {
     user_id: String,
     inner: Arc<MemoryConversationStore>,
+    messages: Arc<MemoryMessageStore>,
 }
 
 struct PersistingSyncCursorStore {
@@ -61,15 +92,215 @@ struct PersistingPendingSendStore {
 }
 
 impl PersistingMessageStore {
-    fn new(user_id: String, inner: Arc<MemoryMessageStore>) -> Self {
-        Self { user_id, inner }
+    fn new(
+        user_id: String,
+        inner: Arc<MemoryMessageStore>,
+        conversations: Arc<MemoryConversationStore>,
+    ) -> Self {
+        Self {
+            user_id,
+            inner,
+            conversations,
+        }
+    }
+
+    async fn get_by_any_message_id(&self, message_id: &str) -> Result<Option<IMMessage>> {
+        if let Some(message) = self.inner.get(message_id).await? {
+            return Ok(Some(message));
+        }
+        self.inner.get_by_client_msg_id(message_id).await
+    }
+
+    fn persist_message_spawn(&self, message: IMMessage) {
+        let user_id = self.user_id.clone();
+        spawn_persist(async move {
+            if let Err(error) = persist_message(&user_id, &message).await {
+                log_storage_error("persist_message", &error);
+            }
+        });
+    }
+
+    async fn persist_outgoing_messages_in_conversation(
+        &self,
+        conversation_id: &str,
+        sender_user_id: &str,
+    ) -> Result<()> {
+        let messages = self
+            .inner
+            .get_by_conversation(conversation_id, 0, u32::MAX)
+            .await?;
+        for message in messages {
+            if message.sender_id == sender_user_id {
+                self.persist_message_spawn(message);
+            }
+        }
+        Ok(())
     }
 }
 
 impl PersistingConversationStore {
-    fn new(user_id: String, inner: Arc<MemoryConversationStore>) -> Self {
-        Self { user_id, inner }
+    fn new(
+        user_id: String,
+        inner: Arc<MemoryConversationStore>,
+        messages: Arc<MemoryMessageStore>,
+    ) -> Self {
+        Self {
+            user_id,
+            inner,
+            messages,
+        }
     }
+}
+
+async fn repair_single_chat_message_aliases(
+    user_id: &str,
+    messages: &Arc<MemoryMessageStore>,
+    conversations: &Arc<MemoryConversationStore>,
+) -> Result<u64> {
+    let conversations = conversations.list().await?;
+    let mut moved = 0_u64;
+    for conversation in conversations {
+        moved +=
+            repair_single_chat_message_alias_for_conversation(user_id, messages, &conversation)
+                .await?;
+    }
+    Ok(moved)
+}
+
+async fn repair_single_chat_message_alias_for_conversation(
+    user_id: &str,
+    messages: &Arc<MemoryMessageStore>,
+    conversation: &Conversation,
+) -> Result<u64> {
+    if !conversation.conversation_type.is_single_chat_conversation() {
+        return Ok(0);
+    }
+    let to = conversation.conversation_id.trim();
+    let from = conversation.channel_id.trim();
+    if from.is_empty() || to.is_empty() || from == to {
+        return Ok(0);
+    }
+
+    let mut moved_messages = messages.get_by_conversation(from, 0, u32::MAX).await?;
+    if moved_messages.is_empty() {
+        return Ok(0);
+    }
+    let moved = messages.rewrite_conversation_id(from, to).await?;
+    if moved > 0 {
+        let user_id = user_id.to_string();
+        let to = to.to_string();
+        spawn_persist(async move {
+            for message in &mut moved_messages {
+                message.conversation_id = to.clone();
+                let _ = persist_message(&user_id, message).await;
+            }
+        });
+    }
+    Ok(moved)
+}
+
+fn latest_message_id(message: &IMMessage) -> String {
+    if !message.server_id.trim().is_empty() {
+        return message.server_id.clone();
+    }
+    message.client_msg_id.clone()
+}
+
+fn latest_message_preview(message: &IMMessage) -> Option<String> {
+    message.text_for_storage().or_else(|| {
+        let preview = message.text_preview.trim();
+        (!preview.is_empty()).then(|| preview.to_string())
+    })
+}
+
+fn hydrate_conversation_latest(
+    conversation: &Conversation,
+    latest: &IMMessage,
+) -> Option<Conversation> {
+    let message_id = latest_message_id(latest);
+    if message_id.trim().is_empty() {
+        return None;
+    }
+
+    let preview = latest_message_preview(latest);
+    let time = latest.display_time_ms();
+    let sender_id = latest.sender_id.clone();
+    let max_seq = latest.conversation_seq;
+    let latest_preview = MessagePreviewElem {
+        message_id: message_id.clone(),
+        sender_id: sender_id.clone(),
+        r#type: latest.message_type,
+        text: preview.clone().unwrap_or_default(),
+        time,
+    };
+
+    let unchanged = conversation.last_message_id.as_deref() == Some(message_id.as_str())
+        && conversation.last_sender_id.as_deref() == Some(sender_id.as_str())
+        && conversation.last_message_at == Some(time)
+        && conversation.last_message_preview.as_deref() == preview.as_deref()
+        && conversation.last_message.as_ref().is_some_and(|current| {
+            current.message_id == latest_preview.message_id
+                && current.sender_id == latest_preview.sender_id
+                && current.r#type == latest_preview.r#type
+                && current.text == latest_preview.text
+                && current.time == latest_preview.time
+        })
+        && conversation.max_seq >= max_seq;
+
+    if unchanged {
+        return None;
+    }
+
+    let mut updated = conversation.clone();
+    updated.last_message_id = Some(message_id);
+    updated.last_sender_id = Some(sender_id);
+    updated.last_message_at = Some(time);
+    updated.last_message_preview = preview;
+    updated.last_message = Some(latest_preview);
+    updated.max_seq = updated.max_seq.max(max_seq);
+    updated.updated_at = updated.updated_at.max(time);
+    updated.updated_at_ts = Some(updated.updated_at_ts.unwrap_or(0).max(time));
+    Some(updated)
+}
+
+async fn hydrate_conversation_latest_from_messages(
+    user_id: &str,
+    messages: &Arc<MemoryMessageStore>,
+    conversations: &Arc<MemoryConversationStore>,
+    conversation: &Conversation,
+) -> Result<Option<Conversation>> {
+    let conversation_id = conversation.conversation_id.trim();
+    if conversation_id.is_empty() {
+        return Ok(None);
+    }
+    let latest = messages.get_by_conversation(conversation_id, 0, 1).await?;
+    let Some(latest) = latest.first() else {
+        return Ok(None);
+    };
+    let Some(hydrated) = hydrate_conversation_latest(conversation, latest) else {
+        return Ok(None);
+    };
+    ConversationWriter::save_one(conversations.as_ref(), &hydrated).await?;
+    persist_conversation_spawn(user_id, hydrated.clone());
+    Ok(Some(hydrated))
+}
+
+async fn hydrate_all_conversation_latest_from_messages(
+    user_id: &str,
+    messages: &Arc<MemoryMessageStore>,
+    conversations: &Arc<MemoryConversationStore>,
+) -> Result<()> {
+    let list = conversations.list().await?;
+    for conversation in list {
+        let _ = hydrate_conversation_latest_from_messages(
+            user_id,
+            messages,
+            conversations,
+            &conversation,
+        )
+        .await?;
+    }
+    Ok(())
 }
 
 impl PersistingSyncCursorStore {
@@ -100,6 +331,14 @@ impl MessageReader for PersistingMessageStore {
         before_seq: u64,
         limit: u32,
     ) -> Result<Vec<IMMessage>> {
+        if let Some(conversation) = self.conversations.get(conversation_id).await? {
+            repair_single_chat_message_alias_for_conversation(
+                &self.user_id,
+                &self.inner,
+                &conversation,
+            )
+            .await?;
+        }
         self.inner
             .get_by_conversation(conversation_id, before_seq, limit)
             .await
@@ -126,43 +365,36 @@ impl MessageWriter for PersistingMessageStore {
     async fn save_batch(&self, messages: &[IMMessage]) -> Result<()> {
         self.inner.save_batch(messages).await?;
         for message in messages {
-            let user_id = self.user_id.clone();
-            let message = message.clone();
-            spawn_persist(async move {
-                let _ = persist_message(&user_id, &message).await;
-            });
+            let lookup_id = if message.server_id.trim().is_empty() {
+                message.client_msg_id.trim()
+            } else {
+                message.server_id.trim()
+            };
+            let persisted = self
+                .get_by_any_message_id(lookup_id)
+                .await?
+                .unwrap_or_else(|| message.clone());
+            self.persist_message_spawn(persisted);
         }
         Ok(())
     }
 
     async fn save_one(&self, message: &IMMessage) -> Result<()> {
-        self.inner.save_one(message).await?;
-        let user_id = self.user_id.clone();
-        let message = message.clone();
-        spawn_persist(async move {
-            let _ = persist_message(&user_id, &message).await;
-        });
-        Ok(())
+        MessageWriter::save_batch(self, std::slice::from_ref(message)).await
     }
 
     async fn update_status(&self, message_id: &str, status: i32) -> Result<()> {
         self.inner.update_status(message_id, status).await?;
-        if let Some(message) = self.inner.get(message_id).await? {
-            let user_id = self.user_id.clone();
-            spawn_persist(async move {
-                let _ = persist_message(&user_id, &message).await;
-            });
+        if let Some(message) = self.get_by_any_message_id(message_id).await? {
+            self.persist_message_spawn(message);
         }
         Ok(())
     }
 
     async fn update_content(&self, message_id: &str, new_content: Vec<u8>) -> Result<bool> {
         let updated = self.inner.update_content(message_id, new_content).await?;
-        if updated && let Some(message) = self.inner.get(message_id).await? {
-            let user_id = self.user_id.clone();
-            spawn_persist(async move {
-                let _ = persist_message(&user_id, &message).await;
-            });
+        if updated && let Some(message) = self.get_by_any_message_id(message_id).await? {
+            self.persist_message_spawn(message);
         }
         Ok(updated)
     }
@@ -175,6 +407,31 @@ impl MessageWriter for PersistingMessageStore {
             let _ = delete_message(&user_id, &message_id).await;
         });
         Ok(())
+    }
+
+    async fn rewrite_conversation_id(
+        &self,
+        from_conversation_id: &str,
+        to_conversation_id: &str,
+    ) -> Result<u64> {
+        let from = from_conversation_id.trim();
+        let to = to_conversation_id.trim();
+        if from.is_empty() || to.is_empty() || from == to {
+            return Ok(0);
+        }
+        let mut moved_messages = self.inner.get_by_conversation(from, 0, u32::MAX).await?;
+        let moved = self.inner.rewrite_conversation_id(from, to).await?;
+        if moved > 0 {
+            let user_id = self.user_id.clone();
+            let to = to.to_string();
+            spawn_persist(async move {
+                for message in &mut moved_messages {
+                    message.conversation_id = to.clone();
+                    let _ = persist_message(&user_id, message).await;
+                }
+            });
+        }
+        Ok(moved)
     }
 
     async fn update_after_ack(&self, client_msg_id: &str, message: &IMMessage) -> Result<()> {
@@ -190,15 +447,120 @@ impl MessageWriter for PersistingMessageStore {
     }
 }
 
-impl MessageStore for PersistingMessageStore {}
+#[async_trait]
+impl MessageStore for PersistingMessageStore {
+    async fn mark_outgoing_read_upto_seq(
+        &self,
+        conversation_id: &str,
+        sender_user_id: &str,
+        read_seq: u64,
+    ) -> Result<()> {
+        self.inner
+            .mark_outgoing_read_upto_seq(conversation_id, sender_user_id, read_seq)
+            .await?;
+        self.persist_outgoing_messages_in_conversation(conversation_id, sender_user_id)
+            .await
+    }
+
+    async fn reconcile_outgoing_read_by_peer_seq(
+        &self,
+        conversation_id: &str,
+        sender_user_id: &str,
+        peer_read_seq: u64,
+    ) -> Result<()> {
+        self.inner
+            .reconcile_outgoing_read_by_peer_seq(conversation_id, sender_user_id, peer_read_seq)
+            .await?;
+        self.persist_outgoing_messages_in_conversation(conversation_id, sender_user_id)
+            .await
+    }
+
+    async fn apply_reaction(
+        &self,
+        conversation_id: &str,
+        message_server_id: &str,
+        user_id: &str,
+        emoji: &str,
+        action: i32,
+    ) -> Result<()> {
+        self.inner
+            .apply_reaction(conversation_id, message_server_id, user_id, emoji, action)
+            .await?;
+        if let Some(message) = self.get_by_any_message_id(message_server_id).await? {
+            self.persist_message_spawn(message);
+        }
+        Ok(())
+    }
+
+    async fn list_reactions(
+        &self,
+        message_server_ids: &[String],
+    ) -> Result<HashMap<String, Vec<ReactionEntry>>> {
+        self.inner.list_reactions(message_server_ids).await
+    }
+
+    async fn set_message_flag(
+        &self,
+        message_id: &str,
+        flag_key: &str,
+        enabled: bool,
+    ) -> Result<()> {
+        self.inner
+            .set_message_flag(message_id, flag_key, enabled)
+            .await?;
+        if let Some(message) = self.get_by_any_message_id(message_id).await? {
+            self.persist_message_spawn(message);
+        }
+        Ok(())
+    }
+
+    async fn apply_pin_event(
+        &self,
+        message_id: &str,
+        enabled: bool,
+        event_seq: Option<u64>,
+    ) -> Result<OperationApplyResult> {
+        let applied = self
+            .inner
+            .apply_pin_event(message_id, enabled, event_seq)
+            .await?;
+        if applied == OperationApplyResult::Applied
+            && let Some(message) = self.get_by_any_message_id(message_id).await?
+        {
+            self.persist_message_spawn(message);
+        }
+        Ok(applied)
+    }
+}
 
 #[async_trait]
 impl ConversationReader for PersistingConversationStore {
     async fn get(&self, conversation_id: &str) -> Result<Option<Conversation>> {
+        if let Some(conversation) = self.inner.get(conversation_id).await? {
+            repair_single_chat_message_alias_for_conversation(
+                &self.user_id,
+                &self.messages,
+                &conversation,
+            )
+            .await?;
+            if let Some(hydrated) = hydrate_conversation_latest_from_messages(
+                &self.user_id,
+                &self.messages,
+                &self.inner,
+                &conversation,
+            )
+            .await?
+            {
+                return Ok(Some(hydrated));
+            }
+        }
         self.inner.get(conversation_id).await
     }
 
     async fn list(&self) -> Result<Vec<Conversation>> {
+        repair_single_chat_message_aliases(&self.user_id, &self.messages, &self.inner).await?;
+        hydrate_all_conversation_latest_from_messages(&self.user_id, &self.messages, &self.inner)
+            .await?;
         self.inner.list().await
     }
 }
@@ -209,10 +571,12 @@ impl ConversationWriter for PersistingConversationStore {
         self.inner.save_batch(conversations).await?;
         for conversation in conversations {
             let user_id = self.user_id.clone();
-            let conversation = conversation.clone();
-            spawn_persist(async move {
-                let _ = persist_conversation(&user_id, &conversation).await;
-            });
+            let conversation_id = conversation.conversation_id.clone();
+            if let Some(conversation) = self.inner.get(&conversation_id).await? {
+                spawn_persist(async move {
+                    let _ = persist_conversation(&user_id, &conversation).await;
+                });
+            }
         }
         Ok(())
     }
@@ -220,10 +584,11 @@ impl ConversationWriter for PersistingConversationStore {
     async fn save_one(&self, conversation: &Conversation) -> Result<()> {
         self.inner.save_one(conversation).await?;
         let user_id = self.user_id.clone();
-        let conversation = conversation.clone();
-        spawn_persist(async move {
-            let _ = persist_conversation(&user_id, &conversation).await;
-        });
+        if let Some(conversation) = self.inner.get(&conversation.conversation_id).await? {
+            spawn_persist(async move {
+                let _ = persist_conversation(&user_id, &conversation).await;
+            });
+        }
         Ok(())
     }
 
@@ -288,6 +653,29 @@ impl ConversationWriter for PersistingConversationStore {
         let conversation_id = conversation_id.to_string();
         spawn_persist(async move {
             let _ = delete_conversation(&user_id, &conversation_id).await;
+        });
+        Ok(())
+    }
+
+    async fn merge_conversation_identity(
+        &self,
+        from_conversation_id: &str,
+        to_conversation_id: &str,
+    ) -> Result<()> {
+        let from = from_conversation_id.trim();
+        let to = to_conversation_id.trim();
+        if from.is_empty() || to.is_empty() || from == to {
+            return Ok(());
+        }
+        self.inner.merge_conversation_identity(from, to).await?;
+        let user_id = self.user_id.clone();
+        let from = from.to_string();
+        let merged = self.inner.get(to).await?;
+        spawn_persist(async move {
+            let _ = delete_conversation(&user_id, &from).await;
+            if let Some(conversation) = merged {
+                let _ = persist_conversation(&user_id, &conversation).await;
+            }
         });
         Ok(())
     }
@@ -461,6 +849,8 @@ pub async fn build_web_store_provider(user_id: &str) -> StoreProvider {
             let _ = PendingSendWriter::push(pending_inner.as_ref(), entry).await;
         }
     }
+    let _ = repair_single_chat_message_aliases(user_id, &messages, &conversations).await;
+    let _ = hydrate_all_conversation_latest_from_messages(user_id, &messages, &conversations).await;
 
     let user_id = user_id.to_string();
     let pending = Arc::new(PersistingPendingSendStore::new(
@@ -470,10 +860,15 @@ pub async fn build_web_store_provider(user_id: &str) -> StoreProvider {
     let user_profiles = Arc::new(MemoryUserProfileStore::new());
 
     StoreProvider {
-        messages: Arc::new(PersistingMessageStore::new(user_id.clone(), messages)),
+        messages: Arc::new(PersistingMessageStore::new(
+            user_id.clone(),
+            messages.clone(),
+            conversations.clone(),
+        )),
         conversations: Arc::new(PersistingConversationStore::new(
             user_id.clone(),
             conversations,
+            messages,
         )),
         conversation_participants: None,
         cursors: Arc::new(PersistingSyncCursorStore::new(user_id, cursors)),

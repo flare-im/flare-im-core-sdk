@@ -39,17 +39,17 @@ pub fn to_json_string<T: serde::Serialize>(value: &T) -> Result<String, i32> {
     serde_json::to_string(value).map_err(|_| FLARE_ERR_JSON_PARSE)
 }
 
-/// 解析 init 配置：支持裸 [`SdkConfigOverlay`] 或 `{ environment?, sdk_config? }`。
+/// 解析 init 配置：支持裸 [`SdkConfigOverlay`] 或 `{ environment?, sdkConfig? }`。
 #[inline]
 pub fn parse_init_request(ptr: *const c_char) -> Result<(Option<String>, SdkConfigOverlay), i32> {
     let value: Value = parse_json(ptr)?;
-    if value.get("sdk_config").is_some() || value.get("environment").is_some() {
+    if value.get("sdkConfig").is_some() || value.get("environment").is_some() {
         let environment = value
             .get("environment")
             .and_then(|v| v.as_str())
             .map(String::from);
         let sdk_config = value
-            .get("sdk_config")
+            .get("sdkConfig")
             .cloned()
             .map(serde_json::from_value::<SdkConfigOverlay>)
             .transpose()

@@ -1,16 +1,15 @@
 //! 同步协议处理：会话列表、单会话消息、已读上报及响应落库。
 //! 与 flare-proto 对齐：上行 Ack(ReadAck)、Sync；下行 SyncRes。
 
-use std::collections::HashSet;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 
 use futures::stream::{self, StreamExt};
 
 use flare_proto::common::{
-    Ack, ConversationParticipantsSync, GetSyncCursorSync, MultiDeviceCursor, QueryEventsSync,
-    ReadAck, SyncRes, UpdateSyncCursorSync, ack::Payload as AckPayload,
-    sync_res::Payload as SyncResPayload,
+    Ack, ConversationParticipantsSync, ConversationUserSettingsSync, GetSyncCursorSync,
+    MultiDeviceCursor, QueryEventsSync, ReadAck, SyncRes, UpdateSyncCursorSync,
+    ack::Payload as AckPayload, sync_res::Payload as SyncResPayload,
 };
 use tokio::sync::Mutex as AsyncMutex;
 
@@ -18,19 +17,23 @@ use crate::application::notification::NotificationInboundPipeline;
 use crate::application::services::EventDeduper;
 use crate::application::usecases::sync_request::SyncRequestUseCase;
 use crate::application::usecases::{SyncApplyUseCase, local_message_sync_start_seq};
-use crate::core::ConversationSummarySync;
-use crate::core::event::SyncNotify;
-use crate::core::event::{EventBus, SdkEvent};
-use crate::core::{SessionSyncRunner, SyncResponseHandler, SyncRunContext, SyncTrigger};
-use crate::core::{SyncFsm, SyncState, SyncTransition};
 use crate::domain::{
     CONVERSATION_CURSOR_KEY, CRITICAL_EVENT_CURSOR_KEY, DEFAULT_SYNC_LIMIT, ReadPosition,
     SyncPolicy,
 };
 use crate::infrastructure::persistence::StoreProvider;
 use crate::infrastructure::protocol::PacketSender;
+use crate::kernel::ConversationSummarySync;
+use crate::kernel::event::SyncNotify;
+use crate::kernel::event::{EventBus, SdkEvent};
+use crate::kernel::{
+    ReliableSendQueuePort, SessionSyncRunner, SyncResponseHandler, SyncRunContext, SyncTrigger,
+};
+use crate::kernel::{SyncFsm, SyncState, SyncTransition};
+use crate::model::apply_remote_settings_version;
 use crate::shared::error::{ErrorCode, FlareError, Result};
 use crate::shared::util::now_millis;
+use crate::spi::metrics::{MetricLabel, MetricsRecorder};
 
 #[derive(Debug, Clone, Default)]
 struct QueryEventsReqV1 {
@@ -42,7 +45,7 @@ struct QueryEventsReqV1 {
     include_deleted: bool,
 }
 
-fn build_read_ack(conversation_id: &str, read_seq: u64) -> Ack {
+fn build_read_ack(device_id: &str, conversation_id: &str, read_seq: u64) -> Ack {
     let ack_id = format!("read:{}:{}", conversation_id, read_seq);
     Ack {
         ack_id: Some(ack_id.clone()),
@@ -50,9 +53,18 @@ fn build_read_ack(conversation_id: &str, read_seq: u64) -> Ack {
         payload: Some(AckPayload::Read(ReadAck {
             conversation_id: conversation_id.to_string(),
             read_seq,
-            device_id: None,
+            device_id: non_empty(device_id),
             ack_id: Some(ack_id),
         })),
+    }
+}
+
+fn non_empty(value: &str) -> Option<String> {
+    let value = value.trim();
+    if value.is_empty() {
+        None
+    } else {
+        Some(value.to_string())
     }
 }
 
@@ -66,6 +78,7 @@ pub struct SyncProtocolAdapter {
     sync_request_use_case: SyncRequestUseCase,
     /// Init/重连：会话列表同步后按会话补拉消息的并发上限。
     init_message_sync_concurrency: usize,
+    metrics: MetricsRecorder,
 }
 
 impl SyncProtocolAdapter {
@@ -77,7 +90,7 @@ impl SyncProtocolAdapter {
         let resp = self
             .sync_request_use_case
             .request_get_cursor(GetSyncCursorSync {
-                device_id: String::new(),
+                device_id: self.sync_request_use_case.device_id().to_string(),
                 conversation_id: conversation_id.to_string(),
                 ..Default::default()
             })
@@ -122,7 +135,7 @@ impl SyncProtocolAdapter {
             .sync_request_use_case
             .request_update_cursor(UpdateSyncCursorSync {
                 cursor: Some(MultiDeviceCursor {
-                    device_id: String::new(),
+                    device_id: self.sync_request_use_case.device_id().to_string(),
                     conversation_id: conversation_id.to_string(),
                     last_conversation_seq: effective,
                     last_sync_at: now_millis() as i64,
@@ -138,13 +151,16 @@ impl SyncProtocolAdapter {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         sender: Arc<PacketSender>,
         stores: StoreProvider,
         bus: EventBus,
         event_deduper: EventDeduper,
         notification_pipeline: NotificationInboundPipeline,
+        device_id: String,
         init_message_sync_concurrency: usize,
+        metrics: MetricsRecorder,
     ) -> Self {
         let sync_apply_use_case = SyncApplyUseCase::new(
             stores.clone(),
@@ -152,7 +168,7 @@ impl SyncProtocolAdapter {
             event_deduper,
             notification_pipeline,
         );
-        let sync_request_use_case = SyncRequestUseCase::new(sender.clone());
+        let sync_request_use_case = SyncRequestUseCase::new(sender.clone(), device_id);
         Self {
             sender,
             stores,
@@ -162,10 +178,11 @@ impl SyncProtocolAdapter {
             sync_apply_use_case,
             sync_request_use_case,
             init_message_sync_concurrency: init_message_sync_concurrency.max(1),
+            metrics,
         }
     }
 
-    pub fn set_reliable_queue(&self, reliable_queue: Option<Arc<crate::core::ReliableSendQueue>>) {
+    pub fn set_reliable_queue(&self, reliable_queue: Option<Arc<dyn ReliableSendQueuePort>>) {
         self.sync_apply_use_case.set_reliable_queue(reliable_queue);
     }
 
@@ -246,25 +263,63 @@ impl SyncProtocolAdapter {
     }
 
     async fn send_read_ack_impl(&self, conversation_id: &str, read_seq: u64) -> Result<()> {
-        let ack = build_read_ack(conversation_id, read_seq);
+        let ack = build_read_ack(
+            self.sync_request_use_case.device_id(),
+            conversation_id,
+            read_seq,
+        );
         self.sender.send_ack(&ack).await
     }
 
     /// 上行同步当前用户的会话偏好（置顶/免打扰/归档/草稿）。
-    ///
-    /// 当前 common sync.proto 已移除旧 `UpdateConversationUserSettingsSync` payload；
-    /// 设置同步需要接入新的会话设置命令/RPC 后再启用。
     pub async fn push_conversation_user_settings(
         &self,
         conversation_id: &str,
         base_settings_version: u64,
         patch: crate::application::sync_task::ConversationUserSettingsPatch,
     ) -> Result<()> {
-        let _ = (conversation_id, base_settings_version, patch);
-        Err(FlareError::localized(
-            ErrorCode::OperationNotSupported,
-            "conversation user settings sync is not defined in current sync.proto",
-        ))
+        let conversation_id = conversation_id.trim();
+        if conversation_id.is_empty() {
+            return Err(FlareError::localized(
+                ErrorCode::InvalidParameter,
+                "conversation_id is required",
+            ));
+        }
+        let resp = self
+            .sync_request_use_case
+            .request_conversation_user_settings(ConversationUserSettingsSync {
+                conversation_id: conversation_id.to_string(),
+                is_pinned: patch.is_pinned,
+                is_muted: patch.is_muted,
+                is_archived: patch.is_archived,
+                draft: patch.draft,
+                base_settings_version,
+            })
+            .await?;
+        let Some(SyncResPayload::ConversationUserSettings(res)) = resp.payload else {
+            return Err(FlareError::localized(
+                ErrorCode::GeneralError,
+                "unexpected conversation user settings sync response",
+            ));
+        };
+        let Some(settings) = res.settings else {
+            return Err(FlareError::localized(
+                ErrorCode::GeneralError,
+                "conversation user settings sync response missing settings",
+            ));
+        };
+        if let Some(mut conversation) = self.stores.conversations.get(conversation_id).await? {
+            conversation.is_pinned = settings.is_pinned;
+            conversation.is_muted = settings.is_muted;
+            conversation.is_archived = settings.is_archived;
+            conversation.draft = non_empty(&settings.draft);
+            apply_remote_settings_version(&mut conversation, settings.settings_version);
+            self.stores
+                .conversations
+                .save_batch(&[conversation])
+                .await?;
+        }
+        Ok(())
     }
 
     pub async fn push_conversation_user_settings_from_local(
@@ -585,6 +640,18 @@ impl ConversationSummarySync for SyncProtocolAdapter {
         let user_id = user_id.to_string();
         Box::pin(async move { self.sync_conversations_with_context(&user_id, run).await })
     }
+
+    fn sync_foreground_convergence(
+        &self,
+        user_id: &str,
+        run: SyncRunContext,
+    ) -> Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + '_>> {
+        let user_id = user_id.to_string();
+        Box::pin(async move {
+            self.sync_conversations_with_context(&user_id, run).await?;
+            self.sync_critical_events().await
+        })
+    }
 }
 
 impl SyncResponseHandler for SyncProtocolAdapter {
@@ -721,12 +788,6 @@ impl SyncProtocolAdapter {
         );
 
         let mut total_synced = 0usize;
-        let mut server_conversation_ids = HashSet::new();
-        let should_prune_orphans = cursor_selection.drop_local_incremental_cursor
-            || matches!(
-                run.trigger,
-                SyncTrigger::InitialLogin | SyncTrigger::Reconnect
-            );
         loop {
             tracing::debug!(
                 cursor = %cursor,
@@ -755,7 +816,6 @@ impl SyncProtocolAdapter {
                 .sync_apply_use_case
                 .apply_conversations(user_id, &resp)
                 .await?;
-            server_conversation_ids.extend(applied.synced_conversation_ids.iter().cloned());
             total_synced += resp.conversations.len();
             let server_cursor_ms = resp.next_cursor.parse::<u64>().unwrap_or_default();
             self.save_cursor_with_remote(user_id, CONVERSATION_CURSOR_KEY, server_cursor_ms)
@@ -788,27 +848,6 @@ impl SyncProtocolAdapter {
                 }
             }
             if !applied.has_more {
-                if should_prune_orphans {
-                    match self
-                        .sync_apply_use_case
-                        .prune_local_conversations_not_on_server(&server_conversation_ids)
-                        .await
-                    {
-                        Ok(pruned) if !pruned.is_empty() => {
-                            tracing::info!(
-                                count = pruned.len(),
-                                "pruned local conversations missing from server snapshot"
-                            );
-                        }
-                        Ok(_) => {}
-                        Err(error) => {
-                            tracing::warn!(
-                                error = %error,
-                                "prune local orphan conversations failed"
-                            );
-                        }
-                    }
-                }
                 self.transition_sync(&run, SyncTransition::SyncDone);
                 tracing::debug!(total_synced, "会话列表同步完成");
                 break;
@@ -865,12 +904,14 @@ impl SyncProtocolAdapter {
         .await
     }
 
+    #[tracing::instrument(skip(self, run), fields(conversation_id = %conversation_id, trigger = ?run.trigger))]
     pub async fn sync_conversation_with_context(
         &self,
         conversation_id: &str,
         run: SyncRunContext,
     ) -> Result<()> {
         tracing::debug!(conversation_id = %conversation_id, "开始同步会话消息");
+        let started_at = now_millis();
 
         self.transition_sync(&run, SyncTransition::SyncRequested);
         let user_id = self.current_user_id().await;
@@ -922,6 +963,15 @@ impl SyncProtocolAdapter {
             total_messages = total_messages,
             "会话消息同步完成"
         );
+        self.metrics.histogram_with_labels(
+            "sync.conversation_duration_ms",
+            &[MetricLabel::new("trigger", format!("{:?}", run.trigger))],
+            now_millis().saturating_sub(started_at) as f64,
+        );
+        self.metrics
+            .counter("sync.messages_total", total_messages as u64);
+        self.metrics
+            .gauge("sync.last_finished_at_ms", now_millis() as i64);
         // 会话级关键事件兜底回放容易在会话数较多时放大 QueryEvents 请求量，
         // 且与全局 key_events 任务存在重复。这里不阻塞消息同步链路，优先保证消息实时性。
         Ok(())
@@ -1049,6 +1099,18 @@ impl SyncProtocolAdapter {
             );
 
             if next_seq <= from_seq {
+                if should_repair_operation_only_gap(start_seq, from_seq, next_seq) {
+                    tracing::debug!(
+                        conversation_id = %conversation_id,
+                        start_seq,
+                        from_seq,
+                        next_seq,
+                        "消息增量未推进，执行 operation-only 窗口修复"
+                    );
+                    let _ = self
+                        .request_single_page(run, conversation_id, 0, page_limit, String::new())
+                        .await?;
+                }
                 if has_more {
                     tracing::warn!(
                         conversation_id = %conversation_id,
@@ -1071,9 +1133,13 @@ impl SyncProtocolAdapter {
     }
 }
 
+fn should_repair_operation_only_gap(start_seq: u64, from_seq: u64, next_seq: u64) -> bool {
+    start_seq > 0 && from_seq >= start_seq && next_seq <= from_seq
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{build_read_ack, max_applied_event_prefix_seq};
+    use super::{build_read_ack, max_applied_event_prefix_seq, should_repair_operation_only_gap};
     use flare_proto::common::ack::Payload as AckPayload;
 
     fn make_event(seq: u64) -> flare_proto::common::Event {
@@ -1105,16 +1171,23 @@ mod tests {
 
     #[test]
     fn build_read_ack_uses_typed_payload() {
-        let ack = build_read_ack("conv-1", 42);
+        let ack = build_read_ack("device-1", "conv-1", 42);
 
         match ack.payload {
             Some(AckPayload::Read(read)) => {
                 assert_eq!(read.conversation_id, "conv-1");
                 assert_eq!(read.read_seq, 42);
-                assert_eq!(read.device_id, None);
+                assert_eq!(read.device_id.as_deref(), Some("device-1"));
                 assert_eq!(read.ack_id, ack.ack_id);
             }
             other => panic!("expected AckPayload::Read, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn operation_only_repair_runs_for_non_zero_cursor_without_progress() {
+        assert!(should_repair_operation_only_gap(3, 3, 3));
+        assert!(!should_repair_operation_only_gap(0, 0, 0));
+        assert!(!should_repair_operation_only_gap(3, 3, 4));
     }
 }

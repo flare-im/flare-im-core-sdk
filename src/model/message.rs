@@ -20,15 +20,16 @@ use flare_proto::common::{
     Message as ProtoMessage, MessageContent, MessageRetentionPolicy, MessageRetentionState,
     OfflinePushInfo,
 };
+use schemars::JsonSchema;
 use serde::ser::{SerializeStruct, Serializer};
 use serde::{Deserialize, Serialize};
 
-use crate::model::decoder::decode_content_bytes;
-use crate::model::message_elem::{
+use crate::content::decoder::decode_content_bytes;
+use crate::content::message_elem::{
     Elem, decoded_content_to_elem, elem_plain_summary, elem_preview_storage_payload,
     elem_to_message_content,
 };
-use crate::model::preview_storage::is_redundant_content_text_extra;
+use crate::content::preview_storage::is_redundant_content_text_extra;
 use prost::Message as ProstMessage;
 
 /// 从下行 `Message.attributes` 推断是否已编辑（与 storage writer 写入的 `messageFsmState`、`currentEditVersion` 对齐）。
@@ -46,7 +47,7 @@ fn is_edited_from_attributes(attributes: &HashMap<String, String>) -> bool {
 
 const REACTIONS_JSON_KEY: &str = "reactionsJson";
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct ReactionEntry {
     pub emoji: String,
@@ -83,7 +84,7 @@ fn write_reactions_to_attributes(
     }
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct MessageLocalState {
     /// 是否发送中
@@ -92,6 +93,12 @@ pub struct MessageLocalState {
     pub failed: bool,
     /// 本地消息
     pub is_local: bool,
+    /// 本地媒体上传中；仅用于 SDK 本地时间线展示，不写入服务端协议语义。
+    #[serde(default)]
+    pub uploading: bool,
+    /// 本地媒体上传进度，范围 0..=100。
+    #[serde(default)]
+    pub upload_progress: u32,
     /// 本地列表排序时间（毫秒），**不是**服务端会话 `conversation_seq`。
     ///
     /// 用途：待发/未 ACK 消息常保持 `conversation_seq == 0`，可用本字段稳定停留在本地时间线尾部。
@@ -101,7 +108,7 @@ pub struct MessageLocalState {
 
 /// SDK 层消息类型：与 message.proto 的 Message 属性一致，content 为解码后的 Elem；
 /// 另保留 raw_content 与 proto 一致用于持久化/网络，并增加发送者展示字段。
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct IMMessage {
     // ==============================
@@ -147,6 +154,7 @@ pub struct IMMessage {
     pub message_type: i32,
 
     /// proto结构
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub content: Option<Elem>,
 
     /// 当前 `MessageContent` 的 protobuf 编码缓存（反序列化时由上层编码生成，不从前端传入）。
@@ -170,8 +178,10 @@ pub struct IMMessage {
     // ==============================
     // Reply / Quote
     // ==============================
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub reply_to: Option<String>,
 
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub quote_preview: Option<String>,
 
     // ==============================
@@ -250,13 +260,19 @@ impl Serialize for IMMessage {
         state.serialize_field("createdAt", &self.created_at)?;
         state.serialize_field("clientCreatedAt", &self.client_created_at)?;
         state.serialize_field("messageType", &self.message_type)?;
-        state.serialize_field("content", &self.content)?;
+        if let Some(content) = &self.content {
+            state.serialize_field("content", content)?;
+        }
         state.serialize_field("textPreview", &self.text_preview)?;
         state.serialize_field("senderName", &self.sender_name)?;
         state.serialize_field("senderAvatar", &self.sender_avatar)?;
         state.serialize_field("senderDisplayName", &self.sender_display_name)?;
-        state.serialize_field("replyTo", &self.reply_to)?;
-        state.serialize_field("quotePreview", &self.quote_preview)?;
+        if let Some(reply_to) = &self.reply_to {
+            state.serialize_field("replyTo", reply_to)?;
+        }
+        if let Some(quote_preview) = &self.quote_preview {
+            state.serialize_field("quotePreview", quote_preview)?;
+        }
         state.serialize_field("status", &self.status)?;
         state.serialize_field("isRead", &self.is_read)?;
         state.serialize_field("isRecalled", &self.is_recalled)?;
@@ -357,6 +373,8 @@ impl IMMessage {
                 sending: false,
                 failed: false,
                 is_local: false,
+                uploading: false,
+                upload_progress: 0,
                 sort_ts: created_at,
             },
         }
@@ -515,9 +533,28 @@ impl IMMessage {
             .max(self.client_created_at)
     }
 
+    /// 展示时间：服务端已分配序列后优先使用服务端时间；本地待 ACK 消息使用本地排序时间。
+    ///
+    /// 这样客户端时钟异常只会影响 pending 阶段，ACK/sync 收敛后展示时间会回到服务端时间。
+    pub fn display_time_ms(&self) -> u64 {
+        if self.conversation_seq > 0 && self.created_at > 0 {
+            return self.created_at;
+        }
+        if self.local_state.sort_ts > 0 {
+            return self.local_state.sort_ts;
+        }
+        self.created_at.max(self.client_created_at)
+    }
+
     /// 本地待 ACK 消息在按会话序列展示时应留在尾部，直到服务端分配 `conversation_seq`。
+    ///
+    /// 失败消息是终态，不再参与“尾随等待 ACK”语义；它应按发送时的 `sort_ts`
+    /// 留在原本时间位置，避免后续新消息被插到失败消息上方。
     pub fn is_local_pending_for_timeline(&self) -> bool {
-        self.conversation_seq == 0 && self.local_state.is_local
+        self.conversation_seq == 0
+            && self.local_state.is_local
+            && !self.local_state.failed
+            && (self.local_state.sending || self.local_state.uploading)
     }
 
     /// 消息时间线升序比较：服务端序列为主，本地待 ACK 消息稳定留在尾部。
@@ -553,7 +590,7 @@ impl IMMessage {
         Self::compare_for_timeline_asc(right, left)
     }
 
-    /// 供 `messages.text` 与 `conversations.last_message_preview`：JSON 字符串形态的 [`crate::model::preview_storage::PreviewStoragePayload`]（稳定 `k` + 参数 `a`），供应用端 i18n；与 [`elem_plain_summary`] / [`elem_preview_storage_payload`](crate::model::message_elem::elem_preview_storage_payload) 一致。
+    /// 供 `messages.text` 与 `conversations.last_message_preview`：JSON 字符串形态的 [`crate::content::preview_storage::PreviewStoragePayload`]（稳定 `k` + 参数 `a`），供应用端 i18n；与 [`elem_plain_summary`] / [`elem_preview_storage_payload`](crate::content::message_elem::elem_preview_storage_payload) 一致。
     pub fn text_for_storage(&self) -> Option<String> {
         self.content.as_ref().and_then(|e| {
             let p = elem_preview_storage_payload(e);
@@ -596,8 +633,8 @@ pub use flare_proto::common::{
 
 #[cfg(test)]
 mod tests {
-    use super::{IMMessage, MessageLocalState};
-    use crate::model::message_elem::{Elem, LinkCardElem, TextElem};
+    use super::{IMMessage, MessageLocalState, MessageStatus};
+    use crate::content::message_elem::{Elem, LinkCardElem, TextElem};
     use flare_proto::common::Message as ProtoMessage;
     use std::collections::HashMap;
 
@@ -634,6 +671,8 @@ mod tests {
             sending: true,
             failed: false,
             is_local: true,
+            uploading: false,
+            upload_progress: 0,
             sort_ts: 1_000,
         };
 
@@ -652,6 +691,8 @@ mod tests {
             sending: true,
             failed: false,
             is_local: true,
+            uploading: false,
+            upload_progress: 0,
             sort_ts: 9_000,
         };
 
@@ -663,12 +704,54 @@ mod tests {
     }
 
     #[test]
+    fn failed_local_message_does_not_pin_after_newer_server_messages() {
+        let newer_server = message("client-new", "server-new", 11, 12_000);
+        let mut failed = message("client-failed", "client-failed", 0, 9_000);
+        failed.status = MessageStatus::Failed as i32;
+        failed.local_state = MessageLocalState {
+            sending: false,
+            failed: true,
+            is_local: true,
+            uploading: false,
+            upload_progress: 100,
+            sort_ts: 9_000,
+        };
+
+        let mut messages = vec![newer_server, failed];
+        messages.sort_by(IMMessage::compare_for_timeline_asc);
+
+        assert_eq!(messages[0].client_msg_id, "client-failed");
+        assert_eq!(messages[1].server_id, "server-new");
+        assert!(!messages[0].is_local_pending_for_timeline());
+    }
+
+    #[test]
+    fn display_time_prefers_server_time_after_ack_and_local_time_for_pending() {
+        let mut acked = message("client-1", "server-1", 7, 10_000);
+        acked.local_state.sort_ts = 99_000;
+        assert_eq!(acked.display_time_ms(), 10_000);
+
+        let mut pending = message("client-2", "", 0, 10_000);
+        pending.local_state = MessageLocalState {
+            sending: true,
+            failed: false,
+            is_local: true,
+            uploading: false,
+            upload_progress: 0,
+            sort_ts: 99_000,
+        };
+        assert_eq!(pending.display_time_ms(), 99_000);
+    }
+
+    #[test]
     fn latest_window_uses_sequence_for_acknowledged_messages_despite_future_local_sort_time() {
         let mut skewed_old = message("client-old", "server-old", 10, 1_000);
         skewed_old.local_state = MessageLocalState {
             sending: false,
             failed: false,
             is_local: false,
+            uploading: false,
+            upload_progress: 0,
             sort_ts: 99_999,
         };
         let newest = message("client-new", "server-new", 11, 2_000);
@@ -687,6 +770,8 @@ mod tests {
             sending: true,
             failed: false,
             is_local: true,
+            uploading: false,
+            upload_progress: 0,
             sort_ts: 9_000,
         };
 
@@ -698,6 +783,19 @@ mod tests {
         assert_eq!(value["localState"]["isLocal"], true);
         assert!(value.get("timeline_key").is_none());
         assert!(value.get("local_state").is_none());
+    }
+
+    #[test]
+    fn serialized_message_omits_absent_optional_fields() {
+        let msg = message("client-1", "server-1", 7, 1_000);
+        let value = serde_json::to_value(&msg).expect("serialize message");
+
+        for key in ["content", "replyTo", "quotePreview"] {
+            assert!(
+                value.get(key).is_none(),
+                "{key} must be omitted when absent"
+            );
+        }
     }
 
     #[test]

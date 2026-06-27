@@ -1,0 +1,88 @@
+{
+  "$defs": {
+    "ConversationType": {
+      "enum": [
+        "unspecified",
+        "single",
+        "group",
+        "ai",
+        "system",
+        "customer",
+        "temp",
+        "channel",
+        "broadcast"
+      ],
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "conversationTypes": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/ConversationType"
+      },
+      "type": "array"
+    },
+    "cursor": {
+      "default": null,
+      "description": "cursor 为会话 ID，表示从该会话之后开始。",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "hasDraftOnly": {
+      "default": false,
+      "type": "boolean"
+    },
+    "hasMarkedMessages": {
+      "default": false,
+      "description": "标记消息所在会话。core 当前没有“会话标签”模型，因此只支持消息标记聚合。",
+      "type": "boolean"
+    },
+    "includeArchived": {
+      "default": false,
+      "type": "boolean"
+    },
+    "keyword": {
+      "default": null,
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "limit": {
+      "default": null,
+      "format": "uint32",
+      "minimum": 0,
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "mentionMeOnly": {
+      "default": false,
+      "type": "boolean"
+    },
+    "mutedOnly": {
+      "default": null,
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
+    "pinnedOnly": {
+      "default": false,
+      "type": "boolean"
+    },
+    "unreadOnly": {
+      "default": false,
+      "type": "boolean"
+    }
+  },
+  "title": "ConversationListQuery",
+  "type": "object",
+  "xFlareGeneratedBy": "flare-im-core-sdk-xtask",
+  "xFlareRustType": "ConversationListQuery"
+}

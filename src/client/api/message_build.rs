@@ -9,10 +9,10 @@ use crate::application::{
     BuildCardRequest, BuildLinkCardRequest, BuildLocationRequest, BuildMiniProgramRequest,
     BuildRichDocRequest, BuildScheduleRequest, BuildStickerRequest, MessageBuilderService,
 };
-use crate::core::CurrentUserIdStore;
+use crate::content::BuiltContent;
 use crate::domain::conversation::id as conversation_id;
 use crate::domain::{ConversationIdentityService, ConversationStore};
-use crate::model::content_builder::BuiltContent;
+use crate::kernel::CurrentUserIdStore;
 use crate::model::message::IMMessage;
 use crate::shared::error::{ErrorCode, FlareError, Result};
 use flare_proto::common::ImageInfo;

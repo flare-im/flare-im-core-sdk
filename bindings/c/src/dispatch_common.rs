@@ -5,15 +5,22 @@ use std::future::Future;
 use std::pin::Pin;
 
 use crate::abi;
+use crate::error_convert::FLARE_ERR_JSON_PARSE;
 use crate::executor::{CallbackContext, execute_async, execute_async_unit, return_error};
-use crate::helpers::{c_str_to_string, parse_json, to_json_string};
+use crate::helpers::{c_str_to_string, to_json_string};
 use crate::registry::SdkInstance;
 use crate::registry::require_instance;
 use crate::types::{FlareHandle, FlareResultCallback};
-use flare_im_core_sdk_bindings_runtime::{BindingResponse, InvokeSession, invoke_api_id};
+use flare_im_core_sdk_bindings_runtime::{BindingResponse, InvokeSession, invoke_api_id_json};
 use std::sync::Arc;
 
 type DispatchFut = Pin<Box<dyn Future<Output = flare_im_core_sdk::Result<BindingResponse>> + Send>>;
+
+fn validate_json_str(json: &str) -> Result<(), i32> {
+    serde_json::from_str::<Box<serde_json::value::RawValue>>(json)
+        .map(|_| ())
+        .map_err(|_| FLARE_ERR_JSON_PARSE)
+}
 
 pub(crate) fn binding_response_to_json(response: BindingResponse) -> Result<String, i32> {
     if response.is_unit {
@@ -28,55 +35,40 @@ impl InvokeSession for SdkInstance {
         self.client.clone()
     }
 
-    fn message_api(
+    async fn message_api(
         &self,
-    ) -> impl Future<Output = flare_im_core_sdk::Result<flare_im_core_sdk::client::api::MessageApi>> + Send
+    ) -> flare_im_core_sdk::Result<flare_im_core_sdk::client::api::MessageApi> {
+        self.message_api().await
+    }
+
+    async fn message_build_api(
+        &self,
+    ) -> flare_im_core_sdk::Result<std::sync::Arc<flare_im_core_sdk::client::api::MessageBuildApi>>
     {
-        async move { self.message_api().await }
+        self.message_build_api().await
     }
 
-    fn message_build_api(
+    async fn conversation_api(
         &self,
-    ) -> impl Future<
-        Output = flare_im_core_sdk::Result<
-            std::sync::Arc<flare_im_core_sdk::client::api::MessageBuildApi>,
-        >,
-    > + Send {
-        async move { self.message_build_api().await }
+    ) -> flare_im_core_sdk::Result<flare_im_core_sdk::client::api::ConversationApi> {
+        self.conversation_api().await
     }
 
-    fn conversation_api(
+    async fn media_api(
         &self,
-    ) -> impl Future<
-        Output = flare_im_core_sdk::Result<flare_im_core_sdk::client::api::ConversationApi>,
-    > + Send {
-        async move { self.conversation_api().await }
+    ) -> flare_im_core_sdk::Result<std::sync::Arc<flare_im_core_sdk::client::api::MediaApi>> {
+        self.media_api().await
     }
 
-    fn media_api(
+    async fn capability_api(
         &self,
-    ) -> impl Future<
-        Output = flare_im_core_sdk::Result<
-            std::sync::Arc<flare_im_core_sdk::client::api::MediaApi>,
-        >,
-    > + Send {
-        async move { self.media_api().await }
+    ) -> flare_im_core_sdk::Result<std::sync::Arc<flare_im_core_sdk::client::api::CapabilityApi>>
+    {
+        self.capability_api().await
     }
 
-    fn capability_api(
-        &self,
-    ) -> impl Future<
-        Output = flare_im_core_sdk::Result<
-            std::sync::Arc<flare_im_core_sdk::client::api::CapabilityApi>,
-        >,
-    > + Send {
-        async move { self.capability_api().await }
-    }
-
-    fn after_disconnect(&self) -> impl Future<Output = ()> + Send {
-        async move {
-            self.im_session.clear().await;
-        }
+    async fn after_disconnect(&self) {
+        self.im_session.clear().await;
     }
 }
 
@@ -86,7 +78,7 @@ pub(crate) fn json_dispatch_entry(
     params_json: *const c_char,
     context: *mut c_void,
     callback: FlareResultCallback,
-    run: impl FnOnce(Arc<SdkInstance>, String, serde_json::Value) -> DispatchFut + Send + 'static,
+    run: impl FnOnce(Arc<SdkInstance>, String, String) -> DispatchFut + Send + 'static,
 ) -> i32 {
     abi::catch_ffi_i32(|| {
         let instance = match require_instance(handle) {
@@ -101,19 +93,24 @@ pub(crate) fn json_dispatch_entry(
                 return code;
             }
         };
-        let params = match parse_json(params_json) {
-            Ok(p) => p,
+        let params_json = match c_str_to_string(params_json) {
+            Ok(s) => s,
             Err(code) => {
                 let ctx = CallbackContext::new(context, callback);
                 return_error(&ctx, code, "Invalid params JSON");
                 return code;
             }
         };
+        if let Err(code) = validate_json_str(&params_json) {
+            let ctx = CallbackContext::new(context, callback);
+            return_error(&ctx, code, "Invalid params JSON");
+            return code;
+        }
         let ctx = CallbackContext::new(context, callback);
         execute_async(
             instance.clone(),
             ctx,
-            async move { run(instance, operation, params).await },
+            async move { run(instance, operation, params_json).await },
             binding_response_to_json,
         );
         0
@@ -131,22 +128,28 @@ pub(crate) fn message_build_dispatch_entry(
             Ok(i) => i,
             Err(e) => return e,
         };
-        let request = match parse_json(request_json) {
-            Ok(p) => p,
+        let request_json = match c_str_to_string(request_json) {
+            Ok(s) => s,
             Err(code) => {
                 let ctx = CallbackContext::new(context, callback);
                 return_error(&ctx, code, "Invalid request JSON");
                 return code;
             }
         };
+        if let Err(code) = validate_json_str(&request_json) {
+            let ctx = CallbackContext::new(context, callback);
+            return_error(&ctx, code, "Invalid request JSON");
+            return code;
+        }
         let ctx = CallbackContext::new(context, callback);
         execute_async(
             instance.clone(),
             ctx,
             async move {
                 let api = instance.message_build_api().await?;
-                flare_im_core_sdk_bindings_runtime::message_build::dispatch_message_build(
-                    &api, request,
+                flare_im_core_sdk_bindings_runtime::message_build::dispatch_message_build_json(
+                    &api,
+                    &request_json,
                 )
                 .await
             },
@@ -160,12 +163,12 @@ pub(crate) fn typed_invoke_unit(
     instance: Arc<SdkInstance>,
     ctx: CallbackContext,
     api_id: &str,
-    params: serde_json::Value,
+    params_json: String,
 ) {
     let inst = instance.clone();
     let api_id = api_id.to_string();
     execute_async_unit(instance, ctx, async move {
-        let _ = invoke_api_id(inst.as_ref(), &api_id, params).await?;
+        let _ = invoke_api_id_json(inst.as_ref(), &api_id, &params_json).await?;
         Ok(())
     });
 }
@@ -174,14 +177,14 @@ pub(crate) fn typed_invoke_json(
     instance: Arc<SdkInstance>,
     ctx: CallbackContext,
     api_id: &str,
-    params: serde_json::Value,
+    params_json: String,
 ) {
     let inst = instance.clone();
     let api_id = api_id.to_string();
     execute_async(
         instance,
         ctx,
-        async move { invoke_api_id(inst.as_ref(), &api_id, params).await },
+        async move { invoke_api_id_json(inst.as_ref(), &api_id, &params_json).await },
         binding_response_to_json,
     );
 }
@@ -190,9 +193,9 @@ pub(crate) fn typed_invoke_send_ack(
     instance: Arc<SdkInstance>,
     ctx: CallbackContext,
     api_id: &str,
-    params: serde_json::Value,
+    params_json: String,
 ) {
-    typed_invoke_json(instance, ctx, api_id, params);
+    typed_invoke_json(instance, ctx, api_id, params_json);
 }
 
 pub(crate) fn invoke_entry(
@@ -215,19 +218,24 @@ pub(crate) fn invoke_entry(
                 return code;
             }
         };
-        let params = match parse_json(params_json) {
-            Ok(p) => p,
+        let params_json = match c_str_to_string(params_json) {
+            Ok(s) => s,
             Err(code) => {
                 let ctx = CallbackContext::new(context, callback);
                 return_error(&ctx, code, "Invalid params JSON");
                 return code;
             }
         };
+        if let Err(code) = validate_json_str(&params_json) {
+            let ctx = CallbackContext::new(context, callback);
+            return_error(&ctx, code, "Invalid params JSON");
+            return code;
+        }
         let ctx = CallbackContext::new(context, callback);
         execute_async(
             instance.clone(),
             ctx,
-            async move { invoke_api_id(instance.as_ref(), &api_id, params).await },
+            async move { invoke_api_id_json(instance.as_ref(), &api_id, &params_json).await },
             binding_response_to_json,
         );
         0

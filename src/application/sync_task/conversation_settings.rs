@@ -6,7 +6,9 @@ use std::sync::Arc;
 use tracing::debug;
 
 use super::super::SyncProtocolAdapter;
-use crate::core::{SyncContext, SyncFailurePolicy, SyncMode, SyncResult, SyncTask, SyncTaskResult};
+use crate::kernel::{
+    SyncContext, SyncFailurePolicy, SyncMode, SyncResult, SyncTask, SyncTaskResult,
+};
 use crate::model::{is_settings_dirty, user_settings_version};
 
 pub struct ConversationSettingsSyncTask(pub(crate) Arc<SyncProtocolAdapter>);
@@ -45,17 +47,14 @@ impl SyncTask for ConversationSettingsSyncTask {
                     continue;
                 }
                 let base = user_settings_version(&conversation);
-                if handler
+                handler
                     .push_conversation_user_settings_from_local(
                         &conversation.conversation_id,
                         base,
                         &conversation,
                     )
-                    .await
-                    .is_ok()
-                {
-                    pushed = pushed.saturating_add(1);
-                }
+                    .await?;
+                pushed = pushed.saturating_add(1);
             }
             debug!(
                 task = "conversation_user_settings",

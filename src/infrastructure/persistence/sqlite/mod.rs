@@ -5,6 +5,7 @@
 mod conversation_participant_repo;
 mod conversation_repo;
 mod cursor_repo;
+mod identity_repair;
 mod media_cache_repo;
 mod message_repo;
 mod pending_send_repo;

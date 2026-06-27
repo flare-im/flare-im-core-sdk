@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "failed": {
+      "description": "是否失败",
+      "type": "boolean"
+    },
+    "isLocal": {
+      "description": "本地消息",
+      "type": "boolean"
+    },
+    "sending": {
+      "description": "是否发送中",
+      "type": "boolean"
+    },
+    "sortTs": {
+      "description": "本地列表排序时间（毫秒），**不是**服务端会话 `conversation_seq`。\n\n用途：待发/未 ACK 消息常保持 `conversation_seq == 0`，可用本字段稳定停留在本地时间线尾部。\n已分配 `conversation_seq` 的服务端消息必须回到 seq 优先排序，避免设备时钟偏移污染权威顺序。",
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "uploadProgress": {
+      "default": 0,
+      "description": "本地媒体上传进度，范围 0..=100。",
+      "format": "uint32",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "uploading": {
+      "default": false,
+      "description": "本地媒体上传中；仅用于 SDK 本地时间线展示，不写入服务端协议语义。",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "sending",
+    "failed",
+    "isLocal",
+    "sortTs"
+  ],
+  "title": "MessageLocalState",
+  "type": "object",
+  "xFlareGeneratedBy": "flare-im-core-sdk-xtask",
+  "xFlareRustType": "MessageLocalState"
+}

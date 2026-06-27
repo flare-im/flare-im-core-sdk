@@ -1,0 +1,102 @@
+{
+  "$defs": {
+    "MessageSearchKind": {
+      "oneOf": [
+        {
+          "enum": [
+            "image",
+            "video",
+            "audio"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "message",
+          "description": "消息记录页签：不额外限制消息类型。",
+          "type": "string"
+        },
+        {
+          "const": "text",
+          "description": "文本类消息：Text / RichText / Quote。",
+          "type": "string"
+        },
+        {
+          "const": "media",
+          "description": "媒体集合：Image / Video / Audio / File / ImageGroup。",
+          "type": "string"
+        },
+        {
+          "const": "file",
+          "description": "文件附件：支持按 typed 文件名、描述、MIME 与文件 ID 搜索。",
+          "type": "string"
+        }
+      ]
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "conversationId": {
+      "default": null,
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "fromTime": {
+      "default": null,
+      "description": "起始消息时间（毫秒，含）。",
+      "format": "uint64",
+      "minimum": 0,
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "includeRecalled": {
+      "default": false,
+      "description": "默认排除已撤回消息。",
+      "type": "boolean"
+    },
+    "keyword": {
+      "default": null,
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "kinds": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/MessageSearchKind"
+      },
+      "type": "array"
+    },
+    "limit": {
+      "default": 50,
+      "format": "uint32",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "senderId": {
+      "default": null,
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "toTime": {
+      "default": null,
+      "description": "截止消息时间（毫秒，含）。",
+      "format": "uint64",
+      "minimum": 0,
+      "type": [
+        "integer",
+        "null"
+      ]
+    }
+  },
+  "title": "MessageSearchQuery",
+  "type": "object",
+  "xFlareGeneratedBy": "flare-im-core-sdk-xtask",
+  "xFlareRustType": "MessageSearchQuery"
+}

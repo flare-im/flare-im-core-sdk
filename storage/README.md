@@ -21,8 +21,8 @@ storage/
 
 ### 职责
 
-- **连接池**：`create_pool` / `open_pool` 创建并返回 `SqlitePool`。
-- **运行时**：`SqliteRuntime::open` 持有 pool，供应用与扩展统一使用。
+- **连接池**：`create_pool` / `open_pool` 创建并返回 `SqlitePool`；`*_with_security` 入口应用 SQLCipher 安全配置。
+- **运行时**：`SqliteRuntime::open` / `open_with_security` 持有 pool，供应用与扩展统一使用。
 - **Schema 注册**：`register_schema_init` / `register_schema_init_with` 在创建 pool 后统一执行建表逻辑；`register_schema_init_with` 可直接传入 core-sdk 的 `sqlite_init_schema`，与扩展共用同一 DB。
 
 本 crate **不实现**消息/会话等仓储，也不建 core 表；core 表与仓储由 **flare-im-core-sdk**（`storage-sqlite` feature）在拿到 pool 后自行 `init_schema` 与构建。
@@ -32,9 +32,12 @@ storage/
 | API | 说明 |
 |-----|------|
 | `create_pool(database_url)` | 仅创建 SQLite 连接池，不建表。 |
+| `create_pool_with_security(database_url, security)` | 创建连接池并应用 `PRAGMA key`；启用加密时要求运行时真实支持 SQLCipher。 |
 | `open_pool(database_url)` | 创建池并执行所有已注册的 schema 初始化器。 |
+| `open_pool_with_security(database_url, security)` | 创建加密连接池并执行所有已注册的 schema 初始化器。 |
 | `database_url_from_path(path)` | 将本地路径转为 `sqlite://...?mode=rwc`。 |
 | `SqliteRuntime::open(url)` | 创建池 + 执行已注册 schema，返回持有 pool 的运行时。 |
+| `SqliteRuntime::open_with_security(url, security)` | 创建加密池 + 执行已注册 schema，返回持有 pool 的运行时。 |
 | `SqliteRuntime::pool()` | 获取连接池。 |
 | `register_schema_init(name, \|pool\| async move { ... })` | 注册返回 `anyhow::Result<()>` 的 schema 初始化器。 |
 | `register_schema_init_with(name, f)` | 注册返回 `Result<(), E>` 的初始化器，**可直接传入** core-sdk 的 `sqlite_init_schema`。 |

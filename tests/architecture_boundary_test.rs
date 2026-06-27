@@ -132,6 +132,33 @@ fn find_matching_brace(input: &str) -> Option<usize> {
     None
 }
 
+fn extract_braced_body_after(source: &str, needle: &str) -> String {
+    let start = source
+        .find(needle)
+        .unwrap_or_else(|| panic!("{needle} not found"));
+    let after_start = &source[start..];
+    let brace_start = after_start
+        .find('{')
+        .unwrap_or_else(|| panic!("{needle} body start not found"));
+    let body_start = start + brace_start;
+    let body = &source[body_start..];
+    let body_end =
+        find_matching_brace(body).unwrap_or_else(|| panic!("{needle} body end not found"));
+    body[..=body_end].to_string()
+}
+
+fn toml_section<'a>(source: &'a str, header: &str) -> &'a str {
+    let Some(start) = source.find(header) else {
+        return "";
+    };
+    let rest = &source[start + header.len()..];
+    let end = rest
+        .find("\n[")
+        .map(|idx| start + header.len() + idx)
+        .unwrap_or(source.len());
+    &source[start + header.len()..end]
+}
+
 fn split_top_level_group_items(input: &str) -> Vec<&str> {
     let mut items = Vec::new();
     let mut depth = 0usize;
@@ -180,6 +207,13 @@ struct CoreSdkReference {
     snippet: String,
 }
 
+#[derive(Debug)]
+struct CrateReference {
+    line: usize,
+    root: String,
+    snippet: String,
+}
+
 fn collect_core_sdk_references(source: &str) -> Vec<CoreSdkReference> {
     const PREFIX: &str = "flare_im_core_sdk::";
 
@@ -200,6 +234,124 @@ fn collect_core_sdk_references(source: &str) -> Vec<CoreSdkReference> {
         search_from = after_prefix;
     }
     refs
+}
+
+fn collect_crate_references(source: &str) -> Vec<CrateReference> {
+    const PREFIX: &str = "crate::";
+
+    let mut refs = Vec::new();
+    let mut search_from = 0;
+    while let Some(relative_idx) = source[search_from..].find(PREFIX) {
+        let start = search_from + relative_idx;
+        let after_prefix = start + PREFIX.len();
+        let line = line_number_at(source, start);
+        let snippet = line_snippet(source, line);
+        for root in core_sdk_roots_after_path(&source[after_prefix..]) {
+            refs.push(CrateReference {
+                line,
+                root,
+                snippet: snippet.clone(),
+            });
+        }
+        search_from = after_prefix;
+    }
+    refs
+}
+
+#[test]
+fn domain_source_does_not_depend_on_upper_layers() {
+    let domain_src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/domain");
+    let forbidden_roots = [
+        "application",
+        "client",
+        "core",
+        "extension",
+        "infrastructure",
+        "platform",
+        "runtime",
+        "spi",
+    ];
+    let mut violations = Vec::new();
+
+    for file in rust_files_under(&domain_src) {
+        let source = fs::read_to_string(&file).expect("read domain source");
+        let production_source = strip_line_comments(&strip_cfg_test_modules(&source));
+        for reference in collect_crate_references(&production_source) {
+            if forbidden_roots.contains(&reference.root.as_str()) {
+                violations.push(format!(
+                    "{}:{} uses crate::{} from the domain layer: {}",
+                    file.display(),
+                    reference.line,
+                    reference.root,
+                    reference.snippet
+                ));
+            }
+        }
+    }
+
+    assert!(
+        violations.is_empty(),
+        "domain layer must not depend on application/runtime/platform/infrastructure boundaries:\n{}",
+        violations.join("\n")
+    );
+}
+
+#[test]
+fn application_source_does_not_depend_on_runtime_layer() {
+    let application_src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/application");
+    let mut violations = Vec::new();
+
+    for file in rust_files_under(&application_src) {
+        let source = fs::read_to_string(&file).expect("read application source");
+        let production_source = strip_line_comments(&strip_cfg_test_modules(&source));
+        for reference in collect_crate_references(&production_source) {
+            if reference.root == "runtime" {
+                violations.push(format!(
+                    "{}:{} uses crate::runtime from the application layer: {}",
+                    file.display(),
+                    reference.line,
+                    reference.snippet
+                ));
+            }
+        }
+    }
+
+    assert!(
+        violations.is_empty(),
+        "application layer must not depend on the runtime layer:\n{}",
+        violations.join("\n")
+    );
+}
+
+#[test]
+fn platform_bindings_do_not_construct_resync_markers_directly() {
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let platform_binding_roots = [
+        "bindings/c/src",
+        "bindings/tauri/src",
+        "bindings/uniffi/src",
+        "bindings/wasm/src",
+    ];
+    let mut violations = Vec::new();
+
+    for rel in platform_binding_roots {
+        for file in rust_files_under(&manifest.join(rel)) {
+            let source = fs::read_to_string(&file).expect("read binding source");
+            let production_source = strip_line_comments(&strip_cfg_test_modules(&source));
+            if production_source.contains("SyncNotify::ResyncNeeded") {
+                violations.push(format!(
+                    "{} constructs SyncNotify::ResyncNeeded outside bindings/shared",
+                    file.display()
+                ));
+            }
+        }
+    }
+
+    assert!(
+        violations.is_empty(),
+        "platform bindings must use bindings/shared resync marker helpers:\n{}",
+        violations.join("\n")
+    );
 }
 
 #[test]
@@ -263,5 +415,314 @@ fn social_production_code_uses_spi_for_core_extension_boundaries() {
         violations.is_empty(),
         "social production code may only use flare_im_core_sdk::{{spi, model, prelude}}:\n{}",
         violations.join("\n")
+    );
+}
+
+#[test]
+fn native_release_profiles_keep_ffi_panic_guards_effective() {
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let cargo_toml = fs::read_to_string(manifest.join("Cargo.toml")).expect("read Cargo.toml");
+    let release = toml_section(&cargo_toml, "[profile.release]");
+    assert!(
+        release.contains("panic = \"unwind\""),
+        "native release must use panic=unwind so C ABI catch_ffi_* guards can catch SDK panics"
+    );
+    assert!(
+        !release.contains("panic = \"abort\""),
+        "native release must not abort across FFI panic boundaries"
+    );
+    let release_mobile = toml_section(&cargo_toml, "[profile.release-mobile]");
+    assert!(
+        !release_mobile.contains("panic = \"abort\""),
+        "release-mobile inherits the native FFI profile and must not override panic=abort"
+    );
+
+    for config_path in [
+        manifest.join(".cargo/config.toml"),
+        manifest
+            .parent()
+            .expect("flare-im root")
+            .join(".cargo/config.toml"),
+    ] {
+        let config = fs::read_to_string(&config_path)
+            .unwrap_or_else(|error| panic!("read {}: {error}", config_path.display()));
+        let wasm = toml_section(&config, "[target.wasm32-unknown-unknown]");
+        assert!(
+            wasm.contains("\"panic=abort\""),
+            "{} must keep wasm panic abort explicit instead of relying on the native release profile",
+            config_path.display()
+        );
+    }
+}
+
+#[test]
+fn sdk_crates_do_not_enable_tokio_full() {
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let files = [
+        manifest.join("Cargo.toml"),
+        manifest.join("storage/sqlite/Cargo.toml"),
+        manifest.join("bindings/shared/Cargo.toml"),
+        manifest.join("bindings/wasm/Cargo.toml"),
+        manifest.join("bindings/c/Cargo.toml"),
+        manifest.join("bindings/tauri/Cargo.toml"),
+    ];
+    let mut violations = Vec::new();
+
+    for file in files {
+        let source = fs::read_to_string(&file)
+            .unwrap_or_else(|error| panic!("read {}: {error}", file.display()));
+        for (idx, line) in source.lines().enumerate() {
+            let compact = line.replace([' ', '\t'], "");
+            if compact.starts_with("tokio=")
+                && (compact.contains("features=[\"full\"]")
+                    || compact.contains("\"full\"")
+                    || compact.contains("features=['full']"))
+            {
+                violations.push(format!(
+                    "{}:{} enables tokio full: {}",
+                    file.display(),
+                    idx + 1,
+                    line.trim()
+                ));
+            }
+        }
+    }
+
+    assert!(
+        violations.is_empty(),
+        "SDK crates must keep tokio features explicit and minimal:\n{}",
+        violations.join("\n")
+    );
+}
+
+#[test]
+fn view_refresh_worker_does_not_self_retain_view_api() {
+    let source =
+        fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/client/api/view.rs"))
+            .expect("read view api source");
+    let body = extract_braced_body_after(&source, "fn spawn_refresh_worker");
+
+    assert!(
+        body.contains("Arc::downgrade(&self.inner)"),
+        "ViewApi refresh worker must capture a Weak inner reference"
+    );
+    assert!(
+        body.contains("spawn_background_task"),
+        "ViewApi refresh worker must be abortable instead of fire-and-forget"
+    );
+    assert!(
+        !body.contains("self.clone()"),
+        "ViewApi refresh worker must not clone self, or the background task retains the view API forever"
+    );
+    assert!(
+        source.contains("impl Drop for ViewApiInner") && source.contains("worker.abort()"),
+        "ViewApiInner must abort its refresh worker when the API is released"
+    );
+}
+
+#[test]
+fn ffi_runtime_worker_threads_are_host_adaptive() {
+    let source = fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("bindings/c/src/ffi_runtime.rs"),
+    )
+    .expect("read FFI runtime");
+
+    assert!(
+        source.contains(".worker_threads(ffi_worker_threads())"),
+        "C FFI runtime must size worker threads from host parallelism"
+    );
+    assert!(
+        source.contains("std::thread::available_parallelism()"),
+        "C FFI runtime must use available_parallelism for native host adaptation"
+    );
+    assert!(
+        !source.contains(".worker_threads(2)"),
+        "C FFI runtime must not hard-code two worker threads"
+    );
+}
+
+#[test]
+fn c_typed_abi_invocations_are_callback_based_and_non_blocking() {
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let files = [
+        "bindings/contract/c_typed_abi.json",
+        "bindings/c/src/generated/typed_abi.rs",
+        "xtask/src/core_codegen.rs",
+    ];
+    let mut violations = Vec::new();
+
+    for relative in files {
+        let source = fs::read_to_string(manifest.join(relative)).expect("read typed ABI source");
+        if source.contains("sync_bool_invoke") {
+            violations.push(format!("{relative} contains sync_bool_invoke"));
+        }
+        if source.contains(".block_on(") {
+            violations.push(format!("{relative} blocks an async typed ABI operation"));
+        }
+    }
+
+    assert!(
+        violations.is_empty(),
+        "typed C ABI operations must use the callback bridge, never runtime.block_on:\n{}",
+        violations.join("\n")
+    );
+}
+
+#[test]
+fn production_code_does_not_use_unbounded_channels() {
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let roots = ["src", "bindings"];
+    let forbidden = [
+        "mpsc::unbounded_channel",
+        "tokio::sync::mpsc::unbounded_channel",
+        "UnboundedSender",
+        "UnboundedReceiver",
+    ];
+    let mut violations = Vec::new();
+
+    for root in roots {
+        for file in rust_files_under(&manifest.join(root)) {
+            if file.file_name().and_then(|name| name.to_str()) == Some("tests.rs")
+                || file.components().any(|component| {
+                    component.as_os_str() == "tests" || component.as_os_str() == "test"
+                })
+            {
+                continue;
+            }
+            let source = fs::read_to_string(&file).expect("read Rust source");
+            let production_source = strip_line_comments(&strip_cfg_test_modules(&source));
+            for needle in forbidden {
+                if production_source.contains(needle) {
+                    violations.push(format!("{} contains {needle}", file.display()));
+                }
+            }
+        }
+    }
+
+    assert!(
+        violations.is_empty(),
+        "production async queues must be bounded for SDK memory safety:\n{}",
+        violations.join("\n")
+    );
+}
+
+#[test]
+fn downlink_codec_uses_typed_dispatch_without_unknown_payload_guessing() {
+    let source = fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("src/infrastructure/protocol/codec.rs"),
+    )
+    .expect("read codec source");
+    let impl_body = extract_braced_body_after(&source, "impl Codec for ProtobufCodec");
+    let typed_decoder = extract_braced_body_after(
+        &impl_body,
+        "fn decode_server_payload(&self, payload_type: i32, payload: &[u8])",
+    );
+
+    assert!(
+        typed_decoder.contains("ensure_payload_budget(payload)?"),
+        "typed downlink decode must enforce the shared payload budget before prost decode"
+    );
+    assert!(
+        !typed_decoder.contains("self.decode_server(payload)"),
+        "typed downlink decode must not fall back to untyped guess-every-protobuf decoding"
+    );
+    assert!(
+        typed_decoder.contains("unsupported payload type"),
+        "unknown payload types must fail closed instead of guessing"
+    );
+}
+
+#[test]
+fn platform_event_fanout_isolation_and_unknown_event_codes_are_structural() {
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let repo_root = manifest.parent().expect("flare-im root");
+    let client_sdk = repo_root.join("flare-im-core-client-sdk");
+
+    let sources = [
+        manifest.join("xtask/src/codegen/typescript_adapter.rs"),
+        client_sdk
+            .join("packages/flare-core-typescript-sdk/src/adapter/module/DefaultEventsApi.ts"),
+        client_sdk
+            .join("packages/flare-core-flutter-sdk/lib/src/adapter/events/default_events_api.dart"),
+        manifest.join("xtask/templates/android-adapter/module/DefaultEventsApi.kt"),
+        client_sdk.join(
+            "packages/flare-core-android-sdk/src/main/kotlin/com/flare/im/adapter/module/DefaultEventsApi.kt",
+        ),
+        manifest.join("xtask/templates/apple-adapter/module/DefaultEventsApi.swift"),
+        client_sdk.join(
+            "packages/flare-core-apple-sdk/Sources/FlareCoreAppleSDK/Adapter/Module/DefaultEventsApi.swift",
+        ),
+    ];
+    let mut violations = Vec::new();
+
+    for file in sources {
+        let source = fs::read_to_string(&file)
+            .unwrap_or_else(|error| panic!("read {}: {error}", file.display()));
+        let normalized = source.replace(['\r', '\n', ' '], "");
+        if normalized.contains("invalidnativeeventcode") {
+            violations.push(format!(
+                "{} throws or reports unknown native event codes",
+                file.display()
+            ));
+        }
+        if file.extension().and_then(|ext| ext.to_str()) == Some("kt")
+            && !source.contains("else -> unknownEventFromCode(eventType, payload)")
+        {
+            violations.push(format!(
+                "{} native event entrypoint does not preserve unknown event codes",
+                file.display()
+            ));
+        }
+    }
+
+    let ts_generator = fs::read_to_string(manifest.join("xtask/src/codegen/typescript_adapter.rs"))
+        .expect("read TypeScript generator");
+    assert!(
+        ts_generator.contains("this.dispatchSafely"),
+        "TypeScript event generator must isolate listener failures per subscriber"
+    );
+    let android_template = fs::read_to_string(
+        manifest.join("xtask/templates/android-adapter/module/DefaultEventsApi.kt"),
+    )
+    .expect("read Android event template");
+    assert!(
+        android_template.contains("dispatchSafely"),
+        "Android event template must isolate listener failures per subscriber"
+    );
+    let dart_events = fs::read_to_string(
+        client_sdk
+            .join("packages/flare-core-flutter-sdk/lib/src/adapter/events/default_events_api.dart"),
+    )
+    .expect("read Flutter event API");
+    assert!(
+        dart_events.contains("_reportListenerError"),
+        "Flutter event API must isolate listener failures per subscriber"
+    );
+
+    assert!(
+        violations.is_empty(),
+        "platform event adapters must preserve forward-compatible unknown events:\n{}",
+        violations.join("\n")
+    );
+}
+
+#[test]
+fn im_session_watchers_do_not_self_retain_client_or_event_bus() {
+    let source = fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("src/client/im_client/session_watchers.rs"),
+    )
+    .expect("read session watcher source");
+
+    assert!(
+        !source.contains("let client = self.clone()"),
+        "session watchers must capture WeakIMClient so release/drop can tear down SDK state"
+    );
+    assert!(
+        !source.contains("bus.publish("),
+        "session watchers must not retain EventBus sender clones; publish via current generation engine instead"
+    );
+    assert!(
+        source.contains("let client = self.downgrade()"),
+        "session watchers should use IMClient::downgrade before spawning long-lived workers"
     );
 }

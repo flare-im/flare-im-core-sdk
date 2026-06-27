@@ -53,11 +53,16 @@ impl MessageViewAssembler {
             .store
             .get_by_conversation(conversation_id, before_seq, limit)
             .await?;
-        self.hydrate_reactions_for_messages(&mut views).await?;
-        for view in &mut views {
+        self.hydrate_messages_for_view(&mut views).await?;
+        Ok(views)
+    }
+
+    pub async fn hydrate_messages_for_view(&self, views: &mut [IMMessage]) -> Result<()> {
+        self.hydrate_reactions_for_messages(views).await?;
+        for view in views {
             self.fill_sender_profile(view).await;
         }
-        Ok(views)
+        Ok(())
     }
 
     pub async fn search(&self, keyword: &str, limit: u32) -> Result<Vec<IMMessage>> {
@@ -81,10 +86,7 @@ impl MessageViewAssembler {
 
     pub async fn search_by_query(&self, query: &MessageSearchQuery) -> Result<Vec<IMMessage>> {
         let mut views = self.store.search_by_query(query).await?;
-        self.hydrate_reactions_for_messages(&mut views).await?;
-        for view in &mut views {
-            self.fill_sender_profile(view).await;
-        }
+        self.hydrate_messages_for_view(&mut views).await?;
         Ok(views)
     }
 

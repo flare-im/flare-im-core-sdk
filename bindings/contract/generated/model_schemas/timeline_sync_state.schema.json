@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "enum": [
+    "localReady",
+    "synced",
+    "partial"
+  ],
+  "title": "TimelineSyncState",
+  "type": "string",
+  "xFlareGeneratedBy": "flare-im-core-sdk-xtask",
+  "xFlareRustType": "TimelineSyncState"
+}

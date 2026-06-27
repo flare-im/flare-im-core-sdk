@@ -9,6 +9,10 @@ use super::http_client_wasm as wasm_http;
 use super::http_error_from_response_status;
 use crate::shared::error::{FlareError, Result};
 use base64::Engine as _;
+#[cfg(not(target_arch = "wasm32"))]
+use flare_core::common::TlsConfig as CoreTlsConfig;
+#[cfg(not(target_arch = "wasm32"))]
+use flare_core::common::cert::create_client_config_with_tls;
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
@@ -207,49 +211,118 @@ mod tests {
 pub struct HttpClient {
     base_url: String,
     context: Option<Arc<HttpRequestContext>>,
+    direct_url_rewrite_prefix: Option<String>,
+    direct_url_rewrite_targets: Vec<String>,
     #[cfg(not(target_arch = "wasm32"))]
     client: reqwest::Client,
+    #[cfg(not(target_arch = "wasm32"))]
+    tls_config_error: Option<String>,
 }
 
 impl HttpClient {
     #[cfg(not(target_arch = "wasm32"))]
-    fn build_reqwest_client() -> reqwest::Client {
+    fn build_reqwest_client(tls: Option<&CoreTlsConfig>) -> (reqwest::Client, Option<String>) {
         const HTTP_CONNECT_TIMEOUT_SECS: u64 = 5;
         const HTTP_REQUEST_TIMEOUT_SECS: u64 = 30;
-        match reqwest::Client::builder()
+        let mut builder = reqwest::Client::builder()
             .no_proxy()
             .connect_timeout(Duration::from_secs(HTTP_CONNECT_TIMEOUT_SECS))
-            .timeout(Duration::from_secs(HTTP_REQUEST_TIMEOUT_SECS))
-            .build()
+            .timeout(Duration::from_secs(HTTP_REQUEST_TIMEOUT_SECS));
+        let mut tls_config_error = None;
+        if let Some(tls) = tls
+            && tls.requires_custom_client_tls()
         {
+            match create_client_config_with_tls(tls) {
+                Ok(config) => builder = builder.use_preconfigured_tls(config),
+                Err(err) => {
+                    let message = format!("build reqwest pinned TLS config failed: {err}");
+                    tracing::warn!("{message}");
+                    tls_config_error = Some(message);
+                }
+            }
+        }
+        let client = match builder.build() {
             Ok(client) => client,
             Err(err) => {
                 tracing::warn!("build reqwest client with timeout failed: {err}");
                 reqwest::Client::new()
             }
-        }
+        };
+        (client, tls_config_error)
     }
 
     pub fn new(base_url: impl Into<String>) -> Self {
+        #[cfg(not(target_arch = "wasm32"))]
+        let (client, tls_config_error) = Self::build_reqwest_client(None);
         Self {
             base_url: base_url.into(),
             context: None,
+            direct_url_rewrite_prefix: None,
+            direct_url_rewrite_targets: Vec::new(),
             #[cfg(not(target_arch = "wasm32"))]
-            client: Self::build_reqwest_client(),
+            client,
+            #[cfg(not(target_arch = "wasm32"))]
+            tls_config_error,
         }
     }
 
     pub fn with_context(base_url: impl Into<String>, context: Arc<HttpRequestContext>) -> Self {
+        #[cfg(not(target_arch = "wasm32"))]
+        let (client, tls_config_error) = Self::build_reqwest_client(None);
         Self {
             base_url: base_url.into(),
             context: Some(context),
+            direct_url_rewrite_prefix: None,
+            direct_url_rewrite_targets: Vec::new(),
             #[cfg(not(target_arch = "wasm32"))]
-            client: Self::build_reqwest_client(),
+            client,
+            #[cfg(not(target_arch = "wasm32"))]
+            tls_config_error,
         }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn with_context_and_tls(
+        base_url: impl Into<String>,
+        context: Arc<HttpRequestContext>,
+        tls: CoreTlsConfig,
+    ) -> Self {
+        let (client, tls_config_error) = Self::build_reqwest_client(Some(&tls));
+        Self {
+            base_url: base_url.into(),
+            context: Some(context),
+            direct_url_rewrite_prefix: None,
+            direct_url_rewrite_targets: Vec::new(),
+            client,
+            tls_config_error,
+        }
+    }
+
+    pub fn with_direct_url_rewrite(mut self, prefix: Option<String>, targets: Vec<String>) -> Self {
+        self.direct_url_rewrite_prefix = prefix
+            .map(|value| value.trim().trim_end_matches('/').to_string())
+            .filter(|value| !value.is_empty());
+        self.direct_url_rewrite_targets = targets
+            .into_iter()
+            .map(|value| value.trim().trim_end_matches('/').to_string())
+            .filter(|value| !value.is_empty())
+            .collect();
+        self
     }
 
     pub fn base_url(&self) -> &str {
         &self.base_url
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn ensure_tls_ready(&self) -> Result<()> {
+        if let Some(error) = &self.tls_config_error {
+            return Err(FlareError::localized(
+                crate::shared::error::ErrorCode::ConfigurationError,
+                error.clone(),
+            ));
+        }
+        Ok(())
     }
 
     /// 发 Social Gateway 请求前补齐身份（先写显式 user/tenant，再从 JWT 回填）。
@@ -389,12 +462,8 @@ impl HttpClient {
         data: &[u8],
         headers: &HashMap<String, String>,
     ) -> Result<HashMap<String, String>> {
+        self.ensure_tls_ready()?;
         let mut req = self.client.put(url.to_string()).body(data.to_vec());
-        if let Some(context) = &self.context {
-            for (key, value) in context.build_headers().await {
-                req = req.header(key, value);
-            }
-        }
         for (key, value) in headers {
             req = req.header(key, value);
         }
@@ -406,6 +475,47 @@ impl HttpClient {
         if !status.is_success() {
             return Err(FlareError::general_error(format!(
                 "http put bytes status not success: {status}"
+            )));
+        }
+        let mut out = HashMap::new();
+        for (key, value) in resp.headers() {
+            if let Ok(text) = value.to_str() {
+                out.insert(key.as_str().to_string(), text.to_string());
+            }
+        }
+        Ok(out)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub async fn put_file_full_url(
+        &self,
+        url: &str,
+        path: &std::path::Path,
+        content_len: u64,
+        headers: &HashMap<String, String>,
+    ) -> Result<HashMap<String, String>> {
+        self.ensure_tls_ready()?;
+        let file = tokio::fs::File::open(path)
+            .await
+            .map_err(|e| FlareError::general_error(format!("open upload file failed: {e}")))?;
+        let mut req = self
+            .client
+            .put(url.to_string())
+            .body(reqwest::Body::from(file));
+        for (key, value) in headers {
+            if !key.eq_ignore_ascii_case(reqwest::header::CONTENT_LENGTH.as_str()) {
+                req = req.header(key, value);
+            }
+        }
+        req = req.header(reqwest::header::CONTENT_LENGTH, content_len.to_string());
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| FlareError::system(format!("http put file failed: {e}")))?;
+        let status = resp.status();
+        if !status.is_success() {
+            return Err(FlareError::general_error(format!(
+                "http put file status not success: {status}"
             )));
         }
         let mut out = HashMap::new();
@@ -709,18 +819,17 @@ impl HttpClient {
         data: &[u8],
         extra_headers: &HashMap<String, String>,
     ) -> Result<HashMap<String, String>> {
-        let headers = self.context_headers().await;
-        let _ = wasm_http::fetch_bytes(
+        let (_, headers) = wasm_http::fetch_bytes_with_headers(
             "PUT",
-            url.to_string(),
+            self.rewrite_direct_url(url),
             None,
             Some(data.to_vec()),
             None,
-            headers,
+            HashMap::new(),
             Some(extra_headers),
         )
         .await?;
-        Ok(HashMap::new())
+        Ok(headers)
     }
 
     #[cfg(target_arch = "wasm32")]
@@ -793,7 +902,7 @@ impl HttpClient {
     pub async fn get_bytes_direct_url(&self, url: &str) -> Result<Vec<u8>> {
         wasm_http::fetch_bytes(
             "GET",
-            url.to_string(),
+            self.rewrite_direct_url(url),
             None,
             None,
             None,
@@ -814,6 +923,24 @@ impl HttpClient {
         )
     }
 
+    fn rewrite_direct_url(&self, url: &str) -> String {
+        let Some(prefix) = self.direct_url_rewrite_prefix.as_deref() else {
+            return url.to_string();
+        };
+        for target in &self.direct_url_rewrite_targets {
+            if url == target {
+                return prefix.to_string();
+            }
+            if let Some(rest) = url.strip_prefix(&format!("{target}/")) {
+                return format!("{prefix}/{rest}");
+            }
+            if let Some(rest) = url.strip_prefix(&format!("{target}?")) {
+                return format!("{prefix}?{rest}");
+            }
+        }
+        url.to_string()
+    }
+
     #[cfg(not(target_arch = "wasm32"))]
     async fn request<B, T>(
         &self,
@@ -826,6 +953,7 @@ impl HttpClient {
         B: serde::Serialize + ?Sized,
         T: serde::de::DeserializeOwned,
     {
+        self.ensure_tls_ready()?;
         let mut req = self.client.request(method, url);
         if let Some(context) = &self.context {
             for (key, value) in context.build_headers().await {
@@ -865,6 +993,7 @@ impl HttpClient {
         B: serde::Serialize + ?Sized,
         T: serde::de::DeserializeOwned,
     {
+        self.ensure_tls_ready()?;
         let mut req = self.client.request(method, url);
         if let Some(context) = &self.context {
             for (key, value) in context.build_headers().await {

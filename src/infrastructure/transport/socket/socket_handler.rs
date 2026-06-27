@@ -18,10 +18,10 @@ use prost::Message;
 use tokio::sync::Notify;
 use tracing::{debug, warn};
 
-use crate::core::Dispatcher;
-use crate::core::event::{ConnectionEvent, SdkEvent};
-use crate::infrastructure::protocol::Codec;
 use crate::infrastructure::protocol::downlink::DownlinkPayload;
+use crate::infrastructure::protocol::{Codec, MAX_DOWNLINK_PAYLOAD_BYTES};
+use crate::kernel::event::{ConnectionEvent, SdkEvent};
+use crate::runtime::Dispatcher;
 
 /// Socket 推送处理器 — 实现 flare-core `MessageListener`
 pub struct SocketHandler {
@@ -88,6 +88,9 @@ impl MessageListener for SocketHandler {
             // PayloadType::Ack (3)：网关对 MESSAGE 的回执，payload 为 flare_proto::common::Ack(SendAck)
             if pt == PayloadType::Ack as i32 {
                 let payload = ensure_decompressed_payload(&payload_cmd.payload);
+                if payload_exceeds_budget(&payload, frame.message_id.as_str(), pt, "ack") {
+                    return Ok(None);
+                }
                 if let Ok(ack) = Ack::decode(payload.as_slice()) {
                     match ack.payload {
                         Some(AckPayload::Send(send_ack)) => {
@@ -122,7 +125,7 @@ impl MessageListener for SocketHandler {
                                 "received EventAck (PayloadCommand Ack)"
                             );
                         }
-                        _ => {}
+                        Some(_) | None => {}
                     }
                 } else {
                     warn!(
@@ -139,7 +142,10 @@ impl MessageListener for SocketHandler {
                 || pt == PayloadType::Event as i32
             {
                 let payload = ensure_decompressed_payload(&payload_cmd.payload);
-                match self.codec.decode_server(&payload) {
+                if payload_exceeds_budget(&payload, frame.message_id.as_str(), pt, "downlink") {
+                    return Ok(None);
+                }
+                match self.codec.decode_server_payload(pt, &payload) {
                     Ok(downlink) => {
                         debug!(
                             frame_id = %frame.message_id,
@@ -165,7 +171,7 @@ impl MessageListener for SocketHandler {
     async fn on_connect(&self) -> Result<()> {
         self.signal_ready();
         self.dispatcher.bus().publish(SdkEvent::Connection(
-            crate::core::event::ConnectionEvent::Connected,
+            crate::kernel::event::ConnectionEvent::Connected,
         ));
         Ok(())
     }
@@ -221,4 +227,19 @@ fn ensure_decompressed_payload(payload: &[u8]) -> Vec<u8> {
         Ok((decompressed, _)) => decompressed,
         Err(_) => payload.to_vec(),
     }
+}
+
+fn payload_exceeds_budget(payload: &[u8], frame_id: &str, payload_type: i32, label: &str) -> bool {
+    if payload.len() <= MAX_DOWNLINK_PAYLOAD_BYTES {
+        return false;
+    }
+    warn!(
+        frame_id = %frame_id,
+        payload_type,
+        payload_len = payload.len(),
+        max_payload_len = MAX_DOWNLINK_PAYLOAD_BYTES,
+        label,
+        "payload exceeds downlink budget, ignored"
+    );
+    true
 }

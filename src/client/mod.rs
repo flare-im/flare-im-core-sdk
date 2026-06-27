@@ -37,7 +37,7 @@ pub use config::{
 };
 pub use connected_apis::ConnectedApis;
 pub use flare_core::common::{HeartbeatAppState, HeartbeatConfig};
-pub use im_client::IMClient;
+pub use im_client::{IMClient, NetworkChangeEvent, RuntimeHealthSnapshot};
 pub use lifecycle::{
     LoginDbKind, SdkConfigOverlay, default_sdk_data_root, default_ws_url,
     dev_data_dir_relative_to_cwd, merge_sdk_config, parse_data_url_to_path, resolve_connect_token,

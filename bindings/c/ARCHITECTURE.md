@@ -201,7 +201,14 @@ typedef void (*FlareEventCallback)(
     FlareString event_json
 );
 
+typedef void (*FlareEventBatchCallback)(
+    void* context,
+    size_t event_count,
+    FlareString events_json
+);
+
 FlareSubscriptionHandle flare_event_subscribe(...);
+FlareSubscriptionHandle flare_event_subscribe_batch(...);
 void flare_event_unsubscribe(FlareSubscriptionHandle handle);
 ```
 

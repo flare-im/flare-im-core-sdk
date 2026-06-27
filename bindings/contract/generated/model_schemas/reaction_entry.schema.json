@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "count": {
+      "format": "uint32",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "emoji": {
+      "type": "string"
+    },
+    "userIds": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "emoji",
+    "count"
+  ],
+  "title": "ReactionEntry",
+  "type": "object",
+  "xFlareGeneratedBy": "flare-im-core-sdk-xtask",
+  "xFlareRustType": "ReactionEntry"
+}

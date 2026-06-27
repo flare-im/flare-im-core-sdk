@@ -1,9 +1,9 @@
+use flare_im_core_sdk::content::message_elem::{Elem, TextElem};
 use flare_im_core_sdk::model::conversation::Conversation;
 use flare_im_core_sdk::model::message::IMMessage;
-use flare_im_core_sdk::model::message_elem::{Elem, TextElem};
 use serde_json::{Value, json};
 
-/// Serialize core models with canonical snake_case JSON (matches C ABI / contract).
+/// Serialize core models with canonical camelCase SDK JSON.
 pub fn conversation_to_json(conversation: &Conversation) -> Value {
     serde_json::to_value(conversation).unwrap_or(Value::Null)
 }
@@ -42,18 +42,18 @@ pub fn content_text(content: Option<&Elem>) -> String {
 fn message_content_to_json(content: Option<&Elem>) -> Value {
     match content {
         Some(Elem::Text(TextElem { text, .. })) => {
-            json!({ "content_type": "text", "data": { "text": text } })
+            json!({ "contentType": "text", "data": { "text": text } })
         }
         Some(Elem::Emoji(value)) => {
-            json!({ "content_type": "emoji", "data": serde_json::to_value(value).unwrap_or(Value::Null) })
+            json!({ "contentType": "emoji", "data": serde_json::to_value(value).unwrap_or(Value::Null) })
         }
         Some(Elem::Sticker(value)) => {
-            json!({ "content_type": "sticker", "data": serde_json::to_value(value).unwrap_or(Value::Null) })
+            json!({ "contentType": "sticker", "data": serde_json::to_value(value).unwrap_or(Value::Null) })
         }
         Some(elem) => json!({
-            "content_type": "custom",
+            "contentType": "custom",
             "data": serde_json::to_value(elem).unwrap_or(Value::Null)
         }),
-        None => json!({ "content_type": "custom", "data": {} }),
+        None => json!({ "contentType": "custom", "data": {} }),
     }
 }

@@ -3,14 +3,26 @@
 
 use tokio::runtime::{Handle, Runtime};
 
+const MIN_FFI_WORKER_THREADS: usize = 2;
+
 lazy_static::lazy_static! {
     static ref FLARE_FFI_TOKIO: std::result::Result<Runtime, String> =
         tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(2)
+            .worker_threads(ffi_worker_threads())
             .enable_all()
             .thread_name("flare-ffi")
             .build()
             .map_err(|error| format!("flare_im_core_sdk_ffi: failed to create Tokio runtime: {error}"));
+}
+
+fn recommended_worker_threads(available_parallelism: usize) -> usize {
+    (available_parallelism / 2).max(MIN_FFI_WORKER_THREADS)
+}
+
+fn ffi_worker_threads() -> usize {
+    std::thread::available_parallelism()
+        .map(|parallelism| recommended_worker_threads(parallelism.get()))
+        .unwrap_or(MIN_FFI_WORKER_THREADS)
 }
 
 fn fallback_runtime() -> std::result::Result<&'static Runtime, String> {
@@ -28,4 +40,18 @@ pub fn sdk_runtime_handle() -> std::result::Result<Handle, String> {
     }
 
     fallback_runtime().map(|runtime| runtime.handle().clone())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{MIN_FFI_WORKER_THREADS, recommended_worker_threads};
+
+    #[test]
+    fn recommended_worker_threads_scale_with_host_parallelism() {
+        assert_eq!(recommended_worker_threads(1), MIN_FFI_WORKER_THREADS);
+        assert_eq!(recommended_worker_threads(2), MIN_FFI_WORKER_THREADS);
+        assert_eq!(recommended_worker_threads(4), MIN_FFI_WORKER_THREADS);
+        assert_eq!(recommended_worker_threads(8), 4);
+        assert_eq!(recommended_worker_threads(16), 8);
+    }
 }

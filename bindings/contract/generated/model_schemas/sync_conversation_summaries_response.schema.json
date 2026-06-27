@@ -1,0 +1,35 @@
+{
+  "$defs": {
+    "ConversationVersion": {
+      "description": "Version stamp used by sync summary reconciliation.",
+      "properties": {
+        "conversationId": {
+          "default": "",
+          "type": "string"
+        },
+        "version": {
+          "default": 0,
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Conversations whose local version is missing or newer than the caller's snapshot.",
+  "properties": {
+    "changedConversations": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/ConversationVersion"
+      },
+      "type": "array"
+    }
+  },
+  "title": "SyncConversationSummariesResponse",
+  "type": "object",
+  "xFlareGeneratedBy": "flare-im-core-sdk-xtask",
+  "xFlareRustType": "SyncConversationSummariesResponse"
+}

@@ -2,17 +2,21 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use super::transport_mapper::event_from_transport_action;
-use crate::core::CurrentUserIdStore;
-use crate::core::event::{EventBus, MessageEvent, SdkEvent};
 use crate::domain::{
-    MessageActor, MessageLocalUpdate, MessageLocatorService, MessageMutationService, MessageStore,
-    MessageTransportAction, ResolvedMessage,
+    ConversationStore, DELETE_SCOPE_CONVERSATION_GLOBAL, DELETE_SCOPE_USER_PRIVATE,
+    DELETE_TYPE_SOFT, MessageActor, MessageLocalUpdate, MessageLocatorService,
+    MessageMutationService, MessageStore, MessageTransportAction, OperationApplyResult,
+    ResolvedMessage,
 };
 use crate::infrastructure::protocol::PacketSender;
+use crate::kernel::CurrentUserIdStore;
+use crate::kernel::event::{EventBus, MessageEvent, SdkEvent};
+use crate::model::IMMessage;
 use crate::model::message::{MarkType, ReactionAction};
 use crate::shared::error::{ErrorCode, FlareError, Result};
 use flare_proto::common::{
-    RealtimeControlPacket, TypingStatePacket,
+    Ack, MessageDeleteEvent, PinEvent, ReadAck, RealtimeControlPacket, TypingStatePacket,
+    UnpinEvent, ack::Payload as AckPayload,
     realtime_control_packet::Payload as RealtimeControlPayload,
 };
 
@@ -27,7 +31,9 @@ fn timeout() -> Duration {
 pub struct MessageMutationUseCase {
     sender: Arc<PacketSender>,
     store: Arc<dyn MessageStore>,
+    conversation_store: Arc<dyn ConversationStore>,
     current_user_id: CurrentUserIdStore,
+    device_id: String,
     bus: Option<EventBus>,
     locator_service: MessageLocatorService,
     mutation_service: MessageMutationService,
@@ -37,13 +43,17 @@ impl MessageMutationUseCase {
     pub fn new(
         sender: Arc<PacketSender>,
         store: Arc<dyn MessageStore>,
+        conversation_store: Arc<dyn ConversationStore>,
         current_user_id: CurrentUserIdStore,
+        device_id: impl Into<String>,
         bus: Option<EventBus>,
     ) -> Self {
         Self {
             sender,
             store,
+            conversation_store,
             current_user_id,
+            device_id: device_id.into().trim().to_string(),
             bus,
             locator_service: MessageLocatorService,
             mutation_service: MessageMutationService,
@@ -169,12 +179,30 @@ impl MessageMutationUseCase {
     pub async fn delete_for_self(&self, message_id: &str, reason: Option<String>) -> Result<()> {
         let actor = self.actor().await?;
         let resolved = self.resolve_message(message_id).await?;
+        let conversation_id = resolved.conversation_id().to_string();
+        let server_msg_id = resolved.server_id().to_string();
+        let reason_for_event = reason.clone();
         let plan = self
             .mutation_service
             .plan_delete_for_self(&actor, &resolved, reason);
         self.dispatch_transport_action(&plan.transport_action)
             .await?;
-        self.apply_local_update(plan.local_update).await
+        self.apply_local_update(plan.local_update).await?;
+        self.recompute_conversation_latest(&conversation_id).await?;
+        if let Some(bus) = &self.bus {
+            bus.publish(SdkEvent::Message(MessageEvent::Deleted {
+                conversation_id,
+                event: MessageDeleteEvent {
+                    server_msg_id,
+                    delete_type: Some(DELETE_TYPE_SOFT),
+                    scope: Some(DELETE_SCOPE_USER_PRIVATE),
+                    reason: reason_for_event,
+                    notify_others: Some(false),
+                    target_user_id: Some(actor.user_id),
+                },
+            }));
+        }
+        Ok(())
     }
 
     pub async fn delete_for_everyone(
@@ -184,55 +212,51 @@ impl MessageMutationUseCase {
     ) -> Result<()> {
         let actor = self.actor().await?;
         let resolved = self.resolve_message(message_id).await?;
+        let conversation_id = resolved.conversation_id().to_string();
+        let server_msg_id = resolved.server_id().to_string();
+        let reason_for_event = reason.clone();
         let plan = self
             .mutation_service
             .plan_delete_for_everyone(&actor, &resolved, reason)?;
         self.dispatch_transport_action(&plan.transport_action)
             .await?;
-        self.apply_local_update(plan.local_update).await
-    }
-
-    pub async fn mark_read_with_ids(
-        &self,
-        conversation_id: &str,
-        message_ids: Vec<String>,
-        read_seq: u64,
-    ) -> Result<()> {
-        let actor = self.actor().await?;
-        let plan =
-            self.mutation_service
-                .plan_read_receipt(&actor, conversation_id, message_ids, read_seq);
-        self.dispatch_transport_action(&plan.transport_action).await
+        self.apply_local_update(plan.local_update).await?;
+        self.recompute_conversation_latest(&conversation_id).await?;
+        if let Some(bus) = &self.bus {
+            bus.publish(SdkEvent::Message(MessageEvent::Deleted {
+                conversation_id,
+                event: MessageDeleteEvent {
+                    server_msg_id,
+                    delete_type: Some(DELETE_TYPE_SOFT),
+                    scope: Some(DELETE_SCOPE_CONVERSATION_GLOBAL),
+                    reason: reason_for_event,
+                    notify_others: Some(true),
+                    target_user_id: None,
+                },
+            }));
+        }
+        Ok(())
     }
 
     pub async fn mark_read_and_burn(&self, message_id: &str) -> Result<()> {
-        let actor = self.actor().await?;
         let resolved = self.resolve_message(message_id).await?;
-        let plan = self.mutation_service.plan_read_receipt(
-            &actor,
+        let ack = read_ack_packet(
+            &self.device_id,
             resolved.conversation_id(),
-            vec![resolved.server_id().to_string()],
             resolved.message.conversation_seq(),
-        );
-        self.dispatch_transport_action(&plan.transport_action).await
+        )?;
+        self.sender.send_ack(&ack).await
     }
 
     pub async fn typing(&self, conversation_id: &str, typing: bool) -> Result<()> {
         let actor = self.actor().await?;
         self.sender
-            .send_realtime_control_best_effort(&RealtimeControlPacket {
-                control_type: "typing".to_string(),
-                conversation_id: Some(conversation_id.to_string()),
-                correlation_id: None,
-                attributes: Default::default(),
-                payload: Some(RealtimeControlPayload::Typing(TypingStatePacket {
-                    conversation_id: conversation_id.to_string(),
-                    user_id: actor.user_id,
-                    typing,
-                    device_id: None,
-                    occurred_at: Some(crate::shared::util::now_millis() as i64),
-                })),
-            })
+            .send_realtime_control_best_effort(&typing_realtime_control_packet(
+                conversation_id,
+                &actor,
+                &self.device_id,
+                typing,
+            )?)
             .await
     }
 
@@ -277,23 +301,59 @@ impl MessageMutationUseCase {
         Ok(())
     }
 
-    pub async fn pin(&self, conversation_id: &str, message_id: &str) -> Result<()> {
+    pub async fn pin(&self, conversation_id: &str, message_id: &str, scope: i32) -> Result<()> {
         let actor = self.actor().await?;
         let resolved = self.resolve_message(message_id).await?;
         let conversation_id = Self::require_resolved_conversation(conversation_id, &resolved)?;
-        let plan = self
-            .mutation_service
-            .plan_pin(&actor, conversation_id, resolved.server_id());
-        self.dispatch_transport_action(&plan.transport_action).await
+        let plan =
+            self.mutation_service
+                .plan_pin(&actor, conversation_id, resolved.server_id(), scope);
+        let scope = match &plan.transport_action {
+            MessageTransportAction::Pin { scope, .. } => *scope,
+            _ => scope,
+        };
+        self.dispatch_transport_action(&plan.transport_action)
+            .await?;
+        self.apply_local_update(plan.local_update).await?;
+        if let Some(bus) = &self.bus {
+            bus.publish(SdkEvent::Message(MessageEvent::Pinned {
+                conversation_id: conversation_id.to_string(),
+                event: PinEvent {
+                    server_msg_id: resolved.server_id().to_string(),
+                    pinned_by: actor.user_id.clone(),
+                    scope,
+                    ..Default::default()
+                },
+            }));
+        }
+        Ok(())
     }
 
-    pub async fn unpin(&self, conversation_id: &str, message_id: &str) -> Result<()> {
+    pub async fn unpin(&self, conversation_id: &str, message_id: &str, scope: i32) -> Result<()> {
+        let actor = self.actor().await?;
         let resolved = self.resolve_message(message_id).await?;
         let conversation_id = Self::require_resolved_conversation(conversation_id, &resolved)?;
-        let plan = self
-            .mutation_service
-            .plan_unpin(conversation_id, resolved.server_id());
-        self.dispatch_transport_action(&plan.transport_action).await
+        let plan =
+            self.mutation_service
+                .plan_unpin(&actor, conversation_id, resolved.server_id(), scope);
+        let scope = match &plan.transport_action {
+            MessageTransportAction::Unpin { scope, .. } => *scope,
+            _ => scope,
+        };
+        self.dispatch_transport_action(&plan.transport_action)
+            .await?;
+        self.apply_local_update(plan.local_update).await?;
+        if let Some(bus) = &self.bus {
+            bus.publish(SdkEvent::Message(MessageEvent::Unpinned {
+                conversation_id: conversation_id.to_string(),
+                event: UnpinEvent {
+                    server_msg_id: resolved.server_id().to_string(),
+                    unpinned_by: actor.user_id.clone(),
+                    scope,
+                },
+            }));
+        }
+        Ok(())
     }
 
     pub async fn mark(
@@ -344,8 +404,63 @@ impl MessageMutationUseCase {
                 self.store.update_content(&message_id, new_content).await?;
                 Ok(())
             }
+            MessageLocalUpdate::SetPinned { message_id, pinned } => {
+                let applied = self
+                    .store
+                    .apply_pin_event(&message_id, pinned, None)
+                    .await?;
+                if !matches!(applied, OperationApplyResult::Applied) {
+                    return Err(FlareError::localized(
+                        ErrorCode::InvalidParameter,
+                        format!("message pin target not found: {message_id}"),
+                    ));
+                }
+                Ok(())
+            }
             MessageLocalUpdate::Delete { message_id } => self.store.delete(&message_id).await,
         }
+    }
+
+    async fn recompute_conversation_latest(&self, conversation_id: &str) -> Result<()> {
+        let conversation_id = conversation_id.trim();
+        if conversation_id.is_empty() {
+            return Ok(());
+        }
+        let latest = self
+            .store
+            .get_by_conversation(conversation_id, 0, 1)
+            .await?;
+        let Some(message) = latest.first() else {
+            return Ok(());
+        };
+        self.update_conversation_latest_from_message(conversation_id, message)
+            .await
+    }
+
+    async fn update_conversation_latest_from_message(
+        &self,
+        conversation_id: &str,
+        message: &IMMessage,
+    ) -> Result<()> {
+        let last_message_id = if message.server_id.trim().is_empty() {
+            message.client_msg_id.trim()
+        } else {
+            message.server_id.trim()
+        };
+        if last_message_id.is_empty() {
+            return Ok(());
+        }
+        let preview = message.text_for_storage();
+        self.conversation_store
+            .update_last_message(
+                conversation_id,
+                last_message_id,
+                message.sender_id(),
+                message.display_time_ms(),
+                preview.as_deref(),
+                message.conversation_seq,
+            )
+            .await
     }
 
     async fn dispatch_transport_action(&self, action: &MessageTransportAction) -> Result<()> {
@@ -355,12 +470,85 @@ impl MessageMutationUseCase {
     }
 }
 
+fn typing_realtime_control_packet(
+    conversation_id: &str,
+    actor: &MessageActor,
+    device_id: &str,
+    typing: bool,
+) -> Result<RealtimeControlPacket> {
+    let conversation_id = conversation_id.trim();
+    if conversation_id.is_empty() {
+        return Err(FlareError::localized(
+            ErrorCode::InvalidParameter,
+            "conversation_id must not be empty",
+        ));
+    }
+    let device_id = device_id.trim();
+    if device_id.is_empty() {
+        return Err(FlareError::localized(
+            ErrorCode::InvalidParameter,
+            "typing device_id must not be empty",
+        ));
+    }
+    Ok(RealtimeControlPacket {
+        control_type: "typing".to_string(),
+        conversation_id: Some(conversation_id.to_string()),
+        correlation_id: None,
+        attributes: Default::default(),
+        payload: Some(RealtimeControlPayload::Typing(TypingStatePacket {
+            conversation_id: conversation_id.to_string(),
+            user_id: actor.user_id.clone(),
+            typing,
+            device_id: Some(device_id.to_string()),
+            occurred_at: Some(crate::shared::util::now_millis() as i64),
+        })),
+    })
+}
+
+fn read_ack_packet(device_id: &str, conversation_id: &str, read_seq: u64) -> Result<Ack> {
+    let conversation_id = conversation_id.trim();
+    if conversation_id.is_empty() {
+        return Err(FlareError::localized(
+            ErrorCode::InvalidParameter,
+            "conversation_id must not be empty",
+        ));
+    }
+    if read_seq == 0 {
+        return Err(FlareError::localized(
+            ErrorCode::InvalidParameter,
+            "read_seq must be greater than 0",
+        ));
+    }
+    let device_id = device_id.trim();
+    if device_id.is_empty() {
+        return Err(FlareError::localized(
+            ErrorCode::InvalidParameter,
+            "read ack device_id must not be empty",
+        ));
+    }
+    let ack_id = format!("read:{conversation_id}:{read_seq}");
+    Ok(Ack {
+        ack_id: Some(ack_id.clone()),
+        ack_at: Some(crate::shared::util::now_millis() as i64),
+        payload: Some(AckPayload::Read(ReadAck {
+            conversation_id: conversation_id.to_string(),
+            read_seq,
+            device_id: Some(device_id.to_string()),
+            ack_id: Some(ack_id),
+        })),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::MessageMutationUseCase;
-    use crate::domain::ResolvedMessage;
+    use super::read_ack_packet;
+    use super::typing_realtime_control_packet;
+    use crate::domain::{MessageActor, ResolvedMessage};
     use crate::model::message::IMMessage;
     use crate::shared::error::ErrorCode;
+    use flare_proto::common::ack::Payload as AckPayload;
+    use flare_proto::common::realtime_control_packet::Payload as RealtimeControlPayload;
 
     fn resolved_message(conversation_id: &str) -> ResolvedMessage {
         let proto = flare_proto::common::Message {
@@ -397,6 +585,63 @@ mod tests {
 
         let err = MessageMutationUseCase::require_resolved_conversation("conv-b", &resolved)
             .expect_err("mismatched conversation must be rejected");
+
+        assert_eq!(err.code(), Some(ErrorCode::InvalidParameter));
+    }
+
+    #[test]
+    fn typing_realtime_control_packet_includes_current_device_id() {
+        let actor = MessageActor::require("alice".to_string()).unwrap();
+
+        let packet = typing_realtime_control_packet("conv-a", &actor, "device-a", true).unwrap();
+
+        assert_eq!(packet.control_type, "typing");
+        assert_eq!(packet.conversation_id.as_deref(), Some("conv-a"));
+        let Some(RealtimeControlPayload::Typing(payload)) = packet.payload else {
+            panic!("typing payload expected");
+        };
+        assert_eq!(payload.conversation_id, "conv-a");
+        assert_eq!(payload.user_id, "alice");
+        assert!(payload.typing);
+        assert_eq!(payload.device_id.as_deref(), Some("device-a"));
+        assert!(payload.occurred_at.is_some());
+    }
+
+    #[test]
+    fn typing_realtime_control_packet_requires_device_id() {
+        let actor = MessageActor::require("alice".to_string()).unwrap();
+
+        let err = typing_realtime_control_packet("conv-a", &actor, " ", true)
+            .expect_err("device id is required");
+
+        assert_eq!(err.code(), Some(ErrorCode::InvalidParameter));
+    }
+
+    #[test]
+    fn read_ack_packet_includes_current_device_id() {
+        let ack = read_ack_packet("device-a", "conv-a", 42).unwrap();
+
+        assert_eq!(ack.ack_id.as_deref(), Some("read:conv-a:42"));
+        assert!(ack.ack_at.is_some());
+        let Some(AckPayload::Read(payload)) = ack.payload else {
+            panic!("read ack payload expected");
+        };
+        assert_eq!(payload.conversation_id, "conv-a");
+        assert_eq!(payload.read_seq, 42);
+        assert_eq!(payload.device_id.as_deref(), Some("device-a"));
+        assert_eq!(payload.ack_id.as_deref(), Some("read:conv-a:42"));
+    }
+
+    #[test]
+    fn read_ack_packet_rejects_empty_device_id() {
+        let err = read_ack_packet(" ", "conv-a", 42).expect_err("device id is required");
+
+        assert_eq!(err.code(), Some(ErrorCode::InvalidParameter));
+    }
+
+    #[test]
+    fn read_ack_packet_rejects_zero_read_seq() {
+        let err = read_ack_packet("device-a", "conv-a", 0).expect_err("read seq is required");
 
         assert_eq!(err.code(), Some(ErrorCode::InvalidParameter));
     }

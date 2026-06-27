@@ -15,5 +15,5 @@ pub use adapters::{
 };
 pub use runtime::{
     MediaRuntimeConfig, MediaRuntimeKind, NativeRuntimeAssembler, PlatformKind, RuntimeAssembler,
-    RuntimeComponents, RuntimeConfig, StorageConfig, StorageKind,
+    RuntimeComponents, RuntimeConfig, StorageConfig, StorageEncryptionConfig, StorageKind,
 };

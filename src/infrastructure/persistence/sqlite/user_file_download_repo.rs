@@ -1,20 +1,16 @@
 //! SQLite：`user_file_download` + `file_download_settings`
 
-use std::time::{SystemTime, UNIX_EPOCH};
-
 use async_trait::async_trait;
 use sqlx::SqlitePool;
 
 use crate::domain::UserFileDownloadStore;
 use crate::shared::error::{ErrorCode, FlareError, Result};
+use crate::shared::util::time::now_millis;
 
 const DEFAULT_SUBFOLDER: &str = "flare";
 
 fn now_ms() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
+    now_millis().min(i64::MAX as u64) as i64
 }
 
 pub struct SqliteUserFileDownloadRepo {

@@ -43,6 +43,30 @@ pub enum StorageKind {
     Custom,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct StorageEncryptionConfig {
+    pub enabled: bool,
+    pub key_namespace: Option<String>,
+    pub key_name: Option<String>,
+}
+
+impl StorageEncryptionConfig {
+    pub fn disabled() -> Self {
+        Self::default()
+    }
+
+    pub fn required() -> Self {
+        Self {
+            enabled: true,
+            ..Self::default()
+        }
+    }
+
+    pub fn is_enabled(&self) -> bool {
+        self.enabled
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct StorageConfig {
     pub kind: StorageKind,
@@ -50,6 +74,8 @@ pub struct StorageConfig {
     pub tenant_id: String,
     pub user_id: String,
     pub path: Option<String>,
+    #[serde(default)]
+    pub encryption: StorageEncryptionConfig,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -119,4 +145,45 @@ impl RuntimeComponents {
 #[async_trait]
 pub trait RuntimeAssembler: Send + Sync {
     async fn assemble(&self, config: RuntimeConfig) -> Result<RuntimeComponents>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn storage_config_deserializes_without_encryption_for_existing_json() {
+        let config: StorageConfig = serde_json::from_value(serde_json::json!({
+            "kind": "sqlite",
+            "namespace": "flare",
+            "tenant_id": "0",
+            "user_id": "alice",
+            "path": null
+        }))
+        .expect("storage config");
+
+        assert_eq!(config.kind, StorageKind::Sqlite);
+        assert!(!config.encryption.is_enabled());
+    }
+
+    #[test]
+    fn storage_encryption_config_follows_runtime_snake_case_json() {
+        let config = StorageConfig {
+            kind: StorageKind::Sqlite,
+            namespace: "flare".to_string(),
+            tenant_id: "0".to_string(),
+            user_id: "alice".to_string(),
+            path: None,
+            encryption: StorageEncryptionConfig {
+                enabled: true,
+                key_namespace: Some("secure namespace".to_string()),
+                key_name: Some("local db key".to_string()),
+            },
+        };
+
+        let json = serde_json::to_value(&config).expect("serialize");
+        assert!(json.get("encryption").is_some());
+        assert!(json["encryption"].get("key_namespace").is_some());
+        assert!(json["encryption"].get("keyNamespace").is_none());
+    }
 }

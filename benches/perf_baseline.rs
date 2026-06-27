@@ -120,6 +120,38 @@ fn bench_message_store_save(c: &mut Criterion) {
         });
 }
 
+fn bench_message_send_local_pipeline(c: &mut Criterion) {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime");
+    let stores = in_memory_im_provider();
+    let messages = (0..100)
+        .map(|i| sample_im_message(i + 1))
+        .collect::<Vec<_>>();
+
+    c.benchmark_group("message_send")
+        .throughput(Throughput::Elements(messages.len() as u64))
+        .bench_function("local_prepare_store_encode_100", |b| {
+            b.iter(|| {
+                rt.block_on(async {
+                    let mut prepared = Vec::with_capacity(messages.len());
+                    for message in black_box(messages.as_slice()) {
+                        let mut message = message.clone();
+                        message.materialize_encoded_content_from_elem();
+                        black_box(message.to_proto().encode_to_vec());
+                        prepared.push(message);
+                    }
+                    stores
+                        .messages
+                        .save_batch(prepared.as_slice())
+                        .await
+                        .expect("save batch");
+                });
+            });
+        });
+}
+
 fn bench_message_receive_batch(c: &mut Criterion) {
     let bus = EventBus::new();
     let mut rx = bus.subscribe_event_type(SdkEventType::Message(MessageEventType::Received));
@@ -141,6 +173,60 @@ fn bench_message_receive_batch(c: &mut Criterion) {
                 }
             });
         });
+}
+
+fn bench_sync_messages_thousand(c: &mut Criterion) {
+    let bus = EventBus::new();
+    let mut rx = bus.subscribe_event_type(SdkEventType::Message(MessageEventType::Received));
+    let messages = (0..1000)
+        .map(|i| sample_im_message(i + 1))
+        .collect::<Vec<_>>();
+
+    c.benchmark_group("sync_messages")
+        .throughput(Throughput::Elements(messages.len() as u64))
+        .bench_function("event_bus_publish_and_drain_1000", |b| {
+            b.iter(|| {
+                for message in messages.iter() {
+                    bus.publish(SdkEvent::Message(MessageEvent::Received {
+                        message: Box::new(message.clone()),
+                    }));
+                }
+                for _ in 0..messages.len() {
+                    black_box(rx.try_recv().expect("receiver active"));
+                }
+            });
+        });
+}
+
+fn bench_event_json_serialization(c: &mut Criterion) {
+    let message = sample_im_message(1);
+    let batch = (0..1000)
+        .map(|i| sample_im_message(i + 1))
+        .collect::<Vec<_>>();
+
+    let mut group = c.benchmark_group("event_json_serialization");
+    group.throughput(Throughput::Elements(1));
+    group.bench_function("message_received_payload", |b| {
+        b.iter(|| {
+            let payload = serde_json::json!({
+                "type": "message.received",
+                "payload": black_box(&message),
+            });
+            black_box(serde_json::to_string(&payload).expect("event payload serializes"));
+        });
+    });
+
+    group.throughput(Throughput::Elements(batch.len() as u64));
+    group.bench_function("sync_messages_1000_payload", |b| {
+        b.iter(|| {
+            let payload = serde_json::json!({
+                "type": "message.received_batch",
+                "messages": black_box(&batch),
+            });
+            black_box(serde_json::to_string(&payload).expect("event batch serializes"));
+        });
+    });
+    group.finish();
 }
 
 fn bench_protocol_codec(c: &mut Criterion) {
@@ -174,7 +260,10 @@ criterion_group!(
     bench_event_filter_try_recv,
     bench_message_send_prepare,
     bench_message_store_save,
+    bench_message_send_local_pipeline,
     bench_message_receive_batch,
+    bench_sync_messages_thousand,
+    bench_event_json_serialization,
     bench_protocol_codec
 );
 criterion_main!(perf_baseline);

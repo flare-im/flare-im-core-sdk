@@ -113,8 +113,8 @@ mod tests {
     use async_trait::async_trait;
 
     use super::*;
+    use crate::content::message_elem::{Elem, NotificationElem};
     use crate::model::IMMessage;
-    use crate::model::message_elem::{Elem, NotificationElem};
 
     struct CountingHandler {
         expected_type: &'static str,

@@ -9,20 +9,29 @@ pub use crate::shared::util::paths::{
 };
 
 use crate::client::{SdkConfig, SdkResourceProfile, TransportKind, TransportPolicy};
+#[cfg(feature = "lifecycle-sqlite")]
+use crate::platform::ports::storage::SecureKeyStore;
 use crate::shared::error::Result;
 #[cfg(not(feature = "dev-test-token"))]
 use crate::shared::error::{ErrorCode, FlareError};
+#[cfg(feature = "lifecycle-sqlite")]
+use std::sync::Arc;
 
-/// 上层可选覆盖项（JSON 字段 snake_case，与 Rust 字段一致）。
-#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+/// 上层可选覆盖项（JSON 字段为 SDK canonical camelCase）。
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct SdkConfigOverlay {
     pub data_url: Option<String>,
     pub ws_url: Option<String>,
     pub quic_url: Option<String>,
     pub http_url: Option<String>,
+    pub media_storage_proxy_prefix: Option<String>,
+    pub media_storage_proxy_targets: Option<Vec<String>>,
     pub capability_url: Option<String>,
     pub online_url: Option<String>,
     pub tenant_id: Option<String>,
+    /// Stable client device id for multi-device delivery and sync cursors.
+    pub device_id: Option<String>,
     pub connect_timeout_secs: Option<u64>,
     pub reconnect_interval_secs: Option<u64>,
     pub max_reconnect_attempts: Option<u32>,
@@ -42,13 +51,16 @@ pub struct SdkConfigOverlay {
     pub ack_timeout_secs: Option<u64>,
     pub ack_max_retries: Option<u32>,
     pub ack_max_in_flight: Option<usize>,
+    pub tls_ca_cert_path: Option<String>,
+    pub tls_spki_sha256_pins: Option<Vec<String>>,
+    pub tls_certificate_sha256_pins: Option<Vec<String>>,
     pub enable_metrics: Option<bool>,
 }
 
 /// 解析默认 WebSocket 地址。
 ///
 /// 优先级：
-/// 1. `overlay.ws_url`
+/// 1. `overlay.wsUrl`
 /// 2. 环境变量 `FLARE_IM_SERVER_URL`
 /// 3. 内置默认 `ws://localhost:60051`
 pub fn default_ws_url(overlay: Option<&SdkConfigOverlay>) -> String {
@@ -74,6 +86,12 @@ pub fn merge_sdk_config(ws_url: &str, overlay: Option<&SdkConfigOverlay>) -> Sdk
         if o.http_url.is_some() {
             config.http_url = o.http_url.clone();
         }
+        if o.media_storage_proxy_prefix.is_some() {
+            config.media_storage_proxy_prefix = o.media_storage_proxy_prefix.clone();
+        }
+        if let Some(targets) = &o.media_storage_proxy_targets {
+            config.media_storage_proxy_targets = targets.clone();
+        }
         if o.capability_url.is_some() {
             config.capability_url = o.capability_url.clone();
         }
@@ -82,6 +100,9 @@ pub fn merge_sdk_config(ws_url: &str, overlay: Option<&SdkConfigOverlay>) -> Sdk
         }
         if o.tenant_id.is_some() {
             config.tenant_id = o.tenant_id.clone();
+        }
+        if o.device_id.is_some() {
+            config.device_id = o.device_id.clone();
         }
         if o.connect_timeout_secs.is_some() {
             config.connect_timeout_secs = o.connect_timeout_secs;
@@ -127,6 +148,15 @@ pub fn merge_sdk_config(ws_url: &str, overlay: Option<&SdkConfigOverlay>) -> Sdk
         }
         if o.ack_max_in_flight.is_some() {
             config.ack_max_in_flight = o.ack_max_in_flight;
+        }
+        if o.tls_ca_cert_path.is_some() {
+            config.tls_ca_cert_path = o.tls_ca_cert_path.clone();
+        }
+        if let Some(pins) = &o.tls_spki_sha256_pins {
+            config.tls_spki_sha256_pins = pins.clone();
+        }
+        if let Some(pins) = &o.tls_certificate_sha256_pins {
+            config.tls_certificate_sha256_pins = pins.clone();
         }
         if let Some(b) = o.enable_metrics {
             config.enable_metrics = b;
@@ -187,5 +217,106 @@ pub fn resolve_connect_token(user_id: &str, explicit_token: Option<&str>) -> Res
 pub enum LoginDbKind {
     #[cfg(feature = "lifecycle-sqlite")]
     Sqlite,
+    #[cfg(feature = "lifecycle-sqlite")]
+    EncryptedSqlite {
+        key_store: Arc<dyn SecureKeyStore>,
+        key_namespace: Option<String>,
+        tenant_id: Option<String>,
+        key_name: Option<String>,
+    },
     IndexedDb(crate::infrastructure::persistence::StoreProvider),
+}
+
+#[cfg(feature = "lifecycle-sqlite")]
+impl LoginDbKind {
+    pub fn encrypted_sqlite(key_store: Arc<dyn SecureKeyStore>) -> Self {
+        Self::EncryptedSqlite {
+            key_store,
+            key_namespace: None,
+            tenant_id: None,
+            key_name: None,
+        }
+    }
+
+    pub fn encrypted_sqlite_with_descriptor(
+        key_store: Arc<dyn SecureKeyStore>,
+        key_namespace: impl Into<String>,
+        tenant_id: impl Into<String>,
+        key_name: impl Into<String>,
+    ) -> Self {
+        Self::EncryptedSqlite {
+            key_store,
+            key_namespace: Some(key_namespace.into()),
+            tenant_id: Some(tenant_id.into()),
+            key_name: Some(key_name.into()),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sdk_config_overlay_uses_canonical_camel_case_json() {
+        let overlay: SdkConfigOverlay = serde_json::from_value(serde_json::json!({
+            "wsUrl": "ws://localhost:60051",
+            "quicUrl": "quic://localhost:60052",
+            "transportPolicy": "protocol_race",
+            "defaultTransport": "websocket",
+            "protocolRaceOrder": ["quic", "websocket"],
+            "connectTimeoutSecs": 30,
+            "tlsCaCertPath": "/tmp/flare-ca.crt",
+            "tlsSpkiSha256Pins": ["spki-sha256/current", "spki-sha256/next"],
+            "tlsCertificateSha256Pins": ["sha256/legacy"],
+            "enableMetrics": true
+        }))
+        .expect("camelCase overlay");
+
+        assert_eq!(overlay.ws_url.as_deref(), Some("ws://localhost:60051"));
+        assert_eq!(overlay.quic_url.as_deref(), Some("quic://localhost:60052"));
+        assert_eq!(
+            overlay.transport_policy,
+            Some(TransportPolicy::ProtocolRace)
+        );
+        assert_eq!(overlay.default_transport, Some(TransportKind::WebSocket));
+        assert_eq!(
+            overlay.protocol_race_order,
+            Some(vec![TransportKind::Quic, TransportKind::WebSocket])
+        );
+        assert_eq!(overlay.connect_timeout_secs, Some(30));
+        assert_eq!(
+            overlay.tls_ca_cert_path.as_deref(),
+            Some("/tmp/flare-ca.crt")
+        );
+        assert_eq!(
+            overlay.tls_spki_sha256_pins,
+            Some(vec![
+                "spki-sha256/current".to_string(),
+                "spki-sha256/next".to_string()
+            ])
+        );
+        assert_eq!(
+            overlay.tls_certificate_sha256_pins,
+            Some(vec!["sha256/legacy".to_string()])
+        );
+        assert_eq!(overlay.enable_metrics, Some(true));
+
+        let merged = merge_sdk_config("ws://fallback", Some(&overlay));
+        assert_eq!(
+            merged.tls_ca_cert_path.as_deref(),
+            Some("/tmp/flare-ca.crt")
+        );
+
+        let json = serde_json::to_value(&overlay).expect("serialize overlay");
+        assert!(json.get("wsUrl").is_some());
+        assert!(json.get("ws_url").is_none());
+        assert!(json.get("transportPolicy").is_some());
+        assert!(json.get("transport_policy").is_none());
+        assert!(json.get("tlsCaCertPath").is_some());
+        assert!(json.get("tls_ca_cert_path").is_none());
+        assert!(json.get("tlsSpkiSha256Pins").is_some());
+        assert!(json.get("tls_spki_sha256_pins").is_none());
+        assert!(json.get("tlsCertificateSha256Pins").is_some());
+    }
 }

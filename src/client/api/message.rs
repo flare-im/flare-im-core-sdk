@@ -8,9 +8,9 @@ use super::media::UploadProgressCallback;
 use crate::application::usecases::{
     MessageMutationUseCase, MessageSendUseCase, MessageViewAssembler,
 };
-use crate::core::CurrentUserIdStore;
+use crate::content::{BuiltContent, ContentBuilder};
+use crate::kernel::CurrentUserIdStore;
 use crate::model::MessageSearchQuery;
-use crate::model::content_builder::{BuiltContent, ContentBuilder};
 use crate::model::message::{IMMessage, MarkType, SendAck};
 use crate::shared::error::{ErrorCode, FlareError, Result};
 
@@ -129,7 +129,7 @@ impl MessageApi {
         self.edit_content(
             &conversation_id,
             message_id,
-            crate::model::ContentBuilder::text(text).build(),
+            crate::content::ContentBuilder::text(text).build(),
         )
         .await
     }
@@ -199,25 +199,6 @@ impl MessageApi {
             .await
     }
 
-    pub async fn mark_read(&self, conversation_id: &str, read_seq: u64) -> Result<()> {
-        self.ensure_session_active().await?;
-        self.mutation_use_case
-            .mark_read_with_ids(conversation_id, Vec::new(), read_seq)
-            .await
-    }
-
-    pub async fn mark_read_with_ids(
-        &self,
-        conversation_id: &str,
-        message_ids: Vec<String>,
-        read_seq: u64,
-    ) -> Result<()> {
-        self.ensure_session_active().await?;
-        self.mutation_use_case
-            .mark_read_with_ids(conversation_id, message_ids, read_seq)
-            .await
-    }
-
     /// 标记单条消息已读并触发阅后即焚。message_id 为 client_msg_id 或 server_msg_id。
     pub async fn mark_read_and_burn(&self, message_id: &str) -> Result<()> {
         self.ensure_session_active().await?;
@@ -243,40 +224,40 @@ impl MessageApi {
             .await
     }
 
-    /// 置顶消息。message_id 为 client_msg_id。
-    pub async fn pin(&self, conversation_id: &str, message_id: &str) -> Result<()> {
+    /// 置顶消息。message_id 为 client_msg_id；scope 使用 core wire enum：0=会话可见，1=仅自己可见。
+    pub async fn pin(&self, conversation_id: &str, message_id: &str, scope: i32) -> Result<()> {
         self.ensure_session_active().await?;
         self.mutation_use_case
-            .pin(conversation_id, message_id)
+            .pin(conversation_id, message_id, scope)
             .await
     }
 
-    /// 取消置顶。message_id 为 client_msg_id。
-    pub async fn unpin(&self, conversation_id: &str, message_id: &str) -> Result<()> {
+    /// 取消置顶。message_id 为 client_msg_id；scope 使用 core wire enum：0=会话可见，1=仅自己可见。
+    pub async fn unpin(&self, conversation_id: &str, message_id: &str, scope: i32) -> Result<()> {
         self.ensure_session_active().await?;
         self.mutation_use_case
-            .unpin(conversation_id, message_id)
+            .unpin(conversation_id, message_id, scope)
             .await
     }
 
     /// 按 message_id（client_msg_id）置顶。
-    pub async fn pin_by_message_id(&self, message_id: &str) -> Result<()> {
+    pub async fn pin_by_message_id(&self, message_id: &str, scope: i32) -> Result<()> {
         self.ensure_session_active().await?;
         let (conversation_id, _) = self
             .mutation_use_case
             .resolve_message_id(message_id)
             .await?;
-        self.pin(&conversation_id, message_id).await
+        self.pin(&conversation_id, message_id, scope).await
     }
 
     /// 按 message_id（client_msg_id）取消置顶。
-    pub async fn unpin_by_message_id(&self, message_id: &str) -> Result<()> {
+    pub async fn unpin_by_message_id(&self, message_id: &str, scope: i32) -> Result<()> {
         self.ensure_session_active().await?;
         let (conversation_id, _) = self
             .mutation_use_case
             .resolve_message_id(message_id)
             .await?;
-        self.unpin(&conversation_id, message_id).await
+        self.unpin(&conversation_id, message_id, scope).await
     }
 
     /// 标记消息。message_id 为 client_msg_id。

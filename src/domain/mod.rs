@@ -4,13 +4,24 @@
 //! 由本地 UserProfile 缓存或同步填充，供 UI 列表与详情展示。
 
 pub mod conversation;
+mod media_cache;
 mod message;
-mod models;
+mod pending_send;
 mod repository;
 mod sync;
+mod sync_cursor;
+mod upload_manifest;
+mod user_profile;
 
 pub use conversation::*;
+pub use media_cache::{MediaCacheEntryVo, MediaCacheStatsVo};
 pub use message::*;
-pub use models::*;
+pub use pending_send::PendingSendVo;
 pub use repository::*;
 pub use sync::*;
+pub use sync_cursor::SyncCursorVo;
+pub use upload_manifest::{
+    DirectUploadTransportKindVo, MediaUploadManifestVo, MediaUploadPartVo, UploadManifestState,
+    UploadSourceKind,
+};
+pub use user_profile::UserProfile;

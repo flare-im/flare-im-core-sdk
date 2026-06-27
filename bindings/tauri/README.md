@@ -14,20 +14,20 @@ Canonical API, event, and error contracts live in:
 ../contract/client_config.json
 ```
 
-Run `rtk make -C bindings codegen` after changing contract JSON.
+Run `rtk cargo xtask core-codegen` after changing contract JSON.
 
 ## Shape
 
 ```text
 bindings/tauri/
   src/
-    lib.rs          sdk_contract_json / sdk_init / sdk_invoke commands
+    lib.rs          sdk_contract_json / sdk_init / sdk_invoke_json commands
     generated/      generated contract metadata; not the behavior source
 ```
 
 The active Tauri surface creates an `IMClient::new()` shell with `sdk_init`,
-then forwards JSON `BindingRequest` values through
-`flare_im_core_sdk_bindings_runtime::invoke_json`.
+then forwards canonical API IDs and raw request JSON through
+`flare_im_core_sdk_bindings_runtime::invoke_api_id_json`.
 
 ## Usage
 
@@ -40,11 +40,12 @@ tauri::Builder::default()
 
 ```ts
 await invoke("sdk_init", {
-  args: { config: { ws_url: "ws://localhost:60051" } }
+  args: { config: { wsUrl: "ws://localhost:60051" } }
 });
 
-const response = await invoke("sdk_invoke", {
-  requestJson: JSON.stringify({ route: "sdk.state", params: {} })
+const response = await invoke("sdk_invoke_json", {
+  apiId: "connection.get_state",
+  requestJson: "{}"
 });
 ```
 

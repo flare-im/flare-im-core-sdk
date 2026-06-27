@@ -9,22 +9,39 @@ use tonic::metadata::MetadataValue;
 use tonic::transport::{Channel, Endpoint};
 
 use crate::client::api::session_guard::SessionGuard;
-use crate::core::event::{EventBus, MessageEvent, SdkEvent};
 use crate::infrastructure::transport::http::http_client::HttpRequestContext;
+use crate::kernel::event::{EventBus, MessageEvent, SdkEvent};
 use crate::shared::error::{ErrorCode, FlareError, Result};
 use flare_grpc_proto::signaling::online::online_service_client::OnlineServiceClient;
 use flare_grpc_proto::signaling::online::{
-    BatchGetUserPresenceRequest, GetUserPresenceRequest, LogoutRequest,
-    SubscribeUserPresenceRequest, UserPresence,
+    BatchGetUserPresenceRequest, DeviceInfo, GetDeviceRequest, GetUserPresenceRequest,
+    KickDeviceRequest, ListUserDevicesRequest, LogoutRequest, SubscribeUserPresenceRequest,
+    UserPresence,
 };
+use flare_proto::ConnectionQuality;
 use flare_proto::common::PresenceHintPacket;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConnectionQualityDto {
+    pub rtt_ms: i64,
+    pub packet_loss_rate: f64,
+    pub last_measured_at: i64,
+    pub network_type: String,
+    pub signal_strength: i32,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DevicePresenceDto {
     pub device_id: String,
     pub platform: String,
+    pub model: String,
+    pub os_version: String,
     pub last_active_time_ms: i64,
+    pub priority: i32,
+    pub token_version: i64,
+    pub connection_quality: Option<ConnectionQualityDto>,
     pub conversation_id: String,
     pub gateway_id: String,
     pub server_id: String,
@@ -46,6 +63,7 @@ pub struct PresenceApi {
     endpoint: String,
     channel: Arc<Mutex<Option<Channel>>>,
     current_user_id: Arc<RwLock<String>>,
+    device_id: String,
     default_tenant_id: String,
     http_request_context: Arc<HttpRequestContext>,
     bus: EventBus,
@@ -56,6 +74,7 @@ impl PresenceApi {
     pub fn new(
         grpc_endpoint: impl Into<String>,
         current_user_id: Arc<RwLock<String>>,
+        device_id: impl Into<String>,
         default_tenant_id: impl Into<String>,
         http_request_context: Arc<HttpRequestContext>,
         bus: EventBus,
@@ -65,6 +84,7 @@ impl PresenceApi {
             endpoint: grpc_endpoint.into(),
             channel: Arc::new(Mutex::new(None)),
             current_user_id,
+            device_id: device_id.into().trim().to_string(),
             default_tenant_id: crate::shared::util::normalize_tenant_id(default_tenant_id.into()),
             http_request_context,
             bus,
@@ -188,7 +208,96 @@ impl PresenceApi {
             .await
     }
 
-    /// 主动注销当前 SDK 用户最近活跃的 Online 会话。
+    pub async fn list_current_user_devices(&self) -> Result<Vec<DevicePresenceDto>> {
+        let api = self.clone();
+        self.session_guard
+            .run(async move {
+                let user_id = api.current_user_id.read().await.trim().to_string();
+                if user_id.is_empty() {
+                    return Err(FlareError::localized(ErrorCode::NotConnected, "未连接"));
+                }
+                let ch = api.connect().await?;
+                let mut client = OnlineServiceClient::new(ch);
+                let mut req = tonic::Request::new(ListUserDevicesRequest {
+                    user_id: user_id.clone(),
+                });
+                api.enrich_metadata(&mut req).await?;
+                let resp = client
+                    .list_user_devices(req)
+                    .await
+                    .map_err(|s| FlareError::system(format!("ListUserDevices: {}", s.message())))?
+                    .into_inner();
+                Ok(resp.devices.into_iter().map(device_info_to_dto).collect())
+            })
+            .await
+    }
+
+    pub async fn get_device(&self, device_id: &str) -> Result<DevicePresenceDto> {
+        let device_id = device_id.trim().to_string();
+        if device_id.is_empty() {
+            return Err(FlareError::localized(
+                ErrorCode::InvalidParameter,
+                "sdk.presence.device_id_required",
+            ));
+        }
+        let api = self.clone();
+        self.session_guard
+            .run(async move {
+                let user_id = api.current_user_id.read().await.trim().to_string();
+                if user_id.is_empty() {
+                    return Err(FlareError::localized(ErrorCode::NotConnected, "未连接"));
+                }
+                let ch = api.connect().await?;
+                let mut client = OnlineServiceClient::new(ch);
+                let mut req = tonic::Request::new(GetDeviceRequest { user_id, device_id });
+                api.enrich_metadata(&mut req).await?;
+                let resp = client
+                    .get_device(req)
+                    .await
+                    .map_err(|s| FlareError::system(format!("GetDevice: {}", s.message())))?
+                    .into_inner();
+                resp.device
+                    .map(device_info_to_dto)
+                    .ok_or_else(|| FlareError::system("GetDevice: missing device"))
+            })
+            .await
+    }
+
+    pub async fn kick_device(&self, device_id: &str, reason: &str) -> Result<bool> {
+        let device_id = device_id.trim().to_string();
+        if device_id.is_empty() {
+            return Err(FlareError::localized(
+                ErrorCode::InvalidParameter,
+                "sdk.presence.device_id_required",
+            ));
+        }
+        let reason = reason.trim().to_string();
+        let api = self.clone();
+        self.session_guard
+            .run(async move {
+                let user_id = api.current_user_id.read().await.trim().to_string();
+                if user_id.is_empty() {
+                    return Err(FlareError::localized(ErrorCode::NotConnected, "未连接"));
+                }
+                let ch = api.connect().await?;
+                let mut client = OnlineServiceClient::new(ch);
+                let mut req = tonic::Request::new(KickDeviceRequest {
+                    user_id,
+                    device_id,
+                    reason,
+                });
+                api.enrich_metadata(&mut req).await?;
+                let resp = client
+                    .kick_device(req)
+                    .await
+                    .map_err(|s| FlareError::system(format!("KickDevice: {}", s.message())))?
+                    .into_inner();
+                Ok(resp.success)
+            })
+            .await
+    }
+
+    /// 主动注销当前 SDK 设备对应的 Online 会话。
     ///
     /// 这是用户点击“退出登录”时的主动下线路径，不能只依赖 WebSocket 断开后的网关回调。
     pub async fn logout_current_device_presence(&self) -> Result<()> {
@@ -205,13 +314,12 @@ impl PresenceApi {
             return Ok(());
         }
 
+        let device_id = self.device_id.trim();
+        if device_id.is_empty() {
+            return Ok(());
+        }
         let presence = self.get_user_presence_unbound(&user_id).await?;
-        let Some(device) = presence
-            .devices
-            .into_iter()
-            .filter(|device| !device.conversation_id.trim().is_empty())
-            .max_by_key(|device| device.last_active_time_ms)
-        else {
+        let Some(device) = current_device_presence(presence.devices, device_id) else {
             return Ok(());
         };
 
@@ -331,6 +439,32 @@ fn timestamp_ms(ts: Option<prost_types::Timestamp>) -> i64 {
         .unwrap_or(0)
 }
 
+fn connection_quality_to_dto(q: ConnectionQuality) -> ConnectionQualityDto {
+    ConnectionQualityDto {
+        rtt_ms: q.rtt_ms,
+        packet_loss_rate: q.packet_loss_rate,
+        last_measured_at: q.last_measured_at,
+        network_type: q.network_type,
+        signal_strength: q.signal_strength,
+    }
+}
+
+fn device_info_to_dto(d: DeviceInfo) -> DevicePresenceDto {
+    DevicePresenceDto {
+        device_id: d.device_id,
+        platform: d.platform,
+        model: d.model,
+        os_version: d.os_version,
+        last_active_time_ms: timestamp_ms(d.last_active_time),
+        priority: d.priority,
+        token_version: d.token_version,
+        connection_quality: d.connection_quality.map(connection_quality_to_dto),
+        conversation_id: d.conversation_id,
+        gateway_id: d.gateway_id,
+        server_id: d.server_id,
+    }
+}
+
 fn user_presence_to_dto(p: UserPresence) -> UserPresenceDto {
     let is_online = p.is_online;
     UserPresenceDto {
@@ -338,17 +472,72 @@ fn user_presence_to_dto(p: UserPresence) -> UserPresenceDto {
         is_online,
         status: if is_online { "online" } else { "offline" }.to_string(),
         last_seen_ms: timestamp_ms(p.last_seen),
-        devices: p
-            .devices
-            .into_iter()
-            .map(|d| DevicePresenceDto {
-                device_id: d.device_id,
-                platform: d.platform,
-                last_active_time_ms: timestamp_ms(d.last_active_time),
-                conversation_id: d.conversation_id,
-                gateway_id: d.gateway_id,
-                server_id: d.server_id,
-            })
-            .collect(),
+        devices: p.devices.into_iter().map(device_info_to_dto).collect(),
+    }
+}
+
+fn current_device_presence(
+    devices: Vec<DevicePresenceDto>,
+    device_id: &str,
+) -> Option<DevicePresenceDto> {
+    let device_id = device_id.trim();
+    if device_id.is_empty() {
+        return None;
+    }
+    devices.into_iter().find(|device| {
+        device.device_id.trim() == device_id && !device.conversation_id.trim().is_empty()
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn device(
+        device_id: &str,
+        conversation_id: &str,
+        last_active_time_ms: i64,
+    ) -> DevicePresenceDto {
+        DevicePresenceDto {
+            device_id: device_id.to_string(),
+            platform: "ios".to_string(),
+            model: "iPhone".to_string(),
+            os_version: "26".to_string(),
+            last_active_time_ms,
+            priority: 2,
+            token_version: 1,
+            connection_quality: None,
+            conversation_id: conversation_id.to_string(),
+            gateway_id: "gateway".to_string(),
+            server_id: "server".to_string(),
+        }
+    }
+
+    #[test]
+    fn current_device_presence_selects_exact_device_id_not_recent_device() {
+        let selected = current_device_presence(
+            vec![
+                device("device-b", "conn-b", 300),
+                device("device-a", "conn-a", 100),
+            ],
+            "device-a",
+        )
+        .expect("current device");
+
+        assert_eq!(selected.device_id, "device-a");
+        assert_eq!(selected.conversation_id, "conn-a");
+    }
+
+    #[test]
+    fn current_device_presence_requires_active_conversation_id() {
+        let selected = current_device_presence(
+            vec![
+                device("device-a", "", 300),
+                device("device-b", "conn-b", 100),
+            ],
+            "device-a",
+        );
+
+        assert!(selected.is_none());
     }
 }

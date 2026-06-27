@@ -6,12 +6,13 @@
 //! normalized contract.
 
 use async_trait::async_trait;
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Arc};
 
 use crate::application::callbacks::{UploadProgress, UserFileDownloadRequest};
 use crate::domain::MediaCacheStatsVo;
 use crate::model::{
-    MediaAccessUrl, MediaCacheEntryVo, MediaResolvedAccess, UploadOptions, UploadedMedia,
+    MediaAccessUrl, MediaCacheEntryVo, MediaDestinationDescriptor, MediaDestinationKind,
+    MediaResolvedAccess, RenderableMedia, UploadOptions, UploadedMedia,
 };
 use crate::shared::error::{ErrorCode, FlareError, Result};
 
@@ -105,6 +106,128 @@ pub struct ProcessedMedia {
     pub payload: Option<Vec<u8>>,
 }
 
+#[derive(Clone, Default)]
+pub struct MediaHost {
+    pub reader: Option<Arc<dyn MediaSourceReader>>,
+    pub sink: Option<Arc<dyn MediaSink>>,
+    pub http: Option<Arc<dyn MediaHttp>>,
+    pub transcoder: Option<Arc<dyn MediaTranscoder>>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MediaSinkCapabilities {
+    pub inline_display: bool,
+    pub save_to_device: bool,
+    pub path: bool,
+    pub bytes: bool,
+}
+
+impl MediaSinkCapabilities {
+    pub fn save_to_device() -> Self {
+        Self {
+            inline_display: false,
+            save_to_device: true,
+            path: false,
+            bytes: false,
+        }
+    }
+
+    pub fn supports(&self, destination: &MediaDestinationDescriptor) -> bool {
+        match destination.kind {
+            MediaDestinationKind::InlineDisplay => self.inline_display,
+            MediaDestinationKind::SaveToDevice => self.save_to_device,
+            MediaDestinationKind::Path => self.path,
+            MediaDestinationKind::Bytes => self.bytes,
+        }
+    }
+}
+
+pub struct MediaByteStream {
+    pub chunks: Vec<Vec<u8>>,
+}
+
+pub struct MediaDeliverMeta {
+    pub file_id: String,
+    pub file_name: String,
+    pub mime_type: String,
+    pub destination: MediaDestinationDescriptor,
+}
+
+#[derive(Debug, Clone)]
+pub struct MediaDeliveryResult {
+    pub destination: MediaDestinationDescriptor,
+    pub render_url: Option<String>,
+    pub saved_path: Option<String>,
+    pub bytes: Option<Vec<u8>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct MediaHttpRequest {
+    pub method: String,
+    pub url: String,
+    pub headers: HashMap<String, String>,
+    pub body: Option<Vec<u8>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct MediaHttpResponse {
+    pub status: u16,
+    pub headers: HashMap<String, String>,
+    pub body: Vec<u8>,
+}
+
+#[derive(Debug, Clone)]
+pub struct MediaProfile {
+    pub name: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct TranscodedMedia {
+    pub media: ProcessedMedia,
+    pub thumbnail: Option<Vec<u8>>,
+    pub blurhash: Option<String>,
+}
+
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+pub trait MediaSourceReader: Send + Sync {
+    async fn inspect(&self, source: &MediaSourceDescriptor) -> Result<MediaMetadata>;
+    async fn read_part(
+        &self,
+        source: &MediaSourceDescriptor,
+        offset: u64,
+        len: u64,
+    ) -> Result<Vec<u8>>;
+}
+
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+pub trait MediaSink: Send + Sync {
+    async fn deliver(
+        &self,
+        stream: MediaByteStream,
+        meta: MediaDeliverMeta,
+    ) -> Result<MediaDeliveryResult>;
+
+    fn capabilities(&self) -> MediaSinkCapabilities;
+}
+
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+pub trait MediaHttp: Send + Sync {
+    async fn send(&self, request: MediaHttpRequest) -> Result<MediaHttpResponse>;
+}
+
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+pub trait MediaTranscoder: Send + Sync {
+    async fn process(
+        &self,
+        source: MediaSourceDescriptor,
+        profile: MediaProfile,
+    ) -> Result<TranscodedMedia>;
+}
+
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 pub trait MediaProcessorPort: Send + Sync {
@@ -173,6 +296,11 @@ pub trait MediaServicePort: Send + Sync {
         Err(unsupported_media_operation("resolve_media_access"))
     }
 
+    async fn resolve_for_display(&self, file_id: &str, expires_in: i32) -> Result<RenderableMedia> {
+        let resolved = self.resolve_media_access(file_id, expires_in).await?;
+        Ok(RenderableMedia::from_resolved_access(file_id, resolved))
+    }
+
     async fn cache_remote_media(
         &self,
         _file_id: &str,
@@ -232,4 +360,19 @@ pub fn unsupported_media_operation(operation: &str) -> FlareError {
         ErrorCode::OperationNotSupported,
         format!("{operation} is not supported by the configured media adapter"),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::MediaDestinationDescriptor;
+
+    #[test]
+    fn sink_capabilities_match_destination_descriptors() {
+        let save_only = MediaSinkCapabilities::save_to_device();
+
+        assert!(save_only.supports(&MediaDestinationDescriptor::save_to_device()));
+        assert!(!save_only.supports(&MediaDestinationDescriptor::inline_display()));
+        assert!(!save_only.supports(&MediaDestinationDescriptor::bytes()));
+    }
 }

@@ -6,39 +6,27 @@ use std::collections::HashMap;
 use async_trait::async_trait;
 use sqlx::{QueryBuilder, Row, Sqlite, SqlitePool};
 
+use crate::content::message_elem::{
+    MessagePreviewElem, decoded_content_to_elem, elem_preview_storage_payload,
+};
 use crate::domain::{
     ConversationReader, ConversationWriter, ReadPosition, local_cleared_through_seq,
     preserve_local_remark, preserve_local_single_chat_channel, set_local_cleared_through_seq,
 };
 use crate::model::conversation::{ConversationLocalState, ConversationType};
-use crate::model::message_elem::MessagePreviewElem;
 use crate::model::search::escaped_like_contains;
-use crate::model::{Conversation, ConversationListQuery};
+use crate::model::{Conversation, ConversationListQuery, decode_content_bytes};
 use crate::shared::error::{ErrorCode, FlareError, Result};
 
-/// 与 schema 中 conversations 表列顺序一致的 i32 枚举（与 model prefix 一致：1=单聊 2=群聊 3=AI 4=系统 5=客服 6=临时）
+use super::identity_repair;
+
+/// 与 schema 中 conversations 表列顺序一致的 i32 枚举（由 SDK 会话类型 policy 统一维护）。
 fn conversation_type_to_i32(t: &ConversationType) -> i32 {
-    match t {
-        ConversationType::Unspecified => 0,
-        ConversationType::Single => 1,
-        ConversationType::Group => 2,
-        ConversationType::Ai => 3,
-        ConversationType::System => 4,
-        ConversationType::Customer => 5,
-        ConversationType::Temp => 6,
-    }
+    t.to_proto_int()
 }
 
 fn i32_to_conversation_type(v: i32) -> ConversationType {
-    match v {
-        1 => ConversationType::Single,
-        2 => ConversationType::Group,
-        3 => ConversationType::Ai,
-        4 => ConversationType::System,
-        5 => ConversationType::Customer,
-        6 => ConversationType::Temp,
-        _ => ConversationType::Unspecified,
-    }
+    ConversationType::from_proto_int(v)
 }
 
 fn sqlx_err(e: sqlx::Error) -> FlareError {
@@ -53,6 +41,72 @@ fn parse_ext(s: Option<&str>) -> HashMap<String, String> {
     serde_json::from_str(s).unwrap_or_default()
 }
 
+fn merge_identity_conversation(mut target: Conversation, mut source: Conversation) -> Conversation {
+    source.conversation_id = target.conversation_id.clone();
+    if target.channel_id.trim().is_empty() {
+        target.channel_id = source.channel_id;
+    }
+    if target.business_type.trim().is_empty() {
+        target.business_type = source.business_type;
+    }
+    if target.display_name.trim().is_empty() {
+        target.display_name = source.display_name;
+    }
+    if target.avatar_url.trim().is_empty() {
+        target.avatar_url = source.avatar_url;
+    }
+    if target.remark.is_none() {
+        target.remark = source.remark;
+    }
+    if target.description.is_none() {
+        target.description = source.description;
+    }
+    if target.draft.is_none() {
+        target.draft = source.draft;
+    }
+    let source_is_newer = source.max_seq > target.max_seq
+        || (source.max_seq == target.max_seq
+            && source.last_message_at.unwrap_or_default()
+                > target.last_message_at.unwrap_or_default());
+    if source_is_newer {
+        target.last_message_id = source.last_message_id;
+        target.last_sender_id = source.last_sender_id;
+        target.last_message_at = source.last_message_at;
+        target.last_message_preview = source.last_message_preview;
+        target.last_message = source.last_message;
+        target.last_sender_nickname = source.last_sender_nickname;
+        target.last_sender_avatar_url = source.last_sender_avatar_url;
+        target.max_seq = target.max_seq.max(source.max_seq);
+    }
+    target.members_count = target.members_count.max(source.members_count);
+    target.unread_count = target.unread_count.max(source.unread_count);
+    target.last_read_seq = target.last_read_seq.max(source.last_read_seq);
+    target.visible_after_seq = target.visible_after_seq.max(source.visible_after_seq);
+    target.is_pinned |= source.is_pinned;
+    target.is_muted |= source.is_muted;
+    target.is_archived |= source.is_archived;
+    target.version = target.version.max(source.version);
+    target.updated_at = target.updated_at.max(source.updated_at);
+    target.created_at = match (target.created_at, source.created_at) {
+        (0, value) => value,
+        (value, 0) => value,
+        (left, right) => left.min(right),
+    };
+    target.updated_at_ts = target.updated_at_ts.max(source.updated_at_ts);
+    target.mention_count = target.mention_count.max(source.mention_count);
+    target.mention_me |= source.mention_me;
+    if target.badge.is_none() {
+        target.badge = source.badge;
+    }
+    if target.role.is_none() {
+        target.role = source.role;
+    }
+    for (key, value) in source.ext {
+        target.ext.entry(key).or_insert(value);
+    }
+    target
+}
+
 pub struct SqliteConversationRepo {
     pool: SqlitePool,
 }
@@ -62,7 +116,46 @@ impl SqliteConversationRepo {
         Self { pool }
     }
 
+    async fn delete_invalid_conversation_rows(&self) -> Result<()> {
+        sqlx::query("DELETE FROM conversations WHERE TRIM(COALESCE(conversation_id, '')) = ''")
+            .execute(&self.pool)
+            .await
+            .map_err(sqlx_err)?;
+        Ok(())
+    }
+
+    async fn repair_missing_message_previews_from_content(&self) -> Result<()> {
+        let rows = sqlx::query(
+            r#"SELECT rowid, encoded_content
+               FROM messages
+               WHERE TRIM(COALESCE(text, '')) = ''
+                 AND length(COALESCE(encoded_content, X'')) > 0"#,
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(sqlx_err)?;
+
+        for row in rows {
+            let rowid: i64 = row.try_get("rowid").map_err(sqlx_err)?;
+            let encoded_content: Vec<u8> = row.try_get("encoded_content").map_err(sqlx_err)?;
+            let Some(preview) = preview_from_encoded_content(&encoded_content) else {
+                continue;
+            };
+            sqlx::query("UPDATE messages SET text = ? WHERE rowid = ?")
+                .bind(preview)
+                .bind(rowid)
+                .execute(&self.pool)
+                .await
+                .map_err(sqlx_err)?;
+        }
+
+        Ok(())
+    }
+
     async fn repair_missing_conversations_from_messages(&self) -> Result<()> {
+        self.delete_invalid_conversation_rows().await?;
+        self.repair_missing_message_previews_from_content().await?;
+        identity_repair::repair_single_chat_message_aliases(&self.pool).await?;
         sqlx::query(
             r#"WITH latest_messages AS (
                    SELECT
@@ -145,6 +238,8 @@ impl SqliteConversationRepo {
                        WHEN lm.conversation_type = 4 THEN 'system'
                        WHEN lm.conversation_type = 5 THEN 'customer'
                        WHEN lm.conversation_type = 6 THEN 'temp'
+                       WHEN lm.conversation_type = 7 THEN 'channel'
+                       WHEN lm.conversation_type = 8 THEN 'broadcast'
                        ELSE 'chat'
                    END,
                    COALESCE(
@@ -218,42 +313,22 @@ impl SqliteConversationRepo {
             r#"SELECT c.conversation_id, c.conversation_type, c.business_type, c.channel_id,
                       c.members_count, c.display_name, c.avatar_url, c.remark, c.description,
                       CASE
-                          WHEN lm.rowid IS NOT NULL AND (
-                                   TRIM(COALESCE(c.last_message_preview, '')) = ''
-                                OR (lm.conversation_seq > 0 AND lm.conversation_seq >= COALESCE(c.max_seq, 0))
-                                OR (lm.conversation_seq > 0 AND COALESCE(lm.effective_at, 0) > COALESCE(c.last_message_at, 0))
-                                OR (lm.conversation_seq = 0 AND COALESCE(lm.effective_at, 0) > COALESCE(c.last_message_at, 0))
-                               )
+                          WHEN lm.rowid IS NOT NULL
                               THEN COALESCE(NULLIF(lm.server_id, ''), NULLIF(lm.client_msg_id, ''), NULLIF(TRIM(c.last_message_id), ''))
                           ELSE NULLIF(TRIM(c.last_message_id), '')
                       END AS last_message_id,
                       CASE
-                          WHEN lm.rowid IS NOT NULL AND (
-                                   TRIM(COALESCE(c.last_message_preview, '')) = ''
-                                OR (lm.conversation_seq > 0 AND lm.conversation_seq >= COALESCE(c.max_seq, 0))
-                                OR (lm.conversation_seq > 0 AND COALESCE(lm.effective_at, 0) > COALESCE(c.last_message_at, 0))
-                                OR (lm.conversation_seq = 0 AND COALESCE(lm.effective_at, 0) > COALESCE(c.last_message_at, 0))
-                               )
+                          WHEN lm.rowid IS NOT NULL
                               THEN COALESCE(NULLIF(lm.sender_id, ''), NULLIF(TRIM(c.last_sender_id), ''))
                           ELSE NULLIF(TRIM(c.last_sender_id), '')
                       END AS last_sender_id,
                       CASE
-                          WHEN lm.rowid IS NOT NULL AND (
-                                   TRIM(COALESCE(c.last_message_preview, '')) = ''
-                                OR (lm.conversation_seq > 0 AND lm.conversation_seq >= COALESCE(c.max_seq, 0))
-                                OR (lm.conversation_seq > 0 AND COALESCE(lm.effective_at, 0) > COALESCE(c.last_message_at, 0))
-                                OR (lm.conversation_seq = 0 AND COALESCE(lm.effective_at, 0) > COALESCE(c.last_message_at, 0))
-                               )
+                          WHEN lm.rowid IS NOT NULL
                               THEN COALESCE(NULLIF(lm.effective_at, 0), c.last_message_at)
                           ELSE c.last_message_at
                       END AS last_message_at,
                       CASE
-                          WHEN lm.rowid IS NOT NULL AND (
-                                   TRIM(COALESCE(c.last_message_preview, '')) = ''
-                                OR (lm.conversation_seq > 0 AND lm.conversation_seq >= COALESCE(c.max_seq, 0))
-                                OR (lm.conversation_seq > 0 AND COALESCE(lm.effective_at, 0) > COALESCE(c.last_message_at, 0))
-                                OR (lm.conversation_seq = 0 AND COALESCE(lm.effective_at, 0) > COALESCE(c.last_message_at, 0))
-                               ) THEN lm.text
+                          WHEN lm.rowid IS NOT NULL THEN lm.text
                           ELSE c.last_message_preview
                       END AS last_message_preview,
                       c.last_sender_nickname, c.last_sender_avatar_url,
@@ -404,9 +479,25 @@ impl SqliteConversationRepo {
     }
 }
 
+fn preview_from_encoded_content(bytes: &[u8]) -> Option<String> {
+    decode_content_bytes(bytes)
+        .ok()
+        .and_then(|decoded| decoded_content_to_elem(&decoded))
+        .and_then(|elem| {
+            let payload = elem_preview_storage_payload(&elem);
+            if payload.is_empty_for_last_preview() {
+                return None;
+            }
+            serde_json::to_string(&payload).ok()
+        })
+}
+
 #[async_trait]
 impl ConversationReader for SqliteConversationRepo {
     async fn get(&self, conversation_id: &str) -> Result<Option<Conversation>> {
+        if conversation_id.trim().is_empty() {
+            return Ok(None);
+        }
         self.repair_missing_conversations_from_messages().await?;
         let sql = Self::select_with_latest_visible_message("WHERE c.conversation_id = ?");
         let row = sqlx::query(&sql)
@@ -421,7 +512,8 @@ impl ConversationReader for SqliteConversationRepo {
     async fn list(&self) -> Result<Vec<Conversation>> {
         self.repair_missing_conversations_from_messages().await?;
         let sql = Self::select_with_latest_visible_message(
-            "ORDER BY c.is_archived ASC, c.is_pinned DESC, COALESCE(last_message_at, 0) DESC",
+            "WHERE TRIM(COALESCE(c.conversation_id, '')) != ''
+             ORDER BY c.is_archived ASC, c.is_pinned DESC, COALESCE(last_message_at, 0) DESC",
         );
         let rows = sqlx::query(&sql)
             .fetch_all(&self.pool)
@@ -436,7 +528,9 @@ impl ConversationReader for SqliteConversationRepo {
 
     async fn list_by_query(&self, query: &ConversationListQuery) -> Result<Vec<Conversation>> {
         self.repair_missing_conversations_from_messages().await?;
-        let base = Self::select_with_latest_visible_message("WHERE 1 = 1");
+        let base = Self::select_with_latest_visible_message(
+            "WHERE TRIM(COALESCE(c.conversation_id, '')) != ''",
+        );
         let mut qb = QueryBuilder::<Sqlite>::new(base);
 
         if !query.include_archived {
@@ -514,6 +608,15 @@ impl ConversationReader for SqliteConversationRepo {
 #[async_trait]
 impl ConversationWriter for SqliteConversationRepo {
     async fn save_batch(&self, conversations: &[Conversation]) -> Result<()> {
+        for conversation in conversations {
+            if conversation.conversation_id.trim().is_empty() {
+                return Err(FlareError::localized(
+                    ErrorCode::InvalidParameter,
+                    "conversationId 不能为空",
+                ));
+            }
+        }
+
         let mut tx = self
             .pool
             .begin()
@@ -624,10 +727,17 @@ impl ConversationWriter for SqliteConversationRepo {
                         .map(str::trim)
                         .is_some_and(|v| !v.is_empty())
                     || c.last_message_at.unwrap_or_default() > 0;
+                let incoming_preview_is_empty = c
+                    .last_message_preview
+                    .as_deref()
+                    .map(str::trim)
+                    .is_none_or(str::is_empty);
                 // 会话摘要只是服务端投影；本地消息表同步出来的最新消息更权威。
                 // 避免服务端摘要滞后时把会话列表预览回滚到旧消息或空消息。
                 if prev_has_last_message
-                    && (c.max_seq <= prev_max_seq || !incoming_has_last_message)
+                    && (c.max_seq <= prev_max_seq
+                        || !incoming_has_last_message
+                        || incoming_preview_is_empty)
                 {
                     merged.last_message_id = prev_last_message_id;
                     merged.last_sender_id = prev_last_sender_id;
@@ -683,7 +793,7 @@ impl ConversationWriter for SqliteConversationRepo {
                     merged.unread_count = 0;
                 }
             }
-            // unread 上界：最多为“最新位点 - 已读位点”
+            // unread 上界：最多为“最大 seq - 已读 seq”
             merged.unread_count = merged
                 .unread_count
                 .min(ReadPosition::from_conversation(&merged).unread_upper_bound());
@@ -1004,6 +1114,53 @@ impl ConversationWriter for SqliteConversationRepo {
             .map_err(|e| FlareError::localized(ErrorCode::DatabaseError, e.to_string()))?;
         Ok(())
     }
+
+    async fn merge_conversation_identity(
+        &self,
+        from_conversation_id: &str,
+        to_conversation_id: &str,
+    ) -> Result<()> {
+        let from = from_conversation_id.trim();
+        let to = to_conversation_id.trim();
+        if from.is_empty() || to.is_empty() || from == to {
+            return Ok(());
+        }
+
+        let Some(mut source) = self.get(from).await? else {
+            return Ok(());
+        };
+        source.conversation_id = to.to_string();
+        let merged = match self.get(to).await? {
+            Some(target) => merge_identity_conversation(target, source),
+            None => source,
+        };
+        self.save_one(&merged).await?;
+
+        let mut tx = self.pool.begin().await.map_err(sqlx_err)?;
+        sqlx::query("DELETE FROM conversation_participants WHERE conversation_id = ?")
+            .bind(from)
+            .execute(&mut *tx)
+            .await
+            .map_err(sqlx_err)?;
+        sqlx::query("DELETE FROM sync_conversation_cursors WHERE conversation_id = ?")
+            .bind(from)
+            .execute(&mut *tx)
+            .await
+            .map_err(sqlx_err)?;
+        sqlx::query("DELETE FROM pending_sends WHERE conversation_id = ?")
+            .bind(from)
+            .execute(&mut *tx)
+            .await
+            .map_err(sqlx_err)?;
+        sqlx::query("DELETE FROM conversations WHERE conversation_id = ?")
+            .bind(from)
+            .execute(&mut *tx)
+            .await
+            .map_err(sqlx_err)?;
+        tx.commit().await.map_err(sqlx_err)?;
+        Ok(())
+    }
+
     async fn get_local_max_seq(&self, conversation_id: &str) -> Result<u64> {
         let row = sqlx::query(
             r#"SELECT COALESCE(MAX(conversation_seq), 0) AS max_seq
@@ -1083,9 +1240,11 @@ impl ConversationWriter for SqliteConversationRepo {
 #[cfg(test)]
 mod tests {
     use super::SqliteConversationRepo;
+    use crate::content::ContentBuilder;
     use crate::domain::{ConversationReader, ConversationWriter};
     use crate::model::{Conversation, ConversationListQuery, MessagePreviewElem};
-    use sqlx::SqlitePool;
+    use crate::shared::error::ErrorCode;
+    use sqlx::{Row, SqlitePool};
 
     async fn repo() -> SqliteConversationRepo {
         let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
@@ -1273,6 +1432,38 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn save_batch_rejects_blank_conversation_id() {
+        let repo = repo().await;
+        let summary = conversation("   ", 1, "bad");
+
+        let err = repo
+            .save_batch(&[summary])
+            .await
+            .expect_err("blank conversation id must be rejected");
+
+        assert_eq!(err.code(), Some(ErrorCode::InvalidParameter));
+    }
+
+    #[tokio::test]
+    async fn list_prunes_legacy_blank_conversation_id_rows() {
+        let repo = repo().await;
+        sqlx::query(
+            r#"INSERT INTO conversations (
+                   conversation_id, conversation_type, business_type, display_name,
+                   avatar_url, updated_at, created_at
+               )
+               VALUES ('', 1, 'single', 'bad', '', 0, 0)"#,
+        )
+        .execute(&repo.pool)
+        .await
+        .unwrap();
+
+        let conversations = repo.list().await.unwrap();
+
+        assert!(conversations.is_empty());
+    }
+
+    #[tokio::test]
     async fn update_last_message_does_not_roll_back_newer_projection() {
         let repo = repo().await;
         repo.save_one(&conversation("conv-1", 10, "new-local"))
@@ -1309,6 +1500,32 @@ mod tests {
         assert_eq!(loaded.last_sender_id.as_deref(), Some("u2"));
         assert_eq!(loaded.last_message_at, Some(12_345));
         assert_eq!(loaded.last_message_preview.as_deref(), Some("111"));
+    }
+
+    #[tokio::test]
+    async fn save_batch_does_not_erase_local_preview_with_empty_newer_summary() {
+        let repo = repo().await;
+        repo.save_one(&conversation("conv-1", 10, "local-preview"))
+            .await
+            .unwrap();
+
+        let mut summary = conversation("conv-1", 11, "");
+        summary.last_message_id = Some("msg-11".to_string());
+        summary.last_sender_id = Some("u2".to_string());
+        summary.last_message_at = Some(11_000);
+        summary.last_message_preview = None;
+        summary.last_message = None;
+        repo.save_one(&summary).await.unwrap();
+
+        let loaded = repo.get("conv-1").await.unwrap().unwrap();
+        assert_eq!(loaded.max_seq, 11);
+        assert_eq!(loaded.last_message_id.as_deref(), Some("msg-10"));
+        assert_eq!(loaded.last_sender_id.as_deref(), Some("u1"));
+        assert_eq!(loaded.last_message_at, Some(10_000));
+        assert_eq!(
+            loaded.last_message_preview.as_deref(),
+            Some("local-preview")
+        );
     }
 
     #[tokio::test]
@@ -1544,5 +1761,120 @@ mod tests {
         assert_eq!(loaded.last_sender_id.as_deref(), Some("u2"));
         assert_eq!(loaded.last_message_at, Some(12_345));
         assert_eq!(loaded.last_message_preview.as_deref(), Some("111"));
+    }
+
+    #[tokio::test]
+    async fn read_model_repairs_message_preview_from_encoded_content() {
+        let repo = repo().await;
+        let mut summary = conversation("conv-1", 31, "");
+        summary.last_message_id = Some("msg-31".to_string());
+        summary.last_sender_id = Some("u2".to_string());
+        summary.last_message_at = Some(31_000);
+        summary.last_message_preview = None;
+        summary.last_message = None;
+        summary.unread_count = 31;
+        repo.save_one(&summary).await.unwrap();
+
+        let encoded = ContentBuilder::text("encoded-body").build().encode();
+        sqlx::query(
+            r#"INSERT INTO messages (
+                   server_id, conversation_id, client_msg_id, sender_id, conversation_seq,
+                   created_at, client_created_at, conversation_type, message_type,
+                   channel_id, encoded_content, text, attributes, sort_ts, updated_at
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, '{}', ?, ?)"#,
+        )
+        .bind("msg-31")
+        .bind("conv-1")
+        .bind("client-31")
+        .bind("u2")
+        .bind(31_i64)
+        .bind(31_000_i64)
+        .bind(31_000_i64)
+        .bind(1_i32)
+        .bind(1_i32)
+        .bind("u2")
+        .bind(encoded)
+        .bind(31_000_i64)
+        .bind(31_000_i64)
+        .execute(&repo.pool)
+        .await
+        .unwrap();
+
+        let loaded = repo.get("conv-1").await.unwrap().unwrap();
+        let preview = loaded.last_message_preview.as_deref().unwrap_or_default();
+        assert!(preview.contains("im.preview.user_text"));
+        assert!(preview.contains("encoded-body"));
+
+        let row = sqlx::query("SELECT text FROM messages WHERE server_id = 'msg-31'")
+            .fetch_one(&repo.pool)
+            .await
+            .unwrap();
+        let repaired_text: Option<String> = row.try_get("text").unwrap();
+        assert_eq!(
+            repaired_text.as_deref(),
+            loaded.last_message_preview.as_deref()
+        );
+    }
+
+    #[tokio::test]
+    async fn list_repairs_single_chat_channel_alias_messages_into_canonical_conversation() {
+        let repo = repo().await;
+        let mut canonical = conversation("cid-canonical", 17, "");
+        canonical.conversation_type = crate::model::conversation::ConversationType::Single;
+        canonical.channel_id = "peer-12".to_string();
+        canonical.display_name = "peer-12".to_string();
+        canonical.last_message_id = None;
+        canonical.last_sender_id = None;
+        canonical.last_message_at = None;
+        canonical.last_message_preview = None;
+        canonical.last_message = None;
+        canonical.unread_count = 17;
+        repo.save_one(&canonical).await.unwrap();
+
+        sqlx::query(
+            r#"INSERT INTO messages (
+                   server_id, conversation_id, client_msg_id, sender_id, conversation_seq,
+                   created_at, client_created_at, conversation_type, message_type,
+                   channel_id, sender_name, sender_display_name,
+                   encoded_content, text, sort_ts, updated_at
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, X'', ?, ?, ?)"#,
+        )
+        .bind("server-alias-latest")
+        .bind("peer-12")
+        .bind("client-alias-latest")
+        .bind("peer-12")
+        .bind(17_i64)
+        .bind(17_000_i64)
+        .bind(17_000_i64)
+        .bind(crate::model::conversation::ConversationType::Single.to_proto_int())
+        .bind(1_i32)
+        .bind("peer-12")
+        .bind("Peer 12")
+        .bind("Peer 12")
+        .bind("hello-from-peer")
+        .bind(17_000_i64)
+        .bind(17_000_i64)
+        .execute(&repo.pool)
+        .await
+        .unwrap();
+
+        let loaded = repo.get("cid-canonical").await.unwrap().unwrap();
+        assert_eq!(loaded.unread_count, 17);
+        assert_eq!(
+            loaded.last_message_preview.as_deref(),
+            Some("hello-from-peer")
+        );
+        assert_eq!(
+            loaded.last_message_id.as_deref(),
+            Some("server-alias-latest")
+        );
+
+        let message_conversation_id: String =
+            sqlx::query_scalar("SELECT conversation_id FROM messages WHERE server_id = ?")
+                .bind("server-alias-latest")
+                .fetch_one(&repo.pool)
+                .await
+                .unwrap();
+        assert_eq!(message_conversation_id, "cid-canonical");
     }
 }

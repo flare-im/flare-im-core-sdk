@@ -17,7 +17,8 @@ use crate::domain::{
 };
 use crate::infrastructure::transport::HttpClient;
 use crate::model::{
-    MediaAccessUrl, MediaCacheEntryVo, MediaResolvedAccess, UploadOptions, UploadedMedia,
+    MediaAccessUrl, MediaCacheEntryVo, MediaResolvedAccess, RenderableMedia, UploadOptions,
+    UploadedMedia,
 };
 use crate::platform::adapters::media::MediaService;
 use crate::platform::ports::media::{
@@ -291,6 +292,19 @@ impl MediaApi {
         .await
     }
 
+    /// Resolve media for inline chat display without assuming a filesystem.
+    pub async fn resolve_for_display(
+        &self,
+        file_id: &str,
+        expires_in: i32,
+    ) -> Result<RenderableMedia> {
+        let handler = self.handler.clone();
+        self.run_session_bound(
+            async move { handler.resolve_for_display(file_id, expires_in).await },
+        )
+        .await
+    }
+
     /// 下载远程媒体并写入本地缓存与 SQLite 对照表（点击预览等时机调用）。
     pub async fn cache_remote_media(
         &self,
@@ -330,6 +344,7 @@ impl MediaApi {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::{MediaDestinationKind, RenderableMediaKind};
     use crate::shared::error::ErrorCode;
     use std::time::Duration;
     use tokio::sync::Notify;
@@ -357,6 +372,39 @@ mod tests {
                 size: 5,
                 url: None,
                 cdn_url: None,
+            })
+        }
+    }
+
+    struct ResolvingMediaService;
+
+    #[async_trait::async_trait]
+    impl MediaServicePort for ResolvingMediaService {
+        async fn upload(
+            &self,
+            _media: ProcessedMedia,
+            _options: Option<UploadOptions>,
+            _progress: Option<UploadProgressSink>,
+        ) -> Result<UploadedMedia> {
+            Err(crate::platform::ports::media::unsupported_media_operation(
+                "upload",
+            ))
+        }
+
+        async fn resolve_media_access(
+            &self,
+            file_id: &str,
+            expires_in: i32,
+        ) -> Result<MediaResolvedAccess> {
+            assert_eq!(file_id, "file-1");
+            assert_eq!(expires_in, 300);
+            Ok(MediaResolvedAccess {
+                source: "remote".to_string(),
+                local_path: None,
+                remote: Some(MediaAccessUrl {
+                    url: "https://media.example/file-1".to_string(),
+                    cdn_url: None,
+                }),
             })
         }
     }
@@ -389,5 +437,23 @@ mod tests {
             .expect("upload task should not panic")
             .expect_err("session change must cancel successful media result");
         assert_eq!(err.code(), Some(ErrorCode::NotConnected));
+    }
+
+    #[tokio::test]
+    async fn resolve_for_display_maps_remote_access_to_renderable_media() {
+        let api = MediaApi::from_handler(Arc::new(ResolvingMediaService));
+
+        let media = api
+            .resolve_for_display("file-1", 300)
+            .await
+            .expect("display media");
+
+        assert_eq!(media.file_id, "file-1");
+        assert_eq!(media.destination.kind, MediaDestinationKind::InlineDisplay);
+        assert_eq!(media.kind, RenderableMediaKind::RemoteUrl);
+        assert_eq!(
+            media.render_url.as_deref(),
+            Some("https://media.example/file-1")
+        );
     }
 }

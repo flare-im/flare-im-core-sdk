@@ -34,9 +34,7 @@ pub fn dev_data_dir_relative_to_cwd() -> PathBuf {
     } else {
         cwd.join("..")
     };
-    let temp_data = base.join("temp-data");
-    let _ = std::fs::create_dir_all(&temp_data);
-    temp_data
+    base.join("temp-data")
 }
 
 /// SDK 默认数据根。宿主未显式传入 `dataUrl` 时使用。

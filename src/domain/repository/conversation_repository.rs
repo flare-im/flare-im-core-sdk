@@ -93,6 +93,13 @@ pub trait ConversationWriter: Send + Sync {
     async fn update_draft(&self, conversation_id: &str, draft: Option<&str>) -> Result<()>;
     async fn delete(&self, conversation_id: &str) -> Result<()>;
 
+    /// 将错误会话 ID 的本地会话状态合并到规范会话 ID，并移除错误行。
+    async fn merge_conversation_identity(
+        &self,
+        from_conversation_id: &str,
+        to_conversation_id: &str,
+    ) -> Result<()>;
+
     /// 清空本地聊天记录（保留会话行；不删服务端历史）。
     /// `cleared_through_seq`：该 seq 及更早消息在本地视为已清空，后续同步不再落库。
     async fn clear_local_chat_history(
@@ -120,7 +127,7 @@ pub trait ConversationWriter: Send + Sync {
         current_user_id: &str,
     ) -> Result<()>;
 
-    /// 查询本地消息表中的最大 seq（用于 read_seq=0 的“全部已读”本地对齐）。
+    /// 查询本地消息表中的最大 seq（用于将显式 read_seq clamp 到本地已知上界）。
     async fn get_local_max_seq(&self, _conversation_id: &str) -> Result<u64> {
         Ok(0)
     }

@@ -1,0 +1,1613 @@
+{
+  "$defs": {
+    "AnnouncementElem": {
+      "properties": {
+        "body": {
+          "type": "string"
+        },
+        "metadata": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        },
+        "pinned": {
+          "type": "boolean"
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "title",
+        "body",
+        "pinned",
+        "metadata"
+      ],
+      "type": "object"
+    },
+    "AudioElem": {
+      "properties": {
+        "audioId": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "source": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AudioInfoElem"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "audioId",
+        "description"
+      ],
+      "type": "object"
+    },
+    "AudioInfoElem": {
+      "properties": {
+        "durationMs": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "mimeType": {
+          "type": "string"
+        },
+        "size": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "url": {
+          "type": "string"
+        },
+        "uuid": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "uuid",
+        "url",
+        "mimeType",
+        "size",
+        "durationMs"
+      ],
+      "type": "object"
+    },
+    "CardElem": {
+      "description": "与 `CardContent` 一致；JSON camelCase（如 `cardType`）",
+      "properties": {
+        "avatar": {
+          "type": "string"
+        },
+        "cardType": {
+          "default": "",
+          "type": "string"
+        },
+        "extra": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {},
+          "type": "object"
+        },
+        "id": {
+          "type": "string"
+        },
+        "subtitle": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "title",
+        "subtitle",
+        "avatar"
+      ],
+      "type": "object"
+    },
+    "CustomElem": {
+      "properties": {
+        "description": {
+          "type": "string"
+        },
+        "metadata": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        },
+        "payload": {
+          "items": {
+            "format": "uint8",
+            "maximum": 255,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "type": "array"
+        },
+        "type": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "description",
+        "metadata"
+      ],
+      "type": "object"
+    },
+    "Elem": {
+      "description": "解码后的消息内容枚举；JSON 为 `#[serde(tag = \"contentType\", rename_all = \"snake_case\")]`。",
+      "oneOf": [
+        {
+          "$ref": "#/$defs/TextElem",
+          "properties": {
+            "contentType": {
+              "const": "text",
+              "type": "string"
+            }
+          },
+          "required": [
+            "contentType"
+          ],
+          "type": "object"
+        },
+        {
+          "$ref": "#/$defs/ImageElem",
+          "properties": {
+            "contentType": {
+              "const": "image",
+              "type": "string"
+            }
+          },
+          "required": [
+            "contentType"
+          ],
+          "type": "object"
+        },
+        {
+          "$ref": "#/$defs/VideoElem",
+          "properties": {
+            "contentType": {
+              "const": "video",
+              "type": "string"
+            }
+          },
+          "required": [
+            "contentType"
+          ],
+          "type": "object"
+        },
+        {
+          "$ref": "#/$defs/AudioElem",
+          "properties": {
+            "contentType": {
+              "const": "audio",
+              "type": "string"
+            }
+          },
+          "required": [
+            "contentType"
+          ],
+          "type": "object"
+        },
+        {
+          "$ref": "#/$defs/FileElem",
+          "properties": {
+            "contentType": {
+              "const": "file",
+              "type": "string"
+            }
+          },
+          "required": [
+            "contentType"
+          ],
+          "type": "object"
+        },
+        {
+          "$ref": "#/$defs/LocationElem",
+          "properties": {
+            "contentType": {
+              "const": "location",
+              "type": "string"
+            }
+          },
+          "required": [
+            "contentType"
+          ],
+          "type": "object"
+        },
+        {
+          "$ref": "#/$defs/CardElem",
+          "properties": {
+            "contentType": {
+              "const": "card",
+              "type": "string"
+            }
+          },
+          "required": [
+            "contentType"
+          ],
+          "type": "object"
+        },
+        {
+          "$ref": "#/$defs/StickerElem",
+          "properties": {
+            "contentType": {
+              "const": "sticker",
+              "type": "string"
+            }
+          },
+          "required": [
+            "contentType"
+          ],
+          "type": "object"
+        },
+        {
+          "$ref": "#/$defs/EmojiElem",
+          "properties": {
+            "contentType": {
+              "const": "emoji",
+              "type": "string"
+            }
+          },
+          "required": [
+            "contentType"
+          ],
+          "type": "object"
+        },
+        {
+          "$ref": "#/$defs/QuoteElem",
+          "properties": {
+            "contentType": {
+              "const": "quote",
+              "type": "string"
+            }
+          },
+          "required": [
+            "contentType"
+          ],
+          "type": "object"
+        },
+        {
+          "$ref": "#/$defs/LinkCardElem",
+          "properties": {
+            "contentType": {
+              "const": "link_card",
+              "type": "string"
+            }
+          },
+          "required": [
+            "contentType"
+          ],
+          "type": "object"
+        },
+        {
+          "$ref": "#/$defs/ForwardElem",
+          "properties": {
+            "contentType": {
+              "const": "forward",
+              "type": "string"
+            }
+          },
+          "required": [
+            "contentType"
+          ],
+          "type": "object"
+        },
+        {
+          "$ref": "#/$defs/ThreadElem",
+          "properties": {
+            "contentType": {
+              "const": "thread",
+              "type": "string"
+            }
+          },
+          "required": [
+            "contentType"
+          ],
+          "type": "object"
+        },
+        {
+          "$ref": "#/$defs/MiniProgramElem",
+          "properties": {
+            "contentType": {
+              "const": "mini_program",
+              "type": "string"
+            }
+          },
+          "required": [
+            "contentType"
+          ],
+          "type": "object"
+        },
+        {
+          "$ref": "#/$defs/RichTextElem",
+          "properties": {
+            "contentType": {
+              "const": "rich_text",
+              "type": "string"
+            }
+          },
+          "required": [
+            "contentType"
+          ],
+          "type": "object"
+        },
+        {
+          "$ref": "#/$defs/ImageGroupElem",
+          "properties": {
+            "contentType": {
+              "const": "image_group",
+              "type": "string"
+            }
+          },
+          "required": [
+            "contentType"
+          ],
+          "type": "object"
+        },
+        {
+          "$ref": "#/$defs/SystemElem",
+          "properties": {
+            "contentType": {
+              "const": "system",
+              "type": "string"
+            }
+          },
+          "required": [
+            "contentType"
+          ],
+          "type": "object"
+        },
+        {
+          "$ref": "#/$defs/NotificationElem",
+          "properties": {
+            "contentType": {
+              "const": "notification",
+              "type": "string"
+            }
+          },
+          "required": [
+            "contentType"
+          ],
+          "type": "object"
+        },
+        {
+          "$ref": "#/$defs/VoteElem",
+          "properties": {
+            "contentType": {
+              "const": "vote",
+              "type": "string"
+            }
+          },
+          "required": [
+            "contentType"
+          ],
+          "type": "object"
+        },
+        {
+          "$ref": "#/$defs/TaskElem",
+          "properties": {
+            "contentType": {
+              "const": "task",
+              "type": "string"
+            }
+          },
+          "required": [
+            "contentType"
+          ],
+          "type": "object"
+        },
+        {
+          "$ref": "#/$defs/ScheduleElem",
+          "properties": {
+            "contentType": {
+              "const": "schedule",
+              "type": "string"
+            }
+          },
+          "required": [
+            "contentType"
+          ],
+          "type": "object"
+        },
+        {
+          "$ref": "#/$defs/AnnouncementElem",
+          "properties": {
+            "contentType": {
+              "const": "announcement",
+              "type": "string"
+            }
+          },
+          "required": [
+            "contentType"
+          ],
+          "type": "object"
+        },
+        {
+          "$ref": "#/$defs/CustomElem",
+          "properties": {
+            "contentType": {
+              "const": "custom",
+              "type": "string"
+            }
+          },
+          "required": [
+            "contentType"
+          ],
+          "type": "object"
+        },
+        {
+          "$ref": "#/$defs/PlaceholderElem",
+          "properties": {
+            "contentType": {
+              "const": "placeholder",
+              "type": "string"
+            }
+          },
+          "required": [
+            "contentType"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "EmojiElem": {
+      "properties": {
+        "description": {
+          "type": "string"
+        },
+        "emoji": {
+          "type": "string"
+        },
+        "extra": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        }
+      },
+      "required": [
+        "emoji",
+        "description",
+        "extra"
+      ],
+      "type": "object"
+    },
+    "FileElem": {
+      "properties": {
+        "description": {
+          "type": "string"
+        },
+        "fileId": {
+          "type": "string"
+        },
+        "fileName": {
+          "type": "string"
+        },
+        "fileSize": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "mimeType": {
+          "type": "string"
+        },
+        "url": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "fileId",
+        "fileName",
+        "mimeType",
+        "fileSize",
+        "url",
+        "description"
+      ],
+      "type": "object"
+    },
+    "ForwardElem": {
+      "properties": {
+        "items": {
+          "items": {
+            "$ref": "#/$defs/ForwardItemElem"
+          },
+          "type": "array"
+        },
+        "mode": {
+          "description": "`ForwardMode` 枚举值（与 proto 一致）",
+          "format": "int32",
+          "type": "integer"
+        },
+        "title": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "mode",
+        "items"
+      ],
+      "type": "object"
+    },
+    "ForwardItemElem": {
+      "properties": {
+        "content": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Elem"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "messageType": {
+          "format": "int32",
+          "type": "integer"
+        },
+        "plainText": {
+          "type": "string"
+        },
+        "sourceConversationId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sourceMessageId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sourceMessageTimeMs": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "sourceSenderId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sourceSenderName": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "messageType",
+        "plainText"
+      ],
+      "type": "object"
+    },
+    "ImageElem": {
+      "properties": {
+        "description": {
+          "type": "string"
+        },
+        "durationMs": {
+          "description": "动图时长（毫秒），可选",
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "source": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ImageInfoElem"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "thumbnail": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ImageInfoElem"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "description"
+      ],
+      "type": "object"
+    },
+    "ImageGroupElem": {
+      "properties": {
+        "description": {
+          "type": "string"
+        },
+        "images": {
+          "items": {
+            "$ref": "#/$defs/ImageInfoElem"
+          },
+          "type": "array"
+        },
+        "metadata": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        }
+      },
+      "required": [
+        "images",
+        "description",
+        "metadata"
+      ],
+      "type": "object"
+    },
+    "ImageInfoElem": {
+      "properties": {
+        "animated": {
+          "default": false,
+          "type": "boolean"
+        },
+        "blurhash": {
+          "type": "string"
+        },
+        "format": {
+          "default": 0,
+          "description": "与 proto `ImageInfo.format` 一致（`ImageFormat` 枚举整型）",
+          "format": "int32",
+          "type": "integer"
+        },
+        "height": {
+          "format": "int32",
+          "type": "integer"
+        },
+        "imageId": {
+          "default": "",
+          "description": "媒体存储侧稳定 id（与 proto `ImageInfo.image_id` 一致；展示时走 GetFileUrl）",
+          "type": "string"
+        },
+        "mimeType": {
+          "type": "string"
+        },
+        "size": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "url": {
+          "type": "string"
+        },
+        "uuid": {
+          "type": "string"
+        },
+        "width": {
+          "format": "int32",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "uuid",
+        "url",
+        "mimeType",
+        "size",
+        "width",
+        "height"
+      ],
+      "type": "object"
+    },
+    "LinkCardElem": {
+      "properties": {
+        "description": {
+          "type": "string"
+        },
+        "siteName": {
+          "type": "string"
+        },
+        "thumbnailUrl": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "url": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "url",
+        "title",
+        "description",
+        "thumbnailUrl",
+        "siteName"
+      ],
+      "type": "object"
+    },
+    "LocationElem": {
+      "description": "与 `LocationContent` / 业务 `LocationMessageContent` 对齐（JSON camelCase）",
+      "properties": {
+        "address": {
+          "type": "string"
+        },
+        "latitude": {
+          "format": "double",
+          "type": "number"
+        },
+        "longitude": {
+          "format": "double",
+          "type": "number"
+        },
+        "snapshotLocalPath": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "snapshotUrl": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "title": {
+          "type": "string"
+        },
+        "zoom": {
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "latitude",
+        "longitude",
+        "title",
+        "address"
+      ],
+      "type": "object"
+    },
+    "MentionElem": {
+      "properties": {
+        "length": {
+          "format": "int32",
+          "type": "integer"
+        },
+        "roleId": {
+          "type": "string"
+        },
+        "start": {
+          "format": "int32",
+          "type": "integer"
+        },
+        "type": {
+          "format": "int32",
+          "type": "integer"
+        },
+        "userId": {
+          "type": "string"
+        },
+        "userIds": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "type",
+        "userId",
+        "userIds",
+        "roleId",
+        "start",
+        "length"
+      ],
+      "type": "object"
+    },
+    "MessageLocalState": {
+      "properties": {
+        "failed": {
+          "description": "是否失败",
+          "type": "boolean"
+        },
+        "isLocal": {
+          "description": "本地消息",
+          "type": "boolean"
+        },
+        "sending": {
+          "description": "是否发送中",
+          "type": "boolean"
+        },
+        "sortTs": {
+          "description": "本地列表排序时间（毫秒），**不是**服务端会话 `conversation_seq`。\n\n用途：待发/未 ACK 消息常保持 `conversation_seq == 0`，可用本字段稳定停留在本地时间线尾部。\n已分配 `conversation_seq` 的服务端消息必须回到 seq 优先排序，避免设备时钟偏移污染权威顺序。",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "uploadProgress": {
+          "default": 0,
+          "description": "本地媒体上传进度，范围 0..=100。",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "uploading": {
+          "default": false,
+          "description": "本地媒体上传中；仅用于 SDK 本地时间线展示，不写入服务端协议语义。",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "sending",
+        "failed",
+        "isLocal",
+        "sortTs"
+      ],
+      "type": "object"
+    },
+    "MiniProgramElem": {
+      "properties": {
+        "appId": {
+          "type": "string"
+        },
+        "extra": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        },
+        "pagePath": {
+          "type": "string"
+        },
+        "thumbnailUrl": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "appId",
+        "title",
+        "pagePath",
+        "thumbnailUrl",
+        "extra"
+      ],
+      "type": "object"
+    },
+    "NotificationElem": {
+      "properties": {
+        "body": {
+          "type": "string"
+        },
+        "data": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        },
+        "notificationType": {
+          "type": "string"
+        },
+        "notifyAll": {
+          "type": "boolean"
+        },
+        "persistent": {
+          "type": "boolean"
+        },
+        "playSound": {
+          "type": "boolean"
+        },
+        "showBadge": {
+          "type": "boolean"
+        },
+        "showInList": {
+          "type": "boolean"
+        },
+        "targetRoleId": {
+          "type": "string"
+        },
+        "targetUserIds": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "title",
+        "body",
+        "notificationType",
+        "data",
+        "targetUserIds",
+        "targetRoleId",
+        "notifyAll",
+        "persistent",
+        "showInList",
+        "showBadge",
+        "playSound"
+      ],
+      "type": "object"
+    },
+    "PlaceholderElem": {
+      "properties": {
+        "fallbackText": {
+          "type": "string"
+        },
+        "metadata": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        },
+        "payload": {
+          "items": {
+            "format": "uint8",
+            "maximum": 255,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "type": "array"
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "reason",
+        "fallbackText",
+        "metadata"
+      ],
+      "type": "object"
+    },
+    "QuoteElem": {
+      "properties": {
+        "currentContent": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Elem"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "quotedContent": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Elem"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "quotedMessageId": {
+          "type": "string"
+        },
+        "quotedSenderId": {
+          "type": "string"
+        },
+        "quotedTextPreview": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "quotedMessageId",
+        "quotedSenderId",
+        "quotedTextPreview"
+      ],
+      "type": "object"
+    },
+    "ReactionEntry": {
+      "properties": {
+        "count": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "emoji": {
+          "type": "string"
+        },
+        "userIds": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "emoji",
+        "count"
+      ],
+      "type": "object"
+    },
+    "RichTextElem": {
+      "description": "与 `RichTextContent` 一致：Rich Doc JSON 主存储 + 必填 `plain_text`",
+      "properties": {
+        "contentSchema": {
+          "type": "string"
+        },
+        "docJson": {
+          "type": "string"
+        },
+        "inputFormat": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "inputFormatVersion": {
+          "format": "int32",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "plainText": {
+          "type": "string"
+        },
+        "renderHintsJson": {
+          "description": "SDK 派生渲染提示 JSON 字符串（可选）",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "searchText": {
+          "description": "SDK 派生检索串（可选；与 proto `search_text` 对齐）",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sourcePayload": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {},
+          "type": "object"
+        },
+        "title": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "docJson",
+        "contentSchema",
+        "plainText"
+      ],
+      "type": "object"
+    },
+    "ScheduleElem": {
+      "properties": {
+        "endTime": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "metadata": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        },
+        "participantUserIds": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "scheduleId": {
+          "type": "string"
+        },
+        "startTime": {
+          "description": "毫秒时间戳（与 proto `start_time_ms` / `end_time_ms` 一致）",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "scheduleId",
+        "title",
+        "startTime",
+        "endTime",
+        "metadata"
+      ],
+      "type": "object"
+    },
+    "StickerElem": {
+      "properties": {
+        "extra": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {},
+          "type": "object"
+        },
+        "format": {
+          "default": "",
+          "description": "如 webp、png（JSON 键 `format`）",
+          "type": "string"
+        },
+        "height": {
+          "format": "int32",
+          "type": "integer"
+        },
+        "packageId": {
+          "default": "",
+          "type": "string"
+        },
+        "stickerId": {
+          "type": "string"
+        },
+        "url": {
+          "type": "string"
+        },
+        "width": {
+          "format": "int32",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "stickerId",
+        "url",
+        "width",
+        "height"
+      ],
+      "type": "object"
+    },
+    "SystemElem": {
+      "properties": {
+        "body": {
+          "type": "string"
+        },
+        "data": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        },
+        "eventKind": {
+          "type": "string"
+        },
+        "payload": {
+          "items": {
+            "format": "uint8",
+            "maximum": 255,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "eventKind",
+        "body",
+        "data"
+      ],
+      "type": "object"
+    },
+    "TaskElem": {
+      "properties": {
+        "metadata": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        },
+        "participantUserIds": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "status": {
+          "type": "string"
+        },
+        "taskId": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "taskId",
+        "title",
+        "status",
+        "metadata"
+      ],
+      "type": "object"
+    },
+    "TextElem": {
+      "properties": {
+        "mentions": {
+          "items": {
+            "$ref": "#/$defs/MentionElem"
+          },
+          "type": "array"
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "text",
+        "mentions"
+      ],
+      "type": "object"
+    },
+    "ThreadElem": {
+      "properties": {
+        "metadata": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        },
+        "rootContent": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Elem"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "threadId": {
+          "type": "string"
+        },
+        "threadTitle": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "threadId",
+        "threadTitle",
+        "metadata"
+      ],
+      "type": "object"
+    },
+    "VideoElem": {
+      "properties": {
+        "cover": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ImageInfoElem"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "description": {
+          "type": "string"
+        },
+        "source": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/VideoInfoElem"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "videoId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "videoId",
+        "description"
+      ],
+      "type": "object"
+    },
+    "VideoInfoElem": {
+      "properties": {
+        "durationMs": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "height": {
+          "format": "int32",
+          "type": "integer"
+        },
+        "mimeType": {
+          "type": "string"
+        },
+        "size": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "url": {
+          "type": "string"
+        },
+        "uuid": {
+          "type": "string"
+        },
+        "width": {
+          "format": "int32",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "uuid",
+        "url",
+        "mimeType",
+        "size",
+        "durationMs",
+        "width",
+        "height"
+      ],
+      "type": "object"
+    },
+    "VoteElem": {
+      "properties": {
+        "metadata": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        },
+        "options": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "participantUserIds": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "title": {
+          "type": "string"
+        },
+        "voteId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "voteId",
+        "title",
+        "options",
+        "metadata"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "SDK 层消息类型：与 message.proto 的 Message 属性一致，content 为解码后的 Elem；\n另保留 raw_content 与 proto 一致用于持久化/网络，并增加发送者展示字段。",
+  "properties": {
+    "attributes": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "type": "object"
+    },
+    "channelId": {
+      "description": "会话频道 ID：单聊=对方 user_id，群聊=群 ID，频道/话题=对应 ID",
+      "type": "string"
+    },
+    "clientCreatedAt": {
+      "description": "客户端本地创建时间，Unix epoch millis。",
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "clientMsgId": {
+      "description": "客户端生成ID（去重）",
+      "type": "string"
+    },
+    "content": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Elem"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "proto结构"
+    },
+    "conversationId": {
+      "description": "会话ID",
+      "type": "string"
+    },
+    "conversationSeq": {
+      "description": "会话内持久化 replay 序列号。",
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "conversationType": {
+      "description": "会话类型",
+      "format": "int32",
+      "type": "integer"
+    },
+    "createdAt": {
+      "description": "消息创建时间，Unix epoch millis。",
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "extensions": {
+      "additionalProperties": {
+        "items": {
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "type": "array"
+      },
+      "default": {},
+      "description": "扩展数据；未提供时为空。",
+      "type": "object"
+    },
+    "isEdited": {
+      "type": "boolean"
+    },
+    "isRead": {
+      "type": "boolean"
+    },
+    "isRecalled": {
+      "type": "boolean"
+    },
+    "localState": {
+      "$ref": "#/$defs/MessageLocalState",
+      "default": {
+        "failed": false,
+        "isLocal": false,
+        "sending": false,
+        "sortTs": 0,
+        "uploadProgress": 0,
+        "uploading": false
+      }
+    },
+    "mentionAll": {
+      "type": "boolean"
+    },
+    "mentionUsers": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "messageType": {
+      "description": "消息类型",
+      "format": "int32",
+      "type": "integer"
+    },
+    "quotePreview": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "reactions": {
+      "default": [],
+      "description": "表情反应快照（由 ReactionEvent 驱动更新并持久化）",
+      "items": {
+        "$ref": "#/$defs/ReactionEntry"
+      },
+      "type": "array"
+    },
+    "replyTo": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "senderAvatar": {
+      "type": "string"
+    },
+    "senderDisplayName": {
+      "description": "SDK计算展示名",
+      "type": "string"
+    },
+    "senderId": {
+      "description": "发送者",
+      "type": "string"
+    },
+    "senderName": {
+      "type": "string"
+    },
+    "serverId": {
+      "description": "服务端唯一ID",
+      "type": "string"
+    },
+    "source": {
+      "description": "消息来源",
+      "format": "int32",
+      "type": "integer"
+    },
+    "status": {
+      "format": "int32",
+      "type": "integer"
+    },
+    "textPreview": {
+      "default": "",
+      "description": "列表、搜索、绑定层使用的纯文本预览。",
+      "type": "string"
+    },
+    "updatedAt": {
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "version": {
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "serverId",
+    "clientMsgId",
+    "conversationId",
+    "conversationType",
+    "channelId",
+    "senderId",
+    "source",
+    "conversationSeq",
+    "createdAt",
+    "clientCreatedAt",
+    "messageType",
+    "senderName",
+    "senderAvatar",
+    "senderDisplayName",
+    "status",
+    "isRead",
+    "isRecalled",
+    "isEdited",
+    "mentionUsers",
+    "mentionAll",
+    "attributes",
+    "version",
+    "updatedAt"
+  ],
+  "title": "IMMessage",
+  "type": "object",
+  "xFlareGeneratedBy": "flare-im-core-sdk-xtask",
+  "xFlareRustType": "IMMessage"
+}

@@ -12,9 +12,13 @@ use models::{AppliedConversationIncremental, AppliedSingleConversationPage, Repl
 use crate::application::notification::{
     NotificationInboundPipeline, partition_notification_durability,
 };
-use crate::core::event::{ConversationEvent, EventBus, SdkEvent};
-use crate::domain::{SyncCursorVo, filter_messages_after_clear, local_cleared_through_seq};
+use crate::domain::{
+    ConversationIdRewrite, ConversationIdentityService, SyncCursorVo, filter_messages_after_clear,
+    local_cleared_through_seq,
+};
 use crate::infrastructure::persistence::StoreProvider;
+use crate::kernel::ReliableSendQueuePort;
+use crate::kernel::event::{ConversationEvent, EventBus, SdkEvent};
 use crate::model::IMMessage;
 use crate::shared::error::Result;
 use flare_proto::common::{ConversationsSyncRes, SingleConversationSyncRes};
@@ -36,8 +40,12 @@ impl SyncApplyUseCase {
         notification_pipeline: NotificationInboundPipeline,
     ) -> Self {
         let event_applier = SyncEventApplier::new(stores.clone(), bus.clone(), event_deduper);
-        let incoming_message_converger =
-            IncomingMessageConverger::new(stores.messages.clone(), bus.clone(), None);
+        let incoming_message_converger = IncomingMessageConverger::new(
+            stores.messages.clone(),
+            stores.conversations.clone(),
+            bus.clone(),
+            None,
+        );
         let conversation_projection_applier =
             ConversationProjectionApplier::new(stores.clone(), bus.clone());
         Self {
@@ -52,7 +60,7 @@ impl SyncApplyUseCase {
 
     pub fn set_reliable_queue(
         &self,
-        reliable_queue: Option<std::sync::Arc<crate::core::ReliableSendQueue>>,
+        reliable_queue: Option<std::sync::Arc<dyn ReliableSendQueuePort>>,
     ) {
         self.incoming_message_converger
             .set_reliable_queue(reliable_queue);
@@ -173,33 +181,49 @@ impl SyncApplyUseCase {
         user_id: &str,
         response: &ConversationsSyncRes,
     ) -> Result<AppliedConversationIncremental> {
-        let conversation_ids: Vec<String> = response
-            .conversations
-            .iter()
-            .filter(|summary| !is_hidden_internal_conversation(&summary.conversation_id))
-            .map(|summary| summary.conversation_id.clone())
-            .collect();
-        let summaries = response
+        let mut conversation_ids = Vec::new();
+        let mut message_sync_conversation_ids = Vec::new();
+        let mut conversations = Vec::new();
+
+        for summary in response
             .conversations
             .iter()
             .filter(|summary| !is_hidden_internal_conversation(&summary.conversation_id))
             .cloned()
-            .collect::<Vec<_>>();
-        let mut message_sync_conversation_ids = Vec::new();
+        {
+            let mut conversation = crate::model::Conversation::from(summary);
+            if let Some(rewrite) =
+                ConversationIdentityService::canonicalize_single_chat_conversation(
+                    &mut conversation,
+                    user_id,
+                )
+            {
+                self.apply_conversation_identity_rewrite(&rewrite).await?;
+            }
+            if is_hidden_internal_conversation(&conversation.conversation_id) {
+                tracing::warn!(
+                    conversation_id = %conversation.conversation_id,
+                    "drop invalid or hidden conversation summary before local save"
+                );
+                continue;
+            }
+            conversation_ids.push(conversation.conversation_id.clone());
+            conversations.push(conversation);
+        }
 
-        if !summaries.is_empty() {
-            let conversations: Vec<crate::model::Conversation> = summaries
-                .into_iter()
-                .map(crate::model::Conversation::from)
-                .collect();
+        if !conversations.is_empty() {
             for conversation in &conversations {
-                if conversation.conversation_id.trim().is_empty() || conversation.max_seq == 0 {
+                if conversation.conversation_id.trim().is_empty() {
+                    continue;
+                }
+                let remote_target_seq = remote_conversation_target_seq(conversation);
+                if remote_target_seq == 0 {
                     continue;
                 }
                 let local_message_seq = self
                     .local_message_sync_start_seq(user_id, &conversation.conversation_id)
                     .await?;
-                if conversation.max_seq > local_message_seq {
+                if remote_target_seq > local_message_seq {
                     message_sync_conversation_ids.push(conversation.conversation_id.clone());
                 }
             }
@@ -212,6 +236,19 @@ impl SyncApplyUseCase {
                     .await
                 {
                     before_save.insert(conversation.conversation_id.clone(), prev);
+                }
+            }
+            for conversation in &conversations {
+                let previous_unread = before_save
+                    .get(&conversation.conversation_id)
+                    .map(|c| c.unread_count)
+                    .unwrap_or_default();
+                if should_sync_messages_for_unread_delta(previous_unread, conversation.unread_count)
+                    && !message_sync_conversation_ids
+                        .iter()
+                        .any(|id| id == &conversation.conversation_id)
+                {
+                    message_sync_conversation_ids.push(conversation.conversation_id.clone());
                 }
             }
             if let Err(error) = self.stores.conversations.save_batch(&conversations).await {
@@ -275,33 +312,29 @@ impl SyncApplyUseCase {
         })
     }
 
-    /// 全量会话同步完成后，删除服务端已不存在的本地孤儿会话及其消息。
-    pub async fn prune_local_conversations_not_on_server(
+    async fn apply_conversation_identity_rewrite(
         &self,
-        server_conversation_ids: &std::collections::HashSet<String>,
-    ) -> Result<Vec<String>> {
-        let local = self.stores.conversations.list().await?;
-        let mut pruned = Vec::new();
-        for conversation in local {
-            let conversation_id = conversation.conversation_id().to_string();
-            if server_conversation_ids.contains(&conversation_id) {
-                continue;
-            }
-            if let Err(error) = self.stores.conversations.delete(&conversation_id).await {
-                tracing::warn!(
-                    conversation_id = %conversation_id,
-                    error = %error,
-                    "prune orphan conversation failed"
-                );
-                continue;
-            }
-            self.bus
-                .publish(SdkEvent::Conversation(ConversationEvent::Deleted {
-                    conversation_id: conversation_id.clone(),
-                }));
-            pruned.push(conversation_id);
+        rewrite: &ConversationIdRewrite,
+    ) -> Result<()> {
+        if rewrite.from == rewrite.to {
+            return Ok(());
         }
-        Ok(pruned)
+        let moved = self
+            .stores
+            .messages
+            .rewrite_conversation_id(&rewrite.from, &rewrite.to)
+            .await?;
+        self.stores
+            .conversations
+            .merge_conversation_identity(&rewrite.from, &rewrite.to)
+            .await?;
+        tracing::info!(
+            from = %rewrite.from,
+            to = %rewrite.to,
+            moved,
+            "canonicalized conversation summary identity"
+        );
+        Ok(())
     }
 
     pub async fn save_cursor_with_remote<F, Fut>(
@@ -371,9 +404,24 @@ pub(crate) fn local_message_sync_start_seq(
     materialized_seq.max(cleared_floor)
 }
 
+fn remote_conversation_target_seq(conversation: &crate::model::Conversation) -> u64 {
+    let unread_tail_seq = conversation
+        .last_read_seq
+        .saturating_add(conversation.unread_count as u64);
+    conversation
+        .max_seq
+        .max(unread_tail_seq)
+        .max(conversation.visible_after_seq)
+}
+
+fn should_sync_messages_for_unread_delta(previous_unread: u32, next_unread: u32) -> bool {
+    next_unread > previous_unread
+}
+
 /// Social SyncSignal 内部路由会话；不得进入本地会话列表。
 fn is_hidden_internal_conversation(conversation_id: &str) -> bool {
-    conversation_id.starts_with("sync:")
+    let conversation_id = conversation_id.trim();
+    conversation_id.is_empty() || conversation_id.starts_with("sync:")
 }
 
 fn now_ms() -> u64 {
@@ -382,7 +430,11 @@ fn now_ms() -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::local_message_sync_start_seq;
+    use super::{
+        is_hidden_internal_conversation, local_message_sync_start_seq,
+        remote_conversation_target_seq, should_sync_messages_for_unread_delta,
+    };
+    use crate::model::Conversation;
 
     #[test]
     fn local_sync_start_ignores_polluted_cursor_ahead_of_local_messages() {
@@ -399,5 +451,51 @@ mod tests {
     fn local_sync_start_respects_local_clear_floor() {
         assert_eq!(local_message_sync_start_seq(0, 0, 50), 50);
         assert_eq!(local_message_sync_start_seq(80, 100, 90), 90);
+    }
+
+    #[test]
+    fn conversation_sync_target_infers_tail_from_unread_state() {
+        let stale_summary = Conversation {
+            conversation_id: "conv-1".to_string(),
+            max_seq: 1,
+            last_read_seq: 0,
+            unread_count: 2,
+            ..Default::default()
+        };
+        assert_eq!(remote_conversation_target_seq(&stale_summary), 2);
+
+        let read_based_tail = Conversation {
+            conversation_id: "conv-1".to_string(),
+            max_seq: 1,
+            last_read_seq: 10,
+            unread_count: 2,
+            ..Default::default()
+        };
+        assert_eq!(remote_conversation_target_seq(&read_based_tail), 12);
+
+        let normal_summary = Conversation {
+            conversation_id: "conv-1".to_string(),
+            max_seq: 20,
+            last_read_seq: 10,
+            unread_count: 0,
+            ..Default::default()
+        };
+        assert_eq!(remote_conversation_target_seq(&normal_summary), 20);
+    }
+
+    #[test]
+    fn unread_increase_forces_message_sync() {
+        assert!(should_sync_messages_for_unread_delta(0, 1));
+        assert!(should_sync_messages_for_unread_delta(1, 2));
+        assert!(!should_sync_messages_for_unread_delta(2, 2));
+        assert!(!should_sync_messages_for_unread_delta(2, 1));
+    }
+
+    #[test]
+    fn hidden_conversation_filter_rejects_blank_and_internal_ids() {
+        assert!(is_hidden_internal_conversation(""));
+        assert!(is_hidden_internal_conversation("   "));
+        assert!(is_hidden_internal_conversation("sync:conversation"));
+        assert!(!is_hidden_internal_conversation("conv-1"));
     }
 }

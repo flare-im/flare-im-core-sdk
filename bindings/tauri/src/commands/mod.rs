@@ -2,7 +2,7 @@
 
 pub mod lifecycle;
 
-pub use crate::generated::invoke::sdk_invoke;
+pub use crate::generated::invoke::sdk_invoke_json;
 pub use lifecycle::*;
 
 #[inline]

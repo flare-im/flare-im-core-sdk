@@ -4,11 +4,11 @@
 // stays thin. Do not add durable IM behavior here. Add shared behavior under
 // `flare-im-core-sdk/src`, then route the wasm binding to that core facade.
 
-use flare_im_core_sdk::model::conversation::{Conversation, ConversationType};
-use flare_im_core_sdk::model::message::{IMMessage, ReactionEntry};
-use flare_im_core_sdk::model::message_elem::{
+use flare_im_core_sdk::content::message_elem::{
     CustomElem, Elem, EmojiElem, MentionElem, StickerElem, TextElem,
 };
+use flare_im_core_sdk::model::conversation::{Conversation, ConversationType};
+use flare_im_core_sdk::model::message::{IMMessage, ReactionEntry};
 use flare_im_core_sdk::prelude::SdkConfigOverlay;
 use flare_im_core_sdk::spi::{
     extract_conversation_type as extract_cid_conversation_type, generate_group_conversation_id,
@@ -27,7 +27,6 @@ const CONTRACT_VERSION: &str = "flare-im-ffi/v1";
 
 #[derive(Debug, Default, Clone)]
 struct SmokeInitState {
-    environment: Option<String>,
     overlay: SdkConfigOverlay,
 }
 
@@ -117,16 +116,15 @@ impl FlareImWasmRuntime {
                 Ok(Value::Null)
             }
             "sdk.current_user_id" => {
-                Ok(json!({ "user_id": self.current_user_id.clone().unwrap_or_default() }))
+                Ok(json!({ "userId": self.current_user_id.clone().unwrap_or_default() }))
             }
             "sdk.is_connected" | "sdk.session_active" => Ok(json!(self.connected)),
             #[cfg(feature = "dev-test-token")]
             "sdk.generate_core_token" => {
                 let user_id =
-                    string_field(&request, "user_id").unwrap_or_else(|| "web-user".to_string());
+                    string_field(&request, "userId").unwrap_or_else(|| "web-user".to_string());
                 Ok(json!({ "token": format!("wasm-core-token-{user_id}") }))
             }
-            "sdk.init_logging" => Ok(Value::Null),
             "sdk.update_access_token" => Ok(Value::Null),
             "connection.get_state" => Ok(json!(if self.connected {
                 "ready"
@@ -147,21 +145,19 @@ impl FlareImWasmRuntime {
             }
             "conversation.mark_read" => {
                 if let Some(id) = conversation_id(&request) {
+                    let read_seq = request
+                        .get("readSeq")
+                        .and_then(Value::as_u64)
+                        .filter(|seq| *seq > 0)
+                        .ok_or_else(|| JsValue::from_str("readSeq must be greater than 0"))?;
                     if let Some(conversation) = self
                         .conversations
                         .iter_mut()
                         .find(|item| item.conversation_id == id)
                     {
                         conversation.unread_count = 0;
-                        conversation.last_read_seq = conversation.max_seq;
+                        conversation.last_read_seq = read_seq;
                     }
-                }
-                Ok(Value::Null)
-            }
-            "conversation.mark_all_read" => {
-                for conversation in &mut self.conversations {
-                    conversation.unread_count = 0;
-                    conversation.last_read_seq = conversation.max_seq;
                 }
                 Ok(Value::Null)
             }
@@ -244,32 +240,10 @@ impl FlareImWasmRuntime {
             "message.dispatch" => self.dispatch_message(request),
             "message.typing" => Ok(json!({ "typing": true })),
             "sync.conversation" | "sync.messages" => {
-                Ok(json!({ "synced": true, "synced_at": now_ms() }))
-            }
-            "sync.mark_session_read" => {
-                if let Some(id) = conversation_id(&request) {
-                    let read_seq = request.get("read_seq").and_then(Value::as_u64);
-                    if let Some(conversation) = self
-                        .conversations
-                        .iter_mut()
-                        .find(|item| item.conversation_id == id)
-                    {
-                        let seq = read_seq.unwrap_or(conversation.max_seq);
-                        conversation.last_read_seq = seq;
-                        conversation.unread_count = 0;
-                    }
-                    for message in self
-                        .messages
-                        .iter_mut()
-                        .filter(|item| item.conversation_id == id)
-                    {
-                        message.is_read = true;
-                    }
-                }
-                Ok(Value::Null)
+                Ok(json!({ "synced": true, "syncedAt": now_ms() }))
             }
             "message.get" | "message.get_raw" => {
-                let id = string_field(&request, "message_id").unwrap_or_default();
+                let id = string_field(&request, "messageId").unwrap_or_default();
                 Ok(self
                     .messages
                     .iter()
@@ -291,15 +265,13 @@ impl FlareImWasmRuntime {
             | "message.delete"
             | "message.delete_for_self"
             | "message.delete_for_everyone" => {
-                if let Some(id) = string_field(&request, "message_id") {
+                if let Some(id) = string_field(&request, "messageId") {
                     self.messages
                         .retain(|item| item.server_id != id && item.client_msg_id != id);
                 }
                 Ok(Value::Null)
             }
             "message.edit_text_by_message_id"
-            | "message.mark_read"
-            | "message.mark_read_with_ids"
             | "message.mark_read_and_burn"
             | "message.add_reaction"
             | "message.remove_reaction"
@@ -314,24 +286,24 @@ impl FlareImWasmRuntime {
             | "message.unmark_by_message_id"
             | "message.edit_rich_doc_by_message_id" => Ok(Value::Null),
             "presence.get" => {
-                let user_id = string_field(&request, "user_id").unwrap_or_default();
+                let user_id = string_field(&request, "userId").unwrap_or_default();
                 Ok(json!({
-                    "user_id": user_id,
+                    "userId": user_id,
                     "status": "unknown",
                     "available": false,
-                    "last_seen_at": Value::Null
+                    "lastSeenAt": Value::Null
                 }))
             }
             "presence.batch_get" => {
                 let user_ids = request
-                    .get("user_ids")
+                    .get("userIds")
                     .and_then(Value::as_array)
                     .cloned()
                     .unwrap_or_default();
                 let items = user_ids
                     .into_iter()
                     .filter_map(|value| value.as_str().map(str::to_string))
-                    .map(|user_id| json!({ "user_id": user_id, "status": "unknown", "available": false }))
+                    .map(|user_id| json!({ "userId": user_id, "status": "unknown", "available": false }))
                     .collect::<Vec<_>>();
                 Ok(json!({ "items": items }))
             }
@@ -380,12 +352,27 @@ impl FlareImWasmRuntime {
                     .map(|s| s.overlay.clone())
                     .unwrap_or_default();
                 Ok(json!({
-                    "data_url": overlay.data_url.clone().unwrap_or_else(|| "memory://flare-im-core-sdk-wasm".to_string()),
-                    "ws_url": overlay.ws_url,
-                    "quic_url": overlay.quic_url,
-                    "transport_policy": overlay.transport_policy,
-                    "protocol_race_order": overlay.protocol_race_order,
-                    "tenant_id": overlay.tenant_id
+                    "dataUrl": overlay.data_url.clone().unwrap_or_else(|| "memory://flare-im-core-sdk-wasm".to_string()),
+                    "wsUrl": overlay.ws_url,
+                    "quicUrl": overlay.quic_url,
+                    "transportPolicy": overlay.transport_policy,
+                    "protocolRaceOrder": overlay.protocol_race_order,
+                    "tenantId": overlay.tenant_id
+                }))
+            }
+            "diagnostics.runtime_health" => {
+                let (state, state_code) = if self.connected {
+                    ("ready", 3)
+                } else {
+                    ("disconnected", 0)
+                };
+                Ok(json!({
+                    "metricsEnabled": false,
+                    "state": state,
+                    "stateCode": state_code,
+                    "sessionGeneration": 0,
+                    "rawSubscriberDroppedTotal": 0,
+                    "metricsJson": "{}"
                 }))
             }
             _ => Err(js_message(
@@ -400,8 +387,8 @@ impl FlareImWasmRuntime {
         if !self.initialized {
             self.initialized = true;
         }
-        let user_id = string_field(&request, "user_id")
-            .ok_or_else(|| js_message("invalidParameter", "sdk.login", "user_id is required"))?;
+        let user_id = string_field(&request, "userId")
+            .ok_or_else(|| js_message("invalidParameter", "sdk.login", "userId is required"))?;
         self.current_user_id = Some(user_id.clone());
         self.connected = true;
         self.ensure_seed_conversation(&user_id);
@@ -664,7 +651,6 @@ impl FlareImWasmRuntime {
                 .map(conversation_type_from_cid)
                 .unwrap_or_else(|| conversation_type_from_request(request));
             let channel_id = source_id_field(request)
-                .or_else(|| string_field(request, "channel_id"))
                 .or_else(|| string_field(request, "channelId"))
                 .unwrap_or_default();
             let display_name = if channel_id.is_empty() {
@@ -790,9 +776,9 @@ impl FlareImWasmRuntime {
                 request,
                 7,
                 Elem::Sticker(StickerElem {
-                    sticker_id: string_field(request, "sticker_id")
+                    sticker_id: string_field(request, "stickerId")
                         .unwrap_or_else(|| "001".to_string()),
-                    package_id: string_field(request, "package_id")
+                    package_id: string_field(request, "packageId")
                         .unwrap_or_else(|| "default".to_string()),
                     url: String::new(),
                     width: 0,
@@ -852,8 +838,7 @@ impl FlareImWasmRuntime {
             client_msg_id,
             conversation_id: conversation_id.clone(),
             conversation_type,
-            channel_id: string_field(request, "channel_id")
-                .or_else(|| string_field(request, "channelId"))
+            channel_id: string_field(request, "channelId")
                 .filter(|value| !value.is_empty())
                 .unwrap_or_else(|| self.channel_id_for_conversation(&conversation_id)),
             sender_id: sender_id.clone(),
@@ -910,12 +895,12 @@ impl FlareImWasmRuntime {
         self.upsert_conversation_from_message(&message);
         self.messages.push(message.clone());
         Ok(json!({
-            "server_id": message.server_id,
-            "server_msg_id": message.server_id,
-            "client_msg_id": message.client_msg_id,
-            "conversation_id": message.conversation_id,
-            "seq": message.conversation_seq,
-            "timestamp": message.created_at
+            "serverId": message.server_id,
+            "serverMsgId": message.server_id,
+            "clientMsgId": message.client_msg_id,
+            "conversationId": message.conversation_id,
+            "conversationSeq": message.conversation_seq,
+            "createdAt": message.created_at
         }))
     }
 
@@ -925,14 +910,14 @@ impl FlareImWasmRuntime {
             .get("params")
             .cloned()
             .unwrap_or_else(|| request.clone());
-        let id = string_field(&params, "message_id")
-            .or_else(|| string_field(&params, "client_msg_id"))
+        let id = string_field(&params, "messageId")
+            .or_else(|| string_field(&params, "clientMsgId"))
             .unwrap_or_default();
         let now = now_ms();
         if op.contains("delete") {
             self.messages
                 .retain(|item| item.server_id != id && item.client_msg_id != id);
-            return Ok(json!({ "deleted": true, "message_id": id }));
+            return Ok(json!({ "deleted": true, "messageId": id }));
         }
         if let Some(message) = self
             .messages
@@ -944,14 +929,14 @@ impl FlareImWasmRuntime {
                 message.content = Some(text_elem(&text));
                 message.is_edited = true;
                 message.updated_at = now;
-                return Ok(json!({ "edited": true, "message_id": id }));
+                return Ok(json!({ "edited": true, "messageId": id }));
             }
             if op.contains("pin") {
                 message
                     .attributes
                     .insert("pinned".to_string(), "true".to_string());
                 message.updated_at = now;
-                return Ok(json!({ "pinned": true, "message_id": id }));
+                return Ok(json!({ "pinned": true, "messageId": id }));
             }
             if op.contains("reaction") {
                 let emoji = string_field(&params, "emoji").unwrap_or_else(|| "👍".to_string());
@@ -961,66 +946,63 @@ impl FlareImWasmRuntime {
                     count: 1,
                 });
                 message.updated_at = now;
-                return Ok(json!({ "reacted": true, "message_id": id }));
+                return Ok(json!({ "reacted": true, "messageId": id }));
             }
         }
-        Ok(json!({ "handled": true, "op": op, "message_id": id }))
+        Ok(json!({ "handled": true, "op": op, "messageId": id }))
     }
 
     fn normalize_rich_doc(&self, operation: &str, request: &Value) -> Value {
         let raw = string_field(request, "markdown")
             .or_else(|| string_field(request, "html"))
-            .or_else(|| string_field(request, "doc_json"))
+            .or_else(|| string_field(request, "docJson"))
             .unwrap_or_else(|| request.to_string());
         json!({
             "operation": operation,
             "doc": {
-                "type": "rich_doc_v2",
+                "type": "richDocV2",
                 "text": raw,
                 "blocks": []
             },
-            "plain_text": raw
+            "plainText": raw
         })
     }
 
     fn message_from_request(&mut self, value: &Value) -> Result<IMMessage, JsValue> {
-        let conversation_id = string_field(value, "conversation_id").ok_or_else(|| {
+        let conversation_id = string_field(value, "conversationId").ok_or_else(|| {
             js_message(
                 "invalidParameter",
                 "message.send",
-                "message.conversation_id is required",
+                "message.conversationId is required",
             )
         })?;
-        let sender_id = string_field(value, "sender_id")
+        let sender_id = string_field(value, "senderId")
             .or_else(|| self.current_user_id.clone())
             .unwrap_or_else(|| "web-user".to_string());
         let message_type = value
-            .get("message_type")
+            .get("messageType")
             .and_then(Value::as_i64)
             .unwrap_or(0) as i32;
         let now = now_ms();
         let content = parse_web_content(value.get("content"), message_type);
         let text_preview = content_text(content.as_ref());
-        let conversation_seq =
-            u64_field_any(value, &["conversation_seq", "seq"]).unwrap_or_default();
-        let created_at = u64_field_any(value, &["created_at", "timestamp"]).unwrap_or(now);
-        let client_created_at =
-            u64_field_any(value, &["client_created_at", "client_timestamp"]).unwrap_or(created_at);
+        let conversation_seq = u64_field_any(value, &["conversationSeq"]).unwrap_or_default();
+        let created_at = u64_field_any(value, &["createdAt"]).unwrap_or(now);
+        let client_created_at = u64_field_any(value, &["clientCreatedAt"]).unwrap_or(created_at);
         let mut message = IMMessage {
-            server_id: string_field(value, "server_id").unwrap_or_default(),
-            client_msg_id: string_field(value, "client_msg_id").unwrap_or_else(|| {
+            server_id: string_field(value, "serverId").unwrap_or_default(),
+            client_msg_id: string_field(value, "clientMsgId").unwrap_or_else(|| {
                 let id = format!("wasm-local-{}", self.next_message_id);
                 self.next_message_id += 1;
                 id
             }),
             conversation_id: conversation_id.clone(),
             conversation_type: value
-                .get("conversation_type")
+                .get("conversationType")
                 .and_then(Value::as_i64)
                 .map(|value| value as i32)
                 .unwrap_or_else(|| self.conversation_type_for(&conversation_id).to_proto_int()),
-            channel_id: string_field(value, "channel_id")
-                .or_else(|| string_field(value, "channelId"))
+            channel_id: string_field(value, "channelId")
                 .filter(|value| !value.is_empty())
                 .unwrap_or_else(|| self.channel_id_for_conversation(&conversation_id)),
             sender_id: sender_id.clone(),
@@ -1032,23 +1014,23 @@ impl FlareImWasmRuntime {
             content,
             encoded_content: Vec::new(),
             text_preview,
-            sender_name: string_field(value, "sender_name").unwrap_or_else(|| sender_id.clone()),
-            sender_avatar: string_field(value, "sender_avatar").unwrap_or_default(),
-            sender_display_name: string_field(value, "sender_display_name")
+            sender_name: string_field(value, "senderName").unwrap_or_else(|| sender_id.clone()),
+            sender_avatar: string_field(value, "senderAvatar").unwrap_or_default(),
+            sender_display_name: string_field(value, "senderDisplayName")
                 .unwrap_or_else(|| sender_id.clone()),
             reply_to: None,
             quote_preview: None,
             status: value.get("status").and_then(Value::as_i64).unwrap_or(1) as i32,
             is_read: value
-                .get("is_read")
+                .get("isRead")
                 .and_then(Value::as_bool)
                 .unwrap_or(false),
             is_recalled: value
-                .get("is_recalled")
+                .get("isRecalled")
                 .and_then(Value::as_bool)
                 .unwrap_or(false),
             is_edited: value
-                .get("is_edited")
+                .get("isEdited")
                 .and_then(Value::as_bool)
                 .unwrap_or(false),
             retention_policy: None,
@@ -1061,7 +1043,7 @@ impl FlareImWasmRuntime {
             reactions: Vec::new(),
             version: value.get("version").and_then(Value::as_u64).unwrap_or(1),
             updated_at: value
-                .get("updated_at")
+                .get("updatedAt")
                 .and_then(Value::as_u64)
                 .unwrap_or(now),
             local_state: Default::default(),
@@ -1102,9 +1084,9 @@ impl FlareImWasmRuntime {
             return;
         }
         let mut conversation = self.resolve_conversation(&json!({
-            "conversation_id": message.conversation_id,
-            "channel_id": message.channel_id,
-            "conversation_type": message.conversation_type
+            "conversationId": message.conversation_id,
+            "channelId": message.channel_id,
+            "conversationType": message.conversation_type
         }));
         conversation.last_message_id = Some(message.server_id.clone());
         conversation.last_sender_id = Some(message.sender_id.clone());
@@ -1130,23 +1112,15 @@ fn parse_request(request_json: &str) -> Result<Value, JsValue> {
 }
 
 fn parse_init_request(value: Value) -> SmokeInitState {
-    if value.get("sdk_config").is_some() || value.get("environment").is_some() {
-        let environment = value
-            .get("environment")
-            .and_then(Value::as_str)
-            .map(String::from);
+    if value.get("sdkConfig").is_some() || value.get("environment").is_some() {
         let overlay = value
-            .get("sdk_config")
+            .get("sdkConfig")
             .cloned()
             .and_then(|v| serde_json::from_value::<SdkConfigOverlay>(v).ok())
             .unwrap_or_default();
-        return SmokeInitState {
-            environment,
-            overlay,
-        };
+        return SmokeInitState { overlay };
     }
     SmokeInitState {
-        environment: None,
         overlay: serde_json::from_value(value).unwrap_or_default(),
     }
 }
@@ -1164,13 +1138,11 @@ fn u64_field_any(value: &Value, keys: &[&str]) -> Option<u64> {
 }
 
 fn source_id_field(value: &Value) -> Option<String> {
-    string_field(value, "source_id").or_else(|| string_field(value, "sourceId"))
+    string_field(value, "sourceId")
 }
 
 fn conversation_type_from_request(value: &Value) -> ConversationType {
-    let raw = value
-        .get("conversation_type")
-        .or_else(|| value.get("conversationType"));
+    let raw = value.get("conversationType");
     if let Some(raw) = raw {
         if let Some(v) = raw.as_i64() {
             return ConversationType::from_proto_int(v as i32);
@@ -1193,7 +1165,7 @@ fn bool_field(value: &Value, key: &str) -> Option<bool> {
 }
 
 fn conversation_id(value: &Value) -> Option<String> {
-    string_field(value, "conversation_id").or_else(|| {
+    string_field(value, "conversationId").or_else(|| {
         value
             .get("message")
             .and_then(|message| conversation_id(message))
@@ -1208,11 +1180,11 @@ fn parse_web_content(value: Option<&Value>, message_type: i32) -> Option<Elem> {
     let content = value?;
     let data = content.get("data").unwrap_or(content);
     let content_type = content
-        .get("content_type")
+        .get("contentType")
         .and_then(Value::as_str)
         .unwrap_or_default();
     let content_type_index = content
-        .get("content_type")
+        .get("contentType")
         .and_then(Value::as_i64)
         .unwrap_or(i64::from(message_type));
     if content_type == "emoji" || content_type_index == 8 || message_type == 8 {
@@ -1224,8 +1196,8 @@ fn parse_web_content(value: Option<&Value>, message_type: i32) -> Option<Elem> {
     }
     if content_type == "sticker" || content_type_index == 7 || message_type == 7 {
         return Some(Elem::Sticker(StickerElem {
-            sticker_id: string_field(data, "sticker_id").unwrap_or_default(),
-            package_id: string_field(data, "package_id").unwrap_or_default(),
+            sticker_id: string_field(data, "stickerId").unwrap_or_default(),
+            package_id: string_field(data, "packageId").unwrap_or_default(),
             url: string_field(data, "url").unwrap_or_default(),
             width: data.get("width").and_then(Value::as_i64).unwrap_or(0) as i32,
             height: data.get("height").and_then(Value::as_i64).unwrap_or(0) as i32,

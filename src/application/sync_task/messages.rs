@@ -8,7 +8,9 @@ use futures::stream::{self, StreamExt};
 use tracing::debug;
 
 use super::super::SyncProtocolAdapter;
-use crate::core::{SyncContext, SyncFailurePolicy, SyncMode, SyncResult, SyncTask, SyncTaskResult};
+use crate::kernel::{
+    SyncContext, SyncFailurePolicy, SyncMode, SyncResult, SyncTask, SyncTaskResult,
+};
 
 pub struct MessagesSyncTask {
     pub(crate) handler: Arc<SyncProtocolAdapter>,

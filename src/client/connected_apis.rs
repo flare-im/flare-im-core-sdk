@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use crate::client::api::{
-    CapabilityApi, ConversationApi, MediaApi, MessageApi, MessageBuildApi, PresenceApi,
+    CapabilityApi, ConversationApi, MediaApi, MessageApi, MessageBuildApi, PresenceApi, ViewApi,
 };
 use crate::extension::capability::SdkCapabilityRegistry;
 
@@ -16,5 +16,6 @@ pub struct ConnectedApis {
     pub capability_api: Arc<CapabilityApi>,
     pub presence_api: Arc<PresenceApi>,
     pub message_build_api: Arc<MessageBuildApi>,
+    pub view_api: Arc<ViewApi>,
     pub capability_registry: Arc<SdkCapabilityRegistry>,
 }

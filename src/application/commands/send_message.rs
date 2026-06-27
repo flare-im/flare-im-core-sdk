@@ -1,10 +1,10 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::core::ReliableSendQueue;
 use crate::domain::MessageStore;
 use crate::extension::middleware::{MessageMiddlewareContext, MessageOperation, MiddlewareChain};
 use crate::infrastructure::protocol::PacketSender;
+use crate::kernel::ReliableSendQueuePort;
 use crate::model::message::{IMMessage, SendAck};
 use crate::shared::error::Result;
 
@@ -58,7 +58,7 @@ impl SendMessageCommand {
     /// 经可靠队列入队（SendAck 由调用方通过 EventBus 等待）
     pub async fn execute_via_queue(
         &self,
-        queue: &ReliableSendQueue,
+        queue: &dyn ReliableSendQueuePort,
         chain: &MiddlewareChain,
     ) -> Result<()> {
         let ctx = MessageMiddlewareContext::new(MessageOperation::ReliableQueueEnqueue);

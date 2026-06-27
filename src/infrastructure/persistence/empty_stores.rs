@@ -70,6 +70,14 @@ impl MessageWriter for EmptyMessageStore {
         Ok(())
     }
 
+    async fn rewrite_conversation_id(
+        &self,
+        _from_conversation_id: &str,
+        _to_conversation_id: &str,
+    ) -> Result<u64> {
+        Ok(0)
+    }
+
     async fn update_after_ack(&self, _client_msg_id: &str, _message: &IMMessage) -> Result<()> {
         Ok(())
     }
@@ -130,6 +138,14 @@ impl ConversationWriter for EmptyConversationStore {
     }
 
     async fn delete(&self, _conversation_id: &str) -> Result<()> {
+        Ok(())
+    }
+
+    async fn merge_conversation_identity(
+        &self,
+        _from_conversation_id: &str,
+        _to_conversation_id: &str,
+    ) -> Result<()> {
         Ok(())
     }
 

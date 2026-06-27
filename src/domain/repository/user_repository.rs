@@ -1,4 +1,4 @@
-use crate::domain::models::UserProfile;
+use crate::domain::UserProfile;
 use crate::shared::error::Result;
 use async_trait::async_trait;
 

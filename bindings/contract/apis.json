@@ -3,7 +3,7 @@
   "apiContractVersion": "flare-im-api/v1",
   "rules": [
     "Canonical API ids are singular dot-separated operation ids matching the Rust binding runtime route.",
-    "C direct functions are preferred for hot lifecycle, conversation, media, and simple message paths.",
+    "C direct functions are preferred for hot lifecycle, media, and simple message paths; conversation APIs use the canonical contract invoke boundary.",
     "C JSON dispatch is used for large or fast-evolving request shapes.",
     "Tauri commands mirror the same canonical ids but use command names prefixed with sdk_.",
     "Bindings must not implement business rules; they only validate boundary inputs and forward to core APIs.",
@@ -15,7 +15,6 @@
     "jsonDispatch": {
       "message": "flare_message_dispatch_json(handle, op, params_json, context, callback)",
       "messageBuild": "flare_message_build_json(handle, request_json, context, callback)",
-      "conversation": "flare_conversation_dispatch_json(handle, op, params_json, context, callback)",
       "media": "flare_media_dispatch_json(handle, op, params_json, context, callback)"
     }
   },
@@ -102,6 +101,12 @@
           "tauri": null
         },
         {
+          "id": "connection.notify_network_change",
+          "core": "IMClient::notify_network_change",
+          "c": "flare_sdk_invoke_json",
+          "tauri": null
+        },
+        {
           "id": "diagnostics.sdk_version",
           "core": "crate version",
           "c": "flare_sdk_version",
@@ -117,6 +122,12 @@
           "id": "diagnostics.data_root",
           "core": "IMClient::data_root",
           "c": "flare_sdk_data_root",
+          "tauri": null
+        },
+        {
+          "id": "diagnostics.runtime_health",
+          "core": "IMClient::runtime_health_snapshot",
+          "c": "flare_sdk_invoke_json",
           "tauri": null
         },
         {
@@ -171,12 +182,6 @@
           "core": "IMClient::sync_messages",
           "c": "flare_sdk_sync_messages",
           "tauri": "sdk_sync_messages"
-        },
-        {
-          "id": "sync.mark_session_read",
-          "core": "IMClient::mark_session_read",
-          "c": "flare_sdk_mark_session_read",
-          "tauri": "sdk_mark_session_read"
         }
       ]
     },
@@ -188,6 +193,12 @@
           "core": "EventBus::subscribe",
           "c": "flare_event_subscribe",
           "tauri": "sdk_login event forwarder"
+        },
+        {
+          "id": "event.subscribe_batch",
+          "core": "EventBus::subscribe_shared_raw",
+          "c": "flare_event_subscribe_batch",
+          "tauri": null
         },
         {
           "id": "event.unsubscribe",
@@ -257,6 +268,12 @@
           "id": "message_builder.create_image",
           "core": "MessageBuildApi::create_image",
           "c": "flare_message_build_json:create_image",
+          "tauri": "sdk_message_build_json"
+        },
+        {
+          "id": "message_builder.create_image_group",
+          "core": "MessageBuildApi::create_image_group",
+          "c": "flare_message_build_json:create_image_group",
           "tauri": "sdk_message_build_json"
         },
         {
@@ -436,18 +453,6 @@
           "tauri": "sdk_message_dispatch_json"
         },
         {
-          "id": "message.mark_read",
-          "core": "MessageApi::mark_read",
-          "c": "flare_message_dispatch_json:mark_read",
-          "tauri": "sdk_message_dispatch_json"
-        },
-        {
-          "id": "message.mark_read_with_ids",
-          "core": "MessageApi::mark_read_with_ids",
-          "c": "flare_message_dispatch_json:mark_read_with_ids",
-          "tauri": "sdk_message_dispatch_json"
-        },
-        {
           "id": "message.mark_read_and_burn",
           "core": "MessageApi::mark_read_and_burn",
           "c": "flare_message_dispatch_json:mark_read_and_burn",
@@ -569,110 +574,104 @@
         {
           "id": "conversation.list",
           "core": "ConversationApi::list",
-          "c": "flare_conversation_dispatch_json:list",
-          "tauri": "sdk_conversation_dispatch_json"
+          "c": "flare_sdk_invoke_json",
+          "tauri": "sdk_invoke_json"
         },
         {
           "id": "conversation.list_by_query",
           "core": "ConversationApi::list_by_query",
-          "c": "flare_conversation_dispatch_json:list_by_query",
-          "tauri": "sdk_conversation_dispatch_json"
+          "c": "flare_sdk_invoke_json",
+          "tauri": "sdk_invoke_json"
         },
         {
           "id": "conversation.list_including_archived",
           "core": "ConversationApi::list_including_archived",
-          "c": "flare_conversation_dispatch_json:list_including_archived",
-          "tauri": "sdk_conversation_dispatch_json"
+          "c": "flare_sdk_invoke_json",
+          "tauri": "sdk_invoke_json"
         },
         {
           "id": "conversation.get",
           "core": "ConversationApi::get",
-          "c": "flare_conversation_dispatch_json:get",
-          "tauri": "sdk_conversation_dispatch_json"
+          "c": "flare_sdk_invoke_json",
+          "tauri": "sdk_invoke_json"
         },
         {
           "id": "conversation.get_one",
           "core": "ConversationApi::get_one",
-          "c": "flare_conversation_dispatch_json:get_one",
-          "tauri": "sdk_conversation_dispatch_json"
+          "c": "flare_sdk_invoke_json",
+          "tauri": "sdk_invoke_json"
         },
         {
           "id": "conversation.get_group_by_user_ids",
           "core": "ConversationApi::get_group_by_user_ids",
-          "c": "flare_conversation_dispatch_json:get_group_by_user_ids",
-          "tauri": "sdk_conversation_dispatch_json"
+          "c": "flare_sdk_invoke_json",
+          "tauri": "sdk_invoke_json"
         },
         {
           "id": "conversation.get_multiple",
           "core": "ConversationApi::get_multiple",
-          "c": "flare_conversation_dispatch_json:get_multiple",
-          "tauri": "sdk_conversation_dispatch_json"
+          "c": "flare_sdk_invoke_json",
+          "tauri": "sdk_invoke_json"
         },
         {
           "id": "conversation.list_paginated",
           "core": "ConversationApi::list_paginated",
-          "c": "flare_conversation_dispatch_json:list_paginated",
-          "tauri": "sdk_conversation_dispatch_json"
+          "c": "flare_sdk_invoke_json",
+          "tauri": "sdk_invoke_json"
         },
         {
           "id": "conversation.list_raw",
           "core": "ConversationApi::list_raw",
-          "c": "flare_conversation_dispatch_json:list_raw",
-          "tauri": "sdk_conversation_dispatch_json"
+          "c": "flare_sdk_invoke_json",
+          "tauri": "sdk_invoke_json"
         },
         {
           "id": "conversation.mark_read",
           "core": "ConversationApi::mark_read",
-          "c": "flare_conversation_dispatch_json:mark_read",
-          "tauri": "sdk_conversation_dispatch_json"
-        },
-        {
-          "id": "conversation.mark_all_read",
-          "core": "ConversationApi::mark_all_read",
-          "c": "flare_conversation_dispatch_json:mark_all_read",
-          "tauri": "sdk_conversation_dispatch_json"
+          "c": "flare_sdk_invoke_json",
+          "tauri": "sdk_invoke_json"
         },
         {
           "id": "conversation.delete",
           "core": "ConversationApi::delete",
-          "c": "flare_conversation_dispatch_json:delete",
-          "tauri": "sdk_conversation_dispatch_json"
+          "c": "flare_sdk_invoke_json",
+          "tauri": "sdk_invoke_json"
         },
         {
           "id": "conversation.set_pinned",
           "core": "ConversationApi::set_pinned",
-          "c": "flare_conversation_dispatch_json:set_pinned",
-          "tauri": "sdk_conversation_dispatch_json"
+          "c": "flare_sdk_invoke_json",
+          "tauri": "sdk_invoke_json"
         },
         {
           "id": "conversation.set_muted",
           "core": "ConversationApi::set_muted",
-          "c": "flare_conversation_dispatch_json:set_muted",
-          "tauri": "sdk_conversation_dispatch_json"
+          "c": "flare_sdk_invoke_json",
+          "tauri": "sdk_invoke_json"
         },
         {
           "id": "conversation.set_archived",
           "core": "ConversationApi::set_archived",
-          "c": "flare_conversation_dispatch_json:set_archived",
-          "tauri": "sdk_conversation_dispatch_json"
+          "c": "flare_sdk_invoke_json",
+          "tauri": "sdk_invoke_json"
         },
         {
           "id": "conversation.mark_unread",
           "core": "ConversationApi::mark_unread",
-          "c": "flare_conversation_dispatch_json:mark_unread",
-          "tauri": "sdk_conversation_dispatch_json"
+          "c": "flare_sdk_invoke_json",
+          "tauri": "sdk_invoke_json"
         },
         {
           "id": "conversation.update_draft",
           "core": "ConversationApi::update_draft",
-          "c": "flare_conversation_dispatch_json:update_draft",
-          "tauri": "sdk_conversation_dispatch_json"
+          "c": "flare_sdk_invoke_json",
+          "tauri": "sdk_invoke_json"
         },
         {
           "id": "conversation.clear_local_chat_history",
           "core": "ConversationApi::clear_local_chat_history",
-          "c": "flare_conversation_dispatch_json:clear_local_chat_history",
-          "tauri": "sdk_conversation_dispatch_json"
+          "c": "flare_sdk_invoke_json",
+          "tauri": "sdk_invoke_json"
         }
       ]
     },
@@ -916,18 +915,6 @@
           "core": "rich_doc_v2::normalize_from_doc_json",
           "c": "flare_message_build_json:create_rich_doc",
           "tauri": "sdk_rich_doc_v2_normalize_from_doc_json"
-        },
-        {
-          "id": "rich_doc_v2.create_message",
-          "core": "MessageBuildApi::create_rich_doc",
-          "c": "flare_message_build_json:create_rich_doc",
-          "tauri": "sdk_rich_doc_v2_create_message"
-        },
-        {
-          "id": "rich_doc_v2.edit_message",
-          "core": "MessageApi::edit_rich_doc_by_message_id",
-          "c": "flare_message_dispatch_json:edit_rich_doc_by_message_id",
-          "tauri": "sdk_rich_doc_v2_edit_message"
         }
       ]
     }

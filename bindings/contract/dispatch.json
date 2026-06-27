@@ -222,40 +222,6 @@
           "result": "unit"
         },
         {
-          "op": "mark_read",
-          "method": "mark_read",
-          "args": [
-            [
-              "conversation_id",
-              "str_ref"
-            ],
-            [
-              "read_seq",
-              "u64"
-            ]
-          ],
-          "result": "unit"
-        },
-        {
-          "op": "mark_read_with_ids",
-          "method": "mark_read_with_ids",
-          "args": [
-            [
-              "conversation_id",
-              "str_ref"
-            ],
-            [
-              "message_ids",
-              "vec_string"
-            ],
-            [
-              "read_seq",
-              "u64"
-            ]
-          ],
-          "result": "unit"
-        },
-        {
           "op": "mark_read_and_burn",
           "method": "mark_read_and_burn",
           "args": [
@@ -322,6 +288,10 @@
             [
               "message_id",
               "str_ref"
+            ],
+            [
+              "scope",
+              "i32"
             ]
           ],
           "result": "unit"
@@ -337,6 +307,10 @@
             [
               "message_id",
               "str_ref"
+            ],
+            [
+              "scope",
+              "i32"
             ]
           ],
           "result": "unit"
@@ -348,6 +322,10 @@
             [
               "message_id",
               "str_ref"
+            ],
+            [
+              "scope",
+              "i32"
             ]
           ],
           "result": "unit"
@@ -359,6 +337,10 @@
             [
               "message_id",
               "str_ref"
+            ],
+            [
+              "scope",
+              "i32"
             ]
           ],
           "result": "unit"
@@ -575,6 +557,29 @@
             [
               "image_id",
               "str_ref"
+            ]
+          ],
+          "result": "json"
+        },
+        {
+          "op": "create_image_group",
+          "method": "create_image_group",
+          "args": [
+            [
+              "conversation_id",
+              "conversation_id"
+            ],
+            [
+              "images",
+              "image_group_images"
+            ],
+            [
+              "description",
+              "image_group_description"
+            ],
+            [
+              "metadata",
+              "image_group_metadata"
             ]
           ],
           "result": "json"
@@ -967,9 +972,7 @@
         {
           "op": "list",
           "method": "list",
-          "args": [
-
-          ],
+          "args": [],
           "result": "json_object",
           "fields": {
             "conversations": "conversations"
@@ -992,9 +995,7 @@
         {
           "op": "list_including_archived",
           "method": "list_including_archived",
-          "args": [
-
-          ],
+          "args": [],
           "result": "json_object",
           "fields": {
             "conversations": "conversations"
@@ -1082,9 +1083,7 @@
         {
           "op": "list_raw",
           "method": "list_raw",
-          "args": [
-
-          ],
+          "args": [],
           "result": "json_object",
           "fields": {
             "conversations": "conversations"
@@ -1124,14 +1123,6 @@
               "read_seq",
               "u64"
             ]
-          ],
-          "result": "unit"
-        },
-        {
-          "op": "mark_all_read",
-          "method": "mark_all_read",
-          "args": [
-
           ],
           "result": "unit"
         },
@@ -1308,9 +1299,7 @@
         {
           "op": "cache_stats",
           "method": "media_cache_stats",
-          "args": [
-
-          ],
+          "args": [],
           "result": "json"
         },
         {
@@ -1338,9 +1327,7 @@
         {
           "op": "clear_cache",
           "method": "clear_media_cache",
-          "args": [
-
-          ],
+          "args": [],
           "result": "unit"
         },
         {
@@ -1440,9 +1427,7 @@
         {
           "op": "user_download_get_subfolder",
           "method": "user_download_get_subfolder",
-          "args": [
-
-          ],
+          "args": [],
           "result": "json_object",
           "fields": {
             "subfolder": "subfolder"
@@ -1510,9 +1495,7 @@
         {
           "op": "capability_list",
           "method": "list_capabilities",
-          "args": [
-
-          ],
+          "args": [],
           "result": "json"
         },
         {

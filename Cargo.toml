@@ -1,7 +1,8 @@
 [workspace]
+resolver = "3"
 members = [
     ".",
-    "codegen",
+    "xtask",
     "storage/sqlite",
     "storage/indexeddb",
     "bindings/shared",
@@ -22,13 +23,14 @@ license = "Apache-2.0"
 [workspace.dependencies]
 flare-proto = { path = "../flare-proto" }
 flare-grpc-proto = { path = "../flare-grpc-proto" }
-flare-core = { path = "../flare-core" }
+flare-core = { path = "../flare-core", default-features = false }
 tonic = "0.14"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+schemars = "1.2.1"
 anyhow = "1.0"
 thiserror = "2.0"
-tokio = { version = "1", features = ["full"] }
+tokio = { version = "1", default-features = false, features = ["fs", "io-util", "macros", "rt", "rt-multi-thread", "sync", "time"] }
 chrono = { version = "0.4", features = ["serde"] }
 prost = "0.14"
 prost-types = "0.14"
@@ -55,6 +57,16 @@ name = "flare_im_core_sdk"
 path = "src/lib.rs"
 crate-type = ["rlib", "cdylib", "staticlib"]
 
+[profile.release]
+lto = "fat"
+codegen-units = 1
+panic = "unwind"
+strip = true
+
+[profile.release-mobile]
+inherits = "release"
+opt-level = "z"
+
 [features]
 # 默认仅启用 IM 基础能力；通话/RTC 通过 DATA capability 接入。
 default = []
@@ -66,20 +78,25 @@ dev-test-token = []
 storage-sqlite = ["dep:sqlx"]
 # 跨平台 SQLite 登录编排（依赖 storage/sqlite 连接池与 schema 注册）
 lifecycle-sqlite = ["storage-sqlite", "dep:flare-im-core-sdk-storage-sqlite"]
-# RTC/SFU typed helpers. Legacy call_signal plugin crates are intentionally not
-# pulled into the core SDK feature graph.
-plugin-call = []
+# Native QUIC transport support. Browser/WASM remains WebSocket-only.
+quic = ["flare-core/quic"]
+# RichDoc v2 HTML 片段归一化；默认关闭以避免移动端无条件编译 HTML parser 重依赖。
+rich-doc-html = ["dep:scraper", "dep:ego-tree"]
+# 兼容任务/产品层命名：链接预览同样依赖 HTML 解析能力。
+link-preview = ["rich-doc-html"]
 
 [dependencies]
-flare-core = { workspace = true }
+flare-core = { workspace = true, default-features = false, features = ["client", "websocket", "compression-gzip", "encryption-aes-gcm"] }
 flare-proto = { workspace = true }
 chrono = { workspace = true }
 
 serde = { workspace = true }
 serde_json = "1.0"
+schemars = { workspace = true }
 anyhow = { workspace = true }
 thiserror = "2.0"
 async-trait = "0.1"
+arc-swap = "1.7"
 prost = "0.14"
 prost-types = { workspace = true }
 tracing = "0.1"
@@ -108,8 +125,8 @@ dirs = "5.0"
 futures-util = "0.3"
 bytes = "1"
 url = "2.5"
-scraper = "0.20"
-ego-tree = "0.6"
+scraper = { version = "0.20", optional = true }
+ego-tree = { version = "0.6", optional = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 tokio = { version = "1", default-features = false, features = ["macros", "sync", "rt"] }

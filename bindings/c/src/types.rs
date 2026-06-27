@@ -57,6 +57,10 @@ pub type FlareResultCallback =
 pub type FlareEventCallback =
     extern "C" fn(context: *mut c_void, event_type: i32, event_json: FlareString);
 
+/// 批量事件回调
+pub type FlareEventBatchCallback =
+    extern "C" fn(context: *mut c_void, event_count: usize, events_json: FlareString);
+
 /// 进度回调
 pub type FlareProgressCallback = extern "C" fn(context: *mut c_void, current: u64, total: u64);
 

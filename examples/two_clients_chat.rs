@@ -32,8 +32,8 @@ use std::path::Path;
 
 use flare_im_core_sdk::ErrorCode;
 use flare_im_core_sdk::SdkConfigOverlay;
+use flare_im_core_sdk::content::message_elem::Elem;
 use flare_im_core_sdk::model::conversation::ConversationType;
-use flare_im_core_sdk::model::message_elem::Elem;
 use flare_im_core_sdk::prelude::*;
 use tokio::sync::mpsc;
 use tracing::{error, info};

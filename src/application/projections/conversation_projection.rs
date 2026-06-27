@@ -1,9 +1,9 @@
-use crate::core::event::{ConversationEvent, EventBus, SdkEvent};
+use crate::content::message_elem::MessagePreviewElem;
 use crate::domain::conversation::id as conversation_id;
 use crate::domain::{ConversationIdentityService, ReadPosition};
 use crate::infrastructure::persistence::StoreProvider;
+use crate::kernel::event::{ConversationEvent, EventBus, SdkEvent};
 use crate::model::conversation::ConversationType;
-use crate::model::message_elem::MessagePreviewElem;
 use crate::model::{Conversation, IMMessage};
 use crate::shared::error::Result;
 
@@ -77,7 +77,8 @@ impl ConversationProjectionApplier {
                 continue;
             }
             match latest_per_conversation.get(&message.conversation_id) {
-                Some(previous) if previous.conversation_seq >= message.conversation_seq => {}
+                Some(previous)
+                    if IMMessage::compare_for_latest_window_desc(previous, message).is_le() => {}
                 _ => {
                     latest_per_conversation.insert(message.conversation_id.clone(), message);
                 }
@@ -102,8 +103,14 @@ impl ConversationProjectionApplier {
                 .as_ref()
                 .map(|conversation| conversation.max_seq)
                 .unwrap_or(0);
+            let previous_materialized_max_seq = self
+                .stores
+                .conversations
+                .get_local_max_seq(&conversation_id)
+                .await
+                .unwrap_or(0);
             let should_update_summary =
-                previous.is_none() || latest.conversation_seq >= previous_max_seq;
+                previous.is_none() || latest.conversation_seq >= previous_materialized_max_seq;
             let conversation_max_seq = previous
                 .as_ref()
                 .map(|conversation| conversation.max_seq.max(latest.conversation_seq))
@@ -116,9 +123,9 @@ impl ConversationProjectionApplier {
                         &conversation_id,
                         latest.server_id(),
                         latest.sender_id(),
-                        latest.created_at,
+                        latest.display_time_ms(),
                         latest.text_for_storage().as_deref(),
-                        conversation_max_seq,
+                        latest.conversation_seq,
                     )
                     .await;
             }
@@ -354,12 +361,13 @@ impl ConversationProjectionApplier {
 #[cfg(test)]
 mod tests {
     use super::ConversationProjectionApplier;
-    use crate::core::event::{ConversationEvent, EventBus, SdkEvent};
     use crate::domain::{
         ConversationReader, ConversationWriter, MessageReader, MessageStore, MessageWriter,
         SyncCursorReader, SyncCursorVo, SyncCursorWriter,
     };
     use crate::infrastructure::persistence::StoreProvider;
+    use crate::kernel::event::{ConversationEvent, EventBus, SdkEvent};
+    use crate::model::message::MessageLocalState;
     use crate::model::{Conversation, IMMessage};
     use crate::shared::error::Result;
     use async_trait::async_trait;
@@ -370,12 +378,14 @@ mod tests {
 
     struct MemoryConversationStore {
         data: RwLock<HashMap<String, Conversation>>,
+        materialized_max_seq: RwLock<HashMap<String, u64>>,
     }
 
     impl MemoryConversationStore {
         fn new() -> Self {
             Self {
                 data: RwLock::new(HashMap::new()),
+                materialized_max_seq: RwLock::new(HashMap::new()),
             }
         }
     }
@@ -440,6 +450,34 @@ mod tests {
         }
 
         async fn delete(&self, _conversation_id: &str) -> Result<()> {
+            self.materialized_max_seq
+                .write()
+                .await
+                .remove(_conversation_id);
+            Ok(())
+        }
+
+        async fn merge_conversation_identity(
+            &self,
+            from_conversation_id: &str,
+            to_conversation_id: &str,
+        ) -> Result<()> {
+            let from = from_conversation_id.trim();
+            let to = to_conversation_id.trim();
+            if from.is_empty() || to.is_empty() || from == to {
+                return Ok(());
+            }
+            let mut data = self.data.write().await;
+            if let Some(mut conversation) = data.remove(from) {
+                conversation.conversation_id = to.to_string();
+                data.entry(to.to_string()).or_insert(conversation);
+            }
+            let mut materialized = self.materialized_max_seq.write().await;
+            let from_seq = materialized.remove(from).unwrap_or(0);
+            let to_seq = materialized.get(to).copied().unwrap_or(0);
+            if from_seq > 0 || to_seq > 0 {
+                materialized.insert(to.to_string(), from_seq.max(to_seq));
+            }
             Ok(())
         }
 
@@ -467,8 +505,11 @@ mod tests {
                 conversation.last_message_at = Some(last_message_at);
                 conversation.last_message_preview =
                     last_message_preview.map(std::string::ToString::to_string);
-                conversation.max_seq = max_seq;
+                conversation.max_seq = conversation.max_seq.max(max_seq);
             }
+            let mut materialized = self.materialized_max_seq.write().await;
+            let previous = materialized.get(conversation_id).copied().unwrap_or(0);
+            materialized.insert(conversation_id.to_string(), previous.max(max_seq));
             Ok(())
         }
 
@@ -495,6 +536,16 @@ mod tests {
                 };
             }
             Ok(())
+        }
+
+        async fn get_local_max_seq(&self, conversation_id: &str) -> Result<u64> {
+            Ok(self
+                .materialized_max_seq
+                .read()
+                .await
+                .get(conversation_id)
+                .copied()
+                .unwrap_or(0))
         }
     }
 
@@ -554,6 +605,14 @@ mod tests {
 
         async fn delete(&self, _message_id: &str) -> Result<()> {
             Ok(())
+        }
+
+        async fn rewrite_conversation_id(
+            &self,
+            _from_conversation_id: &str,
+            _to_conversation_id: &str,
+        ) -> Result<u64> {
+            Ok(0)
         }
 
         async fn update_after_ack(&self, _client_msg_id: &str, _message: &IMMessage) -> Result<()> {
@@ -616,6 +675,42 @@ mod tests {
             unread_count,
             ..Default::default()
         }
+    }
+
+    fn text_message(server_id: &str, conversation_seq: u64, text: &str) -> IMMessage {
+        let mut message = IMMessage::new(flare_proto::common::Message::default());
+        message.server_id = server_id.to_string();
+        message.client_msg_id = format!("client-{server_id}");
+        message.conversation_id = "conv-1".to_string();
+        message.sender_id = "u2".to_string();
+        message.conversation_seq = conversation_seq;
+        message.created_at = conversation_seq;
+        message.client_created_at = conversation_seq;
+        message.content = Some(crate::model::Elem::Text(
+            crate::content::message_elem::TextElem {
+                text: text.to_string(),
+                mentions: Vec::new(),
+            },
+        ));
+        message.materialize_encoded_content_from_elem();
+        message
+    }
+
+    fn pending_text_message(client_msg_id: &str, sort_ts: u64, text: &str) -> IMMessage {
+        let mut message = text_message("", 0, text);
+        message.client_msg_id = client_msg_id.to_string();
+        message.sender_id = "u1".to_string();
+        message.created_at = sort_ts.saturating_sub(10);
+        message.client_created_at = sort_ts;
+        message.local_state = MessageLocalState {
+            sending: true,
+            failed: false,
+            is_local: true,
+            uploading: false,
+            upload_progress: 0,
+            sort_ts,
+        };
+        message
     }
 
     #[tokio::test]
@@ -700,6 +795,77 @@ mod tests {
         assert_eq!(updated.last_message_id.as_deref(), Some("server-new"));
         assert_eq!(updated.max_seq, 9);
         assert_eq!(updated.unread_count, 2);
+    }
+
+    #[tokio::test]
+    async fn later_local_pending_message_wins_last_message_projection_when_seq_is_zero() {
+        let (conversations, stores) = stores();
+        let bus = EventBus::new();
+        let applier = ConversationProjectionApplier::new(stores, bus);
+
+        let first = pending_text_message("client-first", 1_000, "first pending");
+        let second = pending_text_message("client-second", 2_000, "second pending");
+
+        applier
+            .apply_messages(&[first, second], "u1")
+            .await
+            .unwrap();
+
+        let updated = conversations.get("conv-1").await.unwrap().unwrap();
+        assert!(
+            updated
+                .last_message_preview
+                .as_deref()
+                .unwrap_or_default()
+                .contains("second pending")
+        );
+        assert_eq!(updated.last_message_at, Some(2_000));
+        assert_eq!(updated.max_seq, 0);
+        assert_eq!(updated.unread_count, 0);
+    }
+
+    #[tokio::test]
+    async fn projected_preview_uses_materialized_message_waterline_not_remote_summary_max_seq() {
+        let (conversations, stores) = stores();
+        let summary = conversation_summary(2, 0, 2);
+        conversations.save_one(&summary).await.unwrap();
+
+        let bus = EventBus::new();
+        let applier = ConversationProjectionApplier::new(stores, bus);
+
+        applier
+            .apply_synced_messages(&[text_message("server-1", 1, "first preview")], "u1")
+            .await
+            .unwrap();
+
+        let first = conversations.get("conv-1").await.unwrap().unwrap();
+        assert_eq!(first.max_seq, 2);
+        assert_eq!(first.last_message_id.as_deref(), Some("server-1"));
+        assert!(
+            first
+                .last_message_preview
+                .as_deref()
+                .unwrap_or_default()
+                .contains("first preview")
+        );
+        assert_eq!(conversations.get_local_max_seq("conv-1").await.unwrap(), 1);
+
+        applier
+            .apply_synced_messages(&[text_message("server-2", 2, "second preview")], "u1")
+            .await
+            .unwrap();
+
+        let second = conversations.get("conv-1").await.unwrap().unwrap();
+        assert_eq!(second.max_seq, 2);
+        assert_eq!(second.last_message_id.as_deref(), Some("server-2"));
+        assert!(
+            second
+                .last_message_preview
+                .as_deref()
+                .unwrap_or_default()
+                .contains("second preview")
+        );
+        assert_eq!(conversations.get_local_max_seq("conv-1").await.unwrap(), 2);
     }
 
     #[tokio::test]

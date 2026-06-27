@@ -40,7 +40,33 @@ impl PacketSender {
         }
     }
 
+    async fn client_snapshot(&self) -> Result<FlareClient> {
+        self.client.lock().await.as_ref().cloned().ok_or_else(|| {
+            FlareError::localized(flare_core::common::ErrorCode::NotConnected, "未连接")
+        })
+    }
+
+    async fn send_frame_with_timeout(
+        &self,
+        frame: &Frame,
+        timeout_duration: Duration,
+        timeout_message: &'static str,
+    ) -> Result<()> {
+        let client = self.client_snapshot().await?;
+        timeout(timeout_duration, client.send_frame(frame))
+            .await
+            .map_err(|_| {
+                FlareError::localized(
+                    flare_core::common::ErrorCode::OperationTimeout,
+                    timeout_message,
+                )
+            })?
+            .map_err(|e| FlareError::connection_failed(e.to_string()))?;
+        Ok(())
+    }
+
     /// 发送领域事件（event.proto Event）。PayloadCommand.type=Event，网关回 EventAck。
+    #[tracing::instrument(skip(self, event, timeout_duration), fields(event_id = %event.event_id))]
     pub async fn send_event(&self, event: &Event, timeout_duration: Duration) -> Result<()> {
         let message_id = if event.event_id.is_empty() {
             builder::generate_message_id()
@@ -59,25 +85,14 @@ impl PacketSender {
             wire_event.created_at = now_millis() as i64;
         }
         let payload = wire_event.encode_to_vec();
-        let mut guard = self.client.lock().await;
-        let client = guard.as_mut().ok_or_else(|| {
-            FlareError::localized(flare_core::common::ErrorCode::NotConnected, "未连接")
-        })?;
         let cmd = builder::event_message(message_id, payload, None, None);
         let frame = builder::frame_with_payload_command(cmd, Reliability::AtLeastOnce);
-        timeout(timeout_duration, client.send_frame(&frame))
+        self.send_frame_with_timeout(&frame, timeout_duration, "event send timeout")
             .await
-            .map_err(|_| {
-                FlareError::localized(
-                    flare_core::common::ErrorCode::OperationTimeout,
-                    "event send timeout",
-                )
-            })?
-            .map_err(|e| FlareError::connection_failed(e.to_string()))?;
-        Ok(())
     }
 
     /// 发送消息（message.proto Message）。PayloadCommand.type=Message，网关回 SendAck。
+    #[tracing::instrument(skip(self, message, timeout_duration), fields(client_msg_id = %message.client_msg_id, conversation_id = %message.conversation_id))]
     pub async fn send_message(
         &self,
         message: &ProtoMessage,
@@ -92,24 +107,12 @@ impl PacketSender {
             );
         }
         tracing::debug!(message_id = %message_id, "send_message");
-        let mut guard = self.client.lock().await;
-        let client = guard.as_mut().ok_or_else(|| {
-            FlareError::localized(flare_core::common::ErrorCode::NotConnected, "未连接")
-        })?;
         // 发消息必须用 SEND (0)，网关才会走 handle_message 并回 ACK (1)；用 DATA (2) 会回 DATA (2)
         let msg_cmd =
             builder::send_message(message_id, message.encode_to_vec(), Some(metadata), None);
         let frame = builder::frame_with_payload_command(msg_cmd, Reliability::AtLeastOnce);
-        timeout(timeout_duration, client.send_frame(&frame))
+        self.send_frame_with_timeout(&frame, timeout_duration, "message send timeout")
             .await
-            .map_err(|_| {
-                FlareError::localized(
-                    flare_core::common::ErrorCode::OperationTimeout,
-                    "message send timeout",
-                )
-            })?
-            .map_err(|e| FlareError::connection_failed(e.to_string()))?;
-        Ok(())
     }
 
     /// 上报 ACK（ack.proto Ack：PushAck/ConversationAck/AckBatch）。PayloadCommand.type=Ack。
@@ -124,20 +127,8 @@ impl PacketSender {
             seq: 0,
         };
         let frame = builder::frame_with_payload_command(cmd, Reliability::AtLeastOnce);
-        let mut guard = self.client.lock().await;
-        let client = guard.as_mut().ok_or_else(|| {
-            FlareError::localized(flare_core::common::ErrorCode::NotConnected, "未连接")
-        })?;
-        timeout(CONTROL_SEND_TIMEOUT, client.send_frame(&frame))
+        self.send_frame_with_timeout(&frame, CONTROL_SEND_TIMEOUT, "ack send timeout")
             .await
-            .map_err(|_| {
-                FlareError::localized(
-                    flare_core::common::ErrorCode::OperationTimeout,
-                    "ack send timeout",
-                )
-            })?
-            .map_err(|e| FlareError::connection_failed(e.to_string()))?;
-        Ok(())
     }
 
     /// 发送用户扩展（`DataPacket` + `user_custom`）。PayloadCommand.type=Data。
@@ -146,22 +137,10 @@ impl PacketSender {
             payload: Some(DataPacketPayload::UserCustom(data.clone())),
         };
         let payload = packet.encode_to_vec();
-        let mut guard = self.client.lock().await;
-        let client = guard.as_mut().ok_or_else(|| {
-            FlareError::localized(flare_core::common::ErrorCode::NotConnected, "未连接")
-        })?;
         let cmd = builder::data_message(builder::generate_message_id(), payload, None, None);
         let frame = builder::frame_with_payload_command(cmd, Reliability::AtLeastOnce);
-        timeout(CONTROL_SEND_TIMEOUT, client.send_frame(&frame))
+        self.send_frame_with_timeout(&frame, CONTROL_SEND_TIMEOUT, "custom data send timeout")
             .await
-            .map_err(|_| {
-                FlareError::localized(
-                    flare_core::common::ErrorCode::OperationTimeout,
-                    "custom data send timeout",
-                )
-            })?
-            .map_err(|e| FlareError::connection_failed(e.to_string()))?;
-        Ok(())
     }
 
     /// 发送能力包（`DataPacket` + `capability`）。PayloadCommand.type=Data；不占用 conversation_seq。
@@ -170,22 +149,14 @@ impl PacketSender {
             payload: Some(DataPacketPayload::Capability(packet.clone())),
         };
         let payload = data.encode_to_vec();
-        let mut guard = self.client.lock().await;
-        let client = guard.as_mut().ok_or_else(|| {
-            FlareError::localized(flare_core::common::ErrorCode::NotConnected, "未连接")
-        })?;
         let cmd = builder::data_message(builder::generate_message_id(), payload, None, None);
         let frame = builder::frame_with_payload_command(cmd, Reliability::AtLeastOnce);
-        timeout(CONTROL_SEND_TIMEOUT, client.send_frame(&frame))
-            .await
-            .map_err(|_| {
-                FlareError::localized(
-                    flare_core::common::ErrorCode::OperationTimeout,
-                    "capability packet send timeout",
-                )
-            })?
-            .map_err(|e| FlareError::connection_failed(e.to_string()))?;
-        Ok(())
+        self.send_frame_with_timeout(
+            &frame,
+            CONTROL_SEND_TIMEOUT,
+            "capability packet send timeout",
+        )
+        .await
     }
 
     /// 发送实时控制包（`DataPacket` + `realtime_control`）。PayloadCommand.type=Data；不占用 conversation_seq。
@@ -221,22 +192,10 @@ impl PacketSender {
             payload: Some(DataPacketPayload::RealtimeControl(control.clone())),
         };
         let payload = data.encode_to_vec();
-        let mut guard = self.client.lock().await;
-        let client = guard.as_mut().ok_or_else(|| {
-            FlareError::localized(flare_core::common::ErrorCode::NotConnected, "未连接")
-        })?;
         let cmd = builder::data_message(builder::generate_message_id(), payload, None, None);
         let frame = builder::frame_with_payload_command(cmd, Reliability::AtLeastOnce);
-        timeout(timeout_duration, client.send_frame(&frame))
+        self.send_frame_with_timeout(&frame, timeout_duration, "realtime control send timeout")
             .await
-            .map_err(|_| {
-                FlareError::localized(
-                    flare_core::common::ErrorCode::OperationTimeout,
-                    "realtime control send timeout",
-                )
-            })?
-            .map_err(|e| FlareError::connection_failed(e.to_string()))?;
-        Ok(())
     }
 
     /// 发送同步请求并等待 DATA 回包（网关对 DATA 为 request-response，须 `send_frame_and_wait`）。
@@ -253,15 +212,11 @@ impl PacketSender {
         let frame = builder::frame_with_payload_command(cmd, Reliability::AtLeastOnce);
         // 多会话同步会并发调用本方法；用 rpc_wait 排队，禁止 take 走 client（否则并行方得到「未连接」）。
         let _rpc = self.rpc_wait.lock().await;
-        let mut guard = self.client.lock().await;
-        let client = guard.as_mut().ok_or_else(|| {
-            FlareError::localized(flare_core::common::ErrorCode::NotConnected, "未连接")
-        })?;
+        let client = self.client_snapshot().await?;
         let response = client
             .send_frame_and_wait(&frame, timeout)
             .await
             .map_err(|e| FlareError::general_error(e.to_string()))?;
-        drop(guard);
         decode_sync_response_frame(&response)
     }
 
@@ -271,22 +226,10 @@ impl PacketSender {
             payload: Some(DataPacketPayload::SyncRequest(sync.clone())),
         };
         let payload = packet.encode_to_vec();
-        let mut guard = self.client.lock().await;
-        let client = guard.as_mut().ok_or_else(|| {
-            FlareError::localized(flare_core::common::ErrorCode::NotConnected, "未连接")
-        })?;
         let cmd = builder::data_message(builder::generate_message_id(), payload, None, None);
         let frame = builder::frame_with_payload_command(cmd, Reliability::AtLeastOnce);
-        timeout(CONTROL_SEND_TIMEOUT, client.send_frame(&frame))
+        self.send_frame_with_timeout(&frame, CONTROL_SEND_TIMEOUT, "sync send timeout")
             .await
-            .map_err(|_| {
-                FlareError::localized(
-                    flare_core::common::ErrorCode::OperationTimeout,
-                    "sync send timeout",
-                )
-            })?
-            .map_err(|e| FlareError::connection_failed(e.to_string()))?;
-        Ok(())
     }
 }
 

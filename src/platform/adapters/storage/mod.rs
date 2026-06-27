@@ -12,4 +12,6 @@ pub use crate::infrastructure::persistence::{
     MessageBackendAdapter, MessageStorageBackend, StoreProvider as CoreStoreProvider,
 };
 pub use profile::StorageAdapterProfile;
-pub use store_factory::open_store_from_runtime_config;
+pub use store_factory::{
+    open_store_from_runtime_config, open_store_from_runtime_config_with_secure_key_store,
+};

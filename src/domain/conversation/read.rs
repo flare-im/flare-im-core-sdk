@@ -12,11 +12,7 @@ impl ConversationReadService {
     ) -> ConversationReadDecision {
         // 会话摘要 max_seq 可能滞后于本地消息表；已读位点应对齐两者中的较大值。
         let effective_max_seq = local_max_seq.max(current.max_seq);
-        let target_read_seq = if requested_read_seq == 0 {
-            effective_max_seq
-        } else {
-            requested_read_seq.min(effective_max_seq)
-        };
+        let target_read_seq = requested_read_seq.min(effective_max_seq);
         let next_read_seq = target_read_seq
             .max(current.last_read_seq)
             .min(effective_max_seq);
@@ -39,7 +35,7 @@ mod tests {
     use crate::model::Conversation;
 
     #[test]
-    fn mark_read_zero_advances_to_local_message_max_and_clears_unread() {
+    fn mark_read_zero_keeps_current_read_position() {
         let service = ConversationReadService;
         let conversation = Conversation {
             max_seq: 50,
@@ -50,8 +46,8 @@ mod tests {
 
         let decision = service.plan_mark_read(&conversation, 80, 0);
 
-        assert_eq!(decision.next_read_seq, 80);
-        assert_eq!(decision.unread_count, 0);
+        assert_eq!(decision.next_read_seq, 10);
+        assert_eq!(decision.unread_count, 5);
         assert!(decision.should_recompute_local_unread);
     }
 

@@ -6,7 +6,9 @@ use std::sync::Arc;
 use tracing::debug;
 
 use super::super::SyncProtocolAdapter;
-use crate::core::{SyncContext, SyncFailurePolicy, SyncMode, SyncResult, SyncTask, SyncTaskResult};
+use crate::kernel::{
+    SyncContext, SyncFailurePolicy, SyncMode, SyncResult, SyncTask, SyncTaskResult,
+};
 
 pub struct KeyEventsSyncTask(pub(crate) Arc<SyncProtocolAdapter>);
 

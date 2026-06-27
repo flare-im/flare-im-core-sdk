@@ -1,11 +1,21 @@
+use flare_im_core_sdk::RawSdkEvent;
 use flare_im_core_sdk::event::{
     ConnectionEvent, ConversationEvent, MessageEvent, NotificationEvent, SdkEvent, SyncNotify,
     SyncPhase,
 };
 use serde_json::{Value, json};
+use std::fmt::Write as _;
 
 fn message_json(message: &flare_im_core_sdk::model::IMMessage) -> Value {
     serde_json::to_value(message).unwrap_or_else(|_| json!({}))
+}
+
+fn send_ack_id(ack: &flare_im_core_sdk::model::SendAck) -> &str {
+    ack.ack_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(ack.client_msg_id.as_str())
 }
 
 fn send_ack_json(ack: &flare_im_core_sdk::model::SendAck) -> Value {
@@ -45,16 +55,16 @@ fn send_ack_json(ack: &flare_im_core_sdk::model::SendAck) -> Value {
             ),
         };
     json!({
-        "client_msg_id": ack.client_msg_id,
-        "server_msg_id": server_msg_id,
+        "clientMsgId": ack.client_msg_id,
+        "serverId": server_msg_id,
         "seq": seq,
-        "conversation_id": ack.conversation_id,
-        "ack_id": ack.ack_id,
+        "conversationId": ack.conversation_id,
+        "ackId": send_ack_id(ack),
         "timestamp": timestamp,
         "success": success,
-        "error_code": error_code,
-        "error_message": error_message,
-        "error_detail": error_detail,
+        "errorCode": error_code,
+        "errorMessage": error_message,
+        "errorDetail": error_detail,
     })
 }
 
@@ -101,7 +111,7 @@ pub fn sdk_event_payload(ev: &SdkEvent) -> Option<(&'static str, Value)> {
             reason,
         }) => (
             "message.send_failed",
-            json!({ "client_msg_id": client_msg_id, "reason": reason }),
+            json!({ "clientMsgId": client_msg_id, "reason": reason }),
         ),
         SdkEvent::Message(MessageEvent::Recalled {
             conversation_id,
@@ -109,9 +119,10 @@ pub fn sdk_event_payload(ev: &SdkEvent) -> Option<(&'static str, Value)> {
         }) => (
             "message.recalled",
             json!({
-                "conversation_id": conversation_id,
-                "message_id": event.server_msg_id,
-                "recaller_id": ""
+                "conversationId": conversation_id,
+                "messageId": event.server_msg_id,
+                "serverMsgId": event.server_msg_id,
+                "recallerId": ""
             }),
         ),
         SdkEvent::Message(MessageEvent::Edited {
@@ -121,9 +132,10 @@ pub fn sdk_event_payload(ev: &SdkEvent) -> Option<(&'static str, Value)> {
         }) => (
             "message.edited",
             json!({
-                "conversation_id": conversation_id,
-                "message_id": server_msg_id,
-                "edit_version": edit_version
+                "conversationId": conversation_id,
+                "messageId": server_msg_id,
+                "serverMsgId": server_msg_id,
+                "editVersion": edit_version
             }),
         ),
         SdkEvent::Message(MessageEvent::ReactionChanged {
@@ -135,9 +147,9 @@ pub fn sdk_event_payload(ev: &SdkEvent) -> Option<(&'static str, Value)> {
         }) => (
             "message.reaction_changed",
             json!({
-                "conversation_id": conversation_id,
-                "message_id": server_msg_id,
-                "user_id": user_id,
+                "conversationId": conversation_id,
+                "serverMsgId": server_msg_id,
+                "userId": user_id,
                 "emoji": emoji,
                 "action": action
             }),
@@ -148,8 +160,8 @@ pub fn sdk_event_payload(ev: &SdkEvent) -> Option<(&'static str, Value)> {
         }) => (
             "message.typing",
             json!({
-                "conversation_id": conversation_id,
-                "user_id": event.user_id,
+                "conversationId": conversation_id,
+                "userId": event.user_id,
                 "typing": event.typing
             }),
         ),
@@ -159,8 +171,9 @@ pub fn sdk_event_payload(ev: &SdkEvent) -> Option<(&'static str, Value)> {
         }) => (
             "message.deleted",
             json!({
-                "conversation_id": conversation_id,
-                "message_id": event.server_msg_id
+                "conversationId": conversation_id,
+                "messageId": event.server_msg_id,
+                "serverMsgId": event.server_msg_id
             }),
         ),
         SdkEvent::Message(MessageEvent::ReadReceipt {
@@ -169,10 +182,9 @@ pub fn sdk_event_payload(ev: &SdkEvent) -> Option<(&'static str, Value)> {
         }) => (
             "message.read_receipt",
             json!({
-                "conversation_id": conversation_id,
-                "user_id": event.user_id,
-                "read_seq": event.read_seq,
-                "message_ids": event.message_ids,
+                "conversationId": conversation_id,
+                "userId": event.user_id,
+                "readSeq": event.read_seq,
             }),
         ),
         SdkEvent::Message(MessageEvent::PresenceChanged {
@@ -181,8 +193,8 @@ pub fn sdk_event_payload(ev: &SdkEvent) -> Option<(&'static str, Value)> {
         }) => (
             "message.presence_changed",
             json!({
-                "conversation_id": conversation_id,
-                "user_id": event.user_id,
+                "conversationId": conversation_id,
+                "userId": event.user_id,
                 "status": event.status,
                 "extra": event.attributes
             }),
@@ -193,7 +205,7 @@ pub fn sdk_event_payload(ev: &SdkEvent) -> Option<(&'static str, Value)> {
         }) => (
             "message.custom",
             json!({
-                "conversation_id": conversation_id,
+                "conversationId": conversation_id,
                 "namespace": event.namespace,
                 "name": event.name,
                 "version": event.version,
@@ -208,26 +220,26 @@ pub fn sdk_event_payload(ev: &SdkEvent) -> Option<(&'static str, Value)> {
 
         SdkEvent::Conversation(ConversationEvent::Synced { conversation_ids }) => (
             "conversation.synced",
-            json!({ "conversation_ids": conversation_ids }),
+            json!({ "conversationIds": conversation_ids }),
         ),
         SdkEvent::Conversation(ConversationEvent::Created { conversation_id }) => (
             "conversation.created",
-            json!({ "conversation_id": conversation_id }),
+            json!({ "conversationId": conversation_id }),
         ),
         SdkEvent::Conversation(ConversationEvent::Updated { conversation_id }) => (
             "conversation.updated",
-            json!({ "conversation_id": conversation_id }),
+            json!({ "conversationId": conversation_id }),
         ),
         SdkEvent::Conversation(ConversationEvent::Deleted { conversation_id }) => (
             "conversation.deleted",
-            json!({ "conversation_id": conversation_id }),
+            json!({ "conversationId": conversation_id }),
         ),
         SdkEvent::Conversation(ConversationEvent::UnreadCountChanged {
             conversation_id,
             unread_count,
         }) => (
             "conversation.unread_count_changed",
-            json!({ "conversation_id": conversation_id, "unread_count": unread_count }),
+            json!({ "conversationId": conversation_id, "unreadCount": unread_count }),
         ),
 
         SdkEvent::Sync(SyncNotify::ResyncNeeded {
@@ -239,7 +251,7 @@ pub fn sdk_event_payload(ev: &SdkEvent) -> Option<(&'static str, Value)> {
             json!({
                 "scope": scope,
                 "reason": reason,
-                "dropped_events": dropped_events
+                "droppedEvents": dropped_events
             }),
         ),
         SdkEvent::Sync(SyncNotify::Started { .. }) => ("sync.started", json!({})),
@@ -266,6 +278,10 @@ pub fn sdk_event_payload(ev: &SdkEvent) -> Option<(&'static str, Value)> {
                 "detail": detail
             }),
         ),
+        SdkEvent::View(update) => (
+            "view.updated",
+            serde_json::to_value(update).unwrap_or_else(|_| json!({})),
+        ),
         _ => return None,
     };
 
@@ -278,8 +294,145 @@ pub fn sdk_event_code(ev: &SdkEvent) -> i32 {
         .unwrap_or(crate::generated::event_codes::FLARE_EVENT_UNKNOWN)
 }
 
+pub fn sdk_event_channel_payload(ev: &SdkEvent) -> Option<(&'static str, Value)> {
+    let (id, payload) = sdk_event_payload(ev)?;
+    let channel = crate::find_event_by_id(id)?.tauri?;
+    Some((channel, payload))
+}
+
+pub fn sdk_event_web_payload(ev: &SdkEvent) -> Option<Value> {
+    let (channel, payload) = sdk_event_channel_payload(ev)?;
+    Some(json!({
+        "channel": channel,
+        "payload": payload,
+    }))
+}
+
 pub fn sdk_event_json(ev: &SdkEvent) -> String {
     sdk_event_payload(ev)
         .and_then(|(_, payload)| serde_json::to_string(&payload).ok())
         .unwrap_or_else(|| "{}".to_string())
+}
+
+pub fn sdk_event_batch_json<'a, I>(events: I) -> Option<(String, usize)>
+where
+    I: IntoIterator<Item = &'a RawSdkEvent>,
+{
+    let mut event_count = 0usize;
+    let mut out = String::from("{\"events\":[");
+
+    for event in events {
+        let event_type = sdk_event_code(event.event());
+        if event_type == crate::generated::event_codes::FLARE_EVENT_UNKNOWN {
+            continue;
+        }
+
+        let payload = event.cached_json(sdk_event_json);
+        if event_count > 0 {
+            out.push(',');
+        }
+        write!(
+            &mut out,
+            "{{\"eventType\":{event_type},\"payload\":{}",
+            payload.as_ref()
+        )
+        .expect("writing to String cannot fail");
+        out.push('}');
+        event_count += 1;
+    }
+
+    if event_count == 0 {
+        return None;
+    }
+
+    out.push_str("]}");
+    Some((out, event_count))
+}
+
+pub fn platform_event_bridge_resync_marker(dropped_events: u64) -> SdkEvent {
+    SdkEvent::Sync(SyncNotify::ResyncNeeded {
+        scope: "platform_event_bridge".to_string(),
+        reason: "platform_event_bridge_lagged".to_string(),
+        dropped_events,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use flare_im_core_sdk::EventBus;
+    use flare_proto::common::SendAck;
+
+    #[test]
+    fn send_ack_event_uses_client_msg_id_when_ack_id_is_absent() {
+        let payload = send_ack_json(&SendAck {
+            client_msg_id: "client-1".to_string(),
+            conversation_id: "conversation-1".to_string(),
+            ack_id: None,
+            result: None,
+        });
+
+        assert_eq!(payload["ackId"], "client-1");
+        assert_ne!(payload["ackId"], serde_json::Value::Null);
+    }
+
+    #[test]
+    fn platform_event_bridge_resync_marker_uses_canonical_contract_event() {
+        let event = platform_event_bridge_resync_marker(3);
+        let (channel, payload) =
+            sdk_event_channel_payload(&event).expect("resync marker should map to channel");
+
+        assert_eq!(channel, "im://resync_needed");
+        assert_eq!(
+            payload.get("scope").and_then(Value::as_str),
+            Some("platform_event_bridge")
+        );
+        assert_eq!(
+            payload.get("reason").and_then(Value::as_str),
+            Some("platform_event_bridge_lagged")
+        );
+        assert_eq!(
+            payload.get("droppedEvents").and_then(Value::as_u64),
+            Some(3)
+        );
+    }
+
+    #[test]
+    fn sdk_event_batch_json_uses_stable_event_codes_and_payloads() {
+        let bus = EventBus::new();
+        let mut rx = bus.subscribe_shared_raw();
+
+        bus.publish(SdkEvent::Connection(ConnectionEvent::Connected));
+        bus.publish(SdkEvent::Connection(ConnectionEvent::Disconnected {
+            reason: "network".to_string(),
+        }));
+
+        let first = rx.try_recv().expect("first event");
+        let second = rx.try_recv().expect("second event");
+        let (json, event_count) =
+            sdk_event_batch_json([first.as_ref(), second.as_ref()]).expect("batch json");
+
+        assert_eq!(event_count, 2);
+        let value: Value = serde_json::from_str(&json).expect("batch JSON parses");
+        let events = value
+            .get("events")
+            .and_then(Value::as_array)
+            .expect("events array");
+        assert_eq!(events.len(), 2);
+        assert_eq!(
+            events[0].get("eventType").and_then(Value::as_i64),
+            Some(1001)
+        );
+        assert_eq!(
+            events[1].get("eventType").and_then(Value::as_i64),
+            Some(1002)
+        );
+        assert_eq!(
+            events[1]
+                .get("payload")
+                .and_then(|payload| payload.get("reason"))
+                .and_then(Value::as_str),
+            Some("network")
+        );
+    }
 }

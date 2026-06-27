@@ -16,7 +16,7 @@
 
 pub mod codec;
 pub mod downlink;
-pub use codec::{Codec, ProtobufCodec};
+pub use codec::{Codec, MAX_DOWNLINK_PAYLOAD_BYTES, ProtobufCodec};
 pub use downlink::DownlinkPayload;
 pub use packet_sender::PacketSender;
 

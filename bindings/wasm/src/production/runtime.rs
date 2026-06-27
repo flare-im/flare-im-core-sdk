@@ -5,9 +5,9 @@ use std::sync::Arc;
 use flare_im_core_sdk::client::lifecycle::LoginDbKind;
 #[cfg(feature = "dev-test-token")]
 use flare_im_core_sdk::client::{CoreTokenConfig, IMClient};
-use flare_im_core_sdk::event::EventReceiver;
+use flare_im_core_sdk::event::SharedEventReceiver;
 use flare_im_core_sdk_bindings_runtime::{
-    SessionTaskSlot, binding_response_to_value, invoke_api_id, normalize_operation,
+    SessionTaskSlot, binding_response_to_value, invoke_api_id_json,
 };
 use js_sys::Function;
 use serde::Serialize;
@@ -44,7 +44,7 @@ fn parse_request(request_json: &str) -> Result<Value, JsValue> {
     serde_json::from_str(request_json).map_err(|error| js_error("invalidParameter", "parse", error))
 }
 
-fn spawn_event_bridge(rx: EventReceiver, bridge: SessionTaskSlot) {
+fn spawn_event_bridge(rx: SharedEventReceiver, bridge: SessionTaskSlot) {
     let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
     bridge.replace(move || {
         let _ = cancel_tx.send(());
@@ -139,24 +139,20 @@ async fn invoke_impl(
     operation: &str,
     request_json: &str,
 ) -> Result<JsValue, JsValue> {
-    let request = parse_request(request_json)?;
-    let normalized = normalize_operation(operation, request);
-    let route = normalized.name.as_str();
-    let request = normalized.request;
-
-    let result = match route {
+    let result = match operation {
         "sdk.create" => Ok(json!({ "handle": 1 })),
         "sdk.init" => {
+            let request = parse_request(request_json)?;
             let environment = request
                 .get("environment")
                 .and_then(|v| v.as_str())
                 .map(str::to_string);
-            let sdk_config = if request.get("sdk_config").is_some() {
+            let sdk_config = if request.get("sdkConfig").is_some() {
                 Some(
                     serde_json::from_value(
-                        request.get("sdk_config").cloned().unwrap_or(Value::Null),
+                        request.get("sdkConfig").cloned().unwrap_or(Value::Null),
                     )
-                    .map_err(|e| js_error("invalidParameter", route, e))?,
+                    .map_err(|e| js_error("invalidParameter", operation, e))?,
                 )
             } else {
                 serde_json::from_value(request.clone()).ok()
@@ -164,16 +160,17 @@ async fn invoke_impl(
             state
                 .set_config(environment, sdk_config)
                 .await
-                .map_err(|e| map_sdk_err(route, e))?;
+                .map_err(|e| map_sdk_err(operation, e))?;
             Ok(Value::Null)
         }
         "sdk.login" => {
+            let request = parse_request(request_json)?;
             let user_id = request
-                .get("user_id")
+                .get("userId")
                 .and_then(|v| v.as_str())
                 .map(str::trim)
                 .filter(|s| !s.is_empty())
-                .ok_or_else(|| js_error("invalidParameter", route, "user_id is required"))?
+                .ok_or_else(|| js_error("invalidParameter", operation, "userId is required"))?
                 .to_string();
             let token = request
                 .get("token")
@@ -197,7 +194,7 @@ async fn invoke_impl(
                     token,
                     LoginDbKind::IndexedDb(store_provider),
                     move |bus, _| {
-                        let rx = bus.subscribe();
+                        let rx = bus.subscribe_shared_raw();
                         spawn_event_bridge(rx, event_bridge_for_login.clone());
                     },
                 )
@@ -206,19 +203,20 @@ async fn invoke_impl(
                 Ok(apis) => apis,
                 Err(err) => {
                     event_bridge.clear();
-                    return Err(map_sdk_err(route, err));
+                    return Err(map_sdk_err(operation, err));
                 }
             };
             session_state.install_session(apis).await;
             Ok(Value::Null)
         }
         "sdk.prepare" => {
+            let request = parse_request(request_json)?;
             let user_id = request
-                .get("user_id")
+                .get("userId")
                 .and_then(|v| v.as_str())
                 .map(str::trim)
                 .filter(|s| !s.is_empty())
-                .ok_or_else(|| js_error("invalidParameter", route, "user_id is required"))?
+                .ok_or_else(|| js_error("invalidParameter", operation, "userId is required"))?
                 .to_string();
             let client = state.client();
             let event_bridge = state.event_bridge();
@@ -227,20 +225,21 @@ async fn invoke_impl(
             client
                 .prepare(&user_id, LoginDbKind::IndexedDb(store_provider))
                 .await
-                .map_err(|e| map_sdk_err(route, e))?;
+                .map_err(|e| map_sdk_err(operation, e))?;
             // 预热后立即订阅事件总线 → 转发 JS（等价 login 闭包在 connect 前所做）。
-            let bus = client.bus().await.map_err(|e| map_sdk_err(route, e))?;
-            let rx = bus.subscribe();
+            let bus = client.bus().await.map_err(|e| map_sdk_err(operation, e))?;
+            let rx = bus.subscribe_shared_raw();
             spawn_event_bridge(rx, event_bridge);
             Ok(Value::Null)
         }
         "sdk.connect" => {
+            let request = parse_request(request_json)?;
             let user_id = request
-                .get("user_id")
+                .get("userId")
                 .and_then(|v| v.as_str())
                 .map(str::trim)
                 .filter(|s| !s.is_empty())
-                .ok_or_else(|| js_error("invalidParameter", route, "user_id is required"))?
+                .ok_or_else(|| js_error("invalidParameter", operation, "userId is required"))?
                 .to_string();
             let token = request
                 .get("token")
@@ -257,12 +256,15 @@ async fn invoke_impl(
             let apis = client
                 .connect(&user_id, token)
                 .await
-                .map_err(|e| map_sdk_err(route, e))?;
+                .map_err(|e| map_sdk_err(operation, e))?;
             session_state.install_session(apis).await;
             Ok(Value::Null)
         }
         "sdk.logout" => {
-            state.logout().await.map_err(|e| map_sdk_err(route, e))?;
+            state
+                .logout()
+                .await
+                .map_err(|e| map_sdk_err(operation, e))?;
             clear_event_callback();
             Ok(Value::Null)
         }
@@ -273,7 +275,7 @@ async fn invoke_impl(
                 .client()
                 .uninit()
                 .await
-                .map_err(|e| map_sdk_err(route, e))?;
+                .map_err(|e| map_sdk_err(operation, e))?;
             Ok(Value::Null)
         }
         "sdk.dispose" | "sdk.hard_reset" => {
@@ -287,32 +289,29 @@ async fn invoke_impl(
         "event.unsubscribe" | "event.unsubscribe_all" => Ok(Value::Null),
         #[cfg(feature = "dev-test-token")]
         "sdk.generate_core_token" => {
+            let request = parse_request(request_json)?;
             let user_id = request
-                .get("user_id")
-                .or_else(|| request.get("userId"))
+                .get("userId")
                 .and_then(|v| v.as_str())
-                .ok_or_else(|| js_error("invalidParameter", route, "user_id is required"))?;
+                .ok_or_else(|| js_error("invalidParameter", operation, "userId is required"))?;
             let secret = request
                 .get("secret")
                 .and_then(|v| v.as_str())
-                .ok_or_else(|| js_error("invalidParameter", route, "secret is required"))?;
+                .ok_or_else(|| js_error("invalidParameter", operation, "secret is required"))?;
             let issuer = request
                 .get("issuer")
                 .and_then(|v| v.as_str())
-                .ok_or_else(|| js_error("invalidParameter", route, "issuer is required"))?;
+                .ok_or_else(|| js_error("invalidParameter", operation, "issuer is required"))?;
             let ttl_secs = request
-                .get("ttl_secs")
-                .or_else(|| request.get("ttlSeconds"))
+                .get("ttlSecs")
                 .and_then(|v| v.as_u64())
-                .ok_or_else(|| js_error("invalidParameter", route, "ttl_secs is required"))?;
+                .ok_or_else(|| js_error("invalidParameter", operation, "ttlSecs is required"))?;
             let device_id = request
-                .get("device_id")
-                .or_else(|| request.get("deviceId"))
+                .get("deviceId")
                 .and_then(|v| v.as_str())
                 .map(ToString::to_string);
             let tenant_id = request
-                .get("tenant_id")
-                .or_else(|| request.get("tenantId"))
+                .get("tenantId")
                 .and_then(|v| v.as_str())
                 .map(ToString::to_string);
             let token = IMClient::generate_core_token(CoreTokenConfig {
@@ -323,16 +322,16 @@ async fn invoke_impl(
                 device_id,
                 tenant_id,
             })
-            .map_err(|e| map_sdk_err(route, e))?;
+            .map_err(|e| map_sdk_err(operation, e))?;
             Ok(json!({ "token": token }))
         }
-        _ => invoke_api_id(&*state, route, request)
+        operation => invoke_api_id_json(&*state, operation, request_json)
             .await
             .map(binding_response_to_value)
-            .map_err(|e| map_sdk_err(route, e)),
+            .map_err(|e| map_sdk_err(operation, e)),
     }?;
 
     result
         .serialize(&serde_wasm_bindgen::Serializer::json_compatible())
-        .map_err(|error| js_error("wasm.serialize_failed", route, error))
+        .map_err(|error| js_error("wasm.serialize_failed", operation, error))
 }

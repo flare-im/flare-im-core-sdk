@@ -16,5 +16,8 @@ pub use delivery::{
 };
 pub use draft::MessageDraftService;
 pub use locator::MessageLocatorService;
+pub(crate) use mutation::{
+    DELETE_SCOPE_CONVERSATION_GLOBAL, DELETE_SCOPE_USER_PRIVATE, DELETE_TYPE_SOFT,
+};
 pub use mutation::{MessageLocalUpdate, MessageMutationPlan, MessageMutationService};
 pub use transport::MessageTransportAction;

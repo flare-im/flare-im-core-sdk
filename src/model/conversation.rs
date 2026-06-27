@@ -3,9 +3,10 @@
 
 use std::collections::HashMap;
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::model::message_elem::{
+use crate::content::message_elem::{
     MessagePreviewElem, message_preview_from_proto, message_preview_to_proto,
 };
 
@@ -19,7 +20,104 @@ fn u64_to_proto_ms(ms: u64) -> i64 {
 
 // ---------- 会话类型（严格对齐 `flare.common.v1.ConversationType`，并与 flare_core CID 前缀一致）----------
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ConversationTypePolicy {
+    pub conversation_type: ConversationType,
+    pub wire_value: i32,
+    pub wire_name: &'static str,
+    pub cid_prefix: Option<&'static str>,
+    pub subscriber_model: bool,
+    pub member_lookup_required: bool,
+}
+
+pub const CONVERSATION_TYPE_WIRE_ORDER: &[ConversationType] = &[
+    ConversationType::Unspecified,
+    ConversationType::Single,
+    ConversationType::Group,
+    ConversationType::Ai,
+    ConversationType::System,
+    ConversationType::Customer,
+    ConversationType::Temp,
+    ConversationType::Channel,
+    ConversationType::Broadcast,
+];
+
+pub const CONVERSATION_TYPE_POLICIES: &[ConversationTypePolicy] = &[
+    ConversationTypePolicy {
+        conversation_type: ConversationType::Unspecified,
+        wire_value: 0,
+        wire_name: "unspecified",
+        cid_prefix: None,
+        subscriber_model: false,
+        member_lookup_required: false,
+    },
+    ConversationTypePolicy {
+        conversation_type: ConversationType::Single,
+        wire_value: 1,
+        wire_name: "single",
+        cid_prefix: Some("1"),
+        subscriber_model: false,
+        member_lookup_required: false,
+    },
+    ConversationTypePolicy {
+        conversation_type: ConversationType::Group,
+        wire_value: 2,
+        wire_name: "group",
+        cid_prefix: Some("2"),
+        subscriber_model: true,
+        member_lookup_required: true,
+    },
+    ConversationTypePolicy {
+        conversation_type: ConversationType::Ai,
+        wire_value: 3,
+        wire_name: "ai",
+        cid_prefix: Some("3"),
+        subscriber_model: true,
+        member_lookup_required: true,
+    },
+    ConversationTypePolicy {
+        conversation_type: ConversationType::System,
+        wire_value: 4,
+        wire_name: "system",
+        cid_prefix: Some("4"),
+        subscriber_model: true,
+        member_lookup_required: true,
+    },
+    ConversationTypePolicy {
+        conversation_type: ConversationType::Customer,
+        wire_value: 5,
+        wire_name: "customer",
+        cid_prefix: Some("5"),
+        subscriber_model: true,
+        member_lookup_required: true,
+    },
+    ConversationTypePolicy {
+        conversation_type: ConversationType::Temp,
+        wire_value: 6,
+        wire_name: "temp",
+        cid_prefix: Some("6"),
+        subscriber_model: false,
+        member_lookup_required: false,
+    },
+    ConversationTypePolicy {
+        conversation_type: ConversationType::Channel,
+        wire_value: 7,
+        wire_name: "channel",
+        cid_prefix: Some("7"),
+        subscriber_model: true,
+        member_lookup_required: true,
+    },
+    ConversationTypePolicy {
+        conversation_type: ConversationType::Broadcast,
+        wire_value: 8,
+        wire_name: "broadcast",
+        cid_prefix: Some("8"),
+        subscriber_model: true,
+        member_lookup_required: true,
+    },
+];
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub enum ConversationType {
     #[default]
@@ -30,46 +128,108 @@ pub enum ConversationType {
     System,
     Customer,
     Temp,
+    Channel,
+    Broadcast,
 }
 
 impl ConversationType {
-    /// 返回与 proto/API 一致的类型字符串
-    pub fn as_str(&self) -> &'static str {
+    pub fn policy(self) -> ConversationTypePolicy {
         match self {
-            ConversationType::Unspecified => "unspecified",
-            ConversationType::Single => "single",
-            ConversationType::Group => "group",
-            ConversationType::Ai => "ai",
-            ConversationType::Customer => "customer",
-            ConversationType::System => "system",
-            ConversationType::Temp => "temp",
+            ConversationType::Unspecified => ConversationTypePolicy {
+                conversation_type: ConversationType::Unspecified,
+                wire_value: 0,
+                wire_name: "unspecified",
+                cid_prefix: None,
+                subscriber_model: false,
+                member_lookup_required: false,
+            },
+            ConversationType::Single => ConversationTypePolicy {
+                conversation_type: ConversationType::Single,
+                wire_value: 1,
+                wire_name: "single",
+                cid_prefix: Some("1"),
+                subscriber_model: false,
+                member_lookup_required: false,
+            },
+            ConversationType::Group => ConversationTypePolicy {
+                conversation_type: ConversationType::Group,
+                wire_value: 2,
+                wire_name: "group",
+                cid_prefix: Some("2"),
+                subscriber_model: true,
+                member_lookup_required: true,
+            },
+            ConversationType::Ai => ConversationTypePolicy {
+                conversation_type: ConversationType::Ai,
+                wire_value: 3,
+                wire_name: "ai",
+                cid_prefix: Some("3"),
+                subscriber_model: true,
+                member_lookup_required: true,
+            },
+            ConversationType::System => ConversationTypePolicy {
+                conversation_type: ConversationType::System,
+                wire_value: 4,
+                wire_name: "system",
+                cid_prefix: Some("4"),
+                subscriber_model: true,
+                member_lookup_required: true,
+            },
+            ConversationType::Customer => ConversationTypePolicy {
+                conversation_type: ConversationType::Customer,
+                wire_value: 5,
+                wire_name: "customer",
+                cid_prefix: Some("5"),
+                subscriber_model: true,
+                member_lookup_required: true,
+            },
+            ConversationType::Temp => ConversationTypePolicy {
+                conversation_type: ConversationType::Temp,
+                wire_value: 6,
+                wire_name: "temp",
+                cid_prefix: Some("6"),
+                subscriber_model: false,
+                member_lookup_required: false,
+            },
+            ConversationType::Channel => ConversationTypePolicy {
+                conversation_type: ConversationType::Channel,
+                wire_value: 7,
+                wire_name: "channel",
+                cid_prefix: Some("7"),
+                subscriber_model: true,
+                member_lookup_required: true,
+            },
+            ConversationType::Broadcast => ConversationTypePolicy {
+                conversation_type: ConversationType::Broadcast,
+                wire_value: 8,
+                wire_name: "broadcast",
+                cid_prefix: Some("8"),
+                subscriber_model: true,
+                member_lookup_required: true,
+            },
         }
     }
 
+    pub fn wire_order() -> &'static [ConversationType] {
+        CONVERSATION_TYPE_WIRE_ORDER
+    }
+
+    /// 返回与 proto/API 一致的类型字符串
+    pub fn as_str(self) -> &'static str {
+        self.policy().wire_name
+    }
+
     /// CID 类型前缀（与 flare_core 一致：1=单聊 2=群聊 3=AI 4=系统 5=客服 6=临时）
-    pub fn prefix(&self) -> Option<&'static str> {
-        match self {
-            ConversationType::Single => Some("1"),
-            ConversationType::Group => Some("2"),
-            ConversationType::Ai => Some("3"),
-            ConversationType::System => Some("4"),
-            ConversationType::Customer => Some("5"),
-            ConversationType::Temp => Some("6"),
-            ConversationType::Unspecified => None,
-        }
+    pub fn prefix(self) -> Option<&'static str> {
+        self.policy().cid_prefix
     }
 
     /// 从 CID 类型前缀解析（如 "1" -> Single）
     pub fn from_prefix(prefix: &str) -> Option<Self> {
-        match prefix {
-            "1" => Some(ConversationType::Single),
-            "2" => Some(ConversationType::Group),
-            "3" => Some(ConversationType::Ai),
-            "4" => Some(ConversationType::System),
-            "5" => Some(ConversationType::Customer),
-            "6" => Some(ConversationType::Temp),
-            _ => None,
-        }
+        CONVERSATION_TYPE_POLICIES
+            .iter()
+            .find(|policy| policy.cid_prefix == Some(prefix))
+            .map(|policy| policy.conversation_type)
     }
 
     /// 是否为单聊会话（与 [crate::domain::conversation::id::is_single_chat_conversation] 语义一致）
@@ -82,18 +242,17 @@ impl ConversationType {
         *self == ConversationType::Group
     }
 
+    pub fn uses_subscriber_model(self) -> bool {
+        self.policy().subscriber_model
+    }
+
+    pub fn requires_member_lookup(self) -> bool {
+        self.policy().member_lookup_required
+    }
+
     /// 与 [`flare_proto::common::ConversationType`] 数值一致（`Message.conversation_type`、Orchestrator 推送等）
     pub fn to_proto_int(self) -> i32 {
-        use flare_proto::common::ConversationType as ProtoT;
-        match self {
-            ConversationType::Unspecified => ProtoT::Unspecified as i32,
-            ConversationType::Single => ProtoT::Single as i32,
-            ConversationType::Group => ProtoT::Group as i32,
-            ConversationType::Ai => ProtoT::Ai as i32,
-            ConversationType::Customer => ProtoT::Customer as i32,
-            ConversationType::System => ProtoT::System as i32,
-            ConversationType::Temp => ProtoT::Temp as i32,
-        }
+        self.policy().wire_value
     }
 
     /// 从消息 proto 的 `conversation_type` 整型解析；未知值映射为 [`Unspecified`]
@@ -107,6 +266,8 @@ impl ConversationType {
             Ok(ProtoT::Customer) => ConversationType::Customer,
             Ok(ProtoT::System) => ConversationType::System,
             Ok(ProtoT::Temp) => ConversationType::Temp,
+            Ok(ProtoT::Channel) => ConversationType::Channel,
+            Ok(ProtoT::Broadcast) => ConversationType::Broadcast,
             Err(_) => ConversationType::Unspecified,
         }
     }
@@ -114,21 +275,19 @@ impl ConversationType {
 
 impl From<&str> for ConversationType {
     fn from(s: &str) -> Self {
-        match s.to_lowercase().as_str() {
-            "1" | "single" => ConversationType::Single,
-            "2" | "group" => ConversationType::Group,
-            "3" | "ai" => ConversationType::Ai,
-            "4" | "system" => ConversationType::System,
-            "5" | "customer" => ConversationType::Customer,
-            "6" | "temp" => ConversationType::Temp,
-            _ => ConversationType::Unspecified,
+        let normalized = s.trim().to_ascii_lowercase();
+        for policy in CONVERSATION_TYPE_POLICIES {
+            if policy.wire_name == normalized {
+                return policy.conversation_type;
+            }
         }
+        ConversationType::Unspecified
     }
 }
 
 // ---------- 本地状态（不序列化到 JSON/DB，仅内存）----------
 
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ConversationLocalState {
     /// 草稿光标等 UI 状态可放此处
@@ -137,7 +296,7 @@ pub struct ConversationLocalState {
 }
 
 /// SDK 本地会话参与者快照。单聊不依赖该结构；群聊/频道/客服等非单聊用它支撑群通话、成员面板和后续设置页。
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
 #[serde(rename_all = "camelCase")]
 pub struct ConversationParticipant {
@@ -186,7 +345,7 @@ impl From<ConversationParticipant> for flare_proto::common::ConversationParticip
 
 /// SDK 层会话类型：内部统一使用，从 proto ConversationSummary 获取后即转换为此类型。
 /// 与 message.rs 的 IMMessage 一致：扁平字段、serde camelCase。
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
 #[serde(rename_all = "camelCase")]
 pub struct Conversation {
@@ -206,16 +365,23 @@ pub struct Conversation {
     /// 展示名（列表主标题）
     pub display_name: String,
     pub avatar_url: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub remark: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
 
     // ===============================
     // Last Message
     // ===============================
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub last_message_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub last_sender_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub last_message_at: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub last_message_preview: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub last_message: Option<MessagePreviewElem>,
     /// 最后一条消息发送者展示名（列表用）
     pub last_sender_nickname: String,
@@ -249,6 +415,7 @@ pub struct Conversation {
     pub updated_at: u64,
     pub created_at: u64,
     /// 更新时间戳（毫秒，用于排序/筛选）
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub updated_at_ts: Option<u64>,
 
     // ===============================
@@ -264,10 +431,13 @@ pub struct Conversation {
     // ===============================
     // 草稿 / @ / 徽标 / 群角色
     // ===============================
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub draft: Option<String>,
     pub mention_count: u32,
     pub mention_me: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub badge: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub role: Option<String>,
     /// 已按需同步到本地的完整成员快照；会话摘要同步不会填充该字段。
     pub participants: Vec<ConversationParticipant>,
@@ -608,6 +778,53 @@ mod tests {
         assert_eq!(
             conversation.ext.get("peer_read_seq").map(String::as_str),
             Some("0")
+        );
+    }
+
+    #[test]
+    fn conversation_serializes_canonical_camel_case_identity() {
+        let conversation = Conversation::from_conversation_id("1ATESTCIDVALUE001".to_string());
+        let value = serde_json::to_value(&conversation).expect("serialize conversation");
+
+        assert_eq!(value["conversationId"], "1ATESTCIDVALUE001");
+        assert!(value.get("conversation_id").is_none());
+    }
+
+    #[test]
+    fn conversation_serializes_absent_optional_fields_as_missing() {
+        let conversation = Conversation::from_conversation_id("1ATESTCIDVALUE001".to_string());
+        let value = serde_json::to_value(&conversation).expect("serialize conversation");
+
+        for key in [
+            "remark",
+            "description",
+            "lastMessageId",
+            "lastSenderId",
+            "lastMessageAt",
+            "lastMessagePreview",
+            "lastMessage",
+            "updatedAtTs",
+            "draft",
+            "badge",
+            "role",
+        ] {
+            assert!(
+                value.get(key).is_none(),
+                "{key} must be omitted when absent"
+            );
+        }
+    }
+
+    #[test]
+    fn conversation_type_from_str_accepts_only_wire_names() {
+        use super::ConversationType;
+
+        assert_eq!(ConversationType::from("single"), ConversationType::Single);
+        assert_eq!(ConversationType::from("channel"), ConversationType::Channel);
+        assert_eq!(ConversationType::from("1"), ConversationType::Unspecified);
+        assert_eq!(
+            ConversationType::from("conversation_type_single"),
+            ConversationType::Unspecified
         );
     }
 }

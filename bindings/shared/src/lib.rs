@@ -27,14 +27,17 @@ pub use error::{
     BindingBoundaryError, BindingBoundaryResult, binding_invalid_parameter,
     binding_operation_not_supported,
 };
-pub use event::{sdk_event_code, sdk_event_json, sdk_event_payload};
+pub use event::{
+    platform_event_bridge_resync_marker, sdk_event_batch_json, sdk_event_channel_payload,
+    sdk_event_code, sdk_event_json, sdk_event_payload, sdk_event_web_payload,
+};
 pub use generated::dispatch::{capability, conversation, media, message, message_build};
 pub use generated::{
     CAPABILITY_DISPATCH_OPERATIONS, CLIENT_CONFIG_CONTRACT_JSON, CLIENT_INIT_REQUEST_EXAMPLE_JSON,
     CONVERSATION_DISPATCH_OPERATIONS, MEDIA_DISPATCH_OPERATIONS, MESSAGE_BUILD_OPERATIONS,
     MESSAGE_DISPATCH_OPERATIONS,
 };
-pub use invoke::{InvokeSession, binding_response_to_value, invoke_api_id, invoke_normalized};
+pub use invoke::{InvokeSession, binding_response_to_value, invoke_api_id_json};
 pub use operation::{NormalizedOperation, message_build_catalog, normalize_operation};
 pub use request::{BindingRequest, BindingResponse};
 pub use session::SessionSlot;

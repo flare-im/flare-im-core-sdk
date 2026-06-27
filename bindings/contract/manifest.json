@@ -8,6 +8,7 @@
     "clientSdk": "../../../flare-im-core-client-sdk",
     "ffiEntry": "../c",
     "apiContract": "apis.json",
+    "modelSchemaContract": "generated/model_schemas",
     "eventContract": "events.json",
     "errorContract": "errors.json"
   },
@@ -94,7 +95,7 @@
       "contract": {
         "abi": "tauri_commands",
         "async": "promise",
-        "complexPayload": "snake_case_json",
+        "complexPayload": "json",
         "events": "tauri_emit_im_scheme",
         "errors": "stringified_core_error"
       }
@@ -182,9 +183,9 @@
     },
     "tauri": {
       "l1": "tauri",
-      "clientPackage": "packages/flare-core-tauri-sdk",
+      "clientPackage": "packages/flare-core-typescript-sdk",
       "runtime": "tauri_commands",
-      "note": "TS adapter is scaffold-only; Rust bindings/tauri is active."
+      "note": "Use flare-core-typescript-sdk/tauri over Rust bindings/tauri."
     }
   },
   "rules": [
@@ -193,7 +194,7 @@
     "Tauri bindings are a desktop shell adapter, not the universal native boundary.",
     "UniFFI is archived until a deliberate redesign is approved.",
     "WASM is planned but blocked until Web transport, HTTP, media, presence, and storage runtime ports are implemented.",
-    "All complex C ABI payloads are UTF-8 JSON with core-sdk snake_case field names.",
+    "All complex C ABI payloads are UTF-8 JSON with canonical SDK camelCase field names generated from Rust DTO schemas.",
     "All async C ABI functions return immediate submit status and invoke callback exactly once.",
     "Callbacks may run on arbitrary runtime threads; client SDKs own UI/main-thread dispatch.",
     "Rust-allocated strings and bytes must be released by the paired flare_*_free function.",

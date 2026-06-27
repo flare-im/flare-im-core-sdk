@@ -12,7 +12,7 @@ use async_trait::async_trait;
 use futures::FutureExt;
 use tracing::warn;
 
-use crate::core::event::SdkEvent;
+use crate::kernel::event::SdkEvent;
 use crate::model::message::{IMMessage, SendAck};
 use crate::shared::error::{FlareError, Result};
 
@@ -62,7 +62,8 @@ impl EventMiddlewareAction {
 ///
 /// `after_send` and `on_send_error` are observers. Their failures must not
 /// rewrite delivery semantics, so they do not return `Result`.
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 pub trait MessageInterceptor: Send + Sync {
     async fn before_send(
         &self,
@@ -252,8 +253,8 @@ mod tests {
 
     use flare_proto::common::Message as ProtoMessage;
 
-    use crate::core::SdkState;
-    use crate::core::event::{ConnectionEvent, EventBus};
+    use crate::kernel::SdkState;
+    use crate::kernel::event::{ConnectionEvent, EventBus};
 
     struct AppendTag(&'static str);
 

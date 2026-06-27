@@ -1,0 +1,52 @@
+{
+  "$defs": {
+    "MediaAccessUrl": {
+      "properties": {
+        "cdnUrl": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "url": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "url"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "[`crate::platform::ports::media::MediaServicePort::resolve_media_access`] 结果：优先本地缓存，否则返回短时远程地址。",
+  "properties": {
+    "localPath": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "remote": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/MediaAccessUrl"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "source": {
+      "description": "`\"local\"` 或 `\"remote\"`",
+      "type": "string"
+    }
+  },
+  "required": [
+    "source"
+  ],
+  "title": "MediaResolvedAccess",
+  "type": "object",
+  "xFlareGeneratedBy": "flare-im-core-sdk-xtask",
+  "xFlareRustType": "MediaResolvedAccess"
+}

@@ -8,7 +8,7 @@ use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use flare_im_core_sdk::Result;
 use flare_im_core_sdk::client::api::{
-    CapabilityApi, ConversationApi, MediaApi, MessageApi, MessageBuildApi, PresenceApi,
+    CapabilityApi, ConversationApi, MediaApi, MessageApi, MessageBuildApi, PresenceApi, ViewApi,
 };
 use flare_im_core_sdk::client::{ConnectedApis, IMClient};
 
@@ -41,7 +41,7 @@ impl SessionSlot {
 
     /// Install a freshly returned API snapshot after login.
     pub async fn install(&self, client: &IMClient, apis: ConnectedApis) {
-        let generation = client.session_generation().await;
+        let generation = client.session_generation_snapshot();
         *self.write_cache() = Some(SessionCache { generation, apis });
     }
 
@@ -51,7 +51,7 @@ impl SessionSlot {
     }
 
     async fn session_or_live(&self, client: &IMClient) -> Result<ConnectedApis> {
-        let generation = client.session_generation().await;
+        let generation = client.session_generation_snapshot();
         if let Some(apis) = self
             .read_cache()
             .as_ref()
@@ -62,6 +62,7 @@ impl SessionSlot {
         }
 
         let apis = client.connected_apis().await?;
+        let generation = client.session_generation_snapshot();
         *self.write_cache() = Some(SessionCache {
             generation,
             apis: apis.clone(),
@@ -79,6 +80,10 @@ impl SessionSlot {
 
     pub async fn conversation_api(&self, client: &IMClient) -> Result<ConversationApi> {
         Ok(self.session_or_live(client).await?.conversation_api)
+    }
+
+    pub async fn view_api(&self, client: &IMClient) -> Result<Arc<ViewApi>> {
+        Ok(self.session_or_live(client).await?.view_api)
     }
 
     pub async fn media_api(&self, client: &IMClient) -> Result<Arc<MediaApi>> {

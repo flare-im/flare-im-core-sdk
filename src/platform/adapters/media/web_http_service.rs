@@ -11,16 +11,20 @@ use async_trait::async_trait;
 use sha2::{Digest, Sha256};
 use tokio::sync::RwLock;
 
+use super::upload_shared::{
+    build_control_headers, build_upload_metadata, build_upload_parts, compute_bytes_fingerprints,
+    infer_file_type, random_upload_id, upload_file_to_uploaded_media,
+};
 use crate::application::callbacks::{UploadPhase, UploadProgress, UploadProgressCallback};
-use crate::domain::{DirectUploadTransportKindVo, MediaUploadPartVo};
+use crate::domain::DirectUploadTransportKindVo;
 use crate::infrastructure::transport::{
     CommitDirectUploadPartsHttpRequest, CommitDirectUploadPartsHttpResponse,
     CompleteDirectUploadHttpRequest, DeleteFileHttpRequest, DeleteFileHttpResponse,
     DirectUploadTransportKindHttp, GetDirectUploadStatusHttpResponse, GetFileUrlHttpRequest,
     GetFileUrlHttpResponse, HttpApiResponse, HttpClient, InitiateDirectUploadHttpRequest,
     InitiateDirectUploadHttpResponse, PresignDirectUploadPartsHttpRequest,
-    PresignDirectUploadPartsHttpResponse, UploadFileHttpResponse, UploadFileMetadataHttp,
-    UploadedPartInfoHttp, unwrap_api_response,
+    PresignDirectUploadPartsHttpResponse, UploadFileHttpResponse, UploadedPartInfoHttp,
+    unwrap_api_response,
 };
 use crate::model::{MediaAccessUrl, MediaResolvedAccess, UploadOptions, UploadedMedia};
 use crate::platform::ports::media::{
@@ -488,135 +492,8 @@ impl MediaServicePort for MediaService {
     }
 }
 
-fn compute_bytes_fingerprints(data: &[u8]) -> (String, String, Option<String>) {
-    let file_size = data.len() as u64;
-    let head_len = usize::try_from(file_size.min(1024 * 1024)).unwrap_or(0);
-    let head = &data[..head_len];
-    let tail_len = usize::try_from(file_size.min(1024 * 1024)).unwrap_or(0);
-    let tail = if tail_len == 0 {
-        &[]
-    } else {
-        &data[data.len().saturating_sub(tail_len)..]
-    };
-    let full_sha256 = hex::encode(Sha256::digest(data));
-    let head_hash = hex::encode(Sha256::digest(head));
-    let tail_hash = hex::encode(Sha256::digest(tail));
-    let head_tail_sha256 = hex::encode(Sha256::digest(
-        format!("{head_hash}:{tail_hash}:{file_size}").as_bytes(),
-    ));
-    let fingerprint = hex::encode(Sha256::digest(
-        format!("{file_size}:{head_hash}:{tail_hash}").as_bytes(),
-    ));
-    (fingerprint, head_tail_sha256, Some(full_sha256))
-}
-
-fn build_upload_parts(
-    file_size: u64,
-    part_size: u64,
-    total_parts: u32,
-    upload_id: &str,
-) -> Vec<MediaUploadPartVo> {
-    let total_parts = total_parts.max(1);
-    let part_size = part_size.max(1);
-    let mut parts = Vec::with_capacity(total_parts as usize);
-    for idx in 0..total_parts {
-        let part_number = idx + 1;
-        let offset = u64::from(idx) * part_size;
-        let remaining = file_size.saturating_sub(offset);
-        let size = remaining.min(part_size);
-        parts.push(MediaUploadPartVo {
-            local_upload_id: upload_id.to_string(),
-            part_number,
-            offset,
-            size,
-            sha256: String::new(),
-            etag: None,
-            uploaded: false,
-        });
-    }
-    parts
-}
-
-fn build_control_headers(trace_seed: &str) -> HashMap<String, String> {
-    HashMap::from([(
-        "x-trace-id".to_string(),
-        format!("sdk-upload-{trace_seed}-{}", rand::random::<u32>()),
-    )])
-}
-
-fn random_upload_id(prefix: &str) -> String {
-    format!(
-        "{prefix}-{}-{}",
-        chrono::Utc::now().timestamp_millis(),
-        rand::random::<u32>()
-    )
-}
-
 fn emit_progress(on_progress: Option<&UploadProgressCallback>, progress: UploadProgress) {
     if let Some(cb) = on_progress {
         cb(progress);
-    }
-}
-
-fn upload_file_to_uploaded_media(
-    data: UploadFileHttpResponse,
-    fallback_file_name: String,
-    fallback_mime_type: String,
-    fallback_size: i64,
-) -> UploadedMedia {
-    let (resolved_name, resolved_mime, resolved_size) = if let Some(info) = data.info {
-        (info.file_name, info.mime_type, info.size)
-    } else {
-        (fallback_file_name, fallback_mime_type, fallback_size)
-    };
-    UploadedMedia {
-        file_id: data.file_id,
-        file_name: resolved_name,
-        mime_type: resolved_mime,
-        size: resolved_size,
-        url: data.url,
-        cdn_url: data.cdn_url,
-    }
-}
-
-fn build_upload_metadata(
-    file_name: String,
-    mime_type: String,
-    file_size: i64,
-    file_type: i32,
-    upload_id: String,
-    user_id: String,
-) -> UploadFileMetadataHttp {
-    UploadFileMetadataHttp {
-        file_name,
-        mime_type,
-        file_size,
-        file_type,
-        upload_id: upload_id.clone(),
-        metadata: HashMap::new(),
-        user_id,
-        trace_id: upload_id,
-        namespace: "im.message".to_string(),
-        business_tag: "chat_attachment".to_string(),
-        bucket: String::new(),
-        object_key: String::new(),
-        labels: HashMap::new(),
-    }
-}
-
-fn infer_file_type(mime: &str) -> i32 {
-    if mime.starts_with("image/") {
-        1
-    } else if mime.starts_with("video/") {
-        2
-    } else if mime.starts_with("audio/") {
-        3
-    } else if mime == "application/pdf"
-        || mime.starts_with("application/")
-        || mime.starts_with("text/")
-    {
-        4
-    } else {
-        5
     }
 }

@@ -28,7 +28,7 @@
 
 ### 1.2 C FFI（跨语言 ABI 适配层）
 
-- 输入输出统一 JSON（snake_case），避免跨语言结构体漂移
+- SDK JSON 输入输出统一 camelCase，与 core SDK 生成模型保持一致；C ABI 函数参数和符号名可保持 C/Rust 侧命名风格
 - 仅做：
   - 参数反序列化 / 基础校验
   - 异步回调调度（Tokio -> C callback）
@@ -104,8 +104,8 @@ Server Push -> Rust `core/dispatcher`
 要求：
 
 - 必须包含 `type` 和 `event`
-- 全量使用 snake_case
-- `conversation_id`、`server_msg_id`、`client_msg_id` 使用固定命名
+- SDK JSON 字段全量使用 camelCase
+- `conversationId`、`serverMsgId`、`clientMsgId` 使用固定命名
 
 ---
 
@@ -180,4 +180,3 @@ Server Push -> Rust `core/dispatcher`
 - [ ] subscribe/unsubscribe 无泄漏
 - [ ] 双端实时消息与 typing 通过回归脚本
 - [ ] 崩溃恢复后（重登）会话与消息一致
-

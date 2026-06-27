@@ -14,7 +14,7 @@ mod tokio_runtime;
 #[cfg(feature = "local-smoke-runtime")]
 mod smoke;
 
-#[cfg(not(feature = "local-smoke-runtime"))]
+#[cfg(all(not(feature = "local-smoke-runtime"), target_arch = "wasm32"))]
 mod production;
 
 pub use generated::bindings::flare_binding_contract_version;
@@ -22,7 +22,7 @@ pub use generated::client_config::{
     flare_client_config_contract_json, flare_client_init_example_json,
 };
 
-#[cfg(not(feature = "local-smoke-runtime"))]
+#[cfg(all(not(feature = "local-smoke-runtime"), target_arch = "wasm32"))]
 pub use production::{
     FlareImWasmRuntime, build_web_store_provider, clear_storage_host, create_wasm_runtime,
     flare_clear_encryption_key, flare_encryption_key_len, flare_has_encryption_key,

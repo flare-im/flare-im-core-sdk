@@ -54,13 +54,6 @@ pub extern "C" fn flare_sdk_release(handle: FlareHandle) {
     });
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn flare_sdk_init_logging() {
-    abi::catch_ffi_void(|| {
-        let _ = tracing_subscriber::fmt::try_init();
-    });
-}
-
 /// FFI 全局硬重置：取消全部事件订阅并释放全部 SDK 句柄。
 ///
 /// 用途：Flutter/iOS 热重启后，旧 isolate 的回调地址可能失效。
@@ -409,7 +402,7 @@ pub extern "C" fn flare_sdk_data_root(
                     .map(|path| path.display().to_string())
                     .unwrap_or_default())
             },
-            |data_root| to_json_string(&serde_json::json!({ "data_root": data_root })),
+            |data_root| to_json_string(&serde_json::json!({ "dataRoot": data_root })),
         );
 
         0

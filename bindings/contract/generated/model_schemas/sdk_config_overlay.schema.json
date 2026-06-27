@@ -1,0 +1,269 @@
+{
+  "$defs": {
+    "SdkResourceProfile": {
+      "description": "Runtime resource budget selected by the host app.\n\nThe profile only supplies defaults. Explicit numeric config fields still win,\nso production apps can tune one knob without forking the whole profile.",
+      "oneOf": [
+        {
+          "const": "desktop",
+          "description": "Balanced defaults for desktop and server-like hosts.",
+          "type": "string"
+        },
+        {
+          "const": "mobile",
+          "description": "Conservative defaults for mobile devices and memory-constrained hosts.",
+          "type": "string"
+        }
+      ]
+    },
+    "TransportKind": {
+      "description": "Wire transport kind for init overlay and protocol race ordering.",
+      "enum": [
+        "websocket",
+        "quic"
+      ],
+      "type": "string"
+    },
+    "TransportPolicy": {
+      "description": "Transport selection policy.\n\nBrowser/WASM must use WebSocket because QUIC/native protocol racing is not\navailable in the browser sandbox. Native targets can keep protocol racing.",
+      "enum": [
+        "auto",
+        "websocket_only",
+        "protocol_race"
+      ],
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "上层可选覆盖项（JSON 字段为 SDK canonical camelCase）。",
+  "properties": {
+    "ackMaxInFlight": {
+      "format": "uint",
+      "minimum": 0,
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "ackMaxRetries": {
+      "format": "uint32",
+      "minimum": 0,
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "ackTimeoutSecs": {
+      "format": "uint64",
+      "minimum": 0,
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "capabilityUrl": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "connectTimeoutSecs": {
+      "format": "uint64",
+      "minimum": 0,
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "dataUrl": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "defaultTransport": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/TransportKind"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "非竞速模式下的默认传输（`websocket` / `quic`）。"
+    },
+    "deviceId": {
+      "description": "Stable client device id for multi-device delivery and sync cursors.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "enableMetrics": {
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
+    "eventBusCapacity": {
+      "format": "uint",
+      "minimum": 0,
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "eventDedupeCapacity": {
+      "format": "uint",
+      "minimum": 0,
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "httpUrl": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "initMessageSyncConcurrency": {
+      "description": "Init/重连后会话消息补拉并发数（默认 4）。",
+      "format": "uint32",
+      "minimum": 0,
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "maxReconnectAttempts": {
+      "format": "uint32",
+      "minimum": 0,
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "mediaStorageProxyPrefix": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "mediaStorageProxyTargets": {
+      "items": {
+        "type": "string"
+      },
+      "type": [
+        "array",
+        "null"
+      ]
+    },
+    "messageDedupeCapacity": {
+      "format": "uint",
+      "minimum": 0,
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "onlineUrl": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "protocolRaceOrder": {
+      "description": "协议竞速优先级（从高到低），如 `[\"quic\", \"websocket\"]`。",
+      "items": {
+        "$ref": "#/$defs/TransportKind"
+      },
+      "type": [
+        "array",
+        "null"
+      ]
+    },
+    "quicUrl": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "reconnectIntervalSecs": {
+      "format": "uint64",
+      "minimum": 0,
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "resourceProfile": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/SdkResourceProfile"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "运行资源预算 profile（`desktop` / `mobile`）。"
+    },
+    "syncBatchSize": {
+      "format": "uint32",
+      "minimum": 0,
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "tenantId": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "tlsCaCertPath": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "tlsCertificateSha256Pins": {
+      "items": {
+        "type": "string"
+      },
+      "type": [
+        "array",
+        "null"
+      ]
+    },
+    "tlsSpkiSha256Pins": {
+      "items": {
+        "type": "string"
+      },
+      "type": [
+        "array",
+        "null"
+      ]
+    },
+    "transportPolicy": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/TransportPolicy"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "wsUrl": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "title": "SdkConfigOverlay",
+  "type": "object",
+  "xFlareGeneratedBy": "flare-im-core-sdk-xtask",
+  "xFlareRustType": "SdkConfigOverlay"
+}

@@ -75,7 +75,7 @@ let response = flare_im_core_sdk_bindings_runtime::invoke_json(
 ).await;
 ```
 
-Contract 源在 `bindings/contract/*.json`；修改后运行 `rtk make -C bindings codegen` 更新生成表。`call_signal.proto` 已移除，RTC/SFU 通过 `DataPacket.capability` 和 `rtc.*` capability id 发送。
+Contract 源在 `bindings/contract/*.json`；修改后运行 `rtk cargo xtask codegen` 更新生成表。`call_signal.proto` 已移除，RTC/SFU 通过 `DataPacket.capability` 和 `rtc.*` capability id 发送。
 
 ## 事件体系
 

@@ -3,9 +3,9 @@
 use std::sync::Arc;
 
 use crate::application::services::MessageDeduper;
-use crate::core::event::{EventBus, MessageEvent, NotificationEvent, SdkEvent};
+use crate::content::message_elem::Elem;
+use crate::kernel::event::{EventBus, MessageEvent, NotificationEvent, SdkEvent};
 use crate::model::IMMessage;
-use crate::model::message_elem::Elem;
 
 use super::registry::NotificationHandlerRegistry;
 use super::types::{InboundNotificationView, should_publish_notification_as_message};
@@ -112,7 +112,7 @@ impl NotificationInboundPipeline {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::message_elem::{Elem, NotificationElem};
+    use crate::content::message_elem::{Elem, NotificationElem};
     use tokio::sync::mpsc;
     use tokio::time::{Duration, timeout};
 

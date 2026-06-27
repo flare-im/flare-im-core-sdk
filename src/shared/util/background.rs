@@ -140,11 +140,7 @@ pub fn spawn_background<F>(future: F)
 where
     F: Future<Output = ()> + 'static,
 {
-    if tokio::runtime::Handle::try_current().is_ok() {
-        let _ = tokio::task::spawn_local(future);
-    } else {
-        spawn_local(future);
-    }
+    spawn_local(future);
 }
 
 /// Spawn an abortable background worker.
@@ -204,10 +200,6 @@ where
 {
     let cancel = Arc::new(AtomicBool::new(false));
     let wrapped = wrap_cancellable(future, cancel.clone());
-    if tokio::runtime::Handle::try_current().is_ok() {
-        let _ = tokio::task::spawn_local(wrapped);
-    } else {
-        spawn_local(wrapped);
-    }
+    spawn_local(wrapped);
     BackgroundTask { cancel }
 }

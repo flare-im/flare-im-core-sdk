@@ -17,18 +17,14 @@ use crate::application::usecases::{
     MessageSendUseCase, MessageViewAssembler,
 };
 use crate::client::api::{
-    CapabilityApi, ConversationApi, MediaApi, MessageApi, MessageBuildApi, PresenceApi,
+    CapabilityApi, ConversationApi, MediaApi, MessageApi, MessageBuildApi, PresenceApi, ViewApi,
 };
 use crate::client::config::SdkConfig;
 use crate::client::im_client::{IMClient, IMClientInner};
-use crate::core::event::EventBus;
-use crate::core::{
-    ConversationSummarySync, CurrentUserIdStore, SdkEngine, SessionSyncRunner, SyncResponseHandler,
-    SyncTask,
-};
 use crate::extension::capability::AvCapabilityPlugin;
-use crate::extension::capability::{
-    SdkCapabilityPlugin, SdkCapabilityRegistry, reserved_namespaces_of_plugin,
+use crate::extension::capability::{SdkCapabilityPlugin, SdkCapabilityRegistry};
+use crate::extension::encryption::{
+    ContentEncryptionInterceptor, ConversationEncryptionPolicyResolver,
 };
 use crate::extension::middleware::{EventInterceptor, MessageInterceptor, MiddlewareChain};
 use crate::extension::{
@@ -38,10 +34,17 @@ use crate::extension::{
 use crate::infrastructure::persistence::StoreProvider;
 use crate::infrastructure::protocol::{Codec, ProtobufCodec};
 use crate::infrastructure::transport::{HttpClient, HttpRequestContext, SocketTransport};
+use crate::kernel::event::EventBus;
+use crate::kernel::{
+    ConversationSummarySync, CurrentUserIdStore, ReliableSendQueuePort, SessionSyncRunner,
+    SyncResponseHandler, SyncTask,
+};
 use crate::platform::adapters::media::{MediaService, UploadOnlyMediaService};
 use crate::platform::ports::media::MediaServicePort;
 use crate::platform::runtime::RuntimeComponents;
+use crate::runtime::{SdkEngine, SdkEngineConfig};
 use crate::shared::error::{ErrorCode, FlareError, Result};
+use crate::spi::metrics::{MetricsRecorder, MetricsSink};
 
 #[derive(Clone, Default)]
 pub(crate) struct IMClientExtensionComponents {
@@ -55,7 +58,7 @@ pub(crate) struct IMClientExtensionComponents {
     conversation_projection_sources: Vec<Arc<dyn ConversationProjectionSource>>,
     content_codecs: Vec<Arc<dyn ContentCodec>>,
     extension_migrations: Vec<Arc<dyn ExtensionMigration>>,
-    allow_reserved_capability_namespace_override: bool,
+    allow_capability_namespace_override: bool,
 }
 
 impl IMClientExtensionComponents {
@@ -88,8 +91,7 @@ impl IMClientExtensionComponents {
         builder
             .extension_migrations
             .extend(self.extension_migrations.iter().cloned());
-        builder.allow_reserved_capability_namespace_override =
-            self.allow_reserved_capability_namespace_override;
+        builder.allow_capability_namespace_override = self.allow_capability_namespace_override;
         builder
     }
 }
@@ -187,7 +189,8 @@ pub struct IMClientBuilder {
     conversation_projection_sources: Vec<Arc<dyn ConversationProjectionSource>>,
     content_codecs: Vec<Arc<dyn ContentCodec>>,
     extension_migrations: Vec<Arc<dyn ExtensionMigration>>,
-    allow_reserved_capability_namespace_override: bool,
+    metrics_sink: Option<Arc<dyn MetricsSink>>,
+    allow_capability_namespace_override: bool,
     builder_errors: Vec<FlareError>,
 }
 
@@ -210,7 +213,8 @@ impl IMClientBuilder {
             conversation_projection_sources: Vec::new(),
             content_codecs: Vec::new(),
             extension_migrations: Vec::new(),
-            allow_reserved_capability_namespace_override: false,
+            metrics_sink: None,
+            allow_capability_namespace_override: false,
             builder_errors: Vec::new(),
         }
     }
@@ -279,9 +283,11 @@ impl IMClientBuilder {
 
     /// 注册自定义能力插件（开源核心与商业扩展统一入口）。
     ///
-    /// 默认策略下，插件不得覆盖核心保留命名空间（如 `rtc`）；
-    /// 若确需覆盖，请显式调用
-    /// [`Self::allow_reserved_capability_namespace_override_for_private_distribution`]。
+    /// 插件命名空间由 manifest 声明，注册表负责所有权冲突校验。
+    ///
+    /// 默认策略下，插件不得覆盖已注册命名空间；若确需在私有发行中替换某个
+    /// 官方插件，请显式调用
+    /// [`Self::allow_capability_namespace_override_for_private_distribution`]。
     pub fn add_capability_plugin(mut self, plugin: impl SdkCapabilityPlugin + 'static) -> Self {
         self.capability_plugins.push(Arc::new(plugin));
         self
@@ -321,8 +327,31 @@ impl IMClientBuilder {
         self
     }
 
+    /// 注册会话加密策略与内容编解码器。
+    ///
+    /// `Transport` / `None` 档位不改写消息内容；`E2e` 档位会在发送前使用
+    /// `codec` 将明文 `MessageContent` 封装为 typed encrypted placeholder。
+    pub fn conversation_encryption(
+        mut self,
+        resolver: Arc<dyn ConversationEncryptionPolicyResolver>,
+        codec: Arc<dyn ContentCodec>,
+    ) -> Self {
+        self.content_codecs.push(codec.clone());
+        self.message_interceptors
+            .push(Arc::new(ContentEncryptionInterceptor::new(resolver, codec)));
+        self
+    }
+
     pub fn add_extension_migration_arc(mut self, migration: Arc<dyn ExtensionMigration>) -> Self {
         self.extension_migrations.push(migration);
+        self
+    }
+
+    /// Inject a host metrics exporter. The exporter is used only when
+    /// `SdkConfig.enable_metrics` is true; diagnostics still keep an in-memory
+    /// snapshot for platform SDKs.
+    pub fn metrics_sink_arc(mut self, sink: Arc<dyn MetricsSink>) -> Self {
+        self.metrics_sink = Some(sink);
         self
     }
 
@@ -359,14 +388,14 @@ impl IMClientBuilder {
         self
     }
 
-    /// 私有发行开关：允许外部插件覆盖核心保留命名空间。
+    /// 私有发行开关：允许外部插件覆盖已注册命名空间。
     ///
-    /// 开源默认应保持关闭，避免核心路由被意外替换。
-    pub fn allow_reserved_capability_namespace_override_for_private_distribution(
+    /// 开源默认应保持关闭，避免官方插件路由被意外替换。
+    pub fn allow_capability_namespace_override_for_private_distribution(
         mut self,
         enabled: bool,
     ) -> Self {
-        self.allow_reserved_capability_namespace_override = enabled;
+        self.allow_capability_namespace_override = enabled;
         self
     }
 
@@ -388,8 +417,7 @@ impl IMClientBuilder {
             conversation_projection_sources: self.conversation_projection_sources.clone(),
             content_codecs: self.content_codecs.clone(),
             extension_migrations: self.extension_migrations.clone(),
-            allow_reserved_capability_namespace_override: self
-                .allow_reserved_capability_namespace_override,
+            allow_capability_namespace_override: self.allow_capability_namespace_override,
         };
         let codec: Arc<dyn Codec> = self.codec.unwrap_or_else(|| Arc::new(ProtobufCodec));
         let (stores, transport, runtime_media_service) = match self.runtime {
@@ -397,12 +425,18 @@ impl IMClientBuilder {
                 stores,
                 transport,
                 media_service,
+                media_processor,
                 media_uploader,
                 ..
             }) => {
                 let media_service = media_service.or_else(|| {
-                    media_uploader.map(|uploader| {
-                        Arc::new(UploadOnlyMediaService::new(uploader)) as Arc<dyn MediaServicePort>
+                    media_uploader.map(|uploader| match media_processor {
+                        Some(processor) => {
+                            Arc::new(UploadOnlyMediaService::with_processor(uploader, processor))
+                                as Arc<dyn MediaServicePort>
+                        }
+                        None => Arc::new(UploadOnlyMediaService::new(uploader))
+                            as Arc<dyn MediaServicePort>,
                     })
                 });
                 (stores, transport, media_service)
@@ -428,8 +462,16 @@ impl IMClientBuilder {
         }
         let chain = Arc::new(chain);
         let resources = self.config.runtime_resources();
-        let bus =
-            EventBus::with_middleware_and_capacity(chain.clone(), resources.event_bus_capacity);
+        let metrics = if self.config.enable_metrics {
+            MetricsRecorder::enabled(self.metrics_sink)
+        } else {
+            MetricsRecorder::disabled()
+        };
+        let bus = EventBus::with_middleware_capacity_and_metrics(
+            chain.clone(),
+            resources.event_bus_capacity,
+            metrics.clone(),
+        );
         let event_deduper = EventDeduper::new(Some(resources.event_dedupe_capacity));
         let message_deduper = MessageDeduper::new(Some(resources.message_dedupe_capacity));
         let extension_runtime = Arc::new(ExtensionRuntime::new(
@@ -466,11 +508,13 @@ impl IMClientBuilder {
             bus.clone(),
             event_deduper.clone(),
             notification_pipeline.clone(),
+            self.config.effective_device_id(),
             init_msg_concurrency,
+            metrics.clone(),
         ));
 
         let current_user_id: CurrentUserIdStore = Arc::new(RwLock::new(String::new()));
-        let engine = SdkEngine::new(crate::core::SdkEngineConfig {
+        let engine = SdkEngine::new(SdkEngineConfig {
             stores,
             chain: chain.clone(),
             transport,
@@ -488,6 +532,7 @@ impl IMClientBuilder {
             ack_timeout_secs: self.config.ack_timeout_secs,
             ack_max_retries: self.config.ack_max_retries,
             ack_max_in_flight: self.config.ack_max_in_flight,
+            metrics: metrics.clone(),
         });
 
         // 注入应用层同步任务（构造时传入 SyncProtocolAdapter，execute 内自行调用，与用户扩展一致）
@@ -516,7 +561,9 @@ impl IMClientBuilder {
         let store_ref = engine.stores().clone();
         let chain_ref = engine.middleware_chain();
         let profile_reader = store_ref.user_profiles_or_memory();
-        let reliable_queue = engine.reliable_queue();
+        let reliable_queue: Option<Arc<dyn ReliableSendQueuePort>> = engine
+            .reliable_queue()
+            .map(|queue| -> Arc<dyn ReliableSendQueuePort> { queue });
         sync_handler.set_reliable_queue(reliable_queue.clone());
         let bus = engine.bus().clone();
 
@@ -546,8 +593,21 @@ impl IMClientBuilder {
         let http_request_context = self
             .http_request_context
             .unwrap_or_else(|| Arc::new(HttpRequestContext::new()));
+        #[cfg(not(target_arch = "wasm32"))]
+        let media_http_client = HttpClient::with_context_and_tls(
+            media_base_url.clone(),
+            http_request_context.clone(),
+            self.config.core_tls_config(),
+        );
+        #[cfg(target_arch = "wasm32")]
+        let media_http_client =
+            HttpClient::with_context(media_base_url.clone(), http_request_context.clone())
+                .with_direct_url_rewrite(
+                    self.config.media_storage_proxy_prefix.clone(),
+                    self.config.media_storage_proxy_targets.clone(),
+                );
         let default_media_service: Arc<dyn MediaServicePort> = Arc::new(MediaService::new(
-            HttpClient::with_context(media_base_url, http_request_context.clone()),
+            media_http_client,
             current_user_id.clone(),
             store_ref.upload_manifest_store.clone(),
             store_ref.media_cache_store.clone(),
@@ -563,11 +623,14 @@ impl IMClientBuilder {
             current_user_id.clone(),
             reliable_queue,
             media_service.clone(),
+            bus.clone(),
         ));
         let message_mutation_use_case = Arc::new(MessageMutationUseCase::new(
             sender,
             store_ref.messages.clone(),
+            store_ref.conversations.clone(),
             current_user_id.clone(),
+            self.config.effective_device_id(),
             Some(bus.clone()),
         ));
         let message_view_assembler = Arc::new(MessageViewAssembler::new(
@@ -596,6 +659,7 @@ impl IMClientBuilder {
                 }
             },
             current_user_id.clone(),
+            self.config.effective_device_id(),
             tenant_id,
             http_request_context.clone(),
             bus.clone(),
@@ -620,25 +684,16 @@ impl IMClientBuilder {
         });
         for plugin in self.capability_plugins {
             let plugin_id = plugin.plugin_id();
-            let reserved = reserved_namespaces_of_plugin(plugin.as_ref());
-            let register_result = if reserved.is_empty() {
-                capability_registry.register(plugin.clone())
-            } else if self.allow_reserved_capability_namespace_override {
+            let register_result = if self.allow_capability_namespace_override {
                 tracing::warn!(
                     target = "flare_sdk.capability",
                     plugin_id = plugin_id,
-                    namespaces = ?reserved,
-                    "register plugin with reserved namespace override (private distribution)"
+                    namespaces = ?plugin.capability_namespaces(),
+                    "register plugin with namespace override (private distribution)"
                 );
                 capability_registry.register_with_namespace_override(plugin.clone())
             } else {
-                tracing::warn!(
-                    target = "flare_sdk.capability",
-                    plugin_id = plugin_id,
-                    namespaces = ?reserved,
-                    "skip plugin registration: reserved namespace conflict"
-                );
-                continue;
+                capability_registry.register(plugin.clone())
             };
             if let Err(err) = register_result {
                 tracing::warn!(
@@ -667,6 +722,7 @@ impl IMClientBuilder {
             bus.clone(),
             current_user_id.clone(),
         ));
+        let view_api = Arc::new(ViewApi::new(conversation_api.as_ref().clone(), bus.clone()));
 
         Ok(IMClient::from_inner(IMClientInner {
             engine: Some(engine),
@@ -682,10 +738,12 @@ impl IMClientBuilder {
             capability_registry: Some(capability_registry),
             message_build_api: Some(message_build_api),
             conversation_api: Some(conversation_api),
+            view_api: Some(view_api),
             http_request_context: Some(http_request_context),
             notification_registry: Some(notification_registry),
             extension_runtime: Some(extension_runtime),
             extension_components,
+            metrics,
             ..Default::default()
         }))
     }
@@ -703,9 +761,9 @@ mod tests {
     use std::pin::Pin;
 
     use super::*;
-    use crate::core::{SyncContext, SyncResult, SyncTaskResult};
     use crate::extension::ExtensionLifecycleContext;
     use crate::infrastructure::persistence::in_memory_empty_im_provider;
+    use crate::kernel::{SyncContext, SyncResult, SyncTaskResult};
 
     struct ReplayTask;
 

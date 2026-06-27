@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Version stamp used by sync summary reconciliation.",
+  "properties": {
+    "conversationId": {
+      "default": "",
+      "type": "string"
+    },
+    "version": {
+      "default": 0,
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    }
+  },
+  "title": "ConversationVersion",
+  "type": "object",
+  "xFlareGeneratedBy": "flare-im-core-sdk-xtask",
+  "xFlareRustType": "ConversationVersion"
+}

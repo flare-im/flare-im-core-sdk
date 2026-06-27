@@ -1,9 +1,12 @@
 mod common;
 
+use flare_im_core_sdk::content::Elem;
+use flare_im_core_sdk::content::message_elem::TextElem;
+use flare_im_core_sdk::content::preview_storage::{PreviewStoragePayload, keys};
 use flare_im_core_sdk::model::conversation::ConversationType;
-use flare_im_core_sdk::model::preview_storage::{PreviewStoragePayload, keys};
-use flare_im_core_sdk::model::{Conversation, Elem, MessageStatus};
+use flare_im_core_sdk::model::{Conversation, MessageStatus};
 use flare_im_core_sdk::prelude::*;
+use serde_json::Value;
 
 #[test]
 fn builder_requires_explicit_store_provider() {
@@ -97,4 +100,75 @@ async fn memory_stores_follow_current_message_and_conversation_contracts() {
         .expect("list messages");
     assert_eq!(page.len(), 1);
     assert_eq!(page[0].server_id, "server_store");
+}
+
+#[test]
+fn core_wire_dto_keys_are_camel_case() {
+    let mut conversation = Conversation {
+        conversation_id: "conv_wire".to_string(),
+        conversation_type: ConversationType::Group,
+        channel_id: "group_wire".to_string(),
+        display_name: "Wire Contract".to_string(),
+        max_seq: 7,
+        unread_count: 3,
+        ..Default::default()
+    };
+    conversation.ext.insert("pluginKey".into(), "opaque".into());
+
+    let mut message =
+        common::build_single_text("conv_wire", "user_wire", "group_wire", "wire text");
+    message
+        .attributes
+        .insert("tenantId".into(), "tenant_wire".into());
+
+    for (name, value) in [
+        (
+            "Conversation",
+            serde_json::to_value(&conversation).expect("conversation json"),
+        ),
+        (
+            "IMMessage",
+            serde_json::to_value(&message).expect("message json"),
+        ),
+        (
+            "Elem",
+            serde_json::to_value(Elem::Text(TextElem {
+                text: "wire text".to_string(),
+                mentions: Vec::new(),
+            }))
+            .expect("elem json"),
+        ),
+    ] {
+        let mut invalid = Vec::new();
+        collect_non_camel_case_keys(name, &value, &mut invalid);
+        assert!(
+            invalid.is_empty(),
+            "{name} contains non-camelCase wire keys: {invalid:?}"
+        );
+    }
+}
+
+fn collect_non_camel_case_keys(path: &str, value: &Value, invalid: &mut Vec<String>) {
+    match value {
+        Value::Object(map) => {
+            if matches!(
+                path.rsplit('.').next(),
+                Some("attributes" | "extensions" | "ext" | "a" | "details")
+            ) {
+                return;
+            }
+            for (key, child) in map {
+                if key.contains('_') {
+                    invalid.push(format!("{path}.{key}"));
+                }
+                collect_non_camel_case_keys(&format!("{path}.{key}"), child, invalid);
+            }
+        }
+        Value::Array(items) => {
+            for (index, child) in items.iter().enumerate() {
+                collect_non_camel_case_keys(&format!("{path}[{index}]"), child, invalid);
+            }
+        }
+        _ => {}
+    }
 }

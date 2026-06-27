@@ -29,7 +29,7 @@ good enough for browser integration, but it is not yet a full IndexedDB
 repository with SQLite-equivalent transaction semantics.
 
 The thin wasm adapter itself must also compile with `--no-default-features`;
-`make -C bindings/wasm check-thin` verifies that boundary.
+`cargo check -p flare-im-core-sdk-wasm --target wasm32-unknown-unknown --no-default-features` verifies that boundary.
 
 ## Binding Design Rule
 

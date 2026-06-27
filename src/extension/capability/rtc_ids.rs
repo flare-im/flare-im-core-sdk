@@ -3,7 +3,7 @@
 //! `call_signal.proto` 已从协议层移除；core SDK 直接维护稳定的 `rtc.*`
 //! capability IDs 和 JSON payload 形态，避免 optional feature 再拉入旧 durable Event 模型。
 
-mod fallback {
+mod canonical {
     use serde_json::{Value, json};
 
     pub const CALL_AUDIO: &str = "rtc.call.audio";
@@ -108,4 +108,4 @@ mod fallback {
     }
 }
 
-pub use fallback::*;
+pub use canonical::*;

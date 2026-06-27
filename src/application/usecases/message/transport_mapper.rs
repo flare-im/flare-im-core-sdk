@@ -3,7 +3,7 @@ use crate::model::event::{Event, EventType};
 use flare_proto::common::event::Payload as EventPayload;
 use flare_proto::common::{
     MarkEvent, MessageDeleteEvent, MessageEditEvent, MessageRecallEvent, PinEvent, ReactionEvent,
-    ReadReceiptEvent, UnmarkEvent, UnpinEvent,
+    UnmarkEvent, UnpinEvent,
 };
 use prost::Message;
 
@@ -64,23 +64,6 @@ pub fn event_from_transport_action(action: &MessageTransportAction) -> Event {
             })),
             ..Default::default()
         },
-        MessageTransportAction::ReadReceipt {
-            conversation_id,
-            user_id,
-            message_ids,
-            read_seq,
-        } => Event {
-            conversation_id: conversation_id.clone(),
-            r#type: EventType::EventReadReceipt as i32,
-            payload: Some(EventPayload::Read(ReadReceiptEvent {
-                conversation_id: conversation_id.clone(),
-                user_id: user_id.clone(),
-                message_ids: message_ids.clone(),
-                read_seq: *read_seq,
-                ..Default::default()
-            })),
-            ..Default::default()
-        },
         MessageTransportAction::Reaction {
             conversation_id,
             server_msg_id,
@@ -102,12 +85,14 @@ pub fn event_from_transport_action(action: &MessageTransportAction) -> Event {
             conversation_id,
             server_msg_id,
             pinned_by,
+            scope,
         } => Event {
             conversation_id: conversation_id.clone(),
             r#type: EventType::EventPin as i32,
             payload: Some(EventPayload::Pin(PinEvent {
                 server_msg_id: server_msg_id.clone(),
                 pinned_by: pinned_by.clone(),
+                scope: *scope,
                 ..Default::default()
             })),
             ..Default::default()
@@ -115,11 +100,15 @@ pub fn event_from_transport_action(action: &MessageTransportAction) -> Event {
         MessageTransportAction::Unpin {
             conversation_id,
             server_msg_id,
+            unpinned_by,
+            scope,
         } => Event {
             conversation_id: conversation_id.clone(),
             r#type: EventType::EventUnpin as i32,
             payload: Some(EventPayload::Unpin(UnpinEvent {
                 server_msg_id: server_msg_id.clone(),
+                unpinned_by: unpinned_by.clone(),
+                scope: *scope,
             })),
             ..Default::default()
         },

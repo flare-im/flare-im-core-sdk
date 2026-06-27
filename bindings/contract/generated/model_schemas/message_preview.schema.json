@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "messageId": {
+      "type": "string"
+    },
+    "senderId": {
+      "type": "string"
+    },
+    "text": {
+      "type": "string"
+    },
+    "time": {
+      "description": "毫秒时间戳",
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "type": {
+      "format": "int32",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "messageId",
+    "senderId",
+    "type",
+    "text",
+    "time"
+  ],
+  "title": "MessagePreviewElem",
+  "type": "object",
+  "xFlareGeneratedBy": "flare-im-core-sdk-xtask",
+  "xFlareRustType": "MessagePreviewElem"
+}

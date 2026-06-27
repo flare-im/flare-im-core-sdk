@@ -1,7 +1,7 @@
 //! UniFFI binding facade over contract-generated metadata.
 //!
 //! Full UniFFI API surface should be layered on `bindings/shared` dispatch;
-//! extend `bindings/contract/*.json` and run `make -C bindings codegen`.
+//! extend `bindings/contract/*.json` and run `cargo xtask core-codegen`.
 
 pub mod generated;
 
@@ -121,13 +121,13 @@ mod tests {
         let client = super::FlareImCoreClient::new(
             serde_json::json!({
                 "endpoint": "memory://local",
-                "tenant_id": "tenant_a",
-                "user_id": "user_a",
-                "device_id": "device_a",
-                "access_token": "test_token",
+                "tenantId": "tenant_a",
+                "userId": "user_a",
+                "deviceId": "device_a",
+                "accessToken": "test_token",
                 "transport": "web_socket",
-                "outbound_queue_capacity": 64,
-                "event_buffer_capacity": 64
+                "outboundQueueCapacity": 64,
+                "eventBufferCapacity": 64
             })
             .to_string(),
         )

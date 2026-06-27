@@ -1,6 +1,6 @@
 //! 同步任务业务实现：会话列表、消息、已读状态（结合 flare-proto / 服务端协议）。
 //!
-//! 核心引擎在 [crate::core::sync]；本模块提供可注册的 [SyncTask] 实现。
+//! 同步 kernel 在 [crate::kernel::sync]；本模块提供可注册的 [SyncTask] 实现。
 
 mod conversation_settings;
 mod conversations;

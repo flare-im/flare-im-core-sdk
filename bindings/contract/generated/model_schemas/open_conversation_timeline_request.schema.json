@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "conversationId": {
+      "type": "string"
+    },
+    "messageLimit": {
+      "default": 20,
+      "format": "uint32",
+      "minimum": 0,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "conversationId"
+  ],
+  "title": "OpenConversationTimelineRequest",
+  "type": "object",
+  "xFlareGeneratedBy": "flare-im-core-sdk-xtask",
+  "xFlareRustType": "OpenConversationTimelineRequest"
+}

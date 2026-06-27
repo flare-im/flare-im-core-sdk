@@ -66,6 +66,8 @@ impl MessageDeliveryService {
             sending: false,
             failed: false,
             is_local: false,
+            uploading: false,
+            upload_progress: 0,
             sort_ts: message.local_state.sort_ts,
         };
         message.status = MessageStatus::Sent as i32;
@@ -195,6 +197,8 @@ impl MessageDeliveryService {
             sending: false,
             failed: true,
             is_local: true,
+            uploading: false,
+            upload_progress: 0,
             sort_ts: failed_message.local_state.sort_ts,
         };
         failed_message.status = MessageStatus::Failed as i32;
@@ -256,6 +260,8 @@ impl MessageDeliveryService {
             sending: false,
             failed: false,
             is_local: false,
+            uploading: false,
+            upload_progress: 0,
             sort_ts: local
                 .map(|message| message.local_state.sort_ts)
                 .unwrap_or(incoming.local_state.sort_ts.max(incoming.created_at)),

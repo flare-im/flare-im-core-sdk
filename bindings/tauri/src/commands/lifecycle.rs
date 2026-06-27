@@ -9,8 +9,8 @@ use crate::state::SdkState;
 #[cfg(feature = "dev-test-token")]
 use flare_im_core_sdk::client::CoreTokenConfig;
 use flare_im_core_sdk::client::{LoginDbKind, SdkConfigOverlay};
-use flare_im_core_sdk::event::{EventReceiver, SdkEvent, SyncNotify};
-use flare_im_core_sdk_bindings_runtime::SessionTaskSlot;
+use flare_im_core_sdk::event::{SdkEvent, SharedEventReceiver};
+use flare_im_core_sdk_bindings_runtime::{SessionTaskSlot, platform_event_bridge_resync_marker};
 
 fn env_bool(name: &str, default: bool) -> bool {
     match std::env::var(name) {
@@ -120,8 +120,15 @@ fn bool_with_file_fallback(
     default
 }
 
-/// 透传 [IMClient::init]；`sdk_config` / `data_url` 由前端与 core-sdk 约定。
-#[tauri::command]
+#[tauri::command(rename_all = "camelCase")]
+pub async fn sdk_ffi_contract_version() -> std::result::Result<serde_json::Value, String> {
+    Ok(serde_json::json!({
+        "version": crate::BINDING_CONTRACT_VERSION
+    }))
+}
+
+/// 透传 [IMClient::init]；`sdkConfig` / `dataUrl` 由前端与 core-sdk 约定。
+#[tauri::command(rename_all = "camelCase")]
 pub async fn sdk_init(
     state: State<'_, SdkState>,
     environment: Option<String>,
@@ -134,7 +141,7 @@ pub async fn sdk_init(
 }
 
 /// 透传 [IMClient::login]。`app` 由 Tauri 运行时注入（勿从前端 JSON 传参）。
-#[tauri::command]
+#[tauri::command(rename_all = "camelCase")]
 pub async fn sdk_login(
     state: State<'_, SdkState>,
     app: tauri::AppHandle,
@@ -151,7 +158,7 @@ pub async fn sdk_login(
             Some(&token),
             LoginDbKind::Sqlite,
             move |bus, _msg_store| {
-                let rx = bus.subscribe();
+                let rx = bus.subscribe_shared_raw();
                 let app = app.clone();
                 spawn_event_bridge(app, rx, event_bridge_for_login.clone());
             },
@@ -173,7 +180,7 @@ pub async fn sdk_login(
 /// 透传 [IMClient::prepare]：开库 + 建引擎（不连网），把开库 / 迁移移出登录关键路径。
 ///
 /// 与 [`sdk_connect`] 配合实现「初始化前置、登录只做网络」。
-#[tauri::command]
+#[tauri::command(rename_all = "camelCase")]
 pub async fn sdk_prepare(
     state: State<'_, SdkState>,
     app: tauri::AppHandle,
@@ -188,14 +195,14 @@ pub async fn sdk_prepare(
         .map_err(super::map_sdk_err)?;
     // 预热后订阅事件总线 → webview（等价 login 闭包在 connect 前所做）。
     let bus = client.bus().await.map_err(super::map_sdk_err)?;
-    let rx = bus.subscribe();
+    let rx = bus.subscribe_shared_raw();
     spawn_event_bridge(app, rx, event_bridge);
     info!(user_id = %user_id, "sdk_prepare ok");
     Ok(())
 }
 
 /// 透传 [IMClient::connect]：连接已预热引擎 + 首次同步（登录的网络半段）。
-#[tauri::command]
+#[tauri::command(rename_all = "camelCase")]
 pub async fn sdk_connect(
     state: State<'_, SdkState>,
     user_id: String,
@@ -212,7 +219,7 @@ pub async fn sdk_connect(
 }
 
 /// EventBus → `im://*`，独立任务避免阻塞登录路径。
-fn spawn_event_bridge(app: tauri::AppHandle, rx: EventReceiver, bridge: SessionTaskSlot) {
+fn spawn_event_bridge(app: tauri::AppHandle, rx: SharedEventReceiver, bridge: SessionTaskSlot) {
     let (cancel_tx, cancel_rx) = oneshot::channel();
     bridge.replace(move || {
         let _ = cancel_tx.send(());
@@ -224,7 +231,7 @@ fn spawn_event_bridge(app: tauri::AppHandle, rx: EventReceiver, bridge: SessionT
 
 async fn forward_event_rx_to_webview(
     app: tauri::AppHandle,
-    mut rx: EventReceiver,
+    mut rx: SharedEventReceiver,
     mut cancel_rx: oneshot::Receiver<()>,
 ) {
     let mut missed_events = 0u64;
@@ -250,7 +257,7 @@ async fn forward_event_rx_to_webview(
                     }
                 }
 
-                if !emit_event_to_webview(&app, &ev) {
+                if !emit_event_to_webview(&app, ev.event()) {
                     missed_events = missed_events.saturating_add(1);
                     warn!(missed_events, "failed to emit SDK event to Tauri webview");
                 }
@@ -264,14 +271,6 @@ fn emit_event_to_webview<R: tauri::Runtime>(app: &tauri::AppHandle<R>, ev: &SdkE
         return true;
     };
     app.emit(&name, payload).is_ok()
-}
-
-fn platform_event_bridge_resync_marker(dropped_events: u64) -> SdkEvent {
-    SdkEvent::Sync(SyncNotify::ResyncNeeded {
-        scope: "platform_event_bridge".to_string(),
-        reason: "tauri_emit_failed".to_string(),
-        dropped_events,
-    })
 }
 
 #[cfg(test)]
@@ -291,21 +290,21 @@ mod tests {
         );
         assert_eq!(
             payload.get("reason").and_then(|v| v.as_str()),
-            Some("tauri_emit_failed")
+            Some("platform_event_bridge_lagged")
         );
         assert_eq!(
-            payload.get("dropped_events").and_then(|v| v.as_u64()),
+            payload.get("droppedEvents").and_then(|v| v.as_u64()),
             Some(3)
         );
     }
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "camelCase")]
 pub async fn sdk_logout(state: State<'_, SdkState>) -> std::result::Result<(), String> {
     state.logout().await.map_err(super::map_sdk_err)
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "camelCase")]
 pub async fn sdk_update_access_token(
     state: State<'_, SdkState>,
     access_token: String,
@@ -318,12 +317,12 @@ pub async fn sdk_update_access_token(
         .map_err(super::map_sdk_err)
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "camelCase")]
 pub async fn sdk_is_connected(state: State<'_, SdkState>) -> std::result::Result<bool, String> {
     Ok(state.client().is_connected().await)
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "camelCase")]
 pub async fn sdk_current_user_id(
     state: State<'_, SdkState>,
 ) -> std::result::Result<Option<String>, String> {
@@ -331,7 +330,7 @@ pub async fn sdk_current_user_id(
 }
 
 #[cfg(feature = "dev-test-token")]
-#[tauri::command]
+#[tauri::command(rename_all = "camelCase")]
 pub async fn sdk_generate_core_token(
     secret: String,
     issuer: String,
@@ -351,13 +350,13 @@ pub async fn sdk_generate_core_token(
     .map_err(super::map_sdk_err)
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "camelCase")]
 pub async fn sdk_engine_state(state: State<'_, SdkState>) -> std::result::Result<String, String> {
     let c = state.client();
     Ok(format!("{:?}", c.state()))
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "camelCase")]
 pub async fn sdk_rtc_ice_config_snapshot()
 -> std::result::Result<Option<RtcIceConfigSnapshotPayload>, String> {
     let file_vars = try_load_default_rtc_env_file();
@@ -403,7 +402,7 @@ pub async fn sdk_rtc_ice_config_snapshot()
     }))
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "camelCase")]
 pub async fn sdk_sync_conversation(
     state: State<'_, SdkState>,
     conversation_id: String,
@@ -415,7 +414,7 @@ pub async fn sdk_sync_conversation(
         .map_err(super::map_sdk_err)
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "camelCase")]
 pub async fn sdk_sync_messages(
     state: State<'_, SdkState>,
     conversation_id: String,
@@ -429,20 +428,7 @@ pub async fn sdk_sync_messages(
         .map_err(super::map_sdk_err)
 }
 
-#[tauri::command]
-pub async fn sdk_mark_session_read(
-    state: State<'_, SdkState>,
-    conversation_id: String,
-    read_seq: u64,
-) -> std::result::Result<(), String> {
-    state
-        .client()
-        .mark_session_read(&conversation_id, read_seq)
-        .await
-        .map_err(super::map_sdk_err)
-}
-
-#[tauri::command]
+#[tauri::command(rename_all = "camelCase")]
 pub async fn sdk_set_conversation_input_state(
     state: State<'_, SdkState>,
     conversation_id: String,

@@ -102,9 +102,16 @@ int32_t flare_message_dispatch_json(FlareHandle handle, const char* op, const ch
 
 ### 事件覆盖
 
-`flare_event_subscribe` 会转发完整 `SdkEvent` 域事件。`event_type` 是稳定
-整数码，`event_json` 是 snake_case JSON。事件码和 payload 字段以
-[`../contract/events.json`](../contract/events.json) 为准。
+`flare_event_subscribe` 会逐条转发完整 `SdkEvent` 域事件。C callback 参数
+`event_type` 是稳定整数码，`event_json` 是 camelCase SDK JSON。高吞吐同步场景优先使用
+`flare_event_subscribe_batch`，一次 callback 收到:
+
+```json
+{ "events": [{ "eventType": 2001, "payload": {} }] }
+```
+
+其中 `payload` 与逐条 callback 的 `event_json` 对象完全一致。事件码和 payload
+字段以 [`../contract/events.json`](../contract/events.json) 为准。
 
 ## 构建
 

@@ -2,12 +2,20 @@ use flare_proto::common::{MessageStatus, event::Payload as DomainEventPayload};
 use prost::Message;
 
 use crate::application::services::EventDeduper;
-use crate::core::event::{ConversationEvent, EventBus, ExtensionEvent, MessageEvent, SdkEvent};
 use crate::domain::{EditApplyResult, OperationApplyResult, SyncPolicy, local_cleared_through_seq};
 use crate::infrastructure::persistence::StoreProvider;
+use crate::kernel::event::{ConversationEvent, EventBus, ExtensionEvent, MessageEvent, SdkEvent};
 use crate::shared::error::Result;
 
 use super::models::ReplayMode;
+
+const MESSAGE_PIN_SCOPE_CONVERSATION: i32 = 0;
+const MESSAGE_PIN_SCOPE_SELF: i32 = 1;
+
+fn message_pin_visible_to_user(scope: i32, actor_user_id: &str, current_user_id: &str) -> bool {
+    scope == MESSAGE_PIN_SCOPE_CONVERSATION
+        || (scope == MESSAGE_PIN_SCOPE_SELF && actor_user_id == current_user_id)
+}
 
 pub(crate) struct SyncEventApplier {
     stores: StoreProvider,
@@ -327,6 +335,10 @@ impl SyncEventApplier {
             return Ok(true);
         }
         if let Some(DomainEventPayload::Pin(pin)) = &event.payload {
+            if !message_pin_visible_to_user(pin.scope, &pin.pinned_by, user_id) {
+                self.publish_extension_if_needed(event, mode, false);
+                return Ok(true);
+            }
             let applied = self
                 .stores
                 .messages
@@ -351,6 +363,10 @@ impl SyncEventApplier {
             return Ok(true);
         }
         if let Some(DomainEventPayload::Unpin(unpin)) = &event.payload {
+            if !message_pin_visible_to_user(unpin.scope, &unpin.unpinned_by, user_id) {
+                self.publish_extension_if_needed(event, mode, false);
+                return Ok(true);
+            }
             let applied = self
                 .stores
                 .messages
@@ -560,13 +576,13 @@ impl SyncEventApplier {
 mod tests {
     use super::{ReplayMode, SyncEventApplier};
     use crate::application::services::EventDeduper;
-    use crate::core::event::EventBus;
     use crate::domain::{
         ConversationReader, ConversationWriter, MessageReader, MessageWriter, SyncCursorReader,
         SyncCursorVo, SyncCursorWriter,
     };
     use crate::infrastructure::persistence::StoreProvider;
     use crate::infrastructure::persistence::{SqliteMessageRepo, sqlite_init_schema};
+    use crate::kernel::event::EventBus;
     use crate::shared::error::Result;
     use async_trait::async_trait;
     use sqlx::SqlitePool;
@@ -619,6 +635,13 @@ mod tests {
             Ok(())
         }
         async fn delete(&self, _conversation_id: &str) -> Result<()> {
+            Ok(())
+        }
+        async fn merge_conversation_identity(
+            &self,
+            _from_conversation_id: &str,
+            _to_conversation_id: &str,
+        ) -> Result<()> {
             Ok(())
         }
         async fn clear_local_chat_history(

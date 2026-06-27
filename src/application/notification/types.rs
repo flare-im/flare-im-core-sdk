@@ -4,8 +4,8 @@ use std::collections::HashMap;
 
 use async_trait::async_trait;
 
+use crate::content::message_elem::Elem;
 use crate::model::IMMessage;
-use crate::model::message_elem::Elem;
 
 /// 从 [`IMMessage`] 投影的 Notification 视图（无业务语义）。
 #[derive(Debug, Clone)]
