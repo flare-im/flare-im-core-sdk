@@ -189,12 +189,12 @@ pub trait MessageWriter: Send + Sync {
 /// 消息统一端口（读写聚合）
 #[async_trait]
 pub trait MessageStore: MessageReader + MessageWriter {
-    /// 应用编辑事件到存储层；实现可基于 `edit_version` 做版本收敛，避免旧编辑覆盖新内容。
+    /// 应用编辑事件到存储层；实现基于权威 `event_seq`（conversation_seq）做收敛，避免旧编辑覆盖新内容、防止乱序/重复。
     async fn apply_edit_event(
         &self,
         message_id: &str,
         new_content: Vec<u8>,
-        _edit_version: i32,
+        _event_seq: Option<u64>,
     ) -> Result<EditApplyResult> {
         let updated = self.update_content(message_id, new_content).await?;
         Ok(if updated {

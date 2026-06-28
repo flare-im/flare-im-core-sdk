@@ -552,6 +552,8 @@ SdkErrorPayload? sdkErrorPayloadFromJson(Object? value) {
     if (normalized.isEmpty || normalized == 'null') return null;
   }
   if (value is! Map) {
+    final normalized = value.toString().trim();
+    if (normalized.isEmpty || normalized == 'null') return null;
     throw FormatException('invalid SDK error payload field: error', {
       'field': 'error',
       'expected': 'object',

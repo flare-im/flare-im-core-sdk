@@ -105,12 +105,16 @@ impl MessageSendUseCase {
     async fn dispatch_prepared_message(&self, message: IMMessage) -> Result<SendAck> {
         self.ensure_optimistic_conversation(&message).await?;
         if let Some(queue) = &self.reliable_queue {
-            SendMessageCommand::new(message.clone())
+            // 仅取构建 ack 所需的两个 id，避免在发送热路径整体 clone IMMessage
+            // （含 encoded_content/attributes，文本消息小、媒体消息可达 KB 级）。
+            let client_msg_id = message.client_msg_id.clone();
+            let conversation_id = message.conversation_id.clone();
+            SendMessageCommand::new(message)
                 .execute_via_queue(queue.as_ref(), &self.chain)
                 .await?;
             Ok(SendAck {
-                client_msg_id: message.client_msg_id,
-                conversation_id: message.conversation_id,
+                client_msg_id,
+                conversation_id,
                 ack_id: None,
                 result: None,
             })

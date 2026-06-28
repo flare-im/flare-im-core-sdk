@@ -130,6 +130,35 @@ mod tests {
         );
     }
 
+    #[test]
+    fn extracts_message_dispatch_operation_and_params() {
+        let request = serde_json::json!({
+            "op": "search_in_conversation",
+            "params": {
+                "conversationId": "c1",
+                "keyword": "hello"
+            }
+        });
+
+        let (operation, params) =
+            message_dispatch_parts(request).expect("dispatch request should split");
+
+        assert_eq!(operation, "search_in_conversation");
+        assert_eq!(params["conversationId"], "c1");
+        assert_eq!(params["keyword"], "hello");
+    }
+
+    #[test]
+    fn rejects_message_dispatch_without_params() {
+        let err = message_dispatch_parts(serde_json::json!({ "op": "search" }))
+            .expect_err("params is part of the public message.dispatch contract");
+
+        assert!(
+            err.to_string()
+                .contains("message.dispatch params is required")
+        );
+    }
+
     #[tokio::test]
     async fn direct_connection_state_returns_canonical_enum_string() {
         let session = DirectOnlySession::new();
@@ -204,6 +233,35 @@ fn normalize_operation_json_with_request<'a>(
     })
 }
 
+fn message_dispatch_parts(request: Value) -> Result<(String, Value)> {
+    let mut object = request.as_object().cloned().ok_or_else(|| {
+        crate::binding_invalid_parameter("message.dispatch request must be an object")
+    })?;
+    let operation = object
+        .remove("op")
+        .and_then(|value| value.as_str().map(str::trim).map(str::to_owned))
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| crate::binding_invalid_parameter("message.dispatch op is required"))?;
+    let params = object
+        .remove("params")
+        .ok_or_else(|| crate::binding_invalid_parameter("message.dispatch params is required"))?;
+    if !params.is_object() {
+        return Err(crate::binding_invalid_parameter(
+            "message.dispatch params must be an object",
+        ));
+    }
+    Ok((operation, params))
+}
+
+fn message_dispatch_json_parts(request_json: &str) -> Result<(String, String)> {
+    let request: Value = serde_json::from_str(request_json)
+        .map_err(|e| crate::binding_invalid_parameter(format!("invalid request JSON: {e}")))?;
+    let (operation, params) = message_dispatch_parts(request)?;
+    let params_json = serde_json::to_string(&params)
+        .map_err(|e| crate::binding_invalid_parameter(format!("invalid request JSON: {e}")))?;
+    Ok((operation, params_json))
+}
+
 async fn invoke_normalized(
     session: &impl InvokeSession,
     route: &str,
@@ -214,6 +272,11 @@ async fn invoke_normalized(
     }
 
     match route {
+        "message.dispatch" => {
+            let (op, params) = message_dispatch_parts(request)?;
+            let api = session.message_api().await?;
+            message::dispatch_message(&api, &op, params).await
+        }
         "message.build" => {
             let api = session.message_build_api().await?;
             message_build::dispatch_message_build(&api, request).await
@@ -293,6 +356,11 @@ pub async fn invoke_normalized_json(
     }
 
     match route {
+        "message.dispatch" => {
+            let (op, params_json) = message_dispatch_json_parts(request_json)?;
+            let api = session.message_api().await?;
+            message::dispatch_message_json(&api, &op, &params_json).await
+        }
         "message.build" => {
             let api = session.message_build_api().await?;
             message_build::dispatch_message_build_json(&api, request_json).await

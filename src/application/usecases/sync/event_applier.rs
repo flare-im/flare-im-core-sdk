@@ -107,7 +107,7 @@ impl SyncEventApplier {
                 .apply_edit_event(
                     &edit.server_msg_id,
                     new_content.encode_to_vec(),
-                    edit.edit_version,
+                    operation_seq(event),
                 )
                 .await
             {

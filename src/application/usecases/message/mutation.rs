@@ -166,6 +166,7 @@ impl MessageMutationUseCase {
         self.dispatch_transport_action(&plan.transport_action)
             .await?;
         self.apply_local_update(plan.local_update).await?;
+        self.recompute_conversation_latest(conversation_id).await?;
         if let Some(bus) = &self.bus {
             bus.publish(SdkEvent::Message(MessageEvent::Edited {
                 conversation_id: conversation_id.to_string(),
@@ -544,11 +545,22 @@ mod tests {
     use super::MessageMutationUseCase;
     use super::read_ack_packet;
     use super::typing_realtime_control_packet;
-    use crate::domain::{MessageActor, ResolvedMessage};
+    use crate::content::ContentBuilder;
+    use crate::domain::{
+        ConversationReader, ConversationStore, ConversationWriter, MessageActor,
+        MessageLocalUpdate, MessageReader, MessageStore, MessageWriter, ResolvedMessage,
+    };
+    use crate::infrastructure::protocol::{PacketSender, ProtobufCodec};
+    use crate::kernel::CurrentUserIdStore;
+    use crate::kernel::event::EventBus;
+    use crate::model::Conversation;
     use crate::model::message::IMMessage;
     use crate::shared::error::ErrorCode;
+    use crate::storage::{MemoryConversationStore, MemoryMessageStore};
     use flare_proto::common::ack::Payload as AckPayload;
     use flare_proto::common::realtime_control_packet::Payload as RealtimeControlPayload;
+    use std::sync::Arc;
+    use tokio::sync::{Mutex, RwLock};
 
     fn resolved_message(conversation_id: &str) -> ResolvedMessage {
         let proto = flare_proto::common::Message {
@@ -557,6 +569,49 @@ mod tests {
             ..Default::default()
         };
         ResolvedMessage::new(IMMessage::new(proto))
+    }
+
+    fn text_message(
+        conversation_id: &str,
+        server_id: &str,
+        client_msg_id: &str,
+        text: &str,
+    ) -> IMMessage {
+        let content = ContentBuilder::text(text).build();
+        IMMessage::new(flare_proto::common::Message {
+            server_id: server_id.to_string(),
+            client_msg_id: client_msg_id.to_string(),
+            conversation_id: conversation_id.to_string(),
+            sender_id: "alice".to_string(),
+            conversation_seq: 7,
+            created_at: 1_700_000_000_000,
+            message_type: content.message_type as i32,
+            content: Some(content.inner),
+            ..Default::default()
+        })
+    }
+
+    fn encoded_text(text: &str) -> Vec<u8> {
+        ContentBuilder::text(text).build().encode()
+    }
+
+    fn usecase(
+        messages: Arc<dyn MessageStore>,
+        conversations: Arc<dyn ConversationStore>,
+    ) -> MessageMutationUseCase {
+        let sender = Arc::new(PacketSender::new(
+            Arc::new(Mutex::new(None)),
+            Arc::new(ProtobufCodec),
+        ));
+        let current_user_id: CurrentUserIdStore = Arc::new(RwLock::new("alice".to_string()));
+        MessageMutationUseCase::new(
+            sender,
+            messages,
+            conversations,
+            current_user_id,
+            "device-a",
+            Some(EventBus::new()),
+        )
     }
 
     #[test]
@@ -587,6 +642,68 @@ mod tests {
             .expect_err("mismatched conversation must be rejected");
 
         assert_eq!(err.code(), Some(ErrorCode::InvalidParameter));
+    }
+
+    #[tokio::test]
+    async fn local_edit_refreshes_message_preview_and_conversation_latest() {
+        let messages = Arc::new(MemoryMessageStore::new());
+        let conversations = Arc::new(MemoryConversationStore::new());
+        let message = text_message("conv-edit", "server-edit", "client-edit", "before edit");
+        messages
+            .save_batch(std::slice::from_ref(&message))
+            .await
+            .unwrap();
+        conversations
+            .save_one(&Conversation {
+                conversation_id: "conv-edit".to_string(),
+                last_message_id: Some("server-edit".to_string()),
+                last_sender_id: Some("alice".to_string()),
+                last_message_at: Some(message.display_time_ms()),
+                last_message_preview: Some("before edit".to_string()),
+                max_seq: message.conversation_seq,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        let usecase = usecase(messages.clone(), conversations.clone());
+
+        usecase
+            .apply_local_update(MessageLocalUpdate::UpdateContent {
+                message_id: "server-edit".to_string(),
+                new_content: encoded_text("after edit"),
+            })
+            .await
+            .unwrap();
+        usecase
+            .recompute_conversation_latest("conv-edit")
+            .await
+            .unwrap();
+
+        let stored = messages
+            .get("server-edit")
+            .await
+            .unwrap()
+            .expect("edited message");
+        assert!(stored.is_edited);
+        assert!(
+            stored.text_preview.contains("after edit"),
+            "message preview should contain edited text: {}",
+            stored.text_preview
+        );
+        let conversation = conversations
+            .get("conv-edit")
+            .await
+            .unwrap()
+            .expect("conversation");
+        assert_eq!(conversation.last_message_id.as_deref(), Some("server-edit"));
+        let latest_preview = conversation
+            .last_message_preview
+            .as_deref()
+            .expect("latest preview");
+        assert!(
+            latest_preview.contains("after edit"),
+            "conversation preview should contain edited text: {latest_preview}"
+        );
     }
 
     #[test]

@@ -192,10 +192,11 @@ impl MessageBuilderService {
         thread_id: impl Into<String>,
         text: impl AsRef<str>,
     ) -> Result<IMMessage> {
-        let content = ContentBuilder::thread(thread_id).build();
+        let content = ContentBuilder::thread(thread_id)
+            .thread_title(text.as_ref())
+            .build();
         let message = MessageBuilder::new(conversation_id, sender_id)
             .content(content)
-            .attributes("contentText", text.as_ref())
             .build()?;
         Ok(IMMessage::new(message))
     }
@@ -1118,6 +1119,25 @@ mod tests {
         for (name, expected_type, expected_elem, message) in cases {
             assert_message_shape(name, &message, expected_type, expected_elem);
         }
+    }
+
+    #[test]
+    fn build_thread_reply_keeps_reply_text_in_typed_thread_title() {
+        let message =
+            MessageBuilderService::build_thread_reply("conv-1", "sender-1", "thread-1", "reply")
+                .expect("thread");
+
+        let Elem::Thread(thread) = message.content.as_ref().expect("thread content") else {
+            panic!("thread elem expected");
+        };
+        assert_eq!(thread.thread_id, "thread-1");
+        assert_eq!(thread.thread_title, "reply");
+        assert!(!message.attributes.contains_key("contentText"));
+        assert!(
+            message.text_preview.contains("reply"),
+            "thread preview should include typed title: {}",
+            message.text_preview
+        );
     }
 
     #[test]

@@ -177,29 +177,27 @@ impl MessageWriter for MemoryMessageStore {
 
     async fn update_content(&self, message_id: &str, new_content: Vec<u8>) -> Result<bool> {
         let mut data = self.data.write().await;
-        let mut hit = false;
-        if let Some(msg) = data.get_mut(message_id) {
+        let apply = |msg: &mut IMMessage| {
             msg.encoded_content = new_content.clone();
             msg.is_edited = true;
-            msg.content = decode_content_bytes(&msg.encoded_content)
-                .ok()
-                .and_then(|d| decoded_content_to_elem(&d));
-            hit = true;
+            let decoded = decode_content_bytes(&msg.encoded_content).ok();
+            msg.text_preview = decoded
+                .as_ref()
+                .map(|content| content.text_preview())
+                .unwrap_or_default();
+            msg.content = decoded.as_ref().and_then(decoded_content_to_elem);
+        };
+        if let Some(msg) = data.get_mut(message_id) {
+            apply(msg);
+            return Ok(true);
         }
-        if !hit {
-            for msg in data.values_mut() {
-                if msg.server_id == message_id || msg.client_msg_id == message_id {
-                    msg.encoded_content = new_content.clone();
-                    msg.is_edited = true;
-                    msg.content = decode_content_bytes(&msg.encoded_content)
-                        .ok()
-                        .and_then(|d| decoded_content_to_elem(&d));
-                    hit = true;
-                    break;
-                }
+        for msg in data.values_mut() {
+            if msg.server_id == message_id || msg.client_msg_id == message_id {
+                apply(msg);
+                return Ok(true);
             }
         }
-        Ok(hit)
+        Ok(false)
     }
 
     async fn delete(&self, message_id: &str) -> Result<()> {
