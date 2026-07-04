@@ -6,7 +6,10 @@
 
 use std::sync::Arc;
 
-use flare_proto::common::{CapabilityPacket, MessageRecallEvent, SendAck, TypingStatePacket};
+use flare_proto::common::{
+    CapabilityPacket, MessageRecallEvent, ReadReceiptEvent, SendAck, TypingAggregatePacket,
+    TypingStatePacket,
+};
 
 use crate::application::notification::NotificationHandler;
 use crate::client::IMClient;
@@ -210,6 +213,24 @@ impl IMClient {
         F: Fn(&str, &TypingStatePacket) + Send + Sync + 'static,
     {
         self.with_engine(|e| e.bus().on_typing(f))
+    }
+
+    /// **N 人正在输入**（超大群网关聚合）；参数为 `(conversation_id, typing_aggregate)`，
+    /// `typing_user_ids` 为采样姓名集合、`typing_count` 为总人数，客户端按自身 user_id 过滤后展示。
+    pub fn on_typing_aggregate<F>(&self, f: F) -> Result<Subscription>
+    where
+        F: Fn(&str, &TypingAggregatePacket) + Send + Sync + 'static,
+    {
+        self.with_engine(|e| e.bus().on_typing_aggregate(f))
+    }
+
+    /// **已读回执**（已读光标）；参数为 `(conversation_id, read_receipt)`，
+    /// `read_receipt.user_id` 已读至 `read_receipt.read_seq`，用于展示「对方已读」/已读人数。
+    pub fn on_read_receipt<F>(&self, f: F) -> Result<Subscription>
+    where
+        F: Fn(&str, &ReadReceiptEvent) + Send + Sync + 'static,
+    {
+        self.with_engine(|e| e.bus().on_read_receipt(f))
     }
 
     /// 能力包下行（DATA capability）；RTC/通话等插件信令统一走这里。

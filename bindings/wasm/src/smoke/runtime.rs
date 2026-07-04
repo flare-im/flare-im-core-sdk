@@ -22,6 +22,7 @@ use super::web_model::{
     content_text, conversation_to_json, conversations_to_json, message_to_json, messages_to_json,
 };
 use flare_im_core_sdk_bindings_runtime::{message_build_catalog, normalize_operation};
+use flare_proto::common::MentionType;
 
 const CONTRACT_VERSION: &str = "flare-im-ffi/v1";
 
@@ -138,6 +139,53 @@ impl FlareImWasmRuntime {
             | "conversation.list_by_query"
             | "conversation.get_multiple" => {
                 Ok(json!({ "conversations": conversations_to_json(&self.conversations) }))
+            }
+            "conversation.bootstrap_home" => {
+                let limit = request
+                    .get("conversationLimit")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(100) as usize;
+                let conversations = self
+                    .conversations
+                    .iter()
+                    .take(limit)
+                    .cloned()
+                    .collect::<Vec<_>>();
+                let total_unread = conversations
+                    .iter()
+                    .map(|conversation| conversation.unread_count as u64)
+                    .sum::<u64>();
+                Ok(json!({
+                    "conversations": conversations_to_json(&conversations),
+                    "totalUnread": total_unread,
+                    "syncState": "localReady"
+                }))
+            }
+            "sync.bootstrap_startup_home" => {
+                let limit = request
+                    .get("conversationLimit")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(100) as usize;
+                let conversations = self
+                    .conversations
+                    .iter()
+                    .take(limit)
+                    .cloned()
+                    .collect::<Vec<_>>();
+                let total_unread = conversations
+                    .iter()
+                    .map(|conversation| conversation.unread_count as u64)
+                    .sum::<u64>();
+                Ok(json!({
+                    "snapshot": {
+                        "conversations": conversations_to_json(&conversations),
+                        "totalUnread": total_unread,
+                        "syncState": "localReady"
+                    },
+                    "servedFromLocal": !conversations.is_empty(),
+                    "coldSyncPerformed": false,
+                    "backgroundConvergenceStarted": true
+                }))
             }
             "conversation.get" | "conversation.get_one" | "conversation.get_group_by_user_ids" => {
                 let conversation = self.resolve_conversation(&request);
@@ -804,7 +852,16 @@ impl FlareImWasmRuntime {
         let text = string_field(request, "text")
             .or_else(|| string_field(request, "body"))
             .unwrap_or_default();
-        self.build_content_message(request, 0, text_elem(&text))
+        let mention_users = string_vec_field(request, "mentionUsers");
+        let mention_all = bool_field(request, "mentionAll").unwrap_or(false);
+        let mut message = self.build_content_message(
+            request,
+            0,
+            text_elem_with_mentions(&text, &mention_users, mention_all),
+        );
+        message.mention_users = mention_users;
+        message.mention_all = mention_all;
+        message
     }
 
     fn build_content_message(
@@ -1164,6 +1221,22 @@ fn bool_field(value: &Value, key: &str) -> Option<bool> {
     value.get(key).and_then(Value::as_bool)
 }
 
+fn string_vec_field(value: &Value, key: &str) -> Vec<String> {
+    value
+        .get(key)
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::trim)
+                .filter(|item| !item.is_empty())
+                .map(ToString::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 fn conversation_id(value: &Value) -> Option<String> {
     string_field(value, "conversationId").or_else(|| {
         value
@@ -1209,9 +1282,39 @@ fn parse_web_content(value: Option<&Value>, message_type: i32) -> Option<Elem> {
 }
 
 fn text_elem(text: &str) -> Elem {
+    text_elem_with_mentions(text, &[], false)
+}
+
+fn text_elem_with_mentions(text: &str, mention_users: &[String], mention_all: bool) -> Elem {
+    let mut mentions = Vec::<MentionElem>::new();
+    if mention_all {
+        let length = text.chars().count().min(i32::MAX as usize) as i32;
+        mentions.push(MentionElem {
+            r#type: MentionType::All as i32,
+            user_id: String::new(),
+            user_ids: Vec::new(),
+            role_id: String::new(),
+            start: 0,
+            length: length.max(1),
+        });
+    }
+    for user_id in mention_users {
+        let token = format!("@{}", user_id.trim());
+        let Some(start_byte) = text.find(&token) else {
+            continue;
+        };
+        mentions.push(MentionElem {
+            r#type: MentionType::User as i32,
+            user_id: user_id.trim().to_string(),
+            user_ids: Vec::new(),
+            role_id: String::new(),
+            start: text[..start_byte].chars().count().min(i32::MAX as usize) as i32,
+            length: token.chars().count().min(i32::MAX as usize) as i32,
+        });
+    }
     Elem::Text(TextElem {
         text: text.to_string(),
-        mentions: Vec::<MentionElem>::new(),
+        mentions,
     })
 }
 

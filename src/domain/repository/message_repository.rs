@@ -113,6 +113,17 @@ pub(crate) fn merge_message_event_attributes(
 #[async_trait]
 pub trait MessageReader: Send + Sync {
     async fn get(&self, message_id: &str) -> Result<Option<IMMessage>>;
+    /// 批量按 server_id 查询。默认逐条兜底；SQLite 实现覆盖为 `IN (...)` 单次查询，
+    /// 降低大批量下行收敛时的 O(n) DB 往返。
+    async fn get_by_message_ids(&self, message_ids: &[String]) -> Result<Vec<IMMessage>> {
+        let mut out = Vec::with_capacity(message_ids.len());
+        for id in message_ids {
+            if let Some(message) = self.get(id).await? {
+                out.push(message);
+            }
+        }
+        Ok(out)
+    }
     /// 按 client_msg_id 查询（发送中/待 ACK 时可能仅有 client_msg_id）
     async fn get_by_client_msg_id(&self, client_msg_id: &str) -> Result<Option<IMMessage>>;
     /// 批量按 client_msg_id 查询。默认逐条兜底；SQLite 实现覆盖为 `IN (...)` 单次查询，
@@ -134,6 +145,19 @@ pub trait MessageReader: Send + Sync {
         before_seq: u64,
         limit: u32,
     ) -> Result<Vec<IMMessage>>;
+    /// 本地已落库的最早服务端会话序列号；忽略 `conversation_seq == 0` 的本地待发送消息。
+    async fn oldest_conversation_seq(&self, conversation_id: &str) -> Result<Option<u64>> {
+        let messages = self
+            .get_by_conversation(conversation_id, 0, 100_000)
+            .await?;
+        Ok(messages
+            .into_iter()
+            .filter_map(|message| {
+                let seq = message.conversation_seq;
+                (seq > 0).then_some(seq)
+            })
+            .min())
+    }
     async fn search(&self, keyword: &str, limit: u32) -> Result<Vec<IMMessage>>;
     async fn search_by_query(&self, query: &MessageSearchQuery) -> Result<Vec<IMMessage>> {
         if let Some(conversation_id) = query

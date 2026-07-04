@@ -45,7 +45,9 @@ impl SyncTask for KeyEventsSyncTask {
         Box::pin(async move {
             debug!(task = "key_events", "sync phase: key events start");
             ctx.report_progress("syncing critical events");
-            handler.sync_critical_events().await?;
+            // 共享快照：与同 phase 其他任务复用一次 list 查询。
+            let conversations = ctx.conversations_snapshot().await?;
+            handler.sync_critical_events(&conversations).await?;
             debug!(task = "key_events", "sync phase: key events done");
             Ok(SyncTaskResult::ok())
         })

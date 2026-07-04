@@ -39,4 +39,5 @@ futures-channel = "0.3"
 tokio = { version = "1", default-features = false, features = ["sync", "macros", "rt", "time"] }
 
 [package.metadata.wasm-pack.profile.release]
-wasm-opt = false
+# -Oz + 必要特性开关：wasm-pack 内置 binaryen 对 5MB 产物可再缩 15-30%（网络+编译双收益）。
+wasm-opt = ["-Oz", "--enable-bulk-memory", "--enable-nontrapping-float-to-int"]

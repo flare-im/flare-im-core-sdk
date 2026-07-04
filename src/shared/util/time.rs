@@ -77,6 +77,18 @@ pub async fn delay(duration: Duration) {
     tokio::time::sleep(duration).await;
 }
 
+/// I9 apply 分片让帧：大批量应用循环中定期让出执行权。
+/// WASM 走 `setTimeout(0)` **宏任务**（微任务级 yield 不给浏览器渲染机会）；原生走 `yield_now`。
+#[cfg(target_arch = "wasm32")]
+pub async fn yield_for_frame() {
+    delay(Duration::from_millis(0)).await;
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub async fn yield_for_frame() {
+    tokio::task::yield_now().await;
+}
+
 /// Future timed out before completion.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TimeoutElapsed;

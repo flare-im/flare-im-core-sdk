@@ -25,6 +25,18 @@
       "json_expr": "response"
     },
     {
+      "route": "sync.bootstrap_startup_home",
+      "result": "json",
+      "body": "\n            let request = dispatch_support::from_value::<flare_im_core_sdk::model::StartupHomeSyncRequest>(\n                request.clone(),\n                \"startup home sync request\",\n            )?;\n            let response = client.bootstrap_startup_home(request).await?;\n        ",
+      "json_expr": "response"
+    },
+    {
+      "route": "sync.conversation_history_backfill",
+      "result": "json",
+      "body": "\n            let conversation_id = dispatch_support::json_string(request, \"conversationId\")?;\n            let limit = dispatch_support::optional_i32(request, \"limit\")?.unwrap_or(500);\n            let max_pages = dispatch_support::optional_u32(request, \"maxPages\")?.unwrap_or(128);\n            let response = client.backfill_conversation_history(&conversation_id, limit, max_pages).await?;\n        ",
+      "json_expr": "response"
+    },
+    {
       "route": "sync.conversation",
       "result": "unit",
       "body": "\n            let conversation_id = dispatch_support::json_string(request, \"conversationId\")?;\n            client.sync_conversation(&conversation_id).await?;\n        "
@@ -33,6 +45,11 @@
       "route": "sync.messages",
       "result": "unit",
       "body": "\n            let conversation_id = dispatch_support::json_string(request, \"conversationId\")?;\n            let last_seq = dispatch_support::json_u64(request, \"lastSeq\")?;\n            let limit = dispatch_support::optional_i32(request, \"limit\")?.unwrap_or(50);\n            client.sync_messages(&conversation_id, last_seq, limit).await?;\n        "
+    },
+    {
+      "route": "user.upsert_profiles",
+      "result": "unit",
+      "body": "\n            let profiles = dispatch_support::optional_value::<Vec<flare_im_core_sdk::spi::UserProfile>>(request, \"profiles\")?.unwrap_or_default();\n            client.upsert_user_profiles(profiles).await?;\n        "
     },
     {
       "route": "presence.get",
@@ -125,7 +142,7 @@
       "route": "message.create_text",
       "result": "json",
       "skip_client": true,
-      "body": "\n            let conversation_id = dispatch_support::json_string(request, \"conversationId\")?;\n            let text = dispatch_support::json_string(request, \"text\")?;\n            let api = session.message_build_api().await?;\n            let message = api.create_text(&conversation_id, &text, false).await?;\n        ",
+      "body": "\n            let conversation_id = dispatch_support::json_string(request, \"conversationId\")?;\n            let text = dispatch_support::json_string(request, \"text\")?;\n            let mention_users = dispatch_support::optional_value::<Vec<String>>(request, \"mentionUsers\")?.unwrap_or_default();\n            let mention_all = dispatch_support::optional_bool(request, \"mentionAll\")?.unwrap_or(false);\n            let api = session.message_build_api().await?;\n            let message = api.create_text(&conversation_id, &text, mention_all, &mention_users).await?;\n        ",
       "json_expr": "message"
     },
     {

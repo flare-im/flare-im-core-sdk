@@ -166,6 +166,9 @@ class DefaultEventsApi(
     override fun onInputStatusChanged(listener: EventCallback<TypingEvent>): EventSubscription =
         registerTyped(TypingEvent::class.java, listener)
 
+    override fun onTypingAggregateChanged(listener: EventCallback<TypingAggregateEvent>): EventSubscription =
+        registerTyped(TypingAggregateEvent::class.java, listener)
+
     override fun onMessageBurned(listener: EventCallback<MessageMutationEvent>): EventSubscription =
         registerTyped(MessageMutationEvent::class.java, listener)
 
@@ -174,6 +177,9 @@ class DefaultEventsApi(
 
     override fun onMessageUnpinned(listener: EventCallback<MessageMutationEvent>): EventSubscription =
         registerTyped(MessageMutationEvent::class.java, listener)
+
+    override fun onViewUpdated(listener: EventCallback<ViewUpdate>): EventSubscription =
+        registerTyped(ViewUpdate::class.java, listener)
 
     override fun onNewConversation(listener: EventCallback<ConversationEvent>): EventSubscription =
         registerTyped(ConversationEvent::class.java, listener)
@@ -290,6 +296,7 @@ class DefaultEventsApi(
                 MessageEventName.SEND_FAILED,
                 MessageEventName.CAPABILITY,
                 MessageEventName.TYPING,
+                MessageEventName.TYPING_AGGREGATE,
                 MessageEventName.REACTION_CHANGED,
                 MessageEventName.READ_RECEIPT,
                 MessageEventName.BURN_SCHEDULED,
@@ -304,6 +311,7 @@ class DefaultEventsApi(
             is ReadReceiptEvent -> listener.onMessageReadReceipt(event)
             is ReactionChangedEvent -> listener.onMessageReactionChanged(event)
             is TypingEvent -> listener.onInputStatusChanged(event)
+            is TypingAggregateEvent -> listener.onTypingAggregateChanged(event)
             is ConversationEvent -> when (event.name) {
                 ConversationEventName.CREATED -> listener.onNewConversation(event)
                 ConversationEventName.DELETED -> listener.onConversationDeleted(event)
@@ -367,6 +375,11 @@ private fun nativeEventFromCode(eventType: Int, payload: Map<String, Any?>): Any
             conversationId = requiredEventString(payload["conversationId"], "conversationId"),
             userId = requiredEventString(payload["userId"], "userId"),
             typing = requiredEventBool(payload["typing"], "typing"),
+        )
+        EventCode.MESSAGE_TYPING_AGGREGATE -> TypingAggregateEvent(
+            conversationId = requiredEventString(payload["conversationId"], "conversationId"),
+            typingUserIds = requiredEventStringList(payload["typingUserIds"], "typingUserIds"),
+            typingCount = requiredEventInt(payload["typingCount"], "typingCount").toInt(),
         )
         EventCode.MESSAGE_READ_RECEIPT -> ReadReceiptEvent(
             conversationId = requiredEventString(payload["conversationId"], "conversationId"),
@@ -626,6 +639,11 @@ private fun requiredEventListOfMaps(value: Any?, field: String): List<Map<String
 
 private fun optionalEventStringList(value: Any?, field: String): List<String> {
     if (value == null) return emptyList()
+    if (value !is List<*>) invalidEventField(field, "array")
+    return value.mapIndexed { index, item -> requiredEventString(item, "$field.$index") }
+}
+
+private fun requiredEventStringList(value: Any?, field: String): List<String> {
     if (value !is List<*>) invalidEventField(field, "array")
     return value.mapIndexed { index, item -> requiredEventString(item, "$field.$index") }
 }

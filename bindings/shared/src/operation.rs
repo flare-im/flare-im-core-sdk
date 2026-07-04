@@ -1,4 +1,4 @@
-use serde_json::{Map, Value, json};
+use flare_im_core_sdk::serde_json::{Map, Value, json};
 
 use crate::contract::MESSAGE_BUILD_OPS;
 

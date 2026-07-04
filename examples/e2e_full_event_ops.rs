@@ -28,7 +28,7 @@ async fn main() -> Result<()> {
         .await?;
     let message = apis
         .message_build_api
-        .create_text(&conversation.conversation_id, "hello ops", false)
+        .create_text(&conversation.conversation_id, "hello ops", false, &[])
         .await?;
     let client_msg_id = message.client_msg_id.clone();
     let _ = apis.message_api.send_no_oss(message).await?;

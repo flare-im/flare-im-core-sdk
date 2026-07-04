@@ -120,6 +120,26 @@ impl PersistingMessageStore {
         });
     }
 
+    async fn persist_message_now(&self, message: &IMMessage) -> Result<()> {
+        let user_id = self.user_id.clone();
+        let message = message.clone();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        spawn_persist(async move {
+            let result = persist_message(&user_id, &message).await;
+            let _ = tx.send(result);
+        });
+        match rx.await {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(error)) => {
+                log_storage_error("persist_message", &error);
+                Err(error)
+            }
+            Err(_) => Err(flare_im_core_sdk::FlareError::system(
+                "persist message task was cancelled",
+            )),
+        }
+    }
+
     async fn persist_outgoing_messages_in_conversation(
         &self,
         conversation_id: &str,
@@ -374,7 +394,7 @@ impl MessageWriter for PersistingMessageStore {
                 .get_by_any_message_id(lookup_id)
                 .await?
                 .unwrap_or_else(|| message.clone());
-            self.persist_message_spawn(persisted);
+            self.persist_message_now(&persisted).await?;
         }
         Ok(())
     }

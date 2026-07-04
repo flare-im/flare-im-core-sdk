@@ -1,20 +1,21 @@
 use std::time::Duration;
 
 use crate::FlareError;
-use crate::kernel::event::{ConnectionEvent, EventBus, SdkEvent};
+use crate::kernel::event::{ConnectionEvent, EventBus, SdkEvent, SdkEventKind};
 use crate::kernel::{SdkState, SyncRunContext};
 use crate::shared::error::{ErrorCode, Result};
 use crate::shared::util::delay;
 
 use super::{
-    FOREGROUND_SYNC_INITIAL_DELAY_SECS, IMClient, foreground_sync_interval_for_profile,
-    reconnect_delay_secs, should_skip_reconnect_for_disconnect_reason, spawn_im_background,
+    IMClient, reconnect_delay_secs, should_skip_reconnect_for_disconnect_reason,
+    spawn_im_background,
 };
 
 impl IMClient {
     pub(super) fn spawn_state_snapshot_watcher(&self, generation: u64, bus: EventBus) {
         let client = self.downgrade();
-        let mut rx = bus.subscribe_raw();
+        // 只消费连接事件——按 Kind 过滤使总线不再为本订阅者深克隆消息批等热事件。
+        let mut rx = bus.subscribe_filter(SdkEventKind::Connection);
         spawn_im_background(async move {
             loop {
                 let event = match rx.recv().await {
@@ -48,7 +49,7 @@ impl IMClient {
     /// 中断连接会话监听器
     pub(super) fn spawn_terminal_session_watcher(&self, generation: u64, bus: EventBus) {
         let client = self.downgrade();
-        let mut rx = bus.subscribe_raw();
+        let mut rx = bus.subscribe_filter(SdkEventKind::Connection);
         spawn_im_background(async move {
             loop {
                 let event = match rx.recv().await {
@@ -81,7 +82,7 @@ impl IMClient {
 
     pub(super) fn spawn_reconnect_session_watcher(&self, generation: u64, bus: EventBus) {
         let client = self.downgrade();
-        let mut rx = bus.subscribe_raw();
+        let mut rx = bus.subscribe_filter(SdkEventKind::Connection);
         spawn_im_background(async move {
             loop {
                 let event = match rx.recv().await {
@@ -191,33 +192,6 @@ impl IMClient {
         });
     }
 
-    pub(super) fn spawn_foreground_sync_worker(&self, generation: u64) {
-        let client = self.downgrade();
-        let interval = self.foreground_sync_interval();
-        spawn_im_background(async move {
-            delay(Duration::from_secs(FOREGROUND_SYNC_INITIAL_DELAY_SECS)).await;
-            loop {
-                let Some(client) = client.upgrade() else {
-                    break;
-                };
-                if !client.is_generation_current(generation).await {
-                    break;
-                }
-                if client.is_app_foreground_snapshot()
-                    && let Err(error) = client.sync_foreground_convergence_silent().await
-                {
-                    tracing::debug!(
-                        session_generation = generation,
-                        error = %error,
-                        "foreground conversation sync fallback failed"
-                    );
-                }
-                drop(client);
-                delay(interval).await;
-            }
-        });
-    }
-
     pub(super) async fn sync_foreground_convergence_silent(&self) -> Result<()> {
         let sync = self
             .with_engine_async(|engine| engine.conversation_summary_sync())
@@ -232,15 +206,6 @@ impl IMClient {
             SyncRunContext::silent_multidevice_private_data(),
         )
         .await
-    }
-
-    fn foreground_sync_interval(&self) -> Duration {
-        let profile = self.inner.try_read().ok().and_then(|g| {
-            g.sdk_config
-                .as_ref()
-                .and_then(|config| config.resource_profile)
-        });
-        foreground_sync_interval_for_profile(profile)
     }
 
     pub(super) async fn reconnect_snapshot(

@@ -10,15 +10,16 @@ pub(crate) fn decode_single_conversation_items(
     known_seq: u64,
 ) -> DecodedSingleConversationItems {
     let mut events = Vec::new();
+    let mut event_item_seqs = Vec::new();
     let mut messages = Vec::new();
-    let mut applied_item_seqs = Vec::new();
+    let mut covered_item_seqs = Vec::new();
     let mut has_decoded_items = false;
 
     for item in &response.items {
         match &item.payload {
             Some(SyncSliceItemPayload::Skip(_)) | Some(SyncSliceItemPayload::Tombstone(_)) => {
                 if item.conversation_seq > known_seq {
-                    applied_item_seqs.push(item.conversation_seq);
+                    covered_item_seqs.push(item.conversation_seq);
                     has_decoded_items = true;
                 }
             }
@@ -30,14 +31,12 @@ pub(crate) fn decode_single_conversation_items(
                 let item_seq = sync_item_seq(item.conversation_seq, event.conversation_seq);
                 if let Some(DomainEventPayload::Message(message)) = &event.payload {
                     if item_seq > known_seq {
-                        applied_item_seqs.push(item_seq);
+                        covered_item_seqs.push(item_seq);
                         messages.push(crate::model::IMMessage::new(message.clone()));
                     }
                 } else {
-                    if item_seq > known_seq {
-                        applied_item_seqs.push(item_seq);
-                    }
                     events.push(event.clone());
+                    event_item_seqs.push(if item_seq > known_seq { item_seq } else { 0 });
                 }
             }
             Some(SyncSliceItemPayload::Message(message)) => {
@@ -47,7 +46,7 @@ pub(crate) fn decode_single_conversation_items(
                 has_decoded_items = true;
                 let item_seq = sync_item_seq(item.conversation_seq, message.conversation_seq);
                 if item_seq > known_seq {
-                    applied_item_seqs.push(item_seq);
+                    covered_item_seqs.push(item_seq);
                     messages.push(crate::model::IMMessage::new(message.clone()));
                 }
             }
@@ -63,7 +62,8 @@ pub(crate) fn decode_single_conversation_items(
     DecodedSingleConversationItems {
         messages,
         events,
-        applied_item_seqs,
+        event_item_seqs,
+        covered_item_seqs,
         has_decoded_items,
     }
 }
@@ -108,7 +108,7 @@ mod tests {
         );
 
         assert!(decoded.has_decoded_items);
-        assert_eq!(decoded.applied_item_seqs, vec![42]);
+        assert_eq!(decoded.covered_item_seqs, vec![42]);
         assert!(decoded.messages.is_empty());
         assert!(decoded.events.is_empty());
     }
@@ -130,7 +130,7 @@ mod tests {
         );
 
         assert!(!decoded.has_decoded_items);
-        assert!(decoded.applied_item_seqs.is_empty());
+        assert!(decoded.covered_item_seqs.is_empty());
         assert!(decoded.messages.is_empty());
         assert!(decoded.events.is_empty());
     }

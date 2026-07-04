@@ -82,13 +82,57 @@ impl ConversationCommandUseCase {
             conversation_type,
         )?;
         let existing = self.store.get(&conversation_id).await?;
-        let (conversation, needs_persist) = self.identity_service.merge_or_create(
+        let (mut conversation, mut needs_persist) = self.identity_service.merge_or_create(
             existing,
             conversation_id,
             &user_id,
             source_id,
             conversation_type,
         );
+        // 单聊:把会话连同**双方**参与者一次性交服务端建立(幂等),确保对端成为可投递参与者。
+        // 否则服务端会话只含先动作的一方,首发方的消息读扩散时跳过对端 → 单聊单向不达(对端收不到)。
+        // best-effort,成功后打 single_server_established 标记避免重复 RPC;失败回退"首条消息携带成员"兜底建会话。
+        if *conversation_type == ConversationType::Single {
+            let already = conversation
+                .ext
+                .get("single_server_established")
+                .map(|v| v == "1")
+                .unwrap_or(false);
+            if !already && let Some(sync) = &self.settings_sync {
+                let mut members = vec![user_id.clone(), source_id.trim().to_string()];
+                members.retain(|m| !m.is_empty());
+                members.sort();
+                members.dedup();
+                if members.len() == 2 {
+                    match sync
+                        .ensure_conversation(
+                            &conversation.conversation_id,
+                            ConversationType::Single.to_proto_int(),
+                            ConversationType::Single.as_str(),
+                            &conversation.channel_id,
+                            members,
+                        )
+                        .await
+                    {
+                        Ok(true) => {
+                            conversation
+                                .ext
+                                .insert("single_server_established".to_string(), "1".to_string());
+                            needs_persist = true;
+                        }
+                        Ok(false) => tracing::warn!(
+                            conversation_id = %conversation.conversation_id,
+                            "single ensure_conversation returned not-ok; falling back to message-roster establishment"
+                        ),
+                        Err(error) => tracing::warn!(
+                            conversation_id = %conversation.conversation_id,
+                            %error,
+                            "single ensure_conversation rpc failed; falling back to message-roster establishment"
+                        ),
+                    }
+                }
+            }
+        }
         if save && needs_persist {
             self.store
                 .save_batch(std::slice::from_ref(&conversation))
@@ -132,6 +176,11 @@ impl ConversationCommandUseCase {
             &group_key,
             &ConversationType::Group,
         );
+        // channel_id 绝不存整张成员表:去重身份已由 conversation_id(=hash(group_key))承担,成员在
+        // participants/ext。把 "users:<全体成员>" 塞 channel_id 会让每条消息 channel_id 膨胀到 O(成员)
+        // (穿 WAL/NATS/投递),大群直接压垮管线。ad-hoc 用户集合群无外部频道名,channel_id 取恒定大小的
+        // conversation_id(merge_or_create 默认会把 source_id=group_key 当 channel_id,这里覆盖回收)。
+        conversation.channel_id = conversation.conversation_id.clone();
         if let Some(name) = display_name.map(str::trim).filter(|name| !name.is_empty()) {
             conversation.display_name = name.to_string();
         } else if conversation.display_name.trim().is_empty()
@@ -161,6 +210,42 @@ impl ConversationCommandUseCase {
         conversation
             .ext
             .insert("group_source".to_string(), "user_ids".to_string());
+
+        // 显式建群：把整张成员表一次性交服务端建群，成功后消息**永不携带成员表**（超大群建群不再受 NATS
+        // 单消息上限约束，且不把成员表落进消息行）。best-effort：失败则保留"首条消息携带成员表"的兜底建群。
+        if let Some(sync) = &self.settings_sync {
+            let business_type = ConversationType::Group.as_str().to_string();
+            match sync
+                .ensure_conversation(
+                    &conversation.conversation_id,
+                    ConversationType::Group.to_proto_int(),
+                    &business_type,
+                    &conversation.channel_id,
+                    members.clone(),
+                )
+                .await
+            {
+                Ok(true) => {
+                    conversation
+                        .ext
+                        .insert("group_server_established".to_string(), "1".to_string());
+                }
+                Ok(false) => {
+                    tracing::warn!(
+                        conversation_id = %conversation.conversation_id,
+                        "server ensure_conversation returned not-ok; falling back to message-roster establishment"
+                    );
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        conversation_id = %conversation.conversation_id,
+                        %error,
+                        "ensure_conversation rpc failed; falling back to message-roster establishment"
+                    );
+                }
+            }
+        }
+
         self.store.save_batch(&[conversation.clone()]).await?;
         Ok(conversation)
     }

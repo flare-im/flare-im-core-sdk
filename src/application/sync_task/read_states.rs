@@ -40,7 +40,9 @@ impl SyncTask for ReadStatesSyncTask {
         Box::pin(async move {
             debug!(task = "read_states", "sync phase: read_states start");
             ctx.report_progress("syncing read states");
-            let list = ctx.store.conversations.list().await?;
+            // 共享快照：与同 phase 其他任务复用一次 list 查询。
+            let list = ctx.conversations_snapshot().await?;
+            // 恒 delta（I4）：只推已读位点前进过的会话，避免每次同步 O(N) 冗余重推。
             let ack_count = handler.push_local_read_states(&list).await?;
             debug!(
                 task = "read_states",

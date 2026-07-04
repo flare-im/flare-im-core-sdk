@@ -1,9 +1,11 @@
 use flare_im_core_sdk::RawSdkEvent;
 use flare_im_core_sdk::event::{
-    ConnectionEvent, ConversationEvent, MessageEvent, NotificationEvent, SdkEvent, SyncNotify,
-    SyncPhase,
+    ConnectionEvent, ConversationEvent, MessageEvent, NotificationEvent, ReadinessStage, SdkEvent,
+    SyncNotify, SyncPhase,
 };
-use serde_json::{Value, json};
+use flare_im_core_sdk::model::message::send_ack;
+use flare_im_core_sdk::prelude::SyncRunContext;
+use flare_im_core_sdk::serde_json::{self, Value, json};
 use std::fmt::Write as _;
 
 fn message_json(message: &flare_im_core_sdk::model::IMMessage) -> Value {
@@ -21,7 +23,7 @@ fn send_ack_id(ack: &flare_im_core_sdk::model::SendAck) -> &str {
 fn send_ack_json(ack: &flare_im_core_sdk::model::SendAck) -> Value {
     let (server_msg_id, seq, timestamp, success, error_code, error_message, error_detail) =
         match ack.result.as_ref() {
-            Some(flare_proto::common::send_ack::Result::Accepted(accepted)) => (
+            Some(send_ack::Result::Accepted(accepted)) => (
                 accepted.server_msg_id.clone(),
                 accepted.conversation_seq,
                 accepted.server_time,
@@ -30,7 +32,7 @@ fn send_ack_json(ack: &flare_im_core_sdk::model::SendAck) -> Value {
                 String::new(),
                 Value::Null,
             ),
-            Some(flare_proto::common::send_ack::Result::Error(error)) => (
+            Some(send_ack::Result::Error(error)) => (
                 String::new(),
                 0,
                 0,
@@ -66,6 +68,39 @@ fn send_ack_json(ack: &flare_im_core_sdk::model::SendAck) -> Value {
         "errorMessage": error_message,
         "errorDetail": error_detail,
     })
+}
+
+fn sync_run_json(run: &SyncRunContext) -> Value {
+    json!({
+        "runId": run.run_id,
+        "trigger": run.trigger.as_str(),
+        "scope": run.scope.as_str(),
+        "visibility": run.visibility.as_str(),
+        "reason": run.reason.as_str(),
+    })
+}
+
+fn sync_phase_str(phase: &SyncPhase) -> &'static str {
+    match phase {
+        SyncPhase::Init => "Init",
+        SyncPhase::Background => "Background",
+    }
+}
+
+fn readiness_stage_str(stage: ReadinessStage) -> &'static str {
+    match stage {
+        ReadinessStage::LocalReady => "LocalReady",
+        ReadinessStage::ForegroundFresh => "ForegroundFresh",
+        ReadinessStage::Converged => "Converged",
+        ReadinessStage::Degraded => "Degraded",
+    }
+}
+
+fn with_sync_field(mut payload: Value, key: &'static str, value: Value) -> Value {
+    if let Some(map) = payload.as_object_mut() {
+        map.insert(key.to_string(), value);
+    }
+    payload
 }
 
 pub fn sdk_event_payload(ev: &SdkEvent) -> Option<(&'static str, Value)> {
@@ -165,6 +200,17 @@ pub fn sdk_event_payload(ev: &SdkEvent) -> Option<(&'static str, Value)> {
                 "typing": event.typing
             }),
         ),
+        SdkEvent::Message(MessageEvent::TypingAggregate {
+            conversation_id,
+            event,
+        }) => (
+            "message.typing_aggregate",
+            json!({
+                "conversationId": conversation_id,
+                "typingUserIds": event.typing_user_ids,
+                "typingCount": event.typing_count
+            }),
+        ),
         SdkEvent::Message(MessageEvent::Deleted {
             conversation_id,
             event,
@@ -254,29 +300,51 @@ pub fn sdk_event_payload(ev: &SdkEvent) -> Option<(&'static str, Value)> {
                 "droppedEvents": dropped_events
             }),
         ),
-        SdkEvent::Sync(SyncNotify::Started { .. }) => ("sync.started", json!({})),
-        SdkEvent::Sync(SyncNotify::Finished { phase, .. }) => {
-            let phase = match phase {
-                SyncPhase::Init => "Init",
-                SyncPhase::Background => "Background",
-            };
-            ("sync.finished", json!({ "phase": phase }))
-        }
-        SdkEvent::Sync(SyncNotify::Failed { message, .. }) => {
-            ("sync.failed", json!({ "error": message }))
-        }
+        SdkEvent::Sync(SyncNotify::Started { run }) => ("sync.started", sync_run_json(run)),
+        SdkEvent::Sync(SyncNotify::Finished { run, phase }) => (
+            "sync.finished",
+            with_sync_field(sync_run_json(run), "phase", json!(sync_phase_str(phase))),
+        ),
+        SdkEvent::Sync(SyncNotify::Failed { run, task, message }) => (
+            "sync.failed",
+            with_sync_field(
+                with_sync_field(sync_run_json(run), "task", json!(task)),
+                "error",
+                json!(message),
+            ),
+        ),
         SdkEvent::Sync(SyncNotify::Progress {
+            run,
             task,
             progress,
             detail,
-            ..
         }) => (
             "sync.progress",
-            json!({
-                "task": task,
-                "progress": progress,
-                "detail": detail
-            }),
+            with_sync_field(
+                with_sync_field(
+                    with_sync_field(sync_run_json(run), "task", json!(task)),
+                    "progress",
+                    json!(progress),
+                ),
+                "detail",
+                json!(detail),
+            ),
+        ),
+        SdkEvent::Sync(SyncNotify::TaskCompleted { run, task }) => (
+            "sync.task_completed",
+            with_sync_field(sync_run_json(run), "task", json!(task)),
+        ),
+        SdkEvent::Sync(SyncNotify::StateChanged { run, state }) => (
+            "sync.state_changed",
+            with_sync_field(sync_run_json(run), "state", json!(format!("{state:?}"))),
+        ),
+        SdkEvent::Sync(SyncNotify::Readiness { run, stage }) => (
+            "sync.readiness",
+            with_sync_field(
+                sync_run_json(run),
+                "stage",
+                json!(readiness_stage_str(*stage)),
+            ),
         ),
         SdkEvent::View(update) => (
             "view.updated",
@@ -361,7 +429,7 @@ pub fn platform_event_bridge_resync_marker(dropped_events: u64) -> SdkEvent {
 mod tests {
     use super::*;
     use flare_im_core_sdk::EventBus;
-    use flare_proto::common::SendAck;
+    use flare_im_core_sdk::model::SendAck;
 
     #[test]
     fn send_ack_event_uses_client_msg_id_when_ack_id_is_absent() {
@@ -394,6 +462,52 @@ mod tests {
         assert_eq!(
             payload.get("droppedEvents").and_then(Value::as_u64),
             Some(3)
+        );
+    }
+
+    #[test]
+    fn sync_started_payload_includes_run_context_for_warm_calibration() {
+        let run = SyncRunContext::warm_start();
+        let (_id, payload) =
+            sdk_event_payload(&SdkEvent::Sync(SyncNotify::Started { run })).unwrap();
+
+        assert_eq!(
+            payload.get("trigger").and_then(Value::as_str),
+            Some("WarmStartupCalibration")
+        );
+        assert_eq!(
+            payload.get("visibility").and_then(Value::as_str),
+            Some("NonBlocking")
+        );
+        assert_eq!(
+            payload.get("reason").and_then(Value::as_str),
+            Some("WarmStartupCalibration")
+        );
+        assert!(
+            payload
+                .get("runId")
+                .and_then(Value::as_str)
+                .is_some_and(|id| !id.is_empty())
+        );
+    }
+
+    #[test]
+    fn sync_readiness_maps_to_contract_channel_with_stage() {
+        let event = SdkEvent::Sync(SyncNotify::Readiness {
+            run: SyncRunContext::warm_start(),
+            stage: ReadinessStage::ForegroundFresh,
+        });
+        let (channel, payload) =
+            sdk_event_channel_payload(&event).expect("readiness should map to channel");
+
+        assert_eq!(channel, "im://sync_readiness");
+        assert_eq!(
+            payload.get("stage").and_then(Value::as_str),
+            Some("ForegroundFresh")
+        );
+        assert_eq!(
+            payload.get("trigger").and_then(Value::as_str),
+            Some("WarmStartupCalibration")
         );
     }
 

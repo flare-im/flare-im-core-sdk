@@ -1,4 +1,5 @@
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use super::transport_mapper::event_from_transport_action;
@@ -23,6 +24,8 @@ use flare_proto::common::{
 const REQUEST_TIMEOUT_SECS: u64 = 15;
 const RESOLVE_WAIT_STEP_MS: u64 = 100;
 const RESOLVE_WAIT_TOTAL_MS: u64 = 3_000;
+/// typing 源头节流窗口：每会话 `typing=true` 最多 1 次/此窗口（停止态 stop 不受限，立即上行）。
+const TYPING_SOURCE_THROTTLE_MS: u64 = 3_000;
 
 fn timeout() -> Duration {
     Duration::from_secs(REQUEST_TIMEOUT_SECS)
@@ -37,6 +40,8 @@ pub struct MessageMutationUseCase {
     bus: Option<EventBus>,
     locator_service: MessageLocatorService,
     mutation_service: MessageMutationService,
+    /// typing 源头节流：每会话上次发送 `typing=true` 的时刻(UNIX 毫秒,wasm 安全),窗口内抑制重复上行。
+    typing_throttle: Arc<Mutex<HashMap<String, u64>>>,
 }
 
 impl MessageMutationUseCase {
@@ -57,6 +62,7 @@ impl MessageMutationUseCase {
             bus,
             locator_service: MessageLocatorService,
             mutation_service: MessageMutationService,
+            typing_throttle: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -250,6 +256,12 @@ impl MessageMutationUseCase {
     }
 
     pub async fn typing(&self, conversation_id: &str, typing: bool) -> Result<()> {
+        // 源头节流（飞书/Telegram 标准）：每会话 `typing=true` 最多 1 次/窗口（默认 3s），把按键级
+        // 调用压成低频上行；`typing=false`(stop) 不受限、立即上行并清窗口（停止态及时）。
+        // 与网关侧聚合/去抖互补：源头降上行、网关降下行扇出。
+        if !self.should_send_typing(conversation_id, typing) {
+            return Ok(());
+        }
         let actor = self.actor().await?;
         self.sender
             .send_realtime_control_best_effort(&typing_realtime_control_packet(
@@ -259,6 +271,21 @@ impl MessageMutationUseCase {
                 typing,
             )?)
             .await
+    }
+
+    /// typing 源头节流判定。`typing=false` 总是发送（清窗口）；`typing=true` 窗口内抑制。
+    fn should_send_typing(&self, conversation_id: &str, typing: bool) -> bool {
+        let mut guard = match self.typing_throttle.lock() {
+            Ok(guard) => guard,
+            Err(_) => return true, // 锁中毒不影响有损信令语义，放行
+        };
+        typing_should_send(
+            &mut guard,
+            conversation_id,
+            typing,
+            crate::shared::util::time::now_millis(),
+            Duration::from_millis(TYPING_SOURCE_THROTTLE_MS),
+        )
     }
 
     pub async fn add_reaction(&self, message_id: &str, emoji: &str) -> Result<()> {
@@ -471,6 +498,27 @@ impl MessageMutationUseCase {
     }
 }
 
+/// typing 源头节流纯判定（便于单测）：`typing=false` 总放行并清窗口；`typing=true` 窗口内抑制、否则记录并放行。
+fn typing_should_send(
+    map: &mut HashMap<String, u64>,
+    conversation_id: &str,
+    typing: bool,
+    now: u64,
+    window: Duration,
+) -> bool {
+    if !typing {
+        map.remove(conversation_id);
+        return true;
+    }
+    if let Some(last) = map.get(conversation_id)
+        && now.saturating_sub(*last) < window.as_millis() as u64
+    {
+        return false;
+    }
+    map.insert(conversation_id.to_string(), now);
+    true
+}
+
 fn typing_realtime_control_packet(
     conversation_id: &str,
     actor: &MessageActor,
@@ -545,6 +593,34 @@ mod tests {
     use super::MessageMutationUseCase;
     use super::read_ack_packet;
     use super::typing_realtime_control_packet;
+    use super::typing_should_send;
+    use std::collections::HashMap;
+    use std::time::Duration;
+
+    #[test]
+    fn typing_source_throttle_suppresses_within_window_and_passes_stop() {
+        let mut map: HashMap<String, u64> = HashMap::new();
+        let window = Duration::from_millis(3000);
+        let t0: u64 = 1_000_000;
+        // 首次 typing → 放行
+        assert!(typing_should_send(&mut map, "c", true, t0, window));
+        // 窗口内再次 typing → 抑制
+        assert!(!typing_should_send(&mut map, "c", true, t0 + 500, window));
+        // stop 总是放行（并清窗口）
+        assert!(typing_should_send(&mut map, "c", false, t0 + 600, window));
+        // stop 清窗口后，再次 typing 立即放行
+        assert!(typing_should_send(&mut map, "c", true, t0 + 700, window));
+        // 超过窗口后 typing 再次放行
+        assert!(typing_should_send(
+            &mut map,
+            "c",
+            true,
+            t0 + 700 + window.as_millis() as u64,
+            window
+        ));
+        // 不同会话独立
+        assert!(typing_should_send(&mut map, "c2", true, t0, window));
+    }
     use crate::content::ContentBuilder;
     use crate::domain::{
         ConversationReader, ConversationStore, ConversationWriter, MessageActor,

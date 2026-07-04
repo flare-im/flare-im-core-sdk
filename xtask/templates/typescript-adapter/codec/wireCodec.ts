@@ -515,6 +515,8 @@ export function buildTextMessageRequestToMap(request: BuildTextMessageRequest): 
   return {
   conversationId: request.conversationId,
   text: request.text,
+  mentionUsers: request.mentionUsers ?? [],
+  mentionAll: request.mentionAll ?? false,
   };
 }
 
@@ -946,6 +948,7 @@ export function messageToWireMap(message: Message): Record<string, unknown> {
     senderDisplayName: message.senderDisplayName,
     ...(message.replyTo !== undefined ? { replyTo: message.replyTo } : {}),
     ...(message.quotePreview !== undefined ? { quotePreview: message.quotePreview } : {}),
+    ...(message.threadId !== undefined ? { threadId: message.threadId } : {}),
     status: message.status,
     isRead: message.isRead,
     isRecalled: message.isRecalled,
@@ -1176,6 +1179,7 @@ export function messageFromJson(value: unknown | undefined): Message {
     senderDisplayName: requiredStringField(json, 'senderDisplayName', 'Message'),
     replyTo: field(json, 'replyTo') as string | undefined,
     quotePreview: field(json, 'quotePreview') as string | undefined,
+    threadId: field(json, 'threadId') as string | undefined,
     status: requiredIntField(json, 'status', 'Message'),
     isRead: boolValue(field(json, 'isRead')),
     isRecalled: boolValue(field(json, 'isRecalled')),

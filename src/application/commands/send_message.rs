@@ -21,13 +21,14 @@ impl SendMessageCommand {
 
     /// 直接发送并落库（不走可靠队列，仅当未配置 PendingSend Reader/Writer 时使用）
     pub async fn execute(
-        &self,
+        self,
         sender: &Arc<PacketSender>,
         store: &dyn MessageStore,
         chain: &MiddlewareChain,
     ) -> Result<SendAck> {
         let ctx = MessageMiddlewareContext::new(MessageOperation::DirectSend);
-        let mut msg = self.message.clone();
+        // 消费 self：发送热路径不整体克隆 IMMessage（媒体消息 encoded_content 可达 KB 级）。
+        let mut msg = self.message;
         if let Err(error) = chain.before_send(&mut msg, &ctx).await {
             chain.notify_send_error(&msg, &error, &ctx).await;
             return Err(error);
@@ -57,12 +58,13 @@ impl SendMessageCommand {
 
     /// 经可靠队列入队（SendAck 由调用方通过 EventBus 等待）
     pub async fn execute_via_queue(
-        &self,
+        self,
         queue: &dyn ReliableSendQueuePort,
         chain: &MiddlewareChain,
     ) -> Result<()> {
         let ctx = MessageMiddlewareContext::new(MessageOperation::ReliableQueueEnqueue);
-        let mut msg = self.message.clone();
+        // 消费 self：入队热路径不整体克隆（拦截器路径仍需一份 msg 供 after_send 使用）。
+        let mut msg = self.message;
         if let Err(error) = chain.before_send(&mut msg, &ctx).await {
             chain.notify_send_error(&msg, &error, &ctx).await;
             return Err(error);

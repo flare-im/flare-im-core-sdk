@@ -3,7 +3,7 @@ use flare_im_core_sdk::model::{
     Conversation, HomeTimelineSnapshot, TimelineSyncState, ViewDelta, ViewDeltaKind, ViewUpdate,
     ViewUpdateKind,
 };
-use serde_json::{Value, json};
+use flare_im_core_sdk::serde_json::{self, Value, json};
 use std::path::Path;
 
 use crate::{emit_errors, fail, load_json, spec_dir};

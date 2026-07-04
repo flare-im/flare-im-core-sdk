@@ -36,7 +36,9 @@ pub use crate::extension::{
     merge_or_create_conversation, repair_single_chat_channel,
 };
 pub use crate::kernel::{
-    SyncContext, SyncFailurePolicy, SyncMode, SyncResult, SyncTask, SyncTaskResult,
+    ApplyOutcome, ConvergencePriority, DomainCursor, DomainDelta, DomainId, DomainItem,
+    DomainPhase, LaneSpec, SyncContext, SyncDomain, SyncFailurePolicy, SyncMode, SyncResult,
+    SyncTask, SyncTaskResult,
 };
 pub use crate::model::conversation::ConversationType;
 pub use crate::model::{Conversation, IMMessage};

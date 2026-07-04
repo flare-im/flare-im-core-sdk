@@ -7,7 +7,7 @@ use crate::content::{BuiltContent, ContentBuilder, DEFAULT_STICKER_DISPLAY_SIDE}
 use crate::model::message::IMMessage;
 use crate::shared::error::{ErrorCode, FlareError, Result};
 use flare_proto::common::{ForwardItem, ForwardMode, ImageInfo};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 pub struct MessageBuilderService;
 
@@ -126,6 +126,7 @@ impl MessageBuilderService {
         text: impl AsRef<str>,
         channel_id: Option<&str>,
         mention_all: bool,
+        mention_user_ids: &[String],
     ) -> Result<IMMessage> {
         let text_str = text.as_ref();
         let mut content_builder = ContentBuilder::text(text_str);
@@ -133,15 +134,22 @@ impl MessageBuilderService {
             let len = text_str.chars().count().min(i32::MAX as usize) as i32;
             content_builder = content_builder.mention_all(0, len.max(1));
         }
+        let mention_spans = mention_spans_for_text(text_str, mention_user_ids);
+        for (user_id, start, length) in &mention_spans {
+            content_builder = content_builder.mention_user(user_id, *start, *length);
+        }
         let content = content_builder.build();
         let mut builder = MessageBuilder::new(conversation_id, sender_id).content(content);
-        if mention_all {
-            builder = builder.attributes("mention_all", "true");
-        }
         if let Some(channel_id) = channel_id {
             builder = builder.channel(channel_id).single_chat();
         }
-        Ok(IMMessage::new(builder.build()?))
+        let mut message = IMMessage::new(builder.build()?);
+        message.mention_all = mention_all;
+        message.mention_users = mention_spans
+            .into_iter()
+            .map(|(user_id, _, _)| user_id)
+            .collect();
+        Ok(message)
     }
 
     pub fn build_quote(
@@ -192,10 +200,16 @@ impl MessageBuilderService {
         thread_id: impl Into<String>,
         text: impl AsRef<str>,
     ) -> Result<IMMessage> {
-        let content = ContentBuilder::thread(thread_id)
-            .thread_title(text.as_ref())
-            .build();
+        let thread_id = thread_id.into();
+        if thread_id.trim().is_empty() {
+            return Err(FlareError::localized(
+                ErrorCode::InvalidParameter,
+                "sdk.message.thread.invalid_thread_id",
+            ));
+        }
+        let content = ContentBuilder::text(text.as_ref()).build();
         let message = MessageBuilder::new(conversation_id, sender_id)
+            .thread(thread_id)
             .content(content)
             .build()?;
         Ok(IMMessage::new(message))
@@ -691,6 +705,26 @@ impl MessageBuilderService {
     }
 }
 
+fn mention_spans_for_text(text: &str, mention_user_ids: &[String]) -> Vec<(String, i32, i32)> {
+    let mut spans = Vec::new();
+    let mut seen = HashSet::new();
+    for user_id in mention_user_ids {
+        let user_id = user_id.trim();
+        if user_id.is_empty() || !seen.insert(user_id.to_string()) {
+            continue;
+        }
+        let token = format!("@{user_id}");
+        let Some(start_byte) = text.find(&token) else {
+            continue;
+        };
+        let start = text[..start_byte].chars().count().min(i32::MAX as usize) as i32;
+        let length = token.chars().count().min(i32::MAX as usize) as i32;
+        spans.push((user_id.to_string(), start, length.max(1)));
+    }
+    spans.sort_by_key(|(_, start, _)| *start);
+    spans
+}
+
 fn forward_item_from_source(source: &IMMessage) -> Result<ForwardItem> {
     let elem = source.content.as_ref().ok_or_else(|| {
         FlareError::localized(
@@ -806,7 +840,7 @@ mod tests {
     #[test]
     fn build_all_supported_message_types_to_strong_elem_contracts() {
         let source =
-            MessageBuilderService::build_text("conv-src", "sender-1", "source", None, false)
+            MessageBuilderService::build_text("conv-src", "sender-1", "source", None, false, &[])
                 .expect("source text");
         let quoted = ContentBuilder::text("quoted source").build();
         let rich_doc_json = r#"{"type":"doc","version":2,"children":[]}"#;
@@ -818,7 +852,7 @@ mod tests {
                 "text",
                 MessageType::Text,
                 "text",
-                MessageBuilderService::build_text("conv-1", "sender-1", "hello", None, true)
+                MessageBuilderService::build_text("conv-1", "sender-1", "hello", None, true, &[])
                     .expect("text"),
             ),
             (
@@ -838,8 +872,8 @@ mod tests {
             ),
             (
                 "thread",
-                MessageType::Thread,
-                "thread",
+                MessageType::Text,
+                "text",
                 MessageBuilderService::build_thread_reply(
                     "conv-1", "sender-1", "thread-1", "reply",
                 )
@@ -1122,20 +1156,21 @@ mod tests {
     }
 
     #[test]
-    fn build_thread_reply_keeps_reply_text_in_typed_thread_title() {
+    fn build_thread_reply_uses_typed_thread_id_and_text_content() {
         let message =
             MessageBuilderService::build_thread_reply("conv-1", "sender-1", "thread-1", "reply")
                 .expect("thread");
 
-        let Elem::Thread(thread) = message.content.as_ref().expect("thread content") else {
-            panic!("thread elem expected");
+        let Elem::Text(text) = message.content.as_ref().expect("thread reply content") else {
+            panic!("text elem expected");
         };
-        assert_eq!(thread.thread_id, "thread-1");
-        assert_eq!(thread.thread_title, "reply");
+        assert_eq!(message.thread_id.as_deref(), Some("thread-1"));
+        assert_eq!(text.text, "reply");
+        assert!(!message.attributes.contains_key("thread_id"));
         assert!(!message.attributes.contains_key("contentText"));
         assert!(
             message.text_preview.contains("reply"),
-            "thread preview should include typed title: {}",
+            "thread reply preview should include typed text: {}",
             message.text_preview
         );
     }
@@ -1181,10 +1216,12 @@ mod tests {
         .expect_err("image group requires images");
         assert_eq!(empty_group.code(), Some(ErrorCode::InvalidParameter));
 
-        let source_a = MessageBuilderService::build_text("conv-src", "sender-1", "a", None, false)
-            .expect("source a");
-        let source_b = MessageBuilderService::build_text("conv-src", "sender-1", "b", None, false)
-            .expect("source b");
+        let source_a =
+            MessageBuilderService::build_text("conv-src", "sender-1", "a", None, false, &[])
+                .expect("source a");
+        let source_b =
+            MessageBuilderService::build_text("conv-src", "sender-1", "b", None, false, &[])
+                .expect("source b");
         let bad_forward = MessageBuilderService::build_forward(
             "conv-1",
             "sender-1",
@@ -1194,6 +1231,33 @@ mod tests {
         )
         .expect_err("single forward requires exactly one source");
         assert_eq!(bad_forward.code(), Some(ErrorCode::InvalidParameter));
+    }
+
+    #[test]
+    fn build_text_materializes_structured_user_mentions() {
+        let mention_users = vec!["10".to_string(), "12".to_string()];
+        let message = MessageBuilderService::build_text(
+            "conv-mentions",
+            "sender-1",
+            "hi @10 and @12",
+            None,
+            false,
+            &mention_users,
+        )
+        .expect("text with mentions");
+
+        assert_eq!(message.mention_users, mention_users);
+        assert!(!message.mention_all);
+        let Elem::Text(text) = message.content.as_ref().expect("text content") else {
+            panic!("expected text content");
+        };
+        assert_eq!(text.mentions.len(), 2);
+        assert_eq!(text.mentions[0].user_id, "10");
+        assert_eq!(text.mentions[0].start, 3);
+        assert_eq!(text.mentions[0].length, 3);
+        assert_eq!(text.mentions[1].user_id, "12");
+        assert_eq!(text.mentions[1].start, 11);
+        assert_eq!(text.mentions[1].length, 3);
     }
 
     #[test]

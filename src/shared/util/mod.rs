@@ -39,5 +39,8 @@ pub use sqlite_store::{
     open_sqlite_store_provider_with_security, sqlite_database_url_from_path,
     sqlite_security_config_from_secure_key_store,
 };
-pub use time::{TimeoutElapsed, deadline_after, delay, is_deadline_elapsed, now_millis, timeout};
+pub use time::{
+    TimeoutElapsed, deadline_after, delay, is_deadline_elapsed, now_millis, timeout,
+    yield_for_frame,
+};
 pub use token::{CoreTokenConfig, generate_core_token};

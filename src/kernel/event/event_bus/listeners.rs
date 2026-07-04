@@ -2,7 +2,8 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock};
 
 use flare_proto::common::{
-    CapabilityPacket, CustomEvent, MessageRecallEvent, SendAck, TypingStatePacket,
+    CapabilityPacket, CustomEvent, MessageRecallEvent, ReadReceiptEvent, SendAck,
+    TypingAggregatePacket, TypingStatePacket,
 };
 
 use crate::kernel::{SdkState, SyncState};
@@ -17,9 +18,10 @@ use super::dispatch::{RecoverableRwLock, replay_after_dispatch_window};
 use super::{
     EventBus, EventReceiver, EventRoute, FilteredEventReceiver, FnAny, FnCapability, FnConnected,
     FnConversationId, FnConversationIds, FnConversationUnreadCountChanged, FnDisconnected,
-    FnExtension, FnKickedOff, FnMessage, FnMessageBatch, FnNotification, FnRecalled, FnSendAck,
-    FnSendFailed, FnServerError, FnStateChanged, FnSyncPhase, FnSyncProgress, FnSyncStateChanged,
-    FnTokenExpired, FnTyping, Subscription, same_arc, same_event_route,
+    FnExtension, FnKickedOff, FnMessage, FnMessageBatch, FnNotification, FnReadReceipt, FnRecalled,
+    FnSendAck, FnSendFailed, FnServerError, FnStateChanged, FnSyncPhase, FnSyncProgress,
+    FnSyncStateChanged, FnTokenExpired, FnTyping, FnTypingAggregate, Subscription, same_arc,
+    same_event_route,
 };
 
 impl EventBus {
@@ -270,6 +272,34 @@ impl EventBus {
     {
         let f: FnTyping = Arc::new(move |cid, e| f(cid.as_str(), &e));
         self.callback_subscription(&self.on_typing, &self.typed_callback_count, f, same_arc)
+    }
+
+    /// 注册「N 人正在输入」聚合回调（DATA realtime_control.typing_aggregate，超大群网关聚合下发）
+    pub fn on_typing_aggregate<F>(&self, f: F) -> Subscription
+    where
+        F: Fn(&str, &TypingAggregatePacket) + Send + Sync + 'static,
+    {
+        let f: FnTypingAggregate = Arc::new(move |cid, e| f(cid.as_str(), &e));
+        self.callback_subscription(
+            &self.on_typing_aggregate,
+            &self.typed_callback_count,
+            f,
+            same_arc,
+        )
+    }
+
+    /// 注册「已读回执」回调（已读光标：会话 id + ReadReceiptEvent，对端已读到 read_seq）
+    pub fn on_read_receipt<F>(&self, f: F) -> Subscription
+    where
+        F: Fn(&str, &ReadReceiptEvent) + Send + Sync + 'static,
+    {
+        let f: FnReadReceipt = Arc::new(move |cid, e| f(cid.as_str(), &e));
+        self.callback_subscription(
+            &self.on_read_receipt,
+            &self.typed_callback_count,
+            f,
+            same_arc,
+        )
     }
 
     /// 注册能力包下行（DATA capability；RTC/通话等插件信令统一走这里）。

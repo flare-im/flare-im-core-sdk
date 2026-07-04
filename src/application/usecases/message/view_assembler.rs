@@ -59,8 +59,28 @@ impl MessageViewAssembler {
 
     pub async fn hydrate_messages_for_view(&self, views: &mut [IMMessage]) -> Result<()> {
         self.hydrate_reactions_for_messages(views).await?;
-        for view in views {
-            self.fill_sender_profile(view).await;
+        self.fill_sender_profiles_for_messages(views).await?;
+        Ok(())
+    }
+
+    /// 批量填充发送者资料：去重所有 sender_id → **单次** `get_many` → 按 map 回填。
+    /// 取代此前的逐条 `fill_sender_profile`（N+1：每条消息一次 SQLite 查询），是打开大时间线慢/超时的主因。
+    async fn fill_sender_profiles_for_messages(&self, views: &mut [IMMessage]) -> Result<()> {
+        let mut sender_ids: Vec<String> = views
+            .iter()
+            .map(|v| v.sender_id().trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+        sender_ids.sort();
+        sender_ids.dedup();
+        if sender_ids.is_empty() {
+            return Ok(());
+        }
+        let profiles = self.profile_reader.get_many(&sender_ids).await?;
+        for view in views.iter_mut() {
+            if let Some(profile) = profiles.get(view.sender_id().trim()) {
+                *view = view.clone().with_sender_profile(profile.display_name());
+            }
         }
         Ok(())
     }

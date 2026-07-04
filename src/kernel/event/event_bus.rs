@@ -6,7 +6,10 @@
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock};
 
-use flare_proto::common::{CapabilityPacket, MessageRecallEvent, SendAck, TypingStatePacket};
+use flare_proto::common::{
+    CapabilityPacket, MessageRecallEvent, ReadReceiptEvent, SendAck, TypingAggregatePacket,
+    TypingStatePacket,
+};
 
 use crate::model::IMMessage;
 use tokio::sync::mpsc;
@@ -66,6 +69,8 @@ type FnSendAck = Arc<dyn Fn(SendAck) + Send + Sync>;
 type FnSendFailed = Arc<dyn Fn(String, String) + Send + Sync>;
 type FnRecalled = Arc<dyn Fn(String, MessageRecallEvent) + Send + Sync>;
 type FnTyping = Arc<dyn Fn(String, TypingStatePacket) + Send + Sync>;
+type FnTypingAggregate = Arc<dyn Fn(String, TypingAggregatePacket) + Send + Sync>;
+type FnReadReceipt = Arc<dyn Fn(String, ReadReceiptEvent) + Send + Sync>;
 type FnCapability = Arc<dyn Fn(String, CapabilityPacket) + Send + Sync>;
 type FnConversationIds = Arc<dyn Fn(Vec<String>) + Send + Sync>;
 type FnConversationId = Arc<dyn Fn(String) + Send + Sync>;
@@ -125,6 +130,8 @@ pub struct EventBus {
     on_send_failed: Arc<RwLock<Vec<FnSendFailed>>>,
     on_recalled: Arc<RwLock<Vec<FnRecalled>>>,
     on_typing: Arc<RwLock<Vec<FnTyping>>>,
+    on_typing_aggregate: Arc<RwLock<Vec<FnTypingAggregate>>>,
+    on_read_receipt: Arc<RwLock<Vec<FnReadReceipt>>>,
     capability_listeners: Arc<RwLock<Vec<FnCapability>>>,
     // Conversation
     on_conversation_synced: Arc<RwLock<Vec<FnConversationIds>>>,
@@ -197,6 +204,8 @@ impl EventBus {
         let on_send_failed = Arc::new(RwLock::new(Vec::new()));
         let on_recalled = Arc::new(RwLock::new(Vec::new()));
         let on_typing = Arc::new(RwLock::new(Vec::new()));
+        let on_typing_aggregate = Arc::new(RwLock::new(Vec::new()));
+        let on_read_receipt = Arc::new(RwLock::new(Vec::new()));
         let capability_listeners = Arc::new(RwLock::new(Vec::new()));
         let on_conversation_synced = Arc::new(RwLock::new(Vec::new()));
         let on_conversation_created = Arc::new(RwLock::new(Vec::new()));
@@ -237,6 +246,8 @@ impl EventBus {
             on_send_failed,
             on_recalled,
             on_typing,
+            on_typing_aggregate,
+            on_read_receipt,
             capability_listeners,
             on_conversation_synced,
             on_conversation_created,
@@ -262,49 +273,55 @@ impl EventBus {
         let mut shared_has_closed = false;
         let mut dropped_full = 0usize;
 
-        let subscribers = self.subscribers.safe_read("event_bus").clone();
-        for subscriber in subscribers.iter() {
-            if subscriber.tx.is_closed() {
-                has_closed = true;
-                continue;
-            }
-            if !subscriber.filter.matches(event) {
-                continue;
-            }
-            match subscriber.tx.try_send(event.clone()) {
-                Ok(()) => delivered += 1,
-                Err(mpsc::error::TrySendError::Closed(_)) => {
+        // try_send 全程同步不 await → 持读锁遍历即可，免去每次 publish 克隆整张订阅者表
+        //（含 EventFilter 内 String 的逐个克隆）——这是接收热路径，每条消息都会走到。
+        {
+            let subscribers = self.subscribers.safe_read("event_bus");
+            for subscriber in subscribers.iter() {
+                if subscriber.tx.is_closed() {
                     has_closed = true;
+                    continue;
                 }
-                Err(mpsc::error::TrySendError::Full(_)) => {
-                    subscriber.lagged.store(true, Ordering::Release);
-                    subscriber.dropped_events.fetch_add(1, Ordering::Relaxed);
-                    dropped_full += 1;
+                if !subscriber.filter.matches(event) {
+                    continue;
+                }
+                match subscriber.tx.try_send(event.clone()) {
+                    Ok(()) => delivered += 1,
+                    Err(mpsc::error::TrySendError::Closed(_)) => {
+                        has_closed = true;
+                    }
+                    Err(mpsc::error::TrySendError::Full(_)) => {
+                        subscriber.lagged.store(true, Ordering::Release);
+                        subscriber.dropped_events.fetch_add(1, Ordering::Relaxed);
+                        dropped_full += 1;
+                    }
                 }
             }
         }
 
-        let shared_subscribers = self.shared_subscribers.safe_read("event_bus").clone();
-        let mut raw_event: Option<Arc<RawSdkEvent>> = None;
-        for subscriber in shared_subscribers.iter() {
-            if subscriber.tx.is_closed() {
-                shared_has_closed = true;
-                continue;
-            }
-            if !subscriber.filter.matches(event) {
-                continue;
-            }
-            let event =
-                raw_event.get_or_insert_with(|| Arc::new(RawSdkEvent::from_event(event.clone())));
-            match subscriber.tx.try_send(Arc::clone(event)) {
-                Ok(()) => delivered += 1,
-                Err(mpsc::error::TrySendError::Closed(_)) => {
+        {
+            let shared_subscribers = self.shared_subscribers.safe_read("event_bus");
+            let mut raw_event: Option<Arc<RawSdkEvent>> = None;
+            for subscriber in shared_subscribers.iter() {
+                if subscriber.tx.is_closed() {
                     shared_has_closed = true;
+                    continue;
                 }
-                Err(mpsc::error::TrySendError::Full(_)) => {
-                    subscriber.lagged.store(true, Ordering::Release);
-                    subscriber.dropped_events.fetch_add(1, Ordering::Relaxed);
-                    dropped_full += 1;
+                if !subscriber.filter.matches(event) {
+                    continue;
+                }
+                let event = raw_event
+                    .get_or_insert_with(|| Arc::new(RawSdkEvent::from_event(event.clone())));
+                match subscriber.tx.try_send(Arc::clone(event)) {
+                    Ok(()) => delivered += 1,
+                    Err(mpsc::error::TrySendError::Closed(_)) => {
+                        shared_has_closed = true;
+                    }
+                    Err(mpsc::error::TrySendError::Full(_)) => {
+                        subscriber.lagged.store(true, Ordering::Release);
+                        subscriber.dropped_events.fetch_add(1, Ordering::Relaxed);
+                        dropped_full += 1;
+                    }
                 }
             }
         }
@@ -449,6 +466,18 @@ impl EventBus {
                         },
                     );
                 }
+                MessageEvent::TypingAggregate {
+                    conversation_id,
+                    event,
+                } => {
+                    dispatched += dispatch_callbacks_with(
+                        &self.on_typing_aggregate,
+                        || (conversation_id.clone(), event.clone()),
+                        |f, (conversation_id, event)| {
+                            f(conversation_id.clone(), event.clone());
+                        },
+                    );
+                }
                 MessageEvent::Capability {
                     conversation_id,
                     packet,
@@ -461,10 +490,21 @@ impl EventBus {
                         },
                     );
                 }
+                MessageEvent::ReadReceipt {
+                    conversation_id,
+                    event,
+                } => {
+                    dispatched += dispatch_callbacks_with(
+                        &self.on_read_receipt,
+                        || (conversation_id.clone(), event.clone()),
+                        |f, (conversation_id, event)| {
+                            f(conversation_id.clone(), event.clone());
+                        },
+                    );
+                }
                 MessageEvent::Edited { .. }
                 | MessageEvent::ReactionChanged { .. }
                 | MessageEvent::Deleted { .. }
-                | MessageEvent::ReadReceipt { .. }
                 | MessageEvent::RetentionScheduled { .. }
                 | MessageEvent::RetentionExpired { .. }
                 | MessageEvent::RetentionPurged { .. }
@@ -525,17 +565,19 @@ impl EventBus {
                 }
             },
             SdkEvent::Sync(se) => match se {
-                SyncNotify::Started { run } if run.visibility.is_user_visible() => {
+                SyncNotify::Started { run } if run.visibility.emits_status_events() => {
                     dispatched += dispatch_callbacks(&self.on_sync_started, |f| f());
                 }
-                SyncNotify::Finished { run, phase } if run.visibility.is_user_visible() => {
+                SyncNotify::Finished { run, phase } if run.visibility.emits_status_events() => {
                     dispatched += dispatch_callbacks_with(
                         &self.on_sync_finished,
                         || phase.clone(),
                         |f, phase| f(phase.clone()),
                     );
                 }
-                SyncNotify::Failed { run, task, message } if run.visibility.is_user_visible() => {
+                SyncNotify::Failed { run, task, message }
+                    if run.visibility.emits_status_events() =>
+                {
                     dispatched += dispatch_callbacks_with(
                         &self.on_sync_failed,
                         || (task.clone(), message.clone()),
@@ -547,7 +589,7 @@ impl EventBus {
                     task,
                     progress,
                     detail,
-                } if run.visibility.is_user_visible() => {
+                } if run.visibility.emits_status_events() => {
                     dispatched += dispatch_callbacks_with(
                         &self.on_sync_progress,
                         || (task.clone(), *progress, detail.clone()),
@@ -556,14 +598,14 @@ impl EventBus {
                         },
                     );
                 }
-                SyncNotify::TaskCompleted { run, task } if run.visibility.is_user_visible() => {
+                SyncNotify::TaskCompleted { run, task } if run.visibility.emits_status_events() => {
                     dispatched += dispatch_callbacks_with(
                         &self.on_sync_task_completed,
                         || task.clone(),
                         |f, task| f(task.clone()),
                     );
                 }
-                SyncNotify::StateChanged { run, state } if run.visibility.is_user_visible() => {
+                SyncNotify::StateChanged { run, state } if run.visibility.emits_status_events() => {
                     let s = *state;
                     dispatched += dispatch_callbacks(&self.on_sync_state_changed, move |f| {
                         f(s);
@@ -604,7 +646,7 @@ impl EventBus {
     }
 
     pub fn publish(&self, mut event: SdkEvent) -> PublishOutcome {
-        if matches!(&event, SdkEvent::Sync(sync) if !sync.is_user_visible()) {
+        if matches!(&event, SdkEvent::Sync(sync) if !sync.should_publish()) {
             return PublishOutcome::DroppedSilentSync;
         }
         if self.middleware.before_publish(&mut event).is_drop() {

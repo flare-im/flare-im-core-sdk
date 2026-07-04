@@ -30,6 +30,24 @@ pub struct ConversationTypePolicy {
     pub member_lookup_required: bool,
 }
 
+pub const DEFAULT_READ_FANOUT_GROUP_MEMBER_THRESHOLD: u32 = 5_000;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum ConversationFanoutMode {
+    FanOutOnWrite,
+    FanOutOnRead,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ConversationTimelinePolicy {
+    pub fanout_mode: ConversationFanoutMode,
+    pub shared_timeline: bool,
+    pub attention_scoped_subscription: bool,
+    pub member_presence_aggregation: bool,
+    pub materialize_member_table: bool,
+}
+
 pub const CONVERSATION_TYPE_WIRE_ORDER: &[ConversationType] = &[
     ConversationType::Unspecified,
     ConversationType::Single,
@@ -248,6 +266,52 @@ impl ConversationType {
 
     pub fn requires_member_lookup(self) -> bool {
         self.policy().member_lookup_required
+    }
+
+    pub fn fanout_mode(
+        self,
+        members_count: u32,
+        server_hint: Option<ConversationFanoutMode>,
+    ) -> ConversationFanoutMode {
+        server_hint.unwrap_or_else(|| {
+            self.fanout_mode_with_threshold(
+                members_count,
+                DEFAULT_READ_FANOUT_GROUP_MEMBER_THRESHOLD,
+            )
+        })
+    }
+
+    pub fn fanout_mode_with_threshold(
+        self,
+        members_count: u32,
+        large_group_threshold: u32,
+    ) -> ConversationFanoutMode {
+        match self {
+            ConversationType::Channel | ConversationType::Broadcast => {
+                ConversationFanoutMode::FanOutOnRead
+            }
+            ConversationType::Group if members_count >= large_group_threshold.max(1) => {
+                ConversationFanoutMode::FanOutOnRead
+            }
+            _ => ConversationFanoutMode::FanOutOnWrite,
+        }
+    }
+
+    pub fn timeline_policy(
+        self,
+        members_count: u32,
+        server_hint: Option<ConversationFanoutMode>,
+    ) -> ConversationTimelinePolicy {
+        let fanout_mode = self.fanout_mode(members_count, server_hint);
+        let shared_timeline = fanout_mode == ConversationFanoutMode::FanOutOnRead;
+
+        ConversationTimelinePolicy {
+            fanout_mode,
+            shared_timeline,
+            attention_scoped_subscription: shared_timeline,
+            member_presence_aggregation: shared_timeline,
+            materialize_member_table: !shared_timeline && self.requires_member_lookup(),
+        }
     }
 
     /// 与 [`flare_proto::common::ConversationType`] 数值一致（`Message.conversation_type`、Orchestrator 推送等）
@@ -506,6 +570,25 @@ impl Conversation {
             conversation_id,
             ..Default::default()
         }
+    }
+
+    /// Ensure the wire-facing route id is non-empty before exposing a local
+    /// conversation snapshot to platform SDKs.
+    ///
+    /// Authoritative summaries should always carry `channel_id`; this is a
+    /// repair path for historical/local shell rows created before a full
+    /// summary arrived. Keeping it here avoids weakening platform codecs while
+    /// still letting session refresh render recoverable local state.
+    pub fn normalize_channel_id_for_wire(&mut self) -> bool {
+        if !self.channel_id.trim().is_empty() {
+            return false;
+        }
+        let fallback = self.conversation_id.trim();
+        if fallback.is_empty() {
+            return false;
+        }
+        self.channel_id = fallback.to_string();
+        true
     }
 
     /// 已读序列号（与 last_read_seq 同义，API 对齐）
@@ -791,6 +874,17 @@ mod tests {
     }
 
     #[test]
+    fn conversation_repairs_blank_channel_id_for_wire_snapshots() {
+        let mut conversation = Conversation::from_conversation_id("2AGROUPCIDVALUE01".to_string());
+
+        assert!(conversation.normalize_channel_id_for_wire());
+        assert_eq!(conversation.channel_id, "2AGROUPCIDVALUE01");
+
+        let value = serde_json::to_value(&conversation).expect("serialize conversation");
+        assert_eq!(value["channelId"], "2AGROUPCIDVALUE01");
+    }
+
+    #[test]
     fn conversation_serializes_absent_optional_fields_as_missing() {
         let conversation = Conversation::from_conversation_id("1ATESTCIDVALUE001".to_string());
         let value = serde_json::to_value(&conversation).expect("serialize conversation");
@@ -826,5 +920,34 @@ mod tests {
             ConversationType::from("conversation_type_single"),
             ConversationType::Unspecified
         );
+    }
+
+    #[test]
+    fn fanout_policy_keeps_small_groups_on_write_path() {
+        use super::{ConversationFanoutMode, ConversationType};
+
+        assert_eq!(
+            ConversationType::Group.fanout_mode_with_threshold(999, 1000),
+            ConversationFanoutMode::FanOutOnWrite
+        );
+        assert_eq!(
+            ConversationType::Group.fanout_mode_with_threshold(1000, 1000),
+            ConversationFanoutMode::FanOutOnRead
+        );
+    }
+
+    #[test]
+    fn channel_and_broadcast_use_shared_read_timeline() {
+        use super::{ConversationFanoutMode, ConversationType};
+
+        for conversation_type in [ConversationType::Channel, ConversationType::Broadcast] {
+            let policy = conversation_type.timeline_policy(0, None);
+
+            assert_eq!(policy.fanout_mode, ConversationFanoutMode::FanOutOnRead);
+            assert!(policy.shared_timeline);
+            assert!(policy.attention_scoped_subscription);
+            assert!(policy.member_presence_aggregation);
+            assert!(!policy.materialize_member_table);
+        }
     }
 }

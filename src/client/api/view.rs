@@ -10,6 +10,7 @@ use tokio::sync::{RwLock, mpsc::error::TryRecvError};
 
 use crate::client::api::ConversationApi;
 use crate::kernel::event::{ConversationEvent, EventBus, MessageEvent, SdkEvent, SyncNotify};
+use crate::kernel::{AttentionRegistry, SessionSyncRunner};
 use crate::model::{
     BootstrapHomeTimelineRequest, CloseViewRequest, CloseViewResponse, Conversation,
     ConversationTimelineSnapshot, HomeTimelineSnapshot, IMMessage, LoadOlderTimelineViewRequest,
@@ -18,12 +19,12 @@ use crate::model::{
     ViewUpdate, ViewUpdateKind, normalized_conversation_limit, normalized_message_limit,
 };
 use crate::shared::error::{ErrorCode, FlareError, Result};
-use crate::shared::util::{BackgroundTask, delay, spawn_background_task};
+use crate::shared::util::{BackgroundTask, delay, spawn_background, spawn_background_task};
 
 const VIEW_REFRESH_DEBOUNCE: Duration = Duration::from_millis(40);
 const MAX_TIMELINE_VIEWS: usize = 8;
 const MAX_CONVERSATION_LIST_VIEWS: usize = 2;
-const MAX_TIMELINE_WINDOW_MESSAGES: usize = 500;
+const MAX_TIMELINE_WINDOW_MESSAGES: usize = 10_000;
 
 #[derive(Clone)]
 pub struct ViewApi {
@@ -32,10 +33,39 @@ pub struct ViewApi {
 
 struct ViewApiInner {
     conversation_api: ConversationApi,
+    session_sync: Option<Arc<dyn SessionSyncRunner>>,
     bus: EventBus,
+    /// 共享注意力：打开时间线即把该会话标为前台，收敛（重连/后台补齐）优先该会话——秒展示。
+    attention: AttentionRegistry,
+    /// I5：前台定向补拉的 single-flight（同会话在途去重）。
+    foreground_pull: ForegroundPullGuard,
     views: RwLock<ViewRegistrations>,
     next_id: AtomicU64,
     refresh_worker: Mutex<Option<BackgroundTask>>,
+}
+
+/// I5：前台定向补拉守卫——同会话在途只允许一个补拉，完成后释放。
+/// 与批量收敛的重叠由应用侧幂等（LWW + converger 去重）兜底；本守卫消灭的是重复网络往返。
+#[derive(Default)]
+struct ForegroundPullGuard {
+    in_flight: Mutex<HashSet<String>>,
+}
+
+impl ForegroundPullGuard {
+    /// 占用该会话的在途名额；已在途返回 false（调用方跳过本次补拉）。
+    fn try_begin(&self, conversation_id: &str) -> bool {
+        self.lock().insert(conversation_id.to_string())
+    }
+
+    fn finish(&self, conversation_id: &str) {
+        self.lock().remove(conversation_id);
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, HashSet<String>> {
+        self.in_flight
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
 }
 
 impl Drop for ViewApiInner {
@@ -137,11 +167,19 @@ fn evict_oldest<T: OrderedViewRegistration>(views: &mut HashMap<String, T>, limi
 }
 
 impl ViewApi {
-    pub fn new(conversation_api: ConversationApi, bus: EventBus) -> Self {
+    pub fn new(
+        conversation_api: ConversationApi,
+        session_sync: Option<Arc<dyn SessionSyncRunner>>,
+        bus: EventBus,
+        attention: AttentionRegistry,
+    ) -> Self {
         let api = Self {
             inner: Arc::new(ViewApiInner {
                 conversation_api,
+                session_sync,
                 bus,
+                attention,
+                foreground_pull: ForegroundPullGuard::default(),
                 views: RwLock::new(ViewRegistrations::default()),
                 next_id: AtomicU64::new(1),
                 refresh_worker: Mutex::new(None),
@@ -162,6 +200,12 @@ impl ViewApi {
             conversation_id: request.conversation_id.trim().to_string(),
             message_limit: normalized_message_limit(request.message_limit),
         };
+        // 注意力信号：打开的会话升为前台，后续收敛优先补齐它（秒展示）。app 打开会话即自动触发。
+        // I5：同时立即定向补拉该会话（P0 中断，不等下一轮收敛）——本地快照仍即时返回不被网络阻塞。
+        if !request.conversation_id.is_empty() {
+            self.inner.attention.open_timeline(&request.conversation_id);
+            self.spawn_foreground_pull(&request.conversation_id);
+        }
         let snapshot = self.timeline_snapshot(&request).await?;
         let (view_id, order) = self.next_view_id("timeline");
         self.inner.views.write().await.insert_timeline(
@@ -174,6 +218,31 @@ impl ViewApi {
             view_id,
             snapshot: ViewSnapshot::Timeline(snapshot),
         })
+    }
+
+    /// I5：打开会话触发一次该会话定向补拉（fire-and-forget）。best-effort：
+    /// 未接线/未连接时静默降级为纯 attention hint（等下一轮收敛）；single-flight 在途去重。
+    fn spawn_foreground_pull(&self, conversation_id: &str) {
+        let Some(session_sync) = self.inner.session_sync.clone() else {
+            return;
+        };
+        if !self.inner.foreground_pull.try_begin(conversation_id) {
+            return;
+        }
+        let conversation_id = conversation_id.to_string();
+        let inner = Arc::downgrade(&self.inner);
+        spawn_background(async move {
+            if let Err(error) = session_sync.request_message_sync(&conversation_id).await {
+                tracing::debug!(
+                    conversation_id = %conversation_id,
+                    error = %error,
+                    "前台定向补拉失败（best-effort，等常规收敛补齐）"
+                );
+            }
+            if let Some(inner) = inner.upgrade() {
+                inner.foreground_pull.finish(&conversation_id);
+            }
+        });
     }
 
     pub async fn load_older_timeline(
@@ -190,15 +259,22 @@ impl ViewApi {
         let requested_limit = normalized_message_limit(request.message_limit) as usize;
         let (conversation_id, before_seq, page_limit) = {
             let views = self.inner.views.read().await;
-            let registration = views.timelines.get(&view_id).ok_or_else(|| {
-                FlareError::localized(ErrorCode::InvalidParameter, "timeline view not found")
-            })?;
+            // view 已关闭（用户切走会话 / silent_refresh 替换了 view）是无害竞态：
+            // 加载更多历史对已关闭的 timeline 无意义，静默返回"无更多"而非报错打断 UI。
+            let Some(registration) = views.timelines.get(&view_id) else {
+                return Ok(ViewLoadOlderResponse {
+                    view_id,
+                    loaded_count: 0,
+                    has_more: false,
+                    update: None,
+                });
+            };
             let current_len = registration.last_snapshot.messages.len();
             if current_len >= MAX_TIMELINE_WINDOW_MESSAGES {
                 return Ok(ViewLoadOlderResponse {
                     view_id,
                     loaded_count: 0,
-                    has_more: registration.last_snapshot.has_more,
+                    has_more: false,
                     update: None,
                 });
             }
@@ -227,21 +303,48 @@ impl ViewApi {
             });
         }
 
-        let older = self
+        let mut older = self
             .inner
             .conversation_api
             .timeline_page(&conversation_id, before_seq, page_limit as u32)
             .await?;
+        let mut backfill_has_more = false;
+        if older.len() < page_limit
+            && before_seq > 1
+            && let Some(sync) = &self.inner.session_sync
+        {
+            backfill_has_more = sync
+                .request_message_backfill_before_seq(
+                    &conversation_id,
+                    before_seq,
+                    page_limit as i32,
+                )
+                .await?;
+            older = self
+                .inner
+                .conversation_api
+                .timeline_page(&conversation_id, before_seq, page_limit as u32)
+                .await?;
+        }
 
         let (loaded_count, has_more, update) = {
             let mut views = self.inner.views.write().await;
-            let registration = views.timelines.get_mut(&view_id).ok_or_else(|| {
-                FlareError::localized(ErrorCode::InvalidParameter, "timeline view not found")
-            })?;
+            // 网络往返期间 view 被关闭同属无害竞态（拉到的历史丢弃即可，用户已切走）。
+            let Some(registration) = views.timelines.get_mut(&view_id) else {
+                return Ok(ViewLoadOlderResponse {
+                    view_id,
+                    loaded_count: 0,
+                    has_more: false,
+                    update: None,
+                });
+            };
             let old = registration.last_snapshot.clone();
-            let page_was_full = older.len() >= page_limit;
-            let (new, loaded_count) =
+            let page_was_full = older.len() >= page_limit || backfill_has_more;
+            let (mut new, loaded_count) =
                 expand_timeline_snapshot(&old, &older, page_was_full, MAX_TIMELINE_WINDOW_MESSAGES);
+            if new.messages.len() >= MAX_TIMELINE_WINDOW_MESSAGES {
+                new.has_more = false;
+            }
             let has_more = new.has_more;
             let update = timeline_view_update(&view_id, &old, &new);
             registration.request.message_limit = registration
@@ -286,10 +389,22 @@ impl ViewApi {
         if view_id.is_empty() {
             return Ok(CloseViewResponse { closed: false });
         }
-        let mut views = self.inner.views.write().await;
-        let closed = views.timelines.remove(view_id).is_some()
-            || views.conversation_lists.remove(view_id).is_some();
-        Ok(CloseViewResponse { closed })
+        let (closed_timeline, closed_list) = {
+            let mut views = self.inner.views.write().await;
+            (
+                views.timelines.remove(view_id),
+                views.conversation_lists.remove(view_id).is_some(),
+            )
+        };
+        // 关时间线即清注意力前台——否则已关会话永远保持 P0，持续错误抢占收敛优先级。
+        if let Some(registration) = &closed_timeline {
+            self.inner
+                .attention
+                .close_timeline(&registration.request.conversation_id);
+        }
+        Ok(CloseViewResponse {
+            closed: closed_timeline.is_some() || closed_list,
+        })
     }
 
     async fn timeline_snapshot(
@@ -674,6 +789,9 @@ fn message_refresh_target(event: &MessageEvent) -> ViewRefreshTarget {
         | MessageEvent::Typing {
             conversation_id, ..
         }
+        | MessageEvent::TypingAggregate {
+            conversation_id, ..
+        }
         | MessageEvent::Edited {
             conversation_id, ..
         }
@@ -775,22 +893,33 @@ fn hot_timeline_snapshot(
                 .filter(|id| !id.is_empty())
         })?;
     let mut messages = snapshot.messages.clone();
+    let original_len = messages.len();
+    // key → index 一次构建：旧实现对每条 incoming 线性扫描且逐元素重算 timeline_key，
+    // 窗口放大到 1 万条后每条新消息是 O(K×W) 次 String 构造。
+    let mut index_by_key: HashMap<String, usize> = messages
+        .iter()
+        .enumerate()
+        .map(|(index, message)| (message.timeline_key(), index))
+        .collect();
     let mut changed = false;
+    // 就地更新可能改变排序字段（如 ts 补齐）→ 走全量重排兜底；纯追加走有序合并快路径。
+    let mut order_dirty = false;
 
     for message in incoming
         .iter()
         .filter(|message| message.conversation_id.trim() == conversation_id)
     {
         let key = message.timeline_key();
-        if let Some(existing) = messages
-            .iter_mut()
-            .find(|existing| existing.timeline_key() == key)
-        {
-            if json_changed(&*existing, message) {
-                *existing = message.clone();
+        if let Some(&index) = index_by_key.get(&key) {
+            if json_changed(&messages[index], message) {
+                messages[index] = message.clone();
                 changed = true;
+                if index < original_len {
+                    order_dirty = true;
+                }
             }
         } else {
+            index_by_key.insert(key, messages.len());
             messages.push(message.clone());
             changed = true;
         }
@@ -800,11 +929,27 @@ fn hot_timeline_snapshot(
         return None;
     }
 
-    messages.sort_by(IMMessage::compare_for_latest_window_desc);
-    let limit = normalized_message_limit(limit) as usize;
+    let limit = normalized_timeline_window_limit(limit);
+    let sorted_prefix_intact = !order_dirty
+        && messages[..original_len]
+            .windows(2)
+            .all(|pair| IMMessage::compare_for_timeline_asc(&pair[0], &pair[1]).is_le());
+    if sorted_prefix_intact {
+        // 常态路径（新消息追加）：现有窗口按快照不变式已 ASC 有序，只排 K 条新消息后
+        // 两路有序合并——W log W 全排 → O(W+K)。
+        let appended = messages.split_off(original_len);
+        messages = merge_sorted_timeline(messages, appended);
+    } else {
+        // 兜底（就地更新/前缀失序）：全量 ASC 重排。
+        messages.sort_by(IMMessage::compare_for_timeline_asc);
+    }
+    // 窗口截断 = 保留 ASC 尾部 limit 条（旧实现"desc 截断 + 回排 asc"的等价形式：
+    // `compare_for_latest_window_desc` 是 asc 的严格反序）。
     let truncated = messages.len() > limit;
-    messages.truncate(limit);
-    messages.sort_by(IMMessage::compare_for_timeline_asc);
+    if truncated {
+        let overflow = messages.len() - limit;
+        messages.drain(..overflow);
+    }
 
     Some(ConversationTimelineSnapshot {
         conversation: latest_conversation
@@ -813,6 +958,36 @@ fn hot_timeline_snapshot(
         messages,
         has_more: snapshot.has_more || truncated,
     })
+}
+
+/// 两路有序合并（ASC；tie 时 existing 在前，与稳定全排序对 [existing..., appended...] 的结果一致）。
+fn merge_sorted_timeline(existing: Vec<IMMessage>, mut appended: Vec<IMMessage>) -> Vec<IMMessage> {
+    if appended.is_empty() {
+        return existing;
+    }
+    appended.sort_by(IMMessage::compare_for_timeline_asc);
+    let mut merged = Vec::with_capacity(existing.len() + appended.len());
+    let mut left = existing.into_iter().peekable();
+    let mut right = appended.into_iter().peekable();
+    loop {
+        match (left.peek(), right.peek()) {
+            (Some(l), Some(r)) => {
+                if IMMessage::compare_for_timeline_asc(l, r).is_le() {
+                    merged.push(left.next().expect("peeked"));
+                } else {
+                    merged.push(right.next().expect("peeked"));
+                }
+            }
+            (Some(_), None) => merged.push(left.next().expect("peeked")),
+            (None, Some(_)) => merged.push(right.next().expect("peeked")),
+            (None, None) => break,
+        }
+    }
+    merged
+}
+
+fn normalized_timeline_window_limit(limit: u32) -> usize {
+    (limit as usize).clamp(1, MAX_TIMELINE_WINDOW_MESSAGES)
 }
 
 fn oldest_positive_seq(snapshot: &ConversationTimelineSnapshot) -> Option<u64> {
@@ -1010,8 +1185,9 @@ mod tests {
     use flare_proto::common::{Message as ProtoMessage, SendAck};
 
     use super::{
-        ViewRefreshTarget, ViewRegistrations, expand_timeline_snapshot, hot_timeline_snapshot,
-        oldest_positive_seq, timeline_view_update, view_refresh_plan, view_refresh_target,
+        ForegroundPullGuard, ViewRefreshTarget, ViewRegistrations, expand_timeline_snapshot,
+        hot_timeline_snapshot, oldest_positive_seq, timeline_view_update, view_refresh_plan,
+        view_refresh_target,
     };
     use crate::kernel::event::{MessageEvent, SdkEvent, SyncNotify, SyncPhase};
     use crate::kernel::{SyncReason, SyncRunContext, SyncScope, SyncTrigger, SyncVisibility};
@@ -1019,6 +1195,17 @@ mod tests {
         Conversation, ConversationTimelineSnapshot, IMMessage, OpenTimelineViewRequest, ViewDelta,
         ViewDeltaKind, ViewUpdateKind,
     };
+
+    #[test]
+    fn foreground_pull_guard_dedups_in_flight_and_releases_on_finish() {
+        // I5：同会话在途去重；完成后释放可再次补拉；不同会话互不影响。
+        let guard = ForegroundPullGuard::default();
+        assert!(guard.try_begin("c1"));
+        assert!(!guard.try_begin("c1"), "in-flight pull must dedupe");
+        assert!(guard.try_begin("c2"), "other conversations are independent");
+        guard.finish("c1");
+        assert!(guard.try_begin("c1"), "finished pull frees the slot");
+    }
 
     #[test]
     fn message_batch_refresh_plan_uses_hot_messages_without_timeline_query() {
@@ -1175,6 +1362,35 @@ mod tests {
     }
 
     #[test]
+    fn hot_timeline_snapshot_merges_out_of_order_incoming_into_sorted_window() {
+        // 常态合并路径：已 ASC 有序的窗口 + 乱序 incoming（含中间插入）→ 与全量重排等价。
+        let old = ConversationTimelineSnapshot {
+            conversation: None,
+            messages: vec![message("c1", "m1", 1), message("c1", "m3", 3)],
+            has_more: false,
+        };
+
+        let new = hot_timeline_snapshot(
+            &old,
+            &[message("c1", "m4", 4), message("c1", "m2", 2)],
+            10,
+            None,
+        )
+        .expect("incoming should update hot timeline");
+
+        let keys: Vec<String> = new
+            .messages
+            .iter()
+            .map(|message| message.timeline_key())
+            .collect();
+        assert_eq!(
+            keys,
+            vec!["client:m1", "client:m2", "client:m3", "client:m4"]
+        );
+        assert!(!new.has_more, "window not truncated at limit 10");
+    }
+
+    #[test]
     fn hot_timeline_snapshot_carries_latest_conversation_projection() {
         let old = ConversationTimelineSnapshot {
             conversation: Some(Conversation {
@@ -1200,6 +1416,25 @@ mod tests {
                 .and_then(|conversation| conversation.last_message_preview.as_deref()),
             Some("hello")
         );
+    }
+
+    #[test]
+    fn hot_timeline_snapshot_preserves_expanded_history_window() {
+        let old = ConversationTimelineSnapshot {
+            conversation: None,
+            messages: (1..=120)
+                .map(|seq| message("c1", &format!("m{seq}"), seq))
+                .collect(),
+            has_more: true,
+        };
+
+        let new = hot_timeline_snapshot(&old, &[message("c1", "m121", 121)], 120, None)
+            .expect("new message should update hot timeline");
+
+        assert_eq!(new.messages.len(), 120);
+        assert_eq!(new.messages[0].timeline_key(), "client:m2");
+        assert_eq!(new.messages[119].timeline_key(), "client:m121");
+        assert!(new.has_more);
     }
 
     #[test]

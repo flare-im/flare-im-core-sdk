@@ -54,6 +54,32 @@ pub struct CreateRichDocRequest {
     pub render_hints_json: Option<String>,
 }
 
+/// 是否需要随消息携带整张成员表(`group_member_ids`)。
+///
+/// ad-hoc 用户集合群(`ext["group_source"]=="user_ids"`)的成员集合**恒定**(conversation_id=hash(成员集),
+/// 加减成员即是另一个 conversation_id),服务端首条消息即建群并永久持有成员。故仅在**尚未建群**
+/// (`max_seq==0` —— 还没有任何带服务端 seq 的消息落地;乐观消息 seq=0 不计)时随消息带成员表用于建群;
+/// 一旦建立(`max_seq>0`)即省略,使每条消息回到 O(1):避免 `group_member_ids` 整表膨胀穿 WAL/NATS/投递,
+/// 并让 ingest 的 ensure 缓存生效(participants 仅发送者 → 命中缓存,跳过 O(成员) 的 CreateConversation)。
+/// 命名/可变成员群不在此优化内,仍按原样携带。同发送者消息经可靠队列**有序**到达,首条(带成员表)必先于
+/// 后续(省略)被服务端处理,且失败重试沿用首条原始载荷,故省略不会丢成员。
+fn needs_member_roster(conv: &crate::model::Conversation) -> bool {
+    let is_user_set_group = conv
+        .ext
+        .get("group_source")
+        .map(|source| source == "user_ids")
+        .unwrap_or(false);
+    // 已建群的判据(任一即可):① 显式建群 RPC 成功(get_group_by_user_ids 置 group_server_established=1)——
+    // 这样**首条消息**就不带成员表;② 已有带服务端 seq 的消息落地(max_seq>0)——RPC 失败兜底路径建群后亦不再带。
+    let server_established = conv
+        .ext
+        .get("group_server_established")
+        .map(|v| v == "1")
+        .unwrap_or(false)
+        || conv.max_seq > 0;
+    !(is_user_set_group && server_established)
+}
+
 /// 多类型消息的构建入口（不负责发送）。
 pub struct MessageBuildApi {
     current_user_id: CurrentUserIdStore,
@@ -115,7 +141,7 @@ impl MessageBuildApi {
 
         msg.channel_id = conv.channel_id.clone();
         msg.conversation_type = conv.conversation_type.to_proto_int();
-        if conv.conversation_type.is_group_chat_conversation() {
+        if conv.conversation_type.is_group_chat_conversation() && needs_member_roster(&conv) {
             let participant_ids = conv
                 .participants
                 .iter()
@@ -155,6 +181,7 @@ impl MessageBuildApi {
         conversation_id: &str,
         text: &str,
         mention_all: bool,
+        mention_user_ids: &[String],
     ) -> Result<IMMessage> {
         let sender_id = self.current_sender_id().await?;
         let msg = MessageBuilderService::build_text(
@@ -163,6 +190,7 @@ impl MessageBuildApi {
             text,
             None,
             mention_all,
+            mention_user_ids,
         )?;
         self.apply_conversation_routing(conversation_id, msg).await
     }
@@ -543,5 +571,48 @@ impl MessageBuildApi {
         let sender_id = self.current_sender_id().await?;
         let msg = MessageBuilderService::build_placeholder(conversation_id, &sender_id, reason)?;
         self.apply_conversation_routing(conversation_id, msg).await
+    }
+}
+
+#[cfg(test)]
+mod needs_member_roster_tests {
+    use super::needs_member_roster;
+    use crate::model::Conversation;
+
+    fn user_set_group(max_seq: u64) -> Conversation {
+        let mut conv = Conversation::from_conversation_id("2ATESTGROUPCID0001".to_string());
+        conv.ext
+            .insert("group_source".to_string(), "user_ids".to_string());
+        conv.max_seq = max_seq;
+        conv
+    }
+
+    #[test]
+    fn user_set_group_carries_roster_until_established() {
+        // 未建群(max_seq==0):必须带成员表用于服务端建群。
+        assert!(needs_member_roster(&user_set_group(0)));
+    }
+
+    #[test]
+    fn user_set_group_omits_roster_after_established() {
+        // 已建群(max_seq>0):成员恒定、服务端已持有 → 省略,回到 O(1)。
+        assert!(!needs_member_roster(&user_set_group(7)));
+    }
+
+    #[test]
+    fn user_set_group_omits_roster_when_server_established_flag_set() {
+        // 显式建群 RPC 成功 → 即便 max_seq==0(尚无消息),首条消息也不带成员表。
+        let mut conv = user_set_group(0);
+        conv.ext
+            .insert("group_server_established".to_string(), "1".to_string());
+        assert!(!needs_member_roster(&conv));
+    }
+
+    #[test]
+    fn non_user_set_group_always_carries_roster() {
+        // 非 ad-hoc 用户集合群(无 group_source 标记,可能可变成员)即便已建群也按原样携带,不受优化影响。
+        let mut conv = Conversation::from_conversation_id("2ATESTGROUPCID0002".to_string());
+        conv.max_seq = 99;
+        assert!(needs_member_roster(&conv));
     }
 }

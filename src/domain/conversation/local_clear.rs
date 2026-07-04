@@ -13,6 +13,12 @@ pub fn local_cleared_through_seq(ext: &HashMap<String, String>) -> u64 {
         .unwrap_or(0)
 }
 
+/// 会话的同步可见性下界：本地清空水位与服务端可见起点的较大者。
+/// 落库过滤 / 游标下界 / 同步起始位点同族共用此定义，防止漂移。
+pub fn sync_visibility_floor(conversation: &crate::model::Conversation) -> u64 {
+    local_cleared_through_seq(&conversation.ext).max(conversation.visible_after_seq)
+}
+
 pub fn set_local_cleared_through_seq(ext: &mut HashMap<String, String>, seq: u64) {
     if seq == 0 {
         ext.remove(EXT_LOCAL_CLEARED_THROUGH_SEQ);

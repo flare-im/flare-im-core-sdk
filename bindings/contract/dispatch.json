@@ -466,9 +466,15 @@
               "str_ref"
             ],
             [
-              "literal",
-              "bool",
-              false
+              "mention_all",
+              "bool_default_false"
+            ],
+            [
+              "mention_users",
+              "vec_string_default_empty",
+              {
+                "pass": "ref"
+              }
             ]
           ],
           "result": "json"

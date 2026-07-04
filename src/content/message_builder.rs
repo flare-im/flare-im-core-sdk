@@ -16,6 +16,7 @@ pub struct MessageBuilder {
     content: Option<BuiltContent>,
     conversation_type: i32,
     channel_id: String,
+    thread_id: Option<String>,
     offline_push_info: Option<OfflinePushInfo>,
     extra: std::collections::HashMap<String, String>,
 }
@@ -30,6 +31,7 @@ impl MessageBuilder {
             content: None,
             conversation_type: ConversationType::Unspecified as i32,
             channel_id: String::new(),
+            thread_id: None,
             offline_push_info: None,
             extra: std::collections::HashMap::new(),
         }
@@ -64,6 +66,12 @@ impl MessageBuilder {
 
     pub fn channel(mut self, channel_id: impl Into<String>) -> Self {
         self.channel_id = channel_id.into();
+        self
+    }
+
+    pub fn thread(mut self, thread_id: impl Into<String>) -> Self {
+        let thread_id = thread_id.into();
+        self.thread_id = (!thread_id.trim().is_empty()).then_some(thread_id);
         self
     }
 
@@ -123,6 +131,7 @@ impl MessageBuilder {
             message_seq: None,
             channel_id: self.channel_id,
             content: Some(content.inner),
+            thread_id: self.thread_id,
             status: 0,
             retention_policy: None,
             retention_state: None,

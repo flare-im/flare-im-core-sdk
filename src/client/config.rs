@@ -6,18 +6,31 @@ use flare_core::common::config_types::{
 };
 
 use crate::shared::util::RELIABLE_QUEUE_MAX_IN_FLIGHT;
-use std::{path::PathBuf, sync::LazyLock};
+use std::path::PathBuf;
+#[cfg(not(target_arch = "wasm32"))]
+use std::{
+    sync::atomic::{AtomicU64, Ordering},
+    time::{SystemTime, UNIX_EPOCH},
+};
 
-static DEFAULT_DEVICE_ID: LazyLock<String> = LazyLock::new(|| {
+#[cfg(not(target_arch = "wasm32"))]
+static DEFAULT_DEVICE_SEQ: AtomicU64 = AtomicU64::new(1);
+
+fn new_default_device_id() -> String {
     #[cfg(not(target_arch = "wasm32"))]
     {
-        format!("sdk-device-{}", std::process::id())
+        let millis = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis();
+        let seq = DEFAULT_DEVICE_SEQ.fetch_add(1, Ordering::Relaxed);
+        format!("sdk-device-{}-{millis:x}-{seq}", std::process::id())
     }
     #[cfg(target_arch = "wasm32")]
     {
         format!("sdk-web-{}", uuid::Uuid::new_v4())
     }
-});
+}
 
 /// Wire transport kind for init overlay and protocol race ordering.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -277,7 +290,7 @@ impl SdkConfig {
             .map(str::trim)
             .filter(|id| !id.is_empty())
             .map(ToOwned::to_owned)
-            .unwrap_or_else(|| DEFAULT_DEVICE_ID.clone())
+            .unwrap_or_else(new_default_device_id)
     }
 }
 
@@ -359,6 +372,9 @@ mod tests {
         let default_id = SdkConfig::default().effective_device_id();
         assert!(!default_id.trim().is_empty());
 
+        let another_default_id = SdkConfig::default().effective_device_id();
+        assert_ne!(default_id, another_default_id);
+
         let explicit = SdkConfig {
             device_id: Some("device-42".to_string()),
             ..SdkConfig::default()
@@ -378,7 +394,7 @@ impl Default for SdkConfig {
             capability_url: Some("http://localhost:50110".into()),
             online_url: Some("http://localhost:50061".into()),
             tenant_id: Some("0".into()),
-            device_id: None,
+            device_id: Some(new_default_device_id()),
             connect_timeout_secs: Some(30),
             reconnect_interval_secs: Some(5),
             max_reconnect_attempts: None,

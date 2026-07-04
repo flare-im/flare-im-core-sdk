@@ -18,9 +18,13 @@ pub use fsm::{
 };
 pub use reliable_queue::ReliableSendQueuePort;
 pub use sync::{
-    ConversationSummarySync, SessionSyncRunner, SyncContext, SyncFailurePolicy, SyncManager,
-    SyncMode, SyncPhase, SyncProgress, SyncReason, SyncResponseHandler, SyncResult, SyncRunContext,
-    SyncScope, SyncTask, SyncTaskResult, SyncTrigger, SyncVisibility,
+    ApplyOutcome, AttentionRegistry, AttentionState, ConvergeTarget, ConvergenceDriver,
+    ConvergencePriority, ConvergenceScheduler, ConvergenceTarget, ConversationSummarySync,
+    DeviceGlobalSyncPoint, DeviceGlobalSyncPointStore, DomainCursor, DomainDelta, DomainId,
+    DomainItem, DomainPhase, DrainReport, LaneSpec, RouteReport, SessionSyncRunner, StartupClass,
+    SyncContext, SyncDomain, SyncDomainRegistry, SyncFailurePolicy, SyncManager, SyncMode,
+    SyncPhase, SyncProgress, SyncReason, SyncResponseHandler, SyncResult, SyncRunContext,
+    SyncScope, SyncTask, SyncTaskResult, SyncTrigger, SyncVisibility, watermark_provably_clean,
 };
 
 /// 对外暴露的连接状态（与 kernel FSM `ConnectionState` 对齐，便于 UI 展示）

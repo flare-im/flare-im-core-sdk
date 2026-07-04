@@ -1172,6 +1172,10 @@ public func messageToJson(request: Message): String {
         case Some(value) => jsonPutString(json, "quotePreview", value)
         case None => ()
     }
+    match (request.threadId) {
+        case Some(value) => jsonPutString(json, "threadId", value)
+        case None => ()
+    }
     jsonPutInt(json, "status", Int64(request.status))
     jsonPutBool(json, "isRead", request.isRead)
     jsonPutBool(json, "isRecalled", request.isRecalled)
@@ -1218,6 +1222,7 @@ public func messageFromObject(object: CjJsonObject): Message {
     let senderDisplayName = jsonStringField(object, "senderDisplayName", "")
     let replyTo: ?String = jsonOptionalStringField(object, "replyTo")
     let quotePreview: ?String = jsonOptionalStringField(object, "quotePreview")
+    let threadId: ?String = jsonOptionalStringField(object, "threadId")
     let status = Int32(jsonIntField(object, "status", 0))
     let isRead = jsonBoolField(object, "isRead", false)
     let isRecalled = jsonBoolField(object, "isRecalled", false)
@@ -1254,6 +1259,7 @@ public func messageFromObject(object: CjJsonObject): Message {
         senderDisplayName: senderDisplayName,
         replyTo: replyTo,
         quotePreview: quotePreview,
+        threadId: threadId,
         status: status,
         isRead: isRead,
         isRecalled: isRecalled,

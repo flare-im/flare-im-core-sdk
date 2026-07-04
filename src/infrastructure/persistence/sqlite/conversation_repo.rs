@@ -5,6 +5,7 @@ use std::collections::HashMap;
 
 use async_trait::async_trait;
 use sqlx::{QueryBuilder, Row, Sqlite, SqlitePool};
+use tokio::sync::OnceCell;
 
 use crate::content::message_elem::{
     MessagePreviewElem, decoded_content_to_elem, elem_preview_storage_payload,
@@ -109,11 +110,15 @@ fn merge_identity_conversation(mut target: Conversation, mut source: Conversatio
 
 pub struct SqliteConversationRepo {
     pool: SqlitePool,
+    legacy_repair_once: OnceCell<()>,
 }
 
 impl SqliteConversationRepo {
     pub fn new(pool: SqlitePool) -> Self {
-        Self { pool }
+        Self {
+            pool,
+            legacy_repair_once: OnceCell::new(),
+        }
     }
 
     async fn delete_invalid_conversation_rows(&self) -> Result<()> {
@@ -308,6 +313,13 @@ impl SqliteConversationRepo {
         Ok(())
     }
 
+    async fn ensure_legacy_repair(&self) -> Result<()> {
+        self.legacy_repair_once
+            .get_or_try_init(|| async { self.repair_missing_conversations_from_messages().await })
+            .await
+            .map(|_| ())
+    }
+
     fn select_with_latest_visible_message(where_clause: &str) -> String {
         format!(
             r#"SELECT c.conversation_id, c.conversation_type, c.business_type, c.channel_id,
@@ -498,7 +510,7 @@ impl ConversationReader for SqliteConversationRepo {
         if conversation_id.trim().is_empty() {
             return Ok(None);
         }
-        self.repair_missing_conversations_from_messages().await?;
+        self.ensure_legacy_repair().await?;
         let sql = Self::select_with_latest_visible_message("WHERE c.conversation_id = ?");
         let row = sqlx::query(&sql)
             .bind(conversation_id)
@@ -508,9 +520,51 @@ impl ConversationReader for SqliteConversationRepo {
         row.map(|r| self.row_to_conversation(&r)).transpose()
     }
 
+    /// 存在性探测：启动分类无需整张 JOIN 列表。
+    async fn has_any(&self) -> Result<bool> {
+        let row: (i64,) = sqlx::query_as(
+            "SELECT EXISTS(SELECT 1 FROM conversations WHERE TRIM(COALESCE(conversation_id, '')) != '' LIMIT 1)",
+        )
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| FlareError::localized(ErrorCode::DatabaseError, e.to_string()))?;
+        Ok(row.0 != 0)
+    }
+
+    /// I7：单条 IN 查询批量点查（分块守 SQLite 绑定变量上限）。
+    async fn get_many(&self, conversation_ids: &[String]) -> Result<Vec<Conversation>> {
+        let ids: Vec<&String> = conversation_ids
+            .iter()
+            .filter(|id| !id.trim().is_empty())
+            .collect();
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        self.ensure_legacy_repair().await?;
+        let mut out = Vec::with_capacity(ids.len());
+        for chunk in ids.chunks(super::SQLITE_IN_CHUNK) {
+            let placeholders = super::in_placeholders(chunk.len());
+            let sql = Self::select_with_latest_visible_message(&format!(
+                "WHERE c.conversation_id IN ({placeholders})"
+            ));
+            let mut query = sqlx::query(&sql);
+            for conversation_id in chunk {
+                query = query.bind(conversation_id.as_str());
+            }
+            let rows = query
+                .fetch_all(&self.pool)
+                .await
+                .map_err(|e| FlareError::localized(ErrorCode::DatabaseError, e.to_string()))?;
+            for row in rows {
+                out.push(self.row_to_conversation(&row)?);
+            }
+        }
+        Ok(out)
+    }
+
     /// 列表：与 idx_conversations_sort 一致 — is_archived → is_pinned DESC → last_message_at DESC
     async fn list(&self) -> Result<Vec<Conversation>> {
-        self.repair_missing_conversations_from_messages().await?;
+        self.ensure_legacy_repair().await?;
         let sql = Self::select_with_latest_visible_message(
             "WHERE TRIM(COALESCE(c.conversation_id, '')) != ''
              ORDER BY c.is_archived ASC, c.is_pinned DESC, COALESCE(last_message_at, 0) DESC",
@@ -527,7 +581,7 @@ impl ConversationReader for SqliteConversationRepo {
     }
 
     async fn list_by_query(&self, query: &ConversationListQuery) -> Result<Vec<Conversation>> {
-        self.repair_missing_conversations_from_messages().await?;
+        self.ensure_legacy_repair().await?;
         let base = Self::select_with_latest_visible_message(
             "WHERE TRIM(COALESCE(c.conversation_id, '')) != ''",
         );
@@ -778,8 +832,7 @@ impl ConversationWriter for SqliteConversationRepo {
 
             // Server-visible history boundary is authoritative from the incoming summary.
             // Local clear is preserved by its explicit local_cleared_through_seq marker.
-            let local_cleared_floor =
-                local_cleared_through_seq(&merged.ext).max(merged.visible_after_seq);
+            let local_cleared_floor = crate::domain::sync_visibility_floor(&merged);
             merged.visible_after_seq = local_cleared_floor;
             if local_cleared_floor > 0 {
                 merged.last_read_seq = merged.last_read_seq.max(local_cleared_floor);
@@ -1173,6 +1226,44 @@ impl ConversationWriter for SqliteConversationRepo {
         .map_err(|e| FlareError::localized(ErrorCode::DatabaseError, e.to_string()))?;
         let max_seq = row.try_get::<i64, _>("max_seq").unwrap_or(0).max(0) as u64;
         Ok(max_seq)
+    }
+
+    /// I7：GROUP BY 一次查询批量取本地最大 seq（分块守 SQLite 绑定变量上限）。
+    async fn get_local_max_seqs(
+        &self,
+        conversation_ids: &[String],
+    ) -> Result<std::collections::HashMap<String, u64>> {
+        let mut out = std::collections::HashMap::with_capacity(conversation_ids.len());
+        for chunk in conversation_ids.chunks(super::SQLITE_IN_CHUNK) {
+            if chunk.is_empty() {
+                continue;
+            }
+            let placeholders = super::in_placeholders(chunk.len());
+            let sql = format!(
+                "SELECT conversation_id, COALESCE(MAX(conversation_seq), 0) AS max_seq
+                 FROM messages
+                 WHERE conversation_id IN ({placeholders})
+                 GROUP BY conversation_id"
+            );
+            let mut query = sqlx::query(&sql);
+            for conversation_id in chunk {
+                query = query.bind(conversation_id);
+            }
+            let rows = query
+                .fetch_all(&self.pool)
+                .await
+                .map_err(|e| FlareError::localized(ErrorCode::DatabaseError, e.to_string()))?;
+            for row in rows {
+                let conversation_id: String = row.try_get("conversation_id").unwrap_or_default();
+                let max_seq = row.try_get::<i64, _>("max_seq").unwrap_or(0).max(0) as u64;
+                out.insert(conversation_id, max_seq);
+            }
+        }
+        // 无消息的会话补 0，保证返回表覆盖全部入参。
+        for conversation_id in conversation_ids {
+            out.entry(conversation_id.clone()).or_insert(0);
+        }
+        Ok(out)
     }
 
     async fn apply_user_profile_snapshot(

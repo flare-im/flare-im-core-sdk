@@ -188,8 +188,10 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     })?;
 
     let (received_tx, mut received_rx) = mpsc::unbounded_channel();
-    let _bob_messages = bob.on_message(move |message| {
-        let _ = received_tx.send((*message).clone());
+    let _bob_messages = bob.on_message_batch(move |messages| {
+        for message in messages {
+            let _ = received_tx.send(message.clone());
+        }
     })?;
 
     let conversation = alice_apis
@@ -205,7 +207,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         for _ in 0..5 {
             match alice_apis
                 .message_build_api
-                .create_text(&conversation.conversation_id, &text, false)
+                .create_text(&conversation.conversation_id, &text, false, &[])
                 .await
             {
                 Ok(built) => {

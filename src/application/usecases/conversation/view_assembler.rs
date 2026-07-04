@@ -3,6 +3,7 @@ use std::sync::Arc;
 use crate::domain::{ConversationStore, UserReader};
 use crate::model::{Conversation, ConversationListQuery};
 use crate::shared::error::Result;
+use tracing::warn;
 
 pub struct ConversationViewAssembler {
     store: Arc<dyn ConversationStore>,
@@ -18,12 +19,20 @@ impl ConversationViewAssembler {
     }
 
     pub async fn hydrate_conversation(&self, mut conversation: Conversation) -> Conversation {
+        let should_persist = conversation.normalize_channel_id_for_wire();
         if let Some(last) = conversation.last_message()
             && !last.sender_id.is_empty()
             && let Ok(Some(profile)) = self.profile_reader.get(&last.sender_id).await
         {
             conversation =
                 conversation.with_last_sender(profile.display_name(), &profile.avatar_url);
+        }
+        if should_persist && let Err(error) = self.store.save_one(&conversation).await {
+            warn!(
+                conversation_id = %conversation.conversation_id,
+                error = %error,
+                "failed to persist repaired conversation channel_id"
+            );
         }
         conversation
     }
@@ -97,5 +106,46 @@ impl ConversationViewAssembler {
 
     pub async fn list_raw(&self) -> Result<Vec<Conversation>> {
         self.store.list().await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use crate::domain::{ConversationReader, ConversationWriter};
+    use crate::infrastructure::persistence::MemoryUserProfileStore;
+    use crate::model::conversation::ConversationType;
+    use crate::storage::MemoryConversationStore;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn list_repairs_and_persists_blank_channel_id_before_wire_decode() {
+        let store = Arc::new(MemoryConversationStore::new());
+        let profile_reader = Arc::new(MemoryUserProfileStore::new());
+        store
+            .save_one(&Conversation {
+                conversation_id: "2AGROUPCIDVALUE01".to_string(),
+                conversation_type: ConversationType::Group,
+                channel_id: String::new(),
+                display_name: "Group".to_string(),
+                ..Default::default()
+            })
+            .await
+            .expect("seed broken local conversation");
+
+        let assembler = ConversationViewAssembler::new(store.clone(), profile_reader);
+        let list = assembler.list(false).await.expect("list conversations");
+
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].channel_id, "2AGROUPCIDVALUE01");
+
+        let persisted = store
+            .get("2AGROUPCIDVALUE01")
+            .await
+            .expect("load repaired conversation")
+            .expect("conversation exists");
+        assert_eq!(persisted.channel_id, "2AGROUPCIDVALUE01");
     }
 }

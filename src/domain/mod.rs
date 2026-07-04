@@ -4,7 +4,9 @@
 //! 由本地 UserProfile 缓存或同步填充，供 UI 列表与详情展示。
 
 pub mod conversation;
+mod download_manifest;
 mod media_cache;
+mod media_progressive;
 mod message;
 mod pending_send;
 mod repository;
@@ -14,7 +16,9 @@ mod upload_manifest;
 mod user_profile;
 
 pub use conversation::*;
+pub use download_manifest::{DownloadManifestState, MediaDownloadManifestVo, MediaDownloadPartVo};
 pub use media_cache::{MediaCacheEntryVo, MediaCacheStatsVo};
+pub use media_progressive::{MediaProgressiveEvent, MediaProgressiveStage, MediaProgressiveState};
 pub use message::*;
 pub use pending_send::PendingSendVo;
 pub use repository::*;

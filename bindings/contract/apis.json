@@ -182,6 +182,18 @@
           "core": "IMClient::sync_messages",
           "c": "flare_sdk_sync_messages",
           "tauri": "sdk_sync_messages"
+        },
+        {
+          "id": "sync.bootstrap_startup_home",
+          "core": "IMClient::bootstrap_startup_home",
+          "c": "flare_sdk_invoke_json",
+          "tauri": null
+        },
+        {
+          "id": "sync.conversation_history_backfill",
+          "core": "IMClient::backfill_conversation_history",
+          "c": "flare_sdk_invoke_json",
+          "tauri": null
         }
       ]
     },

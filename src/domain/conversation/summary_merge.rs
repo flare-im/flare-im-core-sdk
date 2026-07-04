@@ -76,7 +76,7 @@ pub fn merge_incoming_conversation_summary(
         );
     }
 
-    let local_cleared_floor = local_cleared_through_seq(&merged.ext).max(merged.visible_after_seq);
+    let local_cleared_floor = crate::domain::sync_visibility_floor(&merged);
     merged.visible_after_seq = local_cleared_floor;
     if local_cleared_floor > 0 {
         merged.last_read_seq = merged.last_read_seq.max(local_cleared_floor);

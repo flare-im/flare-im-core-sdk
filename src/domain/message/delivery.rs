@@ -61,6 +61,15 @@ pub enum IncomingMessageConvergenceDecision {
 pub struct MessageDeliveryService;
 
 impl MessageDeliveryService {
+    pub fn normalize_incoming_server_state(message: &mut IMMessage) {
+        let has_server_identity =
+            !message.server_id.trim().is_empty() && message.conversation_seq > 0;
+        let is_pending_wire_status = message.status <= MessageStatus::Created as i32;
+        if has_server_identity && is_pending_wire_status {
+            message.status = MessageStatus::Sent as i32;
+        }
+    }
+
     fn apply_send_ack_state(message: &mut IMMessage) {
         message.local_state = MessageLocalState {
             sending: false,
@@ -233,10 +242,11 @@ impl MessageDeliveryService {
     pub fn durable_accepted_from_ack(ack: &SendAck) -> Option<&SendAccepted> {
         let accepted = Self::accepted_from_ack(ack)?;
         match accepted.durability() {
-            SendAckDurability::WalAccepted
-            | SendAckDurability::BrokerAccepted
-            | SendAckDurability::Persisted => Some(accepted),
-            SendAckDurability::Unspecified | SendAckDurability::TransientAccepted => None,
+            SendAckDurability::Persisted => Some(accepted),
+            SendAckDurability::Unspecified
+            | SendAckDurability::TransientAccepted
+            | SendAckDurability::WalAccepted
+            | SendAckDurability::BrokerAccepted => None,
         }
     }
 
@@ -330,18 +340,18 @@ mod tests {
     }
 
     #[test]
-    fn durable_accepted_ack_requires_recoverable_boundary() {
+    fn durable_accepted_ack_requires_persisted_boundary() {
         assert!(
             MessageDeliveryService::durable_accepted_from_ack(&accepted_ack(
                 SendAckDurability::WalAccepted
             ))
-            .is_some()
+            .is_none()
         );
         assert!(
             MessageDeliveryService::durable_accepted_from_ack(&accepted_ack(
                 SendAckDurability::BrokerAccepted
             ))
-            .is_some()
+            .is_none()
         );
         assert!(
             MessageDeliveryService::durable_accepted_from_ack(&accepted_ack(
@@ -438,6 +448,25 @@ mod tests {
         );
 
         assert_eq!(decision, IncomingMessageConvergenceDecision::DropDuplicate);
+    }
+
+    #[test]
+    fn incoming_server_backed_created_status_is_normalized_to_sent() {
+        let mut incoming = IMMessage::new(flare_proto::common::Message::default());
+        incoming.server_id = "server-1".to_string();
+        incoming.conversation_seq = 7;
+        incoming.status = MessageStatus::Created as i32;
+
+        MessageDeliveryService::normalize_incoming_server_state(&mut incoming);
+
+        assert_eq!(incoming.status, MessageStatus::Sent as i32);
+
+        let mut local_only = IMMessage::new(flare_proto::common::Message::default());
+        local_only.status = MessageStatus::Created as i32;
+
+        MessageDeliveryService::normalize_incoming_server_state(&mut local_only);
+
+        assert_eq!(local_only.status, MessageStatus::Created as i32);
     }
 
     #[test]

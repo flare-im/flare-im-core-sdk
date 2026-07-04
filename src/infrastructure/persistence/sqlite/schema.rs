@@ -3,7 +3,7 @@
 use crate::shared::error::{ErrorCode, FlareError, Result};
 use sqlx::{Row, SqlitePool};
 
-const CURRENT_SCHEMA_VERSION: i64 = 2;
+const CURRENT_SCHEMA_VERSION: i64 = 3;
 
 fn db_err(e: sqlx::Error) -> FlareError {
     FlareError::localized(ErrorCode::DatabaseError, e.to_string())
@@ -110,6 +110,7 @@ async fn ensure_current_message_columns(pool: &SqlitePool) -> Result<()> {
         ("is_edited", "is_edited INTEGER NOT NULL DEFAULT 0"),
         ("reply_to", "reply_to TEXT"),
         ("quote_preview", "quote_preview TEXT"),
+        ("thread_id", "thread_id TEXT"),
         ("mention_users", "mention_users TEXT"),
         ("mention_all", "mention_all INTEGER NOT NULL DEFAULT 0"),
         ("attributes", "attributes TEXT"),
@@ -227,6 +228,13 @@ async fn migrate_to_v2(pool: &SqlitePool) -> Result<()> {
     backfill_messages_fts(pool).await
 }
 
+async fn migrate_to_v3(pool: &SqlitePool) -> Result<()> {
+    ensure_current_message_columns(pool).await?;
+    ensure_current_conversation_columns(pool).await?;
+    create_messages_fts(pool).await?;
+    backfill_messages_fts(pool).await
+}
+
 async fn run_migrations(pool: &SqlitePool) -> Result<()> {
     let mut version = current_user_version(pool).await?;
     if version > CURRENT_SCHEMA_VERSION {
@@ -251,6 +259,14 @@ async fn run_migrations(pool: &SqlitePool) -> Result<()> {
         }
         set_user_version(pool, 2).await?;
         version = 2;
+    }
+
+    if version < 3 {
+        if !upgraded_from_empty {
+            migrate_to_v3(pool).await?;
+        }
+        set_user_version(pool, 3).await?;
+        version = 3;
     }
 
     debug_assert_eq!(version, CURRENT_SCHEMA_VERSION);
@@ -284,6 +300,7 @@ pub async fn init_schema(pool: &SqlitePool) -> Result<()> {
             is_edited INTEGER NOT NULL DEFAULT 0,
             reply_to TEXT,
             quote_preview TEXT,
+            thread_id TEXT,
             mention_users TEXT,
             mention_all INTEGER NOT NULL DEFAULT 0,
             attributes TEXT,
@@ -680,7 +697,7 @@ mod tests {
                 .await
                 .unwrap()
         );
-        assert_eq!(current_user_version(&pool).await.unwrap(), 2);
+        assert_eq!(current_user_version(&pool).await.unwrap(), 3);
 
         sqlx::query(
             r#"INSERT INTO messages (

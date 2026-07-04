@@ -22,6 +22,7 @@ pub const CONTRACT_EVENT_IDS: &[&str] = &[
     "message.reaction_changed",
     "message.deleted",
     "message.read_receipt",
+    "message.typing_aggregate",
     "message.retention_scheduled",
     "message.retention_expired",
     "message.retention_purged",
@@ -44,6 +45,7 @@ pub const CONTRACT_EVENT_IDS: &[&str] = &[
     "sync.task_completed",
     "sync.state_changed",
     "sync.resync_needed",
+    "sync.readiness",
     "view.updated",
     "extension.event",
 ];
@@ -69,6 +71,7 @@ pub const WEB_EVENT_ROUTES: &[(&str, &str)] = &[
     ("message.reaction_changed", "im://message_reaction_changed"),
     ("message.deleted", "im://message_deleted"),
     ("message.read_receipt", "im://message_read_receipt"),
+    ("message.typing_aggregate", "im://message_typing_aggregate"),
     (
         "message.retention_scheduled",
         "im://message_retention_scheduled",
@@ -100,6 +103,7 @@ pub const WEB_EVENT_ROUTES: &[(&str, &str)] = &[
     ("sync.task_completed", "im://sync_completed"),
     ("sync.state_changed", "im://sync_notify_state_changed"),
     ("sync.resync_needed", "im://resync_needed"),
+    ("sync.readiness", "im://sync_readiness"),
     ("view.updated", "im://view_updated"),
     ("extension.event", "im://extension"),
 ];

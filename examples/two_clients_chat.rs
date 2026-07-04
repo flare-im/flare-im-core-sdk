@@ -246,7 +246,7 @@ impl ChatSide {
         let message = self
             .apis
             .message_build_api
-            .create_text(&conversation.conversation_id, text, false)
+            .create_text(&conversation.conversation_id, text, false, &[])
             .await?;
         let ack = self.apis.message_api.send_no_oss(message).await?;
         info!(

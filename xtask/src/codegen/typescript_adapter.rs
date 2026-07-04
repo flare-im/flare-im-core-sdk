@@ -183,11 +183,14 @@ fn ts_build_wire_object_lines(
             .get("required")
             .and_then(Value::as_bool)
             .unwrap_or(true);
+        let default_literal = ts_field_default_literal(field);
         let access = format!("{receiver}.{name}");
         if enums.contains_key(type_name) {
             let wire_expr = ts_enum_wire_index_expr(type_name, &access, enums);
             if required {
                 lines.push(format!("{indent}{wire}: {wire_expr},"));
+            } else if let Some(default_literal) = default_literal.as_ref() {
+                lines.push(format!("{indent}{wire}: {wire_expr} ?? {default_literal},"));
             } else {
                 lines.push(format!(
                     "{indent}...({access} !== undefined ? {{ {wire}: {wire_expr} }} : {{}}),"
@@ -198,7 +201,15 @@ fn ts_build_wire_object_lines(
             "String" | "Boolean" | "Int32" | "Int64" | "UInt32" | "UInt64" | "Float" | "Double"
         ) {
             if required || type_name == "Boolean" {
-                lines.push(format!("{indent}{wire}: {access},"));
+                if required {
+                    lines.push(format!("{indent}{wire}: {access},"));
+                } else if let Some(default_literal) = default_literal.as_ref() {
+                    lines.push(format!("{indent}{wire}: {access} ?? {default_literal},"));
+                } else {
+                    lines.push(format!("{indent}{wire}: {access},"));
+                }
+            } else if let Some(default_literal) = default_literal.as_ref() {
+                lines.push(format!("{indent}{wire}: {access} ?? {default_literal},"));
             } else {
                 lines.push(format!(
                     "{indent}...({access} !== undefined ? {{ {wire}: {access} }} : {{}}),"
@@ -208,18 +219,26 @@ fn ts_build_wire_object_lines(
             lines.push(format!("{indent}{wire}: {access},"));
         } else if is_list_type_name(type_name) {
             let inner = list_inner_type_name(type_name);
-            if enums.contains_key(inner) {
-                lines.push(format!(
-                    "{indent}...({access}.length > 0 ? {{ {wire}: {access} }} : {{}}),"
-                ));
+            let list_source = if default_literal.as_deref() == Some("[]") {
+                format!("({access} ?? [])")
+            } else {
+                access.to_string()
+            };
+            let value_expr = if enums.contains_key(inner) {
+                list_source.clone()
             } else if matches!(inner, "String" | "Int32" | "Int64" | "Float" | "Double") {
-                lines.push(format!(
-                    "{indent}...({access}.length > 0 ? {{ {wire}: {access} }} : {{}}),"
-                ));
+                list_source.clone()
             } else {
                 let map_fn = ts_model_to_map_fn(inner);
+                format!("{list_source}.map((item) => {map_fn}(item))")
+            };
+            if required {
+                lines.push(format!("{indent}{wire}: {value_expr},"));
+            } else if default_literal.is_some() {
+                lines.push(format!("{indent}{wire}: {value_expr},"));
+            } else {
                 lines.push(format!(
-                    "{indent}...({access}.length > 0 ? {{ {wire}: {access}.map((item) => {map_fn}(item)) }} : {{}}),"
+                    "{indent}...({access} !== undefined ? {{ {wire}: {value_expr} }} : {{}}),"
                 ));
             }
         } else if type_name == "MessageContent" {
@@ -272,6 +291,15 @@ fn ts_build_wire_object_lines(
         }
     }
     lines
+}
+
+fn ts_field_default_literal(field: &Value) -> Option<String> {
+    field.get("default").and_then(|value| match value {
+        Value::Bool(_) | Value::Number(_) | Value::String(_) | Value::Array(_) | Value::Null => {
+            serde_json::to_string(value).ok()
+        }
+        Value::Object(_) => None,
+    })
 }
 
 fn emit_typescript_enum_wire_orders(spec: &Value) -> String {
@@ -630,6 +658,9 @@ fn ts_listener_predicate_expr(name: &str) -> Option<&'static str> {
             Some("eventEventIs(event, 'message', MessageEventName.ReactionChanged)")
         }
         "onInputStatusChanged" => Some("eventEventIs(event, 'message', MessageEventName.Typing)"),
+        "onTypingAggregateChanged" => {
+            Some("eventEventIs(event, 'message', MessageEventName.TypingAggregate)")
+        }
         "onMessageBurned" => Some("eventNameIs(event, 'message', MessageEventName.Burned)"),
         "onMessagePinned" => Some("eventNameIs(event, 'message', MessageEventName.Pinned)"),
         "onMessageUnpinned" => Some("eventNameIs(event, 'message', MessageEventName.Unpinned)"),
@@ -735,6 +766,7 @@ fn ts_event_decoder_expr(entry: &TypescriptEventRegistryEntry) -> String {
                 .to_string()
         }
         "message.typing" => "typingEvent(payload)".to_string(),
+        "message.typing_aggregate" => "typingAggregateEvent(payload)".to_string(),
         "message.reaction_changed" => "reactionChangedEvent(payload)".to_string(),
         "message.read_receipt" => "readReceiptEvent(payload)".to_string(),
         "message.presence_changed" => "presenceChangedEvent(payload)".to_string(),
@@ -771,7 +803,7 @@ fn ts_event_decoder_expr(entry: &TypescriptEventRegistryEntry) -> String {
         }
         "sync.progress" => "syncProgressEvent(payload)".to_string(),
         "view.updated" => "viewUpdatedEvent(payload)".to_string(),
-        "extension.event" => "contractEvent(\"extension\", \"extension\", payload)".to_string(),
+        "extension.event" => "capabilityEvent(payload)".to_string(),
         _ => "undefined".to_string(),
     }
 }
@@ -871,6 +903,7 @@ fn emit_typescript_native_event_decoder(
         "function sdkErrorPayloadFromJson(value: unknown): SdkErrorPayload | undefined {".to_string(),
         "  if (value === undefined || value === null) return undefined;".to_string(),
         "  const decoded = wireDecodeResponse(value);".to_string(),
+        "  if (typeof decoded === 'string') return undefined;".to_string(),
         "  if (!decoded || typeof decoded !== 'object' || Array.isArray(decoded)) invalidEventField('error', 'object');".to_string(),
         "  const record = decoded as Record<string, unknown>;".to_string(),
         "  return {".to_string(),
@@ -896,11 +929,12 @@ fn emit_typescript_native_event_decoder(
         String::new(),
         "function connectionEvent(name: ConnectionEventName, state: SdkConnectionState, event: string, payload: unknown): ConnectionEvent & Record<string, unknown> {".to_string(),
         "  const record = eventPayloadRecord(payload);".to_string(),
-        "  const error = sdkErrorPayloadFromJson(record.error);".to_string(),
+        "  const { error: rawError, ...rest } = record;".to_string(),
+        "  const error = sdkErrorPayloadFromJson(rawError);".to_string(),
         "  const reason = optionalString(record.reason, 'reason');".to_string(),
         "  const attempt = optionalNumber(record.attempt, 'attempt');".to_string(),
         "  return {".to_string(),
-        "    ...record,".to_string(),
+        "    ...rest,".to_string(),
         "    type: 'connection',".to_string(),
         "    event,".to_string(),
         "    name,".to_string(),
@@ -946,9 +980,10 @@ fn emit_typescript_native_event_decoder(
         String::new(),
         "function messageSendFailedEvent(payload: unknown): MessageSendFailedEvent & Record<string, unknown> {".to_string(),
         "  const record = eventPayloadRecord(payload);".to_string(),
-        "  const error = sdkErrorPayloadFromJson(record.error);".to_string(),
+        "  const { error: rawError, ...rest } = record;".to_string(),
+        "  const error = sdkErrorPayloadFromJson(rawError);".to_string(),
         "  return {".to_string(),
-        "    ...record,".to_string(),
+        "    ...rest,".to_string(),
         "    type: 'message',".to_string(),
         "    event: 'send_failed',".to_string(),
         "    clientMsgId: requiredString(record.clientMsgId, 'clientMsgId'),".to_string(),
@@ -977,6 +1012,12 @@ fn emit_typescript_native_event_decoder(
         "  return { ...record, type: 'message', event: 'typing', conversationId: requiredString(record.conversationId, 'conversationId'), userId: requiredString(record.userId, 'userId'), typing: requiredBoolean(record.typing, 'typing') };".to_string(),
         "}".to_string(),
         String::new(),
+        "function typingAggregateEvent(payload: unknown): TypingAggregateEvent & Record<string, unknown> {".to_string(),
+        "  const record = eventPayloadRecord(payload);".to_string(),
+        "  const typingUserIds = requiredArray(record.typingUserIds, 'typingUserIds').map((item, index) => requiredString(item, `typingUserIds.${index}`));".to_string(),
+        "  return { ...record, type: 'message', event: 'typing_aggregate', name: MessageEventName.TypingAggregate, conversationId: requiredString(record.conversationId, 'conversationId'), typingUserIds, typingCount: requiredNumber(record.typingCount, 'typingCount') };".to_string(),
+        "}".to_string(),
+        String::new(),
         "function readReceiptEvent(payload: unknown): ReadReceiptEvent & Record<string, unknown> {".to_string(),
         "  const record = eventPayloadRecord(payload);".to_string(),
         "  return { ...record, type: 'message', event: 'read_receipt', conversationId: requiredString(record.conversationId, 'conversationId'), userId: requiredString(record.userId, 'userId'), readSeq: requiredNumber(record.readSeq, 'readSeq') };".to_string(),
@@ -992,6 +1033,14 @@ fn emit_typescript_native_event_decoder(
         "  return { ...record, type: 'presence', event: 'changed', conversationId: optionalString(record.conversationId, 'conversationId'), userId: requiredString(record.userId, 'userId'), status: requiredString(record.status, 'status'), extra: stringRecord(record.extra, 'extra') };".to_string(),
         "}".to_string(),
         String::new(),
+        "function capabilityEvent(payload: unknown): CapabilityEvent & Record<string, unknown> {".to_string(),
+        "  const record = eventPayloadRecord(payload);".to_string(),
+        "  const eventName = String(record.name ?? record.event ?? '').trim() === CapabilityEventName.Unavailable".to_string(),
+        "    ? CapabilityEventName.Unavailable".to_string(),
+        "    : CapabilityEventName.Changed;".to_string(),
+        "  return { ...record, type: 'capability', event: eventName, name: eventName, capability: optionalString(record.capability, 'capability'), reason: optionalString(record.reason, 'reason') };".to_string(),
+        "}".to_string(),
+        String::new(),
         "function conversationEvent(name: ConversationEventName, event: string, payload: unknown): ConversationEvent & Record<string, unknown> {".to_string(),
         "  const record = eventPayloadRecord(payload);".to_string(),
         "  const conversationId = optionalString(record.conversationId, 'conversationId');".to_string(),
@@ -1003,9 +1052,10 @@ fn emit_typescript_native_event_decoder(
         String::new(),
         "function syncEvent(name: SyncEventName, event: string, payload: unknown): SyncEvent & Record<string, unknown> {".to_string(),
         "  const record = eventPayloadRecord(payload);".to_string(),
-        "  const error = sdkErrorPayloadFromJson(record.error);".to_string(),
+        "  const { error: rawError, ...rest } = record;".to_string(),
+        "  const error = sdkErrorPayloadFromJson(rawError);".to_string(),
         "  return {".to_string(),
-        "    ...record,".to_string(),
+        "    ...rest,".to_string(),
         "    type: 'sync',".to_string(),
         "    event,".to_string(),
         "    name,".to_string(),
@@ -1014,7 +1064,7 @@ fn emit_typescript_native_event_decoder(
         "    task: optionalString(record.task, 'task'),".to_string(),
         "    progress: optionalNumber(record.progress, 'progress'),".to_string(),
         "    ...(error ? { error } : {}),".to_string(),
-        "    ...(typeof record.error === 'string' ? { message: record.error } : {}),".to_string(),
+        "    ...(typeof rawError === 'string' ? { message: rawError } : {}),".to_string(),
         "  };".to_string(),
         "}".to_string(),
         String::new(),
@@ -1220,7 +1270,8 @@ fn emit_typescript_adapter_events_api(
         "    if (subscriptions.size === 0) {".to_string(),
         "      return;".to_string(),
         "    }".to_string(),
-        "    // Fast path: a single subscription (the common case) needs no snapshot allocation.".to_string(),
+        "    // Fast path: a single subscription (the common case) needs no snapshot allocation."
+            .to_string(),
         "    if (subscriptions.size === 1) {".to_string(),
         "      const handler = subscriptions.values().next().value?.handler;".to_string(),
         "      if (handler) {".to_string(),
@@ -1228,7 +1279,8 @@ fn emit_typescript_adapter_events_api(
         "      }".to_string(),
         "      return;".to_string(),
         "    }".to_string(),
-        "    // Snapshot so listeners added/removed during dispatch don't change this fan-out.".to_string(),
+        "    // Snapshot so listeners added/removed during dispatch don't change this fan-out."
+            .to_string(),
         "    for (const subscription of Array.from(subscriptions.values())) {".to_string(),
         "      if (subscription.handler) {".to_string(),
         "        this.dispatchSafely(subscription.handler, event);".to_string(),
@@ -1750,6 +1802,7 @@ const ADAPTER_FACADE_PROPS: &[(&str, &str, &str)] = &[
     ("messageBuilder", "MessageBuilderApi", "MessageBuilder"),
     ("messages", "MessagesApi", "Messages"),
     ("sync", "SyncApi", "Sync"),
+    ("user", "UserApi", "User"),
     ("presence", "PresenceApi", "Presence"),
     ("media", "MediaApi", "Media"),
     ("capabilities", "CapabilitiesApi", "Capabilities"),

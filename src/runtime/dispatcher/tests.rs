@@ -6,7 +6,7 @@ use super::{
     SEQ_REPAIR_IDLE_TTL_MS, SEQ_REPAIR_MAX_BACKOFF_MS, SEQ_REPAIR_MAX_TRACKED_CONVERSATIONS,
     SeqRepairState, WATERLINE_ATTR_CONVERSATION_ID_CAMEL, WATERLINE_ATTR_KIND,
     WATERLINE_ATTR_MAX_SEQ_CAMEL, attr_non_empty, attr_u64, prune_seq_repair_state,
-    seq_repair_backoff_ms,
+    seq_repair_backoff_ms, seq_repair_gap_after,
 };
 use crate::application::notification::{NotificationHandlerRegistry, NotificationInboundPipeline};
 use crate::application::services::EventDeduper;
@@ -306,11 +306,35 @@ impl MessageReader for MemoryMessageStore {
 
     async fn get_by_conversation(
         &self,
-        _conversation_id: &str,
-        _before_seq: u64,
-        _limit: u32,
+        conversation_id: &str,
+        before_seq: u64,
+        limit: u32,
     ) -> Result<Vec<IMMessage>> {
-        Ok(Vec::new())
+        let bound = if before_seq == 0 {
+            u64::MAX
+        } else {
+            before_seq
+        };
+        let mut messages = self
+            .data
+            .read()
+            .await
+            .values()
+            .filter(|message| {
+                message.conversation_id == conversation_id
+                    && message.conversation_seq > 0
+                    && message.conversation_seq < bound
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        messages.sort_by(|left, right| {
+            right
+                .conversation_seq
+                .cmp(&left.conversation_seq)
+                .then_with(|| right.created_at.cmp(&left.created_at))
+        });
+        messages.truncate(limit as usize);
+        Ok(messages)
     }
 
     async fn search(&self, _keyword: &str, _limit: u32) -> Result<Vec<IMMessage>> {
@@ -1009,6 +1033,12 @@ async fn realtime_and_sync_message_replay_share_message_deduper() {
                 assert_eq!(message.server_id, "server-msg-1");
                 received_count += 1;
             }
+            Ok(Ok(SdkEvent::Message(MessageEvent::ReceivedBatch { messages }))) => {
+                for message in messages {
+                    assert_eq!(message.server_id, "server-msg-1");
+                    received_count += 1;
+                }
+            }
             Ok(Ok(_)) => {}
             _ => break,
         }
@@ -1017,6 +1047,275 @@ async fn realtime_and_sync_message_replay_share_message_deduper() {
     assert_eq!(
         received_count, 1,
         "duplicate replay should not emit second Received event"
+    );
+}
+
+#[tokio::test]
+async fn sync_page_cursor_stops_before_failed_event_seq() {
+    // I1 游标-落盘顺序契约：应用失败（保留重放机会）的事件必须留在游标之外——
+    // 游标停在失败事件前的连续位点并报告 seq 缺口，由既有补拉重放；
+    // 若把解码 seq 直接计入游标，失败事件会被游标越过而永久丢失。
+    let bus = EventBus::new();
+    let deduper = EventDeduper::new(Some(64));
+    let message_deduper = MessageDeduper::new(Some(64));
+    let stores = StoreProvider {
+        messages: Arc::new(MemoryMessageStore::new()),
+        conversations: Arc::new(NoopConversationStore),
+        conversation_participants: None,
+        cursors: Arc::new(NoopSyncCursorStore),
+        pending_send_reader: None,
+        pending_send_writer: None,
+        upload_manifest_store: None,
+        media_cache_store: None,
+        media_cache_admin: None,
+        user_file_download_store: None,
+        user_profiles_reader: None,
+        user_profiles_writer: None,
+    };
+    let notification_pipeline =
+        test_notification_pipeline_with_deduper(bus.clone(), message_deduper.clone());
+    let sync_apply = SyncApplyUseCase::new(stores, bus.clone(), deduper, notification_pipeline);
+
+    let message_at = |seq: u64| flare_proto::common::Message {
+        server_id: format!("server-msg-{seq}"),
+        client_msg_id: format!("client-msg-{seq}"),
+        conversation_id: "conv-1".to_string(),
+        sender_id: "u2".to_string(),
+        conversation_seq: seq,
+        ..Default::default()
+    };
+    // 编辑事件缺 new_content → applier 确定性返回「暂不可应用，保留重放」。
+    let failing_edit = Event {
+        conversation_id: "conv-1".to_string(),
+        conversation_seq: 2,
+        r#type: 3, // EVENT_MESSAGE_EDIT
+        payload: Some(ProtoEventPayload::Edit(
+            flare_proto::common::MessageEditEvent {
+                server_msg_id: "missing-msg".to_string(),
+                new_content: None,
+                ..Default::default()
+            },
+        )),
+        ..Default::default()
+    };
+    let item = |seq: u64, payload: flare_proto::common::sync_slice_item::Payload| {
+        flare_proto::common::SyncSliceItem {
+            conversation_seq: seq,
+            created_at: 0,
+            payload: Some(payload),
+        }
+    };
+
+    let applied = sync_apply
+        .apply_single_conversation_page(
+            "conv-1",
+            "u1",
+            0,
+            &flare_proto::common::SingleConversationSyncRes {
+                conversation_id: "conv-1".to_string(),
+                items: vec![
+                    item(
+                        1,
+                        flare_proto::common::sync_slice_item::Payload::Message(message_at(1)),
+                    ),
+                    item(
+                        2,
+                        flare_proto::common::sync_slice_item::Payload::Event(failing_edit),
+                    ),
+                    item(
+                        3,
+                        flare_proto::common::sync_slice_item::Payload::Message(message_at(3)),
+                    ),
+                ],
+                max_conversation_seq: 3,
+                next_cursor: String::new(),
+                has_more: false,
+                hints: None,
+                stale: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        applied.max_seq, 1,
+        "cursor must stop at the contiguous point before the failed event"
+    );
+    assert!(applied.has_seq_gap, "failed event must surface as seq gap");
+    assert!(
+        applied.has_more,
+        "seq gap must force another pull so the event can be replayed"
+    );
+}
+
+#[tokio::test]
+async fn clamped_cursor_save_proves_only_window_above_prior_cursor() {
+    // floor 有界连续性：旧游标(5)之下的历史缺失（快照建立/本地清空）不阻塞推进——
+    // 只需证明 (5, 8] 窗口连续。旧实现从 0 证明 → 恒钳 0 → 静默跳过，游标永久卡死。
+    let bus = EventBus::new();
+    let deduper = EventDeduper::new(Some(64));
+    let message_deduper = MessageDeduper::new(Some(64));
+    let message_store = Arc::new(MemoryMessageStore::new());
+    let cursor_store = Arc::new(crate::infrastructure::persistence::MemorySyncCursorStore::new());
+    let stores = StoreProvider {
+        messages: message_store.clone(),
+        conversations: Arc::new(NoopConversationStore),
+        conversation_participants: None,
+        cursors: cursor_store.clone(),
+        pending_send_reader: None,
+        pending_send_writer: None,
+        upload_manifest_store: None,
+        media_cache_store: None,
+        media_cache_admin: None,
+        user_file_download_store: None,
+        user_profiles_reader: None,
+        user_profiles_writer: None,
+    };
+    let notification_pipeline =
+        test_notification_pipeline_with_deduper(bus.clone(), message_deduper.clone());
+    let sync_apply = SyncApplyUseCase::new(stores, bus.clone(), deduper, notification_pipeline);
+
+    // 旧游标 5（例如快照切换建立），本地只有 6..=8，1..=4 缺失。
+    cursor_store
+        .save_conversation_cursor(&SyncCursorVo {
+            user_id: "u1".to_string(),
+            conversation_id: "conv-w".to_string(),
+            last_seq: 5,
+            synced_at: 1,
+        })
+        .await
+        .unwrap();
+    for seq in 6..=8u64 {
+        let mut message = IMMessage::new(flare_proto::common::Message {
+            server_id: format!("m-{seq}"),
+            client_msg_id: format!("c-{seq}"),
+            conversation_id: "conv-w".to_string(),
+            sender_id: "u2".to_string(),
+            conversation_seq: seq,
+            ..Default::default()
+        });
+        message.conversation_seq = seq;
+        message_store.save_batch(&[message]).await.unwrap();
+    }
+
+    sync_apply
+        .save_cursor_with_remote("u1", "conv-w", 8, |_, _, _| async { Ok(()) })
+        .await
+        .unwrap();
+
+    let saved = cursor_store
+        .get_conversation_cursor("u1", "conv-w")
+        .await
+        .unwrap()
+        .expect("cursor must exist");
+    assert_eq!(
+        saved.last_seq, 8,
+        "window (5,8] is contiguous locally; missing 1..=4 below the proven floor must not block"
+    );
+}
+
+#[tokio::test]
+async fn watermark_cursor_save_persists_pseudo_keys_that_clamped_save_skips() {
+    // 伪 key（critical_event:*/__conversations__ 水位）与快照建立型游标没有本地连续消息，
+    // 钳制保存会把它们清零静默跳过 → 必须走无钳制的 watermark 保存。此测试钉死两条路径的分工。
+    let bus = EventBus::new();
+    let deduper = EventDeduper::new(Some(64));
+    let message_deduper = MessageDeduper::new(Some(64));
+    let cursor_store = Arc::new(crate::infrastructure::persistence::MemorySyncCursorStore::new());
+    let stores = StoreProvider {
+        messages: Arc::new(MemoryMessageStore::new()),
+        conversations: Arc::new(NoopConversationStore),
+        conversation_participants: None,
+        cursors: cursor_store.clone(),
+        pending_send_reader: None,
+        pending_send_writer: None,
+        upload_manifest_store: None,
+        media_cache_store: None,
+        media_cache_admin: None,
+        user_file_download_store: None,
+        user_profiles_reader: None,
+        user_profiles_writer: None,
+    };
+    let notification_pipeline =
+        test_notification_pipeline_with_deduper(bus.clone(), message_deduper.clone());
+    let sync_apply = SyncApplyUseCase::new(stores, bus.clone(), deduper, notification_pipeline);
+
+    // 钳制保存：伪 key 无消息行 → 连续位点 0 → 静默跳过（这是它的既定语义）。
+    sync_apply
+        .save_cursor_with_remote("u1", "critical_event:c1", 7, |_, _, _| async { Ok(()) })
+        .await
+        .unwrap();
+    assert!(
+        cursor_store
+            .get_conversation_cursor("u1", "critical_event:c1")
+            .await
+            .unwrap()
+            .is_none(),
+        "clamped save must skip pseudo keys (documented behavior)"
+    );
+
+    // 水位保存：必须持久化。
+    sync_apply
+        .save_watermark_with_remote("u1", "critical_event:c1", 7, |_, _, _| async { Ok(()) })
+        .await
+        .unwrap();
+    let saved = cursor_store
+        .get_conversation_cursor("u1", "critical_event:c1")
+        .await
+        .unwrap()
+        .expect("watermark save must persist pseudo-key cursors");
+    assert_eq!(saved.last_seq, 7);
+}
+
+#[tokio::test]
+async fn snapshot_row_apply_persists_messages_and_returns_cutover_seq() {
+    // I2 gap-too-large：快照行应用=消息落库 + 返回快照水位；游标由调用方在落库后推进（I1 契约）。
+    let bus = EventBus::new();
+    let deduper = EventDeduper::new(Some(64));
+    let message_deduper = MessageDeduper::new(Some(64));
+    let message_store = Arc::new(MemoryMessageStore::new());
+    let stores = StoreProvider {
+        messages: message_store.clone(),
+        conversations: Arc::new(NoopConversationStore),
+        conversation_participants: None,
+        cursors: Arc::new(NoopSyncCursorStore),
+        pending_send_reader: None,
+        pending_send_writer: None,
+        upload_manifest_store: None,
+        media_cache_store: None,
+        media_cache_admin: None,
+        user_file_download_store: None,
+        user_profiles_reader: None,
+        user_profiles_writer: None,
+    };
+    let notification_pipeline =
+        test_notification_pipeline_with_deduper(bus.clone(), message_deduper.clone());
+    let sync_apply = SyncApplyUseCase::new(stores, bus.clone(), deduper, notification_pipeline);
+
+    let row = flare_proto::common::SnapshotConversationRow {
+        conversation_id: "conv-1".to_string(),
+        messages: vec![flare_proto::common::Message {
+            server_id: "snap-msg-9".to_string(),
+            client_msg_id: "snap-client-9".to_string(),
+            conversation_id: "conv-1".to_string(),
+            sender_id: "u2".to_string(),
+            conversation_seq: 9,
+            ..Default::default()
+        }],
+        last_conversation_seq: 9,
+        last_message_at: 0,
+        unread_count: 1,
+        last_read_seq: 8,
+        summary: None,
+    };
+
+    let cutover_seq = sync_apply.apply_snapshot_row("u1", row).await.unwrap();
+
+    assert_eq!(cutover_seq, 9, "cutover seq must be the snapshot watermark");
+    let persisted = message_store.get("snap-msg-9").await.unwrap();
+    assert!(
+        persisted.is_some(),
+        "snapshot messages must be durably persisted before cursor advance"
     );
 }
 
@@ -1082,6 +1381,15 @@ async fn message_push_delivers_to_view_even_when_persist_fails() {
                 assert_eq!(message.server_id, "server-fail-1");
                 received = true;
                 break;
+            }
+            Ok(Ok(SdkEvent::Message(MessageEvent::ReceivedBatch { messages }))) => {
+                if messages
+                    .iter()
+                    .any(|message| message.server_id == "server-fail-1")
+                {
+                    received = true;
+                    break;
+                }
             }
             Ok(Ok(_)) => {}
             _ => break,
@@ -1179,6 +1487,15 @@ async fn concurrent_message_push_dispatch_is_lossless_for_slow_subscriber() {
                     "duplicate received message {}",
                     message.server_id
                 );
+            }
+            Ok(Ok(SdkEvent::Message(MessageEvent::ReceivedBatch { messages }))) => {
+                for message in messages {
+                    assert!(
+                        received_server_ids.insert(message.server_id.clone()),
+                        "duplicate received message {}",
+                        message.server_id
+                    );
+                }
             }
             Ok(Ok(_)) => {}
             Ok(Err(error)) => panic!("event receiver closed: {error:?}"),
@@ -1560,6 +1877,80 @@ async fn empty_event_envelope_waterline_triggers_message_sync() {
 }
 
 #[tokio::test]
+async fn event_envelope_messages_publish_one_batch() {
+    let bus = EventBus::new();
+    let mut receiver = bus.subscribe_raw();
+    let current_user_id: CurrentUserIdStore = Arc::new(RwLock::new("u1".to_string()));
+    let dispatcher = Dispatcher::new(
+        bus.clone(),
+        None,
+        None,
+        None,
+        None,
+        current_user_id,
+        EventDeduper::new(Some(64)),
+        test_notification_pipeline(bus),
+        MetricsRecorder::disabled(),
+    );
+
+    dispatcher
+        .dispatch(DownlinkPayload::EventEnvelope(EventEnvelope {
+            conversation_id: "conversation-1".to_string(),
+            max_conversation_seq: 2,
+            events: vec![
+                Event {
+                    event_id: "event-1".to_string(),
+                    conversation_id: "conversation-1".to_string(),
+                    conversation_seq: 1,
+                    payload: Some(ProtoEventPayload::Message(flare_proto::common::Message {
+                        server_id: "server-1".to_string(),
+                        client_msg_id: "client-1".to_string(),
+                        conversation_id: "conversation-1".to_string(),
+                        sender_id: "u2".to_string(),
+                        conversation_seq: 1,
+                        ..Default::default()
+                    })),
+                    ..Default::default()
+                },
+                Event {
+                    event_id: "event-2".to_string(),
+                    conversation_id: "conversation-1".to_string(),
+                    conversation_seq: 2,
+                    payload: Some(ProtoEventPayload::Message(flare_proto::common::Message {
+                        server_id: "server-2".to_string(),
+                        client_msg_id: "client-2".to_string(),
+                        conversation_id: "conversation-1".to_string(),
+                        sender_id: "u2".to_string(),
+                        conversation_seq: 2,
+                        ..Default::default()
+                    })),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        }))
+        .await
+        .unwrap();
+
+    match timeout(Duration::from_millis(200), receiver.recv()).await {
+        Ok(Ok(SdkEvent::Message(MessageEvent::ReceivedBatch { messages }))) => {
+            let server_ids = messages
+                .iter()
+                .map(|message| message.server_id.as_str())
+                .collect::<Vec<_>>();
+            assert_eq!(server_ids, vec!["server-1", "server-2"]);
+        }
+        other => panic!("expected one ReceivedBatch from event envelope, got {other:?}"),
+    }
+
+    let stray_single = timeout(Duration::from_millis(80), receiver.recv()).await;
+    assert!(
+        stray_single.is_err(),
+        "event envelope message batch must not replay per-message callbacks"
+    );
+}
+
+#[tokio::test]
 async fn standalone_event_waterline_triggers_message_sync() {
     let bus = EventBus::new();
     let current_user_id: CurrentUserIdStore = Arc::new(RwLock::new("u1".to_string()));
@@ -1794,9 +2185,15 @@ async fn waterline_uses_materialized_message_seq_not_cursor_seq() {
     let bus = EventBus::new();
     let current_user_id: CurrentUserIdStore = Arc::new(RwLock::new("u1".to_string()));
     let sync = Arc::new(RecordingSessionSyncRunner::new());
+    let conversations =
+        Arc::new(crate::infrastructure::persistence::memory_im::MemoryConversationStore::new());
+    let mut conversation =
+        crate::model::Conversation::from_conversation_id("conversation-1".to_string());
+    conversation.max_seq = 2;
+    conversations.save_one(&conversation).await.unwrap();
     let stores = StoreProvider {
         messages: Arc::new(MemoryMessageStore::new()),
-        conversations: Arc::new(NoopConversationStore),
+        conversations,
         conversation_participants: None,
         cursors: Arc::new(CursorAtSeqStore { last_seq: 2 }),
         pending_send_reader: None,
@@ -1846,6 +2243,21 @@ fn internal_gap_detection_uses_local_window() {
 }
 
 #[test]
+fn seq_repair_cursor_stops_before_existing_local_tail_gap() {
+    let cursor_seq = 100;
+    let local_tail_and_incoming = [101, 103, 104];
+
+    assert_eq!(
+        max_contiguous_seq(cursor_seq, &local_tail_and_incoming),
+        101
+    );
+    assert_eq!(
+        first_gap_after(cursor_seq, &local_tail_and_incoming),
+        Some(101)
+    );
+}
+
+#[test]
 fn internal_gap_detection_ignores_historical_gaps_before_base() {
     assert_eq!(
         first_internal_gap_after_from(752, &[1, 2, 752, 766]),
@@ -1856,6 +2268,20 @@ fn internal_gap_detection_ignores_historical_gaps_before_base() {
         Some(771)
     );
     assert_eq!(first_internal_gap_after_from(752, &[1, 2, 752, 753]), None);
+}
+
+#[test]
+fn seq_repair_gap_prefers_recent_window_gap_over_stale_prefix_gap() {
+    let seqs = [520, 521, 624, 644, 645];
+
+    assert_eq!(seq_repair_gap_after(419, 624, &seqs), Some(624));
+}
+
+#[test]
+fn seq_repair_gap_falls_back_to_prefix_gap_without_recent_gap() {
+    let seqs = [421, 422, 423];
+
+    assert_eq!(seq_repair_gap_after(419, 423, &seqs), Some(419));
 }
 
 #[test]

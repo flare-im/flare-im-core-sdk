@@ -2,7 +2,7 @@
 
 use std::borrow::Cow;
 
-use serde_json::Value;
+use flare_im_core_sdk::serde_json::{self, Value};
 
 use crate::generated::dispatch::{capability, conversation, media, message, message_build};
 use crate::operation::normalize_operation;

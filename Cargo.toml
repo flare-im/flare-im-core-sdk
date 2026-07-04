@@ -168,6 +168,10 @@ name = "two_user_latency_throughput"
 required-features = ["lifecycle-sqlite"]
 
 [[example]]
+name = "group_latency_throughput"
+required-features = ["lifecycle-sqlite"]
+
+[[example]]
 name = "e2e_event_observer"
 required-features = ["lifecycle-sqlite"]
 

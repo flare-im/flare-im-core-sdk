@@ -31,6 +31,11 @@ pub const EVENT_ROUTE_TABLE: &[(i32, &str, &str)] = &[
     (2010, "message.deleted", "im://message_deleted"),
     (2011, "message.read_receipt", "im://message_read_receipt"),
     (
+        2021,
+        "message.typing_aggregate",
+        "im://message_typing_aggregate",
+    ),
+    (
         2012,
         "message.retention_scheduled",
         "im://message_retention_scheduled",
@@ -68,6 +73,7 @@ pub const EVENT_ROUTE_TABLE: &[(i32, &str, &str)] = &[
     (4005, "sync.task_completed", "im://sync_completed"),
     (4006, "sync.state_changed", "im://sync_notify_state_changed"),
     (4007, "sync.resync_needed", "im://resync_needed"),
+    (4008, "sync.readiness", "im://sync_readiness"),
     (6001, "view.updated", "im://view_updated"),
     (5001, "extension.event", "im://extension"),
 ];

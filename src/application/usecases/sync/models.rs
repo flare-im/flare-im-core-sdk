@@ -25,6 +25,9 @@ pub(crate) enum ReplayMode {
 pub(crate) struct DecodedSingleConversationItems {
     pub messages: Vec<crate::model::IMMessage>,
     pub events: Vec<flare_proto::common::Event>,
-    pub applied_item_seqs: Vec<u64>,
+    /// 与 `events` 一一对齐的 item seq；事件是否计入游标由 apply 结果决定，不在解码期预判。
+    pub event_item_seqs: Vec<u64>,
+    /// 落库可保证持久的 item seq（消息/skip/tombstone）：save_batch 失败会让整页出错、游标不动。
+    pub covered_item_seqs: Vec<u64>,
     pub has_decoded_items: bool,
 }

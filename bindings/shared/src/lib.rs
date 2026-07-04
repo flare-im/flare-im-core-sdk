@@ -4,7 +4,7 @@
 //! IM behavior stays in `flare-im-core-sdk`; this crate owns contract metadata,
 //! JSON boundary helpers, operation normalization, and session-aware routing.
 
-use serde_json::{Value, json};
+use flare_im_core_sdk::serde_json::{Value, json};
 
 pub mod contract;
 pub mod dispatch_support;
@@ -107,7 +107,7 @@ pub fn binding_response_to_json_value(response: BindingResponse) -> Value {
 
 #[cfg(test)]
 mod tests {
-    use serde_json::Value;
+    use flare_im_core_sdk::serde_json::{self, Value};
 
     #[test]
     fn contract_json_exposes_generated_contract_metadata() {

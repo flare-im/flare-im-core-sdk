@@ -184,6 +184,10 @@ pub struct IMMessage {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub quote_preview: Option<String>,
 
+    /// 话题/线程根消息 ID；普通消息为空，话题回复使用该 typed field。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thread_id: Option<String>,
+
     // ==============================
     // Status
     // ==============================
@@ -248,7 +252,7 @@ impl Serialize for IMMessage {
     where
         S: Serializer,
     {
-        let mut state = serializer.serialize_struct("IMMessage", 32)?;
+        let mut state = serializer.serialize_struct("IMMessage", 33)?;
         state.serialize_field("serverId", &self.server_id)?;
         state.serialize_field("clientMsgId", &self.client_msg_id)?;
         state.serialize_field("conversationId", &self.conversation_id)?;
@@ -272,6 +276,9 @@ impl Serialize for IMMessage {
         }
         if let Some(quote_preview) = &self.quote_preview {
             state.serialize_field("quotePreview", quote_preview)?;
+        }
+        if let Some(thread_id) = &self.thread_id {
+            state.serialize_field("threadId", thread_id)?;
         }
         state.serialize_field("status", &self.status)?;
         state.serialize_field("isRead", &self.is_read)?;
@@ -317,6 +324,9 @@ impl IMMessage {
         let reactions = parse_reactions_from_attributes(&attributes);
         let is_recalled = message.status == flare_proto::common::MessageStatus::Recalled as i32;
         let created_at = message.created_at.max(0) as u64;
+        let thread_id = message
+            .thread_id
+            .filter(|thread_id| !thread_id.trim().is_empty());
         let mut reply_to: Option<String> = None;
         let mut quote_preview: Option<String> = None;
         if let Some(Elem::Quote(q)) = content.as_ref() {
@@ -354,6 +364,7 @@ impl IMMessage {
             text_preview,
             reply_to,
             quote_preview,
+            thread_id,
             status: message.status,
             is_read: false,
             is_recalled,
@@ -461,6 +472,7 @@ impl IMMessage {
             channel_id: self.channel_id.clone(),
             sender_name: self.sender_name.clone(),
             sender_avatar: self.sender_avatar.clone(),
+            thread_id: self.thread_id.clone(),
             content,
             status: self.status,
             retention_policy: self.retention_policy.clone(),
@@ -497,14 +509,14 @@ impl IMMessage {
 
     /// UI/平台 SDK 使用的稳定时间线行 key。
     ///
-    /// 本地发送到服务端 ACK 的过程中 `server_id`/`conversation_seq` 可能补齐或变化，
-    /// 但 `client_msg_id` 稳定，因此优先作为虚拟列表 row key，避免 ack 后消息被当成新行插入导致跳动。
+    /// 服务端已持久化消息以 `server_id` 为权威；`client_msg_id` 只用于尚未 ACK 的本地行。
+    /// 下行历史中不同 `server_id` 可能带相同 `client_msg_id`，不能因此被视为同一时间线行。
     pub fn timeline_key(&self) -> String {
-        if !self.client_msg_id.trim().is_empty() {
-            return format!("client:{}", self.client_msg_id);
-        }
         if !self.server_id.trim().is_empty() {
             return format!("server:{}", self.server_id);
+        }
+        if !self.client_msg_id.trim().is_empty() {
+            return format!("client:{}", self.client_msg_id);
         }
         if self.conversation_seq > 0 {
             return format!("seq:{}:{}", self.conversation_id, self.conversation_seq);
@@ -626,9 +638,10 @@ impl From<ProtoMessage> for IMMessage {
 
 // Re-export proto 消息相关类型（供上层使用）
 pub use flare_proto::common::MessageType;
+pub use flare_proto::common::send_ack;
 pub use flare_proto::common::{
-    AudioInfo, ConversationType, DeleteScope, DeleteType, ImageInfo, MarkType, Message,
-    MessageSource, MessageStatus, ReactionAction, SendAck, VideoInfo,
+    AudioInfo, ConversationType, DeleteScope, DeleteType, ImageFormat, ImageInfo, MarkType,
+    Message, MessageSource, MessageStatus, ReactionAction, SendAck, VideoInfo,
 };
 
 #[cfg(test)]
@@ -651,7 +664,7 @@ mod tests {
     }
 
     #[test]
-    fn timeline_key_stays_on_client_msg_id_after_ack() {
+    fn timeline_key_uses_server_id_after_ack() {
         let mut pending = message("client-1", "", 0, 100);
         let before_ack = pending.timeline_key();
 
@@ -660,7 +673,7 @@ mod tests {
         pending.created_at = 200;
 
         assert_eq!(before_ack, "client:client-1");
-        assert_eq!(pending.timeline_key(), before_ack);
+        assert_eq!(pending.timeline_key(), "server:server-1");
     }
 
     #[test]

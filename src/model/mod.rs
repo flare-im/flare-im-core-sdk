@@ -33,7 +33,8 @@ pub use message::{
 };
 pub use search::{ConversationListQuery, MessageSearchKind, MessageSearchQuery};
 pub use sync::{
-    ConversationVersion, SyncConversationSummariesRequest, SyncConversationSummariesResponse,
+    ConversationHistoryBackfillResponse, ConversationVersion, StartupHomeSyncRequest,
+    StartupHomeSyncResponse, SyncConversationSummariesRequest, SyncConversationSummariesResponse,
 };
 pub use timeline::{
     BootstrapHomeTimelineRequest, CloseViewRequest, CloseViewResponse,

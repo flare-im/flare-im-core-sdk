@@ -2,8 +2,8 @@
 
 use std::collections::HashMap;
 
-use serde::Deserialize;
-use serde_json::Value;
+use flare_im_core_sdk::serde::{self, Deserialize};
+use flare_im_core_sdk::serde_json::{self, Value};
 
 use crate::{BindingResponse, binding_invalid_parameter};
 use flare_im_core_sdk::Result;
@@ -15,13 +15,14 @@ use flare_im_core_sdk::content::content_builder::BuiltContent;
 use flare_im_core_sdk::content::message_elem::{Elem, elem_to_message_content};
 use flare_im_core_sdk::model::conversation::ConversationType;
 use flare_im_core_sdk::model::media::UploadOptions;
-use flare_im_core_sdk::model::message::{IMMessage, MarkType, SendAck};
+use flare_im_core_sdk::model::message::{
+    IMMessage, ImageFormat, ImageInfo, MarkType, MessageType, SendAck, send_ack,
+};
 #[cfg(not(target_arch = "wasm32"))]
 use flare_im_core_sdk::{ErrorCode, FlareError};
-use flare_proto::common::{ImageFormat, ImageInfo, MessageType};
 
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, flare_im_core_sdk::serde::Deserialize)]
+#[serde(crate = "flare_im_core_sdk::serde", rename_all = "camelCase")]
 struct ImageGroupBuildItem {
     image_id: String,
     #[serde(default)]
@@ -42,7 +43,8 @@ struct ImageGroupBuildItem {
     blurhash: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, flare_im_core_sdk::serde::Deserialize)]
+#[serde(crate = "flare_im_core_sdk::serde")]
 struct DispatchOperationRequest {
     op: String,
 }
@@ -89,7 +91,7 @@ pub fn json_send_ack(ack: SendAck) -> Result<BindingResponse> {
     let ack_id = canonical_send_ack_id(&ack).to_string();
     let (server_msg_id, seq, timestamp, success, error_code, error_message) =
         match ack.result.as_ref() {
-            Some(flare_proto::common::send_ack::Result::Accepted(accepted)) => (
+            Some(send_ack::Result::Accepted(accepted)) => (
                 accepted.server_msg_id.clone(),
                 accepted.conversation_seq,
                 accepted.server_time,
@@ -97,7 +99,7 @@ pub fn json_send_ack(ack: SendAck) -> Result<BindingResponse> {
                 0,
                 String::new(),
             ),
-            Some(flare_proto::common::send_ack::Result::Error(error)) => (
+            Some(send_ack::Result::Error(error)) => (
                 String::new(),
                 0,
                 0,
@@ -594,8 +596,8 @@ pub fn build_create_sticker_request(params: Value) -> Result<CreateStickerReques
     })
 }
 
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(flare_im_core_sdk::serde::Deserialize)]
+#[serde(crate = "flare_im_core_sdk::serde", rename_all = "camelCase")]
 pub struct EditRichDocJson {
     message_id: String,
     doc_json: String,
@@ -626,8 +628,8 @@ impl From<EditRichDocJson> for EditRichDocRequest {
     }
 }
 
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(flare_im_core_sdk::serde::Deserialize)]
+#[serde(crate = "flare_im_core_sdk::serde", rename_all = "camelCase")]
 pub struct CreateRichDocJson {
     conversation_id: String,
     doc_json: String,
@@ -667,8 +669,9 @@ mod tests {
         OpenConversationListViewRequest, OpenTimelineViewRequest, ViewLoadOlderResponse,
         ViewOpenResponse, ViewUpdate,
     };
-    use serde::de::DeserializeOwned;
-    use serde_json::json;
+    use flare_im_core_sdk::serde;
+    use flare_im_core_sdk::serde::de::DeserializeOwned;
+    use flare_im_core_sdk::serde_json::json;
 
     fn assert_binding_wire_type<T>()
     where

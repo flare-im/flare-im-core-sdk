@@ -728,6 +728,7 @@ fun messageToWireMap(message: Message): Map<String, Any?> = buildMap {
     put("senderDisplayName", message.senderDisplayName)
     message.replyTo?.let { put("replyTo", it) }
     message.quotePreview?.let { put("quotePreview", it) }
+    message.threadId?.let { put("threadId", it) }
     put("status", message.status)
     put("isRead", message.isRead)
     put("isRecalled", message.isRecalled)
@@ -979,6 +980,49 @@ fun networkChangeResponseFromJson(value: Any?): NetworkChangeResponse {
     )
 }
 
+fun heartbeatEffectiveIntervalResponseFromJson(value: Any?): HeartbeatEffectiveIntervalResponse {
+    val json = mapValue(value)
+    return HeartbeatEffectiveIntervalResponse(
+        connected = requiredBooleanField(json, "connected", "HeartbeatEffectiveIntervalResponse"),
+        intervalMs = field(json, "intervalMs")?.let(::intValue),
+        intervalSecs = field(json, "intervalSecs")?.let(::intValue),
+    )
+}
+
+fun coreTokenResponseFromJson(value: Any?): CoreTokenResponse {
+    val json = mapValue(value)
+    return CoreTokenResponse(
+        token = requiredStringField(json, "token", "CoreTokenResponse"),
+    )
+}
+
+fun runtimeHealthResponseFromJson(value: Any?): RuntimeHealthResponse {
+    val json = mapValue(value)
+    return RuntimeHealthResponse(
+        metricsEnabled = requiredBooleanField(json, "metricsEnabled", "RuntimeHealthResponse"),
+        metricsJson = requiredStringField(json, "metricsJson", "RuntimeHealthResponse"),
+        rawSubscriberDroppedTotal = requiredLongField(json, "rawSubscriberDroppedTotal", "RuntimeHealthResponse"),
+        sessionGeneration = requiredLongField(json, "sessionGeneration", "RuntimeHealthResponse"),
+        state = requiredStringField(json, "state", "RuntimeHealthResponse"),
+        stateCode = requiredLongField(json, "stateCode", "RuntimeHealthResponse").toInt(),
+    )
+}
+
+fun timelineSyncStateFromJson(value: Any?): TimelineSyncState {
+    val raw = value?.toString()?.trim().orEmpty()
+    return when (raw) {
+        "localReady" -> TimelineSyncState.LOCAL_READY
+        "synced" -> TimelineSyncState.SYNCED
+        "partial" -> TimelineSyncState.PARTIAL
+        else -> throw FlareSdkException(
+            SdkErrorCodes.INVALIDPARAMETER,
+            "invalid timeline sync state: ${raw.ifEmpty { "<empty>" }}",
+            operation = "wire.timeline.decode",
+            details = mapOf("field" to "syncState"),
+        )
+    }
+}
+
 fun reactionEntryFromJson(value: Any?): ReactionEntry {
     val json = mapValue(value)
     return ReactionEntry(
@@ -1089,6 +1133,7 @@ fun messageFromJson(value: Any?): Message {
         quotePreview = field(json, "quotePreview")?.toString(),
         reactions = requiredListOfMaps(field(json, "reactions"), "reactions", "Message").map(::reactionEntryFromJson),
         replyTo = field(json, "replyTo")?.toString(),
+        threadId = field(json, "threadId")?.toString(),
         senderAvatar = requiredStringField(json, "senderAvatar", "Message"),
         senderDisplayName = requiredStringField(json, "senderDisplayName", "Message"),
         senderId = requiredStringField(json, "senderId", "Message"),
@@ -1146,6 +1191,33 @@ fun listConversationsResponseFromJson(value: Any?): ListConversationsResponse {
             "conversations",
             "ListConversationsResponse",
         ).map(::conversationFromJson),
+    )
+}
+
+fun homeTimelineSnapshotFromJson(value: Any?): HomeTimelineSnapshot {
+    val json = mapValue(value)
+    return HomeTimelineSnapshot(
+        conversations = requiredListOfMaps(
+            field(json, "conversations"),
+            "conversations",
+            "HomeTimelineSnapshot",
+        ).map(::conversationFromJson),
+        syncState = timelineSyncStateFromJson(field(json, "syncState")),
+        totalUnread = requiredLongField(json, "totalUnread", "HomeTimelineSnapshot"),
+    )
+}
+
+fun conversationTimelineSnapshotFromJson(value: Any?): ConversationTimelineSnapshot {
+    val json = mapValue(value)
+    val conversationRaw = field(json, "conversation")
+    return ConversationTimelineSnapshot(
+        conversation = if (conversationRaw is Map<*, *>) conversationFromJson(mapValue(conversationRaw)) else null,
+        hasMore = requiredBooleanField(json, "hasMore", "ConversationTimelineSnapshot"),
+        messages = requiredListOfMaps(
+            field(json, "messages"),
+            "messages",
+            "ConversationTimelineSnapshot",
+        ).map(::messageFromJson),
     )
 }
 

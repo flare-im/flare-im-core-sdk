@@ -11,7 +11,7 @@ use flare_im_core_sdk::client::api::ConversationApi;
 use flare_im_core_sdk::model::{
     BootstrapHomeTimelineRequest, ConversationListQuery, OpenConversationTimelineRequest,
 };
-use serde_json::Value;
+use flare_im_core_sdk::serde_json::{self, Value};
 
 pub const CONVERSATION_DISPATCH_OPERATIONS: &[&str] = &[
     "list",

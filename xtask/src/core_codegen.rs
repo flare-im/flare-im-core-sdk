@@ -11,13 +11,14 @@ use flare_im_core_sdk::model::{
     BootstrapHomeTimelineRequest, Conversation, ConversationListQuery, ConversationParticipant,
     ConversationTimelineSnapshot, ConversationVersion, Elem, HomeTimelineSnapshot, IMMessage,
     MediaAccessUrl, MediaResolvedAccess, MessagePreviewElem, MessageSearchKind, MessageSearchQuery,
-    OpenConversationTimelineRequest, SyncConversationSummariesRequest,
-    SyncConversationSummariesResponse, TimelineSyncState, UploadedMedia,
+    OpenConversationTimelineRequest, StartupHomeSyncRequest, StartupHomeSyncResponse,
+    SyncConversationSummariesRequest, SyncConversationSummariesResponse, TimelineSyncState,
+    UploadedMedia,
 };
+use flare_im_core_sdk::schemars::schema_for;
+use flare_im_core_sdk::serde::Deserialize;
+use flare_im_core_sdk::serde_json::{self, Value};
 use flare_proto::common::ConversationType as ProtoConversationType;
-use schemars::schema_for;
-use serde::Deserialize;
-use serde_json::Value;
 
 pub(crate) fn run(command: &str) -> Result<()> {
     let root = workspace_root()?;
@@ -646,7 +647,7 @@ fn render_dispatch_group(group: &DispatchGroup) -> Result<String> {
             .map(str::to_string),
     );
     lines.extend([
-        "use serde_json::Value;".to_string(),
+        "use flare_im_core_sdk::serde_json::{self, Value};".to_string(),
         "use flare_im_core_sdk::Result;".to_string(),
         "use crate::dispatch_support::*;".to_string(),
         "use crate::{binding_operation_not_supported, BindingResponse};".to_string(),
@@ -1213,6 +1214,21 @@ fn render_dispatch_arg_extract(arg: &DispatchArg, value_expr: &str) -> Result<(S
             Ok((
                 format!(
                     "let {v} = json_vec_string({value_expr}, {})?",
+                    rust_string_literal(&key)
+                ),
+                expr,
+            ))
+        }
+        "vec_string_default_empty" => {
+            let v = format!("{name}_v");
+            let expr = if arg.pass.as_deref() == Some("ref") {
+                format!("&{v}")
+            } else {
+                v.clone()
+            };
+            Ok((
+                format!(
+                    "let {v} = optional_value::<Vec<String>>({value_expr}, {})?.unwrap_or_default()",
                     rust_string_literal(&key)
                 ),
                 expr,
@@ -1853,7 +1869,7 @@ fn render_c_invoke() -> String {
 fn render_tauri_invoke() -> String {
     format!(
         "{header}\
-         use serde_json::Value;\n\
+         use flare_im_core_sdk::serde_json::Value;\n\
          use tauri::State;\n\n\
          use crate::state::SdkState;\n\
          use flare_im_core_sdk_bindings_runtime::{{binding_response_to_value, invoke_api_id_json}};\n\n\
@@ -2100,6 +2116,14 @@ impl SchemaCatalog {
             schema_artifact::<SyncConversationSummariesResponse>(
                 "sync_conversation_summaries_response.schema.json",
                 "SyncConversationSummariesResponse",
+            ),
+            schema_artifact::<StartupHomeSyncRequest>(
+                "startup_home_sync_request.schema.json",
+                "StartupHomeSyncRequest",
+            ),
+            schema_artifact::<StartupHomeSyncResponse>(
+                "startup_home_sync_response.schema.json",
+                "StartupHomeSyncResponse",
             ),
             schema_artifact::<MediaAccessUrl>("media_access_url.schema.json", "MediaAccessUrl"),
             schema_artifact::<MediaResolvedAccess>(
@@ -3099,8 +3123,7 @@ impl Contracts {
 
         Ok(format!(
             "{header}\n\
-             use serde::Deserialize;\n\
-             use serde_json::Value;\n\n\
+             use flare_im_core_sdk::serde_json::{{self, Value}};\n\n\
              use crate::dispatch_support;\n\
              use crate::{{BindingResponse, InvokeSession}};\n\
              use flare_im_core_sdk::Result;\n\
@@ -3125,8 +3148,8 @@ impl Contracts {
              \x20       S::Reconnecting => (\"reconnecting\", 4),\n\
              \x20   }}\n\
              }}\n\n\
-             #[derive(Deserialize)]\n\
-             #[serde(rename_all = \"camelCase\")]\n\
+             #[derive(flare_im_core_sdk::serde::Deserialize)]\n\
+             #[serde(crate = \"flare_im_core_sdk::serde\", rename_all = \"camelCase\")]\n\
              struct SyncMessagesDirectRequest {{\n\
              \x20   conversation_id: String,\n\
              \x20   last_seq: u64,\n\

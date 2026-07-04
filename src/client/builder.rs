@@ -37,7 +37,7 @@ use crate::infrastructure::transport::{HttpClient, HttpRequestContext, SocketTra
 use crate::kernel::event::EventBus;
 use crate::kernel::{
     ConversationSummarySync, CurrentUserIdStore, ReliableSendQueuePort, SessionSyncRunner,
-    SyncResponseHandler, SyncTask,
+    SyncDomain, SyncResponseHandler, SyncTask,
 };
 use crate::platform::adapters::media::{MediaService, UploadOnlyMediaService};
 use crate::platform::ports::media::MediaServicePort;
@@ -49,6 +49,7 @@ use crate::spi::metrics::{MetricsRecorder, MetricsSink};
 #[derive(Clone, Default)]
 pub(crate) struct IMClientExtensionComponents {
     sync_tasks: Vec<Arc<dyn SyncTask>>,
+    sync_domains: Vec<Arc<dyn SyncDomain>>,
     message_interceptors: Vec<Arc<dyn MessageInterceptor>>,
     event_interceptors: Vec<Arc<dyn EventInterceptor>>,
     capability_plugins: Vec<Arc<dyn SdkCapabilityPlugin>>,
@@ -64,6 +65,9 @@ pub(crate) struct IMClientExtensionComponents {
 impl IMClientExtensionComponents {
     pub(crate) fn apply_to_builder(&self, mut builder: IMClientBuilder) -> IMClientBuilder {
         builder.sync_tasks.extend(self.sync_tasks.iter().cloned());
+        builder
+            .sync_domains
+            .extend(self.sync_domains.iter().cloned());
         builder
             .message_interceptors
             .extend(self.message_interceptors.iter().cloned());
@@ -180,6 +184,7 @@ pub struct IMClientBuilder {
     http_request_context: Option<Arc<HttpRequestContext>>,
     codec: Option<Arc<dyn Codec>>,
     sync_tasks: Vec<Arc<dyn SyncTask>>,
+    sync_domains: Vec<Arc<dyn SyncDomain>>,
     message_interceptors: Vec<Arc<dyn MessageInterceptor>>,
     event_interceptors: Vec<Arc<dyn EventInterceptor>>,
     capability_plugins: Vec<Arc<dyn SdkCapabilityPlugin>>,
@@ -204,6 +209,7 @@ impl IMClientBuilder {
             http_request_context: None,
             codec: None,
             sync_tasks: Vec::new(),
+            sync_domains: Vec::new(),
             message_interceptors: Vec::new(),
             event_interceptors: Vec::new(),
             capability_plugins: Vec::new(),
@@ -263,6 +269,19 @@ impl IMClientBuilder {
     /// 注册已装箱的同步任务实现。
     pub fn add_sync_task_arc(mut self, task: Arc<dyn SyncTask>) -> Self {
         self.sync_tasks.push(task);
+        self
+    }
+
+    /// 注册领域无关同步领域（业务/群/好友等）。实现 [`SyncDomain`] 即接入收敛内核，
+    /// 白拿冷启/热启/重连/追赶/优先级/缺口修复——core 不认识其业务规则。
+    pub fn add_sync_domain(mut self, domain: impl SyncDomain + 'static) -> Self {
+        self.sync_domains.push(Arc::new(domain));
+        self
+    }
+
+    /// 注册已装箱的同步领域实现。
+    pub fn add_sync_domain_arc(mut self, domain: Arc<dyn SyncDomain>) -> Self {
+        self.sync_domains.push(domain);
         self
     }
 
@@ -408,6 +427,7 @@ impl IMClientBuilder {
         }
         let extension_components = IMClientExtensionComponents {
             sync_tasks: self.sync_tasks.clone(),
+            sync_domains: self.sync_domains.clone(),
             message_interceptors: self.message_interceptors.clone(),
             event_interceptors: self.event_interceptors.clone(),
             capability_plugins: self.capability_plugins.clone(),
@@ -509,9 +529,10 @@ impl IMClientBuilder {
             event_deduper.clone(),
             notification_pipeline.clone(),
             self.config.effective_device_id(),
-            init_msg_concurrency,
             metrics.clone(),
         ));
+        // 远端游标合并冲刷 worker：热路径入队即返回，去抖批量推送（advisory 数据不占 catch-up 延迟）。
+        sync_handler.start_remote_cursor_flush_worker();
 
         let current_user_id: CurrentUserIdStore = Arc::new(RwLock::new(String::new()));
         let engine = SdkEngine::new(SdkEngineConfig {
@@ -540,7 +561,11 @@ impl IMClientBuilder {
             .sync_manager()
             .register_task_arc(Arc::new(ConversationsSyncTask::new(sync_handler.clone())));
         engine.sync_manager().register_task_arc(Arc::new(
-            MessagesSyncTask::with_max_sync_concurrency(sync_handler.clone(), init_msg_concurrency),
+            MessagesSyncTask::with_max_sync_concurrency(
+                sync_handler.clone(),
+                init_msg_concurrency,
+                engine.sync_manager().attention(),
+            ),
         ));
         engine
             .sync_manager()
@@ -555,6 +580,9 @@ impl IMClientBuilder {
             )));
         for task in self.sync_tasks {
             engine.sync_manager().register_task_arc(task);
+        }
+        for domain in self.sync_domains {
+            engine.sync_manager().register_domain(domain);
         }
 
         let sender = engine.sender().clone();
@@ -722,7 +750,12 @@ impl IMClientBuilder {
             bus.clone(),
             current_user_id.clone(),
         ));
-        let view_api = Arc::new(ViewApi::new(conversation_api.as_ref().clone(), bus.clone()));
+        let view_api = Arc::new(ViewApi::new(
+            conversation_api.as_ref().clone(),
+            Some(sync_handler.clone() as Arc<dyn SessionSyncRunner>),
+            bus.clone(),
+            engine.sync_manager().attention(),
+        ));
 
         Ok(IMClient::from_inner(IMClientInner {
             engine: Some(engine),

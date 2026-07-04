@@ -42,7 +42,8 @@ fn main() {
         Ok(bindings) => {
             // 写入头文件
             bindings.write_to_file(&output_file);
-            println!("cargo:warning=Generated C header: {:?}", output_file);
+            // Header generated successfully; keep this off the user-facing warning stream.
+            let _ = &output_file;
         }
         Err(e) => {
             println!("cargo:warning=Failed to generate C header: {:?}", e);

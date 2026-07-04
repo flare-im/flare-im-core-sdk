@@ -1,15 +1,15 @@
 //! 同步协议处理：会话列表、单会话消息、已读上报及响应落库。
 //! 与 flare-proto 对齐：上行 Ack(ReadAck)、Sync；下行 SyncRes。
 
+use std::collections::{HashMap, HashSet};
 use std::pin::Pin;
-use std::sync::{Arc, Mutex};
-
-use futures::stream::{self, StreamExt};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use flare_proto::common::{
-    Ack, ConversationParticipantsSync, ConversationUserSettingsSync, GetSyncCursorSync,
-    MultiDeviceCursor, QueryEventsSync, ReadAck, SyncRes, UpdateSyncCursorSync,
-    ack::Payload as AckPayload, sync_res::Payload as SyncResPayload,
+    Ack, ConversationParticipantsSync, ConversationSyncSlice, ConversationUserSettingsSync,
+    EnsureConversationSync, GetSyncCursorSync, MultiDeviceCursor, QueryEventsSync, ReadAck,
+    SingleConversationSyncRes, SyncRes, UpdateSyncCursorSync, ack::Payload as AckPayload,
+    sync_res::Payload as SyncResPayload,
 };
 use tokio::sync::Mutex as AsyncMutex;
 
@@ -27,7 +27,8 @@ use crate::kernel::ConversationSummarySync;
 use crate::kernel::event::SyncNotify;
 use crate::kernel::event::{EventBus, SdkEvent};
 use crate::kernel::{
-    ReliableSendQueuePort, SessionSyncRunner, SyncResponseHandler, SyncRunContext, SyncTrigger,
+    ReliableSendQueuePort, SessionSyncRunner, SyncResponseHandler, SyncRunContext,
+    watermark_provably_clean,
 };
 use crate::kernel::{SyncFsm, SyncState, SyncTransition};
 use crate::model::apply_remote_settings_version;
@@ -43,6 +44,54 @@ struct QueryEventsReqV1 {
     limit: i32,
     event_types: Vec<i32>,
     include_deleted: bool,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct MultiConversationCatchUpReport {
+    pub requested_conversations: usize,
+    pub applied_conversations: usize,
+    pub failed_conversations: usize,
+    pub pages: usize,
+    pub decoded_items: usize,
+}
+
+/// I2 gap-too-large：服务端明示增量不可回放（快照重拉/会话重同步）时，客户端必须放弃
+/// 增量回放切快照，否则要么欠拉（静默丢更新）要么无界重放。
+fn snapshot_cutover_required(
+    stale: Option<&flare_proto::common::SyncStaleContext>,
+    hints: Option<&flare_proto::common::SyncSessionHints>,
+) -> bool {
+    const REFETCH: i32 = flare_proto::common::SyncRecoveryHint::RefetchSnapshot as i32;
+    const RESYNC: i32 = flare_proto::common::SyncRecoveryHint::ResyncConversation as i32;
+    stale
+        .map(|context| {
+            context.recommended_action == REFETCH || context.recommended_action == RESYNC
+        })
+        .unwrap_or(false)
+        || hints
+            .map(|hints| hints.recovery_hint == REFETCH || hints.recovery_hint == RESYNC)
+            .unwrap_or(false)
+}
+
+/// 服务端快照/列表游标形如 `millis|conversation_id`（分页）或纯 `millis`（水位回显）。
+/// 客户端持久化的是 u64 毫秒水位——取 `|` 前的 ms 部分。
+/// 旧实现 `parse::<u64>()` 对 `ms|cid` 必然得 0 → 列表游标永不前进 → 每次热启/重连全量拉列表。
+fn snapshot_cursor_watermark_ms(cursor: &str) -> u64 {
+    let ms_part = cursor.split_once('|').map(|(ms, _)| ms).unwrap_or(cursor);
+    ms_part.trim().parse::<u64>().unwrap_or_default()
+}
+
+/// slice 按值转换（items 含整页消息 payload，move 而非 clone——批量 catch-up 热路径）。
+fn single_response_from_multi_slice(slice: ConversationSyncSlice) -> SingleConversationSyncRes {
+    SingleConversationSyncRes {
+        conversation_id: slice.conversation_id,
+        items: slice.items,
+        max_conversation_seq: slice.max_conversation_seq,
+        next_cursor: slice.next_cursor,
+        has_more: slice.has_more,
+        hints: None,
+        stale: None,
+    }
 }
 
 fn build_read_ack(device_id: &str, conversation_id: &str, read_seq: u64) -> Ack {
@@ -76,9 +125,23 @@ pub struct SyncProtocolAdapter {
     active_user_id: AsyncMutex<String>,
     sync_apply_use_case: SyncApplyUseCase,
     sync_request_use_case: SyncRequestUseCase,
-    /// Init/重连：会话列表同步后按会话补拉消息的并发上限。
-    init_message_sync_concurrency: usize,
+    /// 远端游标合并冲刷：热路径只进 map（按会话取 max 合并），后台去抖批量推送。
+    remote_cursor_flush: Arc<RemoteCursorFlushState>,
+    /// 冲刷 worker 只启动一次（builder 装载；未装载时热路径退化为内联推送，语义等价）。
+    remote_cursor_worker: OnceLock<()>,
+    /// Arc 自引用（builder Arc 化后随冲刷 worker 一并装载）：冷启 bundle 余页后台续拉用。
+    self_weak: OnceLock<std::sync::Weak<Self>>,
+    /// 冷启 bundle 续拉单飞：避免续拉未完成期间的再次冷入口重复整套后台拉取。
+    cold_bundle_continuation_in_flight: std::sync::atomic::AtomicBool,
     metrics: MetricsRecorder,
+}
+
+/// 远端游标推送是 advisory（多端/新设备的引导提示，服务端单调合并）——
+/// 无需在 catch-up 热路径逐会话同步等待。合并=同会话取最大 seq；去抖=批量窗口一次推。
+#[derive(Default)]
+struct RemoteCursorFlushState {
+    pending: AsyncMutex<HashMap<String, u64>>,
+    notify: tokio::sync::Notify,
 }
 
 impl SyncProtocolAdapter {
@@ -106,22 +169,10 @@ impl SyncProtocolAdapter {
         Ok(Some(parsed.last_conversation_seq))
     }
 
-    async fn update_remote_cursor_seq(
-        &self,
-        user_id: &str,
-        conversation_id: &str,
-        last_seq: u64,
-    ) -> Result<()> {
-        let remote = self
-            .get_remote_cursor_seq(user_id, conversation_id)
-            .await
-            .ok()
-            .flatten()
-            .unwrap_or(0);
-        let effective = last_seq.max(remote);
-        if effective <= remote {
-            return Ok(());
-        }
+    /// 推送远端游标。**不做读-比较-写**：服务端 `update_sync_cursor` 已单调合并
+    /// （merge_cursor_monotonic + read/message/sync_at 取 max，有测试守护）——
+    /// 客户端预读 GetSyncCursor 每次推进多一个 RPC 且缓存 miss 时触发服务端全量 bootstrap。
+    async fn update_remote_cursor_seq(&self, conversation_id: &str, last_seq: u64) -> Result<()> {
         let local_read_seq = self
             .stores
             .conversations
@@ -131,13 +182,23 @@ impl SyncProtocolAdapter {
             .flatten()
             .and_then(|conversation| ReadPosition::from_conversation(&conversation).ack_read_seq())
             .unwrap_or(0);
+        self.push_remote_cursor(conversation_id, last_seq, local_read_seq)
+            .await
+    }
+
+    async fn push_remote_cursor(
+        &self,
+        conversation_id: &str,
+        last_seq: u64,
+        local_read_seq: u64,
+    ) -> Result<()> {
         let resp = self
             .sync_request_use_case
             .request_update_cursor(UpdateSyncCursorSync {
                 cursor: Some(MultiDeviceCursor {
                     device_id: self.sync_request_use_case.device_id().to_string(),
                     conversation_id: conversation_id.to_string(),
-                    last_conversation_seq: effective,
+                    last_conversation_seq: last_seq,
                     last_sync_at: now_millis() as i64,
                     last_read_seq: local_read_seq,
                     last_message_seq: 0,
@@ -159,7 +220,6 @@ impl SyncProtocolAdapter {
         event_deduper: EventDeduper,
         notification_pipeline: NotificationInboundPipeline,
         device_id: String,
-        init_message_sync_concurrency: usize,
         metrics: MetricsRecorder,
     ) -> Self {
         let sync_apply_use_case = SyncApplyUseCase::new(
@@ -177,7 +237,10 @@ impl SyncProtocolAdapter {
             active_user_id: AsyncMutex::new(String::new()),
             sync_apply_use_case,
             sync_request_use_case,
-            init_message_sync_concurrency: init_message_sync_concurrency.max(1),
+            remote_cursor_flush: Arc::new(RemoteCursorFlushState::default()),
+            remote_cursor_worker: OnceLock::new(),
+            self_weak: OnceLock::new(),
+            cold_bundle_continuation_in_flight: std::sync::atomic::AtomicBool::new(false),
             metrics,
         }
     }
@@ -201,12 +264,180 @@ impl SyncProtocolAdapter {
                 user_id,
                 conversation_id,
                 last_seq,
-                |user_id, conversation_id, last_seq| async move {
-                    self.update_remote_cursor_seq(&user_id, &conversation_id, last_seq)
-                        .await
+                |_, conversation_id, last_seq| async move {
+                    self.queue_remote_cursor(&conversation_id, last_seq).await
                 },
             )
             .await
+    }
+
+    /// 远端游标推送入队（合并同会话取 max）。worker 已装载 → 去抖批量推；
+    /// 未装载（测试 harness/裸构造）→ 内联推送，语义等价。
+    async fn queue_remote_cursor(&self, conversation_id: &str, last_seq: u64) -> Result<()> {
+        if self.remote_cursor_worker.get().is_none() {
+            return self
+                .update_remote_cursor_seq(conversation_id, last_seq)
+                .await;
+        }
+        {
+            let mut pending = self.remote_cursor_flush.pending.lock().await;
+            let entry = pending.entry(conversation_id.to_string()).or_insert(0);
+            *entry = (*entry).max(last_seq);
+        }
+        self.remote_cursor_flush.notify.notify_one();
+        Ok(())
+    }
+
+    /// 水位/快照建立型游标保存（不做连续性钳制，见 `save_watermark_with_remote`）+ 远端合并推送。
+    async fn save_watermark_cursor(
+        &self,
+        user_id: &str,
+        cursor_key: &str,
+        last_seq: u64,
+    ) -> Result<()> {
+        self.sync_apply_use_case
+            .save_watermark_with_remote(user_id, cursor_key, last_seq, |_, key, seq| async move {
+                self.queue_remote_cursor(&key, seq).await
+            })
+            .await
+    }
+
+    /// 关键事件检查点保存：无远端推送（检查点仅本设备语义），失败仅告警（幂等，下轮重查自愈）。
+    async fn save_critical_checkpoint(&self, user_id: &str, cursor_key: &str, seq: u64) {
+        if let Err(error) = self
+            .sync_apply_use_case
+            .save_watermark_with_remote(user_id, cursor_key, seq, |_, _, _| async { Ok(()) })
+            .await
+        {
+            tracing::warn!(
+                cursor_key = %cursor_key,
+                seq,
+                error = %error,
+                "关键事件检查点保存失败，下轮重查（幂等）"
+            );
+        }
+    }
+
+    /// 启动远端游标冲刷 worker（builder 在 Arc 化后调用一次，幂等）。
+    /// worker 持 Weak：adapter 释放 → worker 退出；推送失败仅 debug（advisory，下轮同步重推）。
+    pub(crate) fn start_remote_cursor_flush_worker(self: &Arc<Self>) {
+        let _ = self.self_weak.set(Arc::downgrade(self));
+        if self.remote_cursor_worker.set(()).is_err() {
+            return;
+        }
+        const FLUSH_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(200);
+        let weak = Arc::downgrade(self);
+        let state = self.remote_cursor_flush.clone();
+        crate::shared::util::spawn_background(async move {
+            loop {
+                state.notify.notified().await;
+                crate::shared::util::delay(FLUSH_DEBOUNCE).await;
+                let batch: Vec<(String, u64)> = {
+                    let mut pending = state.pending.lock().await;
+                    pending.drain().collect()
+                };
+                if batch.is_empty() {
+                    continue;
+                }
+                let Some(adapter) = weak.upgrade() else {
+                    break;
+                };
+                // read_seq 批量预取（冷启后批次可达 N，逐条点查在 IndexedDB 上放大）。
+                let ids: Vec<String> = batch.iter().map(|(cid, _)| cid.clone()).collect();
+                let read_seqs: HashMap<String, u64> = adapter
+                    .stores
+                    .conversations
+                    .get_many(&ids)
+                    .await
+                    .map(|conversations| {
+                        conversations
+                            .into_iter()
+                            .filter_map(|conversation| {
+                                ReadPosition::from_conversation(&conversation)
+                                    .ack_read_seq()
+                                    .map(|seq| (conversation.conversation_id, seq))
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                for (conversation_id, last_seq) in batch {
+                    let read_seq = read_seqs.get(&conversation_id).copied().unwrap_or(0);
+                    if let Err(error) = adapter
+                        .push_remote_cursor(&conversation_id, last_seq, read_seq)
+                        .await
+                    {
+                        tracing::debug!(
+                            conversation_id = %conversation_id,
+                            last_seq,
+                            error = %error,
+                            "远端游标推送失败（advisory，下轮同步重推）"
+                        );
+                    }
+                }
+                drop(adapter);
+            }
+        });
+    }
+
+    /// I2 gap-too-large 快照切换：一次 `SyncSnapshotSync` 拉该会话最新页 + 权威已读/未读，
+    /// 落库成功后把游标直接置到快照水位（守 I1：先数据后游标）；更旧历史留给按需 backfill。
+    /// 返回切换后的游标水位（0 表示服务端未返回该会话行，游标不动）。
+    async fn resync_conversation_from_snapshot(&self, conversation_id: &str) -> Result<u64> {
+        let user_id = self.current_user_id().await;
+        let res = self
+            .sync_request_use_case
+            .request_sync_snapshot(flare_proto::common::SyncSnapshotSync {
+                conversation_ids: vec![conversation_id.to_string()],
+                messages_per_conversation: DEFAULT_SYNC_LIMIT,
+                include_deleted: false,
+                include_conversations: false,
+                snapshot_cursor: String::new(),
+                newest_first: false,
+                conversation_page_limit: 1,
+            })
+            .await?;
+        let mut cutover_seq = 0u64;
+        for row in res.conversations {
+            if row.conversation_id != conversation_id {
+                continue;
+            }
+            let last_seq = self
+                .sync_apply_use_case
+                .apply_snapshot_row(&user_id, row)
+                .await?;
+            if last_seq > 0 && !user_id.is_empty() {
+                self.establish_snapshot_cursors(&user_id, conversation_id, last_seq)
+                    .await?;
+            }
+            cutover_seq = last_seq;
+        }
+        tracing::info!(
+            conversation_id = %conversation_id,
+            cutover_seq,
+            "gap-too-large 快照切换完成，游标已置服务端水位"
+        );
+        Ok(cutover_seq)
+    }
+
+    /// 快照建立型双位点：消息游标（无钳制水位）+ 关键事件位点一并置到快照水位。
+    /// 快照行是服务端「当前态物化」（撤回/编辑/反应已反映在行内），≤last_seq 的事件
+    /// 要么已体现在返回消息、要么指向不在本地的历史；不建立关键位点则冷启后首轮
+    /// critical 扫描会对全部会话各发一个 QueryEvents（N 个空响应 RPC）。
+    async fn establish_snapshot_cursors(
+        &self,
+        user_id: &str,
+        conversation_id: &str,
+        last_seq: u64,
+    ) -> Result<()> {
+        self.save_watermark_cursor(user_id, conversation_id, last_seq)
+            .await?;
+        self.save_critical_checkpoint(
+            user_id,
+            &critical_event_cursor_key(conversation_id),
+            last_seq,
+        )
+        .await;
+        Ok(())
     }
 
     fn transition_sync(&self, run: &SyncRunContext, event: SyncTransition) {
@@ -234,29 +465,76 @@ impl SyncProtocolAdapter {
         self.send_read_ack_impl(conversation_id, read_seq).await
     }
 
-    /// 将本地已读位点批量推送给服务端（登录前、后台 read_states 任务共用）。
+    /// 已读位点批量上报（登录前强推与后台 read_states 任务共用；**恒 delta**，I4）：
+    /// 只上报"本地已读位点 > 上次已上报位点"的会话，O(会话数)→O(前进数)。
+    /// 位点在 `send?` 成功后才记录（失败下轮重推）；live 读路径不记录位点，周期任务必然重推。
+    /// 残余丢失窗口=ack 写入濒死 socket 且服务端未收：影响仅为他端未读徽标暂滞，下次阅读自愈——
+    /// 换来重连/热启不再每次全量 O(N) ack 风暴（历史教训：ACK 116s）。
     pub async fn push_local_read_states(
         &self,
         conversations: &[crate::model::Conversation],
     ) -> Result<usize> {
+        // 一次批量读全部已上报位点（逐会话 get_raw 在重连/热启是 N 次点查）。
+        // 批量失败 → 空表 → 全部视为前进（保守重推，不欠推）。
+        let ack_keys: Vec<String> = conversations
+            .iter()
+            .map(|conversation| Self::read_ack_cursor_key(&conversation.conversation_id))
+            .collect();
+        let acked = self
+            .stores
+            .cursors
+            .get_raws(&ack_keys)
+            .await
+            .unwrap_or_default();
+
         let mut ack_count = 0usize;
-        for conversation in conversations {
+        let mut skipped = 0usize;
+        for (conversation, ack_key) in conversations.iter().zip(&ack_keys) {
             let Some(read_seq) = ReadPosition::from_conversation(conversation).ack_read_seq()
             else {
                 continue;
             };
+            let advanced = acked
+                .get(ack_key)
+                .and_then(|raw| raw.parse::<u64>().ok())
+                .map(|last| read_seq > last)
+                // 未知/解析失败视为前进 → 上报（保守）。
+                .unwrap_or(true);
+            if !advanced {
+                skipped = skipped.saturating_add(1);
+                continue;
+            }
             self.send_read_ack_impl(&conversation.conversation_id, read_seq)
                 .await?;
+            self.remember_read_ack(&conversation.conversation_id, read_seq)
+                .await;
             ack_count = ack_count.saturating_add(1);
         }
-        if ack_count > 0 {
-            tracing::debug!(ack_count, "pushed local read states to server");
+        if ack_count > 0 || skipped > 0 {
+            tracing::debug!(ack_count, skipped, "pushed local read states to server");
         }
         Ok(ack_count)
     }
 
-    /// 冷启动/重连拉摘要前，先把本地真实已读位点推给服务端。
-    /// 确保 participants 表读位与客户端一致，摘要 `last_read_seq` 不再依赖反推。
+    fn read_ack_cursor_key(conversation_id: &str) -> String {
+        format!("read_ack:{conversation_id}")
+    }
+
+    async fn remember_read_ack(&self, conversation_id: &str, read_seq: u64) {
+        let key = Self::read_ack_cursor_key(conversation_id);
+        if let Err(error) = self
+            .stores
+            .cursors
+            .save_raw(&key, &read_seq.to_string())
+            .await
+        {
+            tracing::warn!(conversation_id, error = %error, "记录已读上报位点失败，下次将重复上报");
+        }
+    }
+
+    /// 冷启动/重连拉摘要前，先把本地**前进过的**已读位点推给服务端（delta），
+    /// 使 participants 表读位与客户端一致、摘要 `last_read_seq` 不依赖反推。
+    /// 冷启本地为空=天然 no-op；重连未前进=零 ack（I4 重连轻量化）。
     async fn push_local_read_states_before_summary_sync(&self) -> Result<usize> {
         let list = self.stores.conversations.list().await?;
         self.push_local_read_states(&list).await
@@ -269,6 +547,42 @@ impl SyncProtocolAdapter {
             read_seq,
         );
         self.sender.send_ack(&ack).await
+    }
+
+    /// 显式建群：把整张成员表一次性交服务端建群（之后消息不再携带成员表）。返回服务端是否建群成功；
+    /// 失败（返回 false 或网络错误）时调用方回退到"首条消息携带成员表"的兜底建群。
+    pub async fn ensure_conversation(
+        &self,
+        conversation_id: &str,
+        conversation_type: i32,
+        business_type: &str,
+        channel_id: &str,
+        member_ids: Vec<String>,
+    ) -> Result<bool> {
+        let conversation_id = conversation_id.trim();
+        if conversation_id.is_empty() {
+            return Err(FlareError::localized(
+                ErrorCode::InvalidParameter,
+                "conversation_id is required",
+            ));
+        }
+        let resp = self
+            .sync_request_use_case
+            .request_ensure_conversation(EnsureConversationSync {
+                conversation_id: conversation_id.to_string(),
+                conversation_type,
+                business_type: business_type.to_string(),
+                channel_id: channel_id.to_string(),
+                member_ids,
+            })
+            .await?;
+        match resp.payload {
+            Some(SyncResPayload::EnsureConversation(res)) => Ok(res.ok),
+            _ => Err(FlareError::localized(
+                ErrorCode::GeneralError,
+                "unexpected ensure conversation sync response",
+            )),
+        }
     }
 
     /// 上行同步当前用户的会话偏好（置顶/免打扰/归档/草稿）。
@@ -366,6 +680,20 @@ impl SyncProtocolAdapter {
             "收到消息同步响应"
         );
 
+        // I2：服务端明示增量窗口已失效 → 放弃本页增量回放，切快照重建（游标置服务端水位）。
+        if snapshot_cutover_required(sc.stale.as_ref(), sc.hints.as_ref()) {
+            tracing::warn!(
+                conversation_id = %conversation_id,
+                stale = ?sc.stale,
+                "服务端建议快照重建，切换 gap-too-large 快照路径"
+            );
+            let cutover_seq = self
+                .resync_conversation_from_snapshot(conversation_id)
+                .await?;
+            self.transition_sync(run, SyncTransition::SyncDone);
+            return Ok((cutover_seq, false, String::new()));
+        }
+
         let user_id = self.current_user_id().await;
         let cursor_seq = if user_id.is_empty() {
             0
@@ -382,7 +710,7 @@ impl SyncProtocolAdapter {
             .conversations
             .get(conversation_id)
             .await?
-            .map(|c| crate::domain::local_cleared_through_seq(&c.ext).max(c.visible_after_seq))
+            .map(|c| crate::domain::sync_visibility_floor(&c))
             .unwrap_or(0);
         let decode_after_seq = cursor_seq.min(requested_after_seq).max(cleared_floor);
 
@@ -479,18 +807,21 @@ impl SyncProtocolAdapter {
         self.sync_request_use_case.request_query_events(req).await
     }
 
-    pub async fn sync_critical_events(&self) -> Result<()> {
+    /// 关键事件回放补偿。`conversations` 由调用方提供（sync phase 内传共享快照，×N list 查询→×1）。
+    pub async fn sync_critical_events(
+        &self,
+        conversations: &[crate::model::Conversation],
+    ) -> Result<()> {
         let user_id = self.current_user_id().await;
-        if user_id.is_empty() {
-            return Ok(());
-        }
-        let conversations = self.stores.conversations.list().await?;
-        if conversations.is_empty() {
+        if user_id.is_empty() || conversations.is_empty() {
             return Ok(());
         }
 
+        let total = conversations.len();
+        let mut skipped = 0usize;
         for conversation in conversations {
-            let conversation_id = conversation.conversation_id;
+            let summary_max_seq = conversation.max_seq;
+            let conversation_id = conversation.conversation_id.clone();
             if conversation_id.trim().is_empty() {
                 continue;
             }
@@ -502,6 +833,12 @@ impl SyncProtocolAdapter {
                 .await?
                 .map(|c| c.last_seq as i64)
                 .unwrap_or(0);
+
+            if watermark_provably_clean(summary_max_seq, after_seq.max(0) as u64) {
+                skipped = skipped.saturating_add(1);
+                continue;
+            }
+            let mut fully_caught_up = false;
 
             loop {
                 let req = QueryEventsReqV1 {
@@ -539,6 +876,22 @@ impl SyncProtocolAdapter {
                 let Some(SyncResPayload::QueryEvents(query_res)) = resp.payload else {
                     break;
                 };
+                // I2：事件流缺口不可回放（服务端返回 stale/resync 建议）→ 快照重建该会话，
+                // 事件游标跳到快照水位（快照已物化事件最终态，≤水位的事件被快照覆盖）。
+                if snapshot_cutover_required(query_res.stale.as_ref(), query_res.hints.as_ref()) {
+                    // 快照切换在 resync 内一并建立消息游标 + 关键事件位点（双位点同源）。
+                    if let Err(e) = self
+                        .resync_conversation_from_snapshot(&conversation_id)
+                        .await
+                    {
+                        tracing::warn!(
+                            conversation_id = %conversation_id,
+                            error = %e,
+                            "关键事件缺口快照切换失败，保留游标下轮重试"
+                        );
+                    }
+                    break;
+                }
                 let envelope = query_res.envelope.unwrap_or_default();
                 let applied_event_seqs = self
                     .sync_apply_use_case
@@ -551,22 +904,8 @@ impl SyncProtocolAdapter {
                 );
                 if safe_event_seq > after_seq.max(0) as u64 {
                     after_seq = safe_event_seq as i64;
-                    if let Err(e) = self
-                        .sync_apply_use_case
-                        .save_cursor_with_remote(
-                            &user_id,
-                            &cursor_key,
-                            safe_event_seq,
-                            |_, _, _| async { Ok(()) },
-                        )
-                        .await
-                    {
-                        tracing::warn!(
-                            conversation_id = %conversation_id,
-                            error = %e,
-                            "关键事件回放：保存本地游标失败，继续本轮同步"
-                        );
-                    }
+                    self.save_critical_checkpoint(&user_id, &cursor_key, safe_event_seq)
+                        .await;
                 }
                 if envelope.max_conversation_seq > safe_event_seq {
                     tracing::warn!(
@@ -579,10 +918,19 @@ impl SyncProtocolAdapter {
                     break;
                 }
                 if !envelope.has_more || envelope.max_conversation_seq == 0 {
+                    fully_caught_up = true;
                     break;
                 }
             }
+
+            // I4：本会话事件已拉到服务端水位 → 把检查位点抬到摘要水位，
+            // 使下一轮（重连/前台高频触发）可证明跳过，QueryEvents 从 O(会话数) 降为 O(变化)。
+            if fully_caught_up && summary_max_seq > after_seq.max(0) as u64 {
+                self.save_critical_checkpoint(&user_id, &cursor_key, summary_max_seq)
+                    .await;
+            }
         }
+        tracing::debug!(total, skipped, "critical events sweep done (changed-only)");
         Ok(())
     }
 }
@@ -604,6 +952,19 @@ impl SessionSyncRunner for SyncProtocolAdapter {
     ) -> Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + '_>> {
         let id = conversation_id.to_string();
         Box::pin(async move { self.sync_conversation_from_seq(&id, last_seq, limit).await })
+    }
+
+    fn request_message_backfill_before_seq(
+        &self,
+        conversation_id: &str,
+        before_seq: u64,
+        limit: i32,
+    ) -> Pin<Box<dyn std::future::Future<Output = Result<bool>> + Send + '_>> {
+        let id = conversation_id.to_string();
+        Box::pin(async move {
+            self.sync_conversation_backfill_before_seq(&id, before_seq, limit)
+                .await
+        })
     }
 
     fn send_read_ack(
@@ -649,7 +1010,8 @@ impl ConversationSummarySync for SyncProtocolAdapter {
         let user_id = user_id.to_string();
         Box::pin(async move {
             self.sync_conversations_with_context(&user_id, run).await?;
-            self.sync_critical_events().await
+            let conversations = self.stores.conversations.list().await?;
+            self.sync_critical_events(&conversations).await
         })
     }
 }
@@ -725,10 +1087,8 @@ impl SyncProtocolAdapter {
             *user = user_id.to_string();
         }
         self.transition_sync(&run, SyncTransition::SyncRequested);
-        if matches!(
-            run.trigger,
-            SyncTrigger::InitialLogin | SyncTrigger::Reconnect
-        ) && let Err(error) = self.push_local_read_states_before_summary_sync().await
+        if run.needs_startup_catch_up()
+            && let Err(error) = self.push_local_read_states_before_summary_sync().await
         {
             tracing::warn!(
                 error = %error,
@@ -787,6 +1147,12 @@ impl SyncProtocolAdapter {
             "会话同步游标信息"
         );
 
+        // I6 冷启 bootstrap bundle：无列表游标（真冷启/游标丢失）时，一次 RPC/页 同时拿
+        // top-N 摘要 + 每会话首页消息（活跃度降序，首屏先到），替代 列表→逐会话消息 的串行瀑布。
+        if cursor.is_empty() {
+            return self.cold_start_bundle_sync(user_id, &run).await;
+        }
+
         let mut total_synced = 0usize;
         loop {
             tracing::debug!(
@@ -817,17 +1183,16 @@ impl SyncProtocolAdapter {
                 .apply_conversations(user_id, &resp)
                 .await?;
             total_synced += resp.conversations.len();
-            let server_cursor_ms = resp.next_cursor.parse::<u64>().unwrap_or_default();
-            self.save_cursor_with_remote(user_id, CONVERSATION_CURSOR_KEY, server_cursor_ms)
-                .await?;
-            if matches!(
-                run.trigger,
-                SyncTrigger::InitialLogin | SyncTrigger::Reconnect
-            ) {
+            let server_cursor_ms = snapshot_cursor_watermark_ms(&resp.next_cursor);
+            if server_cursor_ms > 0 {
+                // 列表水位是伪 key（无本地消息行），必须走无钳制保存。
+                self.save_watermark_cursor(user_id, CONVERSATION_CURSOR_KEY, server_cursor_ms)
+                    .await?;
+            }
+            if run.needs_startup_catch_up() {
                 self.sync_conversation_messages_bounded(
                     &applied.message_sync_conversation_ids,
                     run.clone(),
-                    self.init_message_sync_concurrency,
                 )
                 .await?;
             } else {
@@ -857,41 +1222,436 @@ impl SyncProtocolAdapter {
         Ok(())
     }
 
+    /// I6 冷启 bundle：SyncSnapshot 分页循环（活跃度降序）。每页=摘要+首页消息一次到位；
+    /// 页内数据落库后才推进各会话游标（I1）；**列表水位仅在整个 bundle 完成后保存**——
+    /// 降序分页中途崩溃时下次仍走 bundle（幂等），避免"水位已到顶、旧会话永不拉取"的缺口。
+    async fn cold_start_bundle_sync(&self, user_id: &str, run: &SyncRunContext) -> Result<()> {
+        // 首屏放行：首页（最活跃 50 会话 + 首页消息）内联拉取并应用后即返回，
+        // 余页交给后台续拉——大账号首屏从 O(页数) 个串行 RPC 压到 1 个。
+        // 数据纪律不变：每页应用时建立自身消息/关键位点；列表水位只在全部页完成后保存
+        //（中断 → 下次启动列表同步全量兜底，宁可多拉不丢）。
+        let first = self.request_cold_bundle_page(String::new()).await?;
+        let next_cursor =
+            (first.has_more && !first.next_cursor.is_empty()).then(|| first.next_cursor.clone());
+        let (watermark_ms, total) = self.apply_cold_bundle_page(user_id, run, first).await?;
+
+        let Some(cursor) = next_cursor else {
+            return self
+                .finish_cold_bundle(user_id, run, watermark_ms, total)
+                .await;
+        };
+
+        let continuation_available = self
+            .self_weak
+            .get()
+            .and_then(std::sync::Weak::upgrade)
+            .filter(|_| {
+                !self
+                    .cold_bundle_continuation_in_flight
+                    .swap(true, std::sync::atomic::Ordering::AcqRel)
+            });
+        match continuation_available {
+            Some(adapter) => {
+                let user_id = user_id.to_string();
+                let run = run.clone();
+                crate::shared::util::spawn_background(async move {
+                    adapter
+                        .continue_cold_bundle(&user_id, &run, cursor, watermark_ms, total)
+                        .await;
+                    adapter
+                        .cold_bundle_continuation_in_flight
+                        .store(false, std::sync::atomic::Ordering::Release);
+                });
+                Ok(())
+            }
+            // 未 Arc 装配（测试/裸构造）或续拉已在飞：内联拉完，行为与旧实现一致。
+            None => {
+                let (watermark_ms, total) = self
+                    .drain_cold_bundle_pages(user_id, run, cursor, watermark_ms, total)
+                    .await?;
+                self.finish_cold_bundle(user_id, run, watermark_ms, total)
+                    .await
+            }
+        }
+    }
+
+    /// 后台续拉余页（首页已放行首屏）。错误不上抛：告警后放弃本轮，
+    /// 列表水位未保存 → 下次启动列表同步全量兜底。
+    async fn continue_cold_bundle(
+        &self,
+        user_id: &str,
+        run: &SyncRunContext,
+        cursor: String,
+        watermark_ms: u64,
+        total: usize,
+    ) {
+        match self
+            .drain_cold_bundle_pages(user_id, run, cursor, watermark_ms, total)
+            .await
+        {
+            Ok((watermark_ms, total)) => {
+                if let Err(error) = self
+                    .finish_cold_bundle(user_id, run, watermark_ms, total)
+                    .await
+                {
+                    tracing::warn!(error = %error, "冷启 bundle 收尾失败（下次启动全量兜底）");
+                }
+            }
+            Err(error) => {
+                tracing::warn!(error = %error, "冷启 bundle 后台续拉中断（下次启动全量兜底）");
+            }
+        }
+    }
+
+    /// 页间流水线排空：应用第 N 页的同时并发请求第 N+1 页（网络等待与本地落库重叠；
+    /// 服务端 BootstrapPageCache 使续拉页命中快照缓存，预取不放大服务端成本）。
+    /// 每页前校验会话未切换（登出/换号即中止，写入幂等）。
+    async fn drain_cold_bundle_pages(
+        &self,
+        user_id: &str,
+        run: &SyncRunContext,
+        first_cursor: String,
+        mut watermark_ms: u64,
+        mut total: usize,
+    ) -> Result<(u64, usize)> {
+        let mut current = self.request_cold_bundle_page(first_cursor).await?;
+        loop {
+            if self.current_user_id().await != user_id {
+                tracing::info!("冷启 bundle 续拉中止：会话已切换");
+                return Ok((watermark_ms, total));
+            }
+            let next_cursor = (current.has_more && !current.next_cursor.is_empty())
+                .then(|| current.next_cursor.clone());
+            let (applied, fetched) = match next_cursor {
+                Some(cursor) => {
+                    let (applied, fetched) = futures::join!(
+                        self.apply_cold_bundle_page(user_id, run, current),
+                        self.request_cold_bundle_page(cursor),
+                    );
+                    (applied, Some(fetched))
+                }
+                None => (
+                    self.apply_cold_bundle_page(user_id, run, current).await,
+                    None,
+                ),
+            };
+            let (page_watermark, page_total) = applied?;
+            watermark_ms = watermark_ms.max(page_watermark);
+            total += page_total;
+            match fetched {
+                Some(next) => current = next?,
+                None => return Ok((watermark_ms, total)),
+            }
+        }
+    }
+
+    async fn finish_cold_bundle(
+        &self,
+        user_id: &str,
+        run: &SyncRunContext,
+        watermark_ms: u64,
+        total: usize,
+    ) -> Result<()> {
+        if watermark_ms > 0 {
+            self.save_watermark_cursor(user_id, CONVERSATION_CURSOR_KEY, watermark_ms)
+                .await?;
+        }
+        self.transition_sync(run, SyncTransition::SyncDone);
+        tracing::info!(
+            total,
+            watermark_ms,
+            "冷启 bundle 同步完成（摘要+首页消息一次到位）"
+        );
+        Ok(())
+    }
+
+    async fn request_cold_bundle_page(
+        &self,
+        snapshot_cursor: String,
+    ) -> Result<flare_proto::common::SyncSnapshotSyncRes> {
+        const COLD_BUNDLE_PAGE_CONVERSATIONS: i32 = 50;
+        const COLD_BUNDLE_MESSAGES_PER_CONVERSATION: i32 = 30;
+        self.sync_request_use_case
+            .request_sync_snapshot(flare_proto::common::SyncSnapshotSync {
+                conversation_ids: Vec::new(),
+                messages_per_conversation: COLD_BUNDLE_MESSAGES_PER_CONVERSATION,
+                include_deleted: false,
+                include_conversations: true,
+                snapshot_cursor,
+                newest_first: true,
+                conversation_page_limit: COLD_BUNDLE_PAGE_CONVERSATIONS,
+            })
+            .await
+    }
+
+    /// 应用一页冷启 bundle：摘要 + 首页消息 + 快照双位点。按值消费整页（免逐行深拷贝）。
+    /// 返回（页内最大水位, 行数）。
+    async fn apply_cold_bundle_page(
+        &self,
+        user_id: &str,
+        run: &SyncRunContext,
+        res: flare_proto::common::SyncSnapshotSyncRes,
+    ) -> Result<(u64, usize)> {
+        // WASM 上 yield_for_frame 是 setTimeout(0) 宏任务（嵌套 >5 层被钳到 ~4ms），
+        // 逐行让帧一页 50 行最多白等 ~200ms；按块让帧兼顾流畅与冷启速度。
+        const YIELD_EVERY_ROWS: usize = 8;
+        if !res.conversations.is_empty() {
+            self.transition_sync(run, SyncTransition::DataReceived);
+        }
+
+        let mut rows = res.conversations;
+        let summaries: Vec<_> = rows
+            .iter_mut()
+            .filter_map(|row| row.summary.take())
+            .collect();
+        if !summaries.is_empty() {
+            let synthesized = flare_proto::common::ConversationsSyncRes {
+                conversations: summaries,
+                next_cursor: String::new(),
+                has_more: false,
+                hints: None,
+            };
+            self.sync_apply_use_case
+                .apply_conversations(user_id, &synthesized)
+                .await?;
+        }
+        let mut watermark_ms: u64 = 0;
+        let mut total = 0usize;
+        // 页内先落数据、页末一批建双位点（I1 仍守"先数据后游标"，只是更晚）：
+        // 每行 2 次串行 upsert（消息游标+关键位点）→ 每页 1 个事务。
+        let mut cursor_entries: Vec<(String, u64)> = Vec::with_capacity(rows.len() * 2);
+        let mut remote_pushes: Vec<(String, u64)> = Vec::with_capacity(rows.len());
+        for row in rows {
+            total += 1;
+            watermark_ms = watermark_ms.max(row.last_message_at.max(0) as u64);
+            let conversation_id = row.conversation_id.clone();
+            let last_seq = self
+                .sync_apply_use_case
+                .apply_snapshot_row(user_id, row)
+                .await?;
+            if last_seq > 0 {
+                cursor_entries.push((conversation_id.clone(), last_seq));
+                cursor_entries.push((critical_event_cursor_key(&conversation_id), last_seq));
+                remote_pushes.push((conversation_id, last_seq));
+            }
+            if total % YIELD_EVERY_ROWS == 0 {
+                crate::shared::util::yield_for_frame().await;
+            }
+        }
+        self.sync_apply_use_case
+            .save_watermarks(user_id, &cursor_entries)
+            .await?;
+        for (conversation_id, last_seq) in remote_pushes {
+            // 去抖合并队列（K4），页末统一入队。
+            self.queue_remote_cursor(&conversation_id, last_seq).await?;
+        }
+        Ok((watermark_ms, total))
+    }
+
+    /// I7：批量起始位点——3 次批量读替代每会话 3 次串行往返（批量优于 N+1；
+    /// WASM/IndexedDB 桥上尤其显著，呼应 timeline-open N+1 教训）。
+    async fn multi_conversation_start_positions(
+        &self,
+        user_id: &str,
+        conversation_ids: &[String],
+    ) -> Result<HashMap<String, u64>> {
+        let cursors = self
+            .stores
+            .cursors
+            .get_conversation_cursors(user_id, conversation_ids)
+            .await?;
+        let cleared_floors: HashMap<String, u64> = self
+            .stores
+            .conversations
+            .get_many(conversation_ids)
+            .await?
+            .into_iter()
+            .map(|c| {
+                let floor = crate::domain::sync_visibility_floor(&c);
+                (c.conversation_id, floor)
+            })
+            .collect();
+        let local_max_seqs = self
+            .stores
+            .conversations
+            .get_local_max_seqs(conversation_ids)
+            .await?;
+
+        let mut positions = HashMap::with_capacity(conversation_ids.len());
+        for conversation_id in conversation_ids {
+            let cursor_last_seq = cursors
+                .get(conversation_id)
+                .map(|cursor| cursor.last_seq)
+                .unwrap_or(0);
+            let cleared_floor = cleared_floors.get(conversation_id).copied().unwrap_or(0);
+            let local_max_seq = local_max_seqs.get(conversation_id).copied().unwrap_or(0);
+            positions.insert(
+                conversation_id.clone(),
+                local_message_sync_start_seq(cursor_last_seq, local_max_seq, cleared_floor),
+            );
+        }
+        Ok(positions)
+    }
+
+    /// 批量补齐多个会话消息：一次 `MultiConversationSync` 请求承载多个 changed conversation，
+    /// 每个 slice 仍复用单会话 page 应用逻辑，保留现有 LWW、pending 合并、缺口游标推进语义。
+    pub(crate) async fn sync_multi_conversations_with_context(
+        &self,
+        conversation_ids: &[String],
+        run: SyncRunContext,
+        limit_per_conversation: i32,
+    ) -> Result<MultiConversationCatchUpReport> {
+        let mut seen = HashSet::new();
+        let mut active: Vec<String> = conversation_ids
+            .iter()
+            .map(|id| id.trim())
+            .filter(|id| !id.is_empty())
+            .filter_map(|id| {
+                if seen.insert(id.to_string()) {
+                    Some(id.to_string())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        if active.is_empty() {
+            return Ok(MultiConversationCatchUpReport::default());
+        }
+
+        self.transition_sync(&run, SyncTransition::SyncRequested);
+        let user_id = self.current_user_id().await;
+        let mut positions = self
+            .multi_conversation_start_positions(&user_id, &active)
+            .await?;
+        let page_limit = limit_per_conversation.max(1);
+        let mut report = MultiConversationCatchUpReport {
+            requested_conversations: active.len(),
+            ..Default::default()
+        };
+        let mut applied_conversation_ids = HashSet::new();
+
+        while !active.is_empty() {
+            report.pages = report.pages.saturating_add(1);
+            tracing::debug!(
+                conversations = active.len(),
+                page = report.pages,
+                limit_per_conversation = page_limit,
+                "请求批量会话消息同步页面"
+            );
+            let active_positions = active
+                .iter()
+                .filter_map(|id| positions.get(id).map(|seq| (id.clone(), *seq)))
+                .collect::<HashMap<_, _>>();
+            let resp = self
+                .sync_request_use_case
+                .request_multi_conversation(active.clone(), active_positions, page_limit)
+                .await?;
+            let Some(SyncResPayload::MultiConversation(multi)) = resp.payload else {
+                self.transition_sync(&run, SyncTransition::SyncFailed);
+                return Err(FlareError::general_error(
+                    "unexpected multi conversation sync response".to_string(),
+                ));
+            };
+
+            let mut returned = HashSet::new();
+            let mut next_active = Vec::new();
+            let has_more_pages = multi.has_more;
+            for slice in multi.slices {
+                if slice.conversation_id.trim().is_empty() {
+                    continue;
+                }
+                let conversation_id = slice.conversation_id.clone();
+                returned.insert(conversation_id.clone());
+                let requested_after_seq =
+                    positions.get(&conversation_id).copied().unwrap_or_default();
+                let single = single_response_from_multi_slice(slice);
+                report.decoded_items = report.decoded_items.saturating_add(single.items.len());
+                let single_resp = SyncRes {
+                    payload: Some(SyncResPayload::SingleConversation(single)),
+                };
+                match self
+                    .apply_sync_res_single(
+                        &run,
+                        &conversation_id,
+                        &single_resp,
+                        requested_after_seq,
+                    )
+                    .await
+                {
+                    Ok((next_seq, has_more, _next_cursor)) => {
+                        applied_conversation_ids.insert(conversation_id.clone());
+                        report.applied_conversations = applied_conversation_ids.len();
+                        if has_more {
+                            if next_seq > requested_after_seq {
+                                positions.insert(conversation_id.clone(), next_seq);
+                                next_active.push(conversation_id);
+                            } else {
+                                report.failed_conversations =
+                                    report.failed_conversations.saturating_add(1);
+                                tracing::warn!(
+                                    conversation_id = %conversation_id,
+                                    requested_after_seq,
+                                    next_seq,
+                                    "批量消息同步未推进，等待后续缺口修复"
+                                );
+                            }
+                        }
+                    }
+                    Err(error) => {
+                        report.failed_conversations = report.failed_conversations.saturating_add(1);
+                        tracing::warn!(
+                            conversation_id = %conversation_id,
+                            error = %error,
+                            "批量消息 slice 应用失败"
+                        );
+                    }
+                }
+            }
+
+            for conversation_id in &active {
+                if !returned.contains(conversation_id) {
+                    report.failed_conversations = report.failed_conversations.saturating_add(1);
+                    tracing::warn!(
+                        conversation_id = %conversation_id,
+                        "批量消息同步响应缺少会话 slice"
+                    );
+                }
+            }
+            // I9：每应用完一页 slices 让帧，catch-up 中不饿死渲染/事件循环（WASM 尤其）。
+            crate::shared::util::yield_for_frame().await;
+
+            if !has_more_pages || next_active.is_empty() {
+                break;
+            }
+            active = next_active;
+        }
+
+        Ok(report)
+    }
+
     async fn sync_conversation_messages_bounded(
         &self,
         conversation_ids: &[String],
         run: SyncRunContext,
-        concurrency: usize,
     ) -> Result<()> {
         if conversation_ids.is_empty() {
             return Ok(());
         }
-        let limit = concurrency.max(1);
-        let results: Vec<(String, Result<()>)> = stream::iter(conversation_ids.iter().cloned())
-            .map(|conversation_id| {
-                let run = run.clone();
-                async move {
-                    let result = self
-                        .sync_conversation_with_context(&conversation_id, run)
-                        .await;
-                    (conversation_id, result)
-                }
-            })
-            .buffer_unordered(limit)
-            .collect()
-            .await;
-        for (conversation_id, result) in results {
-            if let Err(error) = result {
-                tracing::warn!(
-                    conversation_id = %conversation_id,
-                    error = %error,
-                    "会话摘要已更新，但补拉会话消息失败"
-                );
-                if run.visibility.is_user_visible() {
-                    return Err(error);
-                }
-            }
-        }
+        let report = self
+            .sync_multi_conversations_with_context(
+                conversation_ids,
+                run.clone(),
+                DEFAULT_SYNC_LIMIT,
+            )
+            .await?;
+        tracing::debug!(
+            requested = report.requested_conversations,
+            applied = report.applied_conversations,
+            failed = report.failed_conversations,
+            pages = report.pages,
+            decoded_items = report.decoded_items,
+            "会话摘要更新后的批量消息补拉完成"
+        );
         Ok(())
     }
 
@@ -925,7 +1685,7 @@ impl SyncProtocolAdapter {
         let conversation = self.stores.conversations.get(conversation_id).await?;
         let cleared_floor = conversation
             .as_ref()
-            .map(|c| crate::domain::local_cleared_through_seq(&c.ext).max(c.visible_after_seq))
+            .map(|c| crate::domain::sync_visibility_floor(&c))
             .unwrap_or(0);
         let local_max_seq = self
             .stores
@@ -1047,6 +1807,39 @@ impl SyncProtocolAdapter {
         .await
     }
 
+    pub async fn sync_conversation_backfill_before_seq(
+        &self,
+        conversation_id: &str,
+        before_seq: u64,
+        limit: i32,
+    ) -> Result<bool> {
+        if before_seq == 0 {
+            return Ok(false);
+        }
+        let run = SyncRunContext::silent_gap_repair();
+        self.transition_sync(&run, SyncTransition::SyncRequested);
+        let page_limit = if limit > 0 { limit } else { DEFAULT_SYNC_LIMIT };
+        let resp = self
+            .sync_request_use_case
+            .request_backfill_page(conversation_id, before_seq, page_limit)
+            .await?;
+        let Some(SyncResPayload::SingleConversation(sc)) = resp.payload else {
+            self.transition_sync(&run, SyncTransition::SyncDone);
+            return Ok(false);
+        };
+        let has_more = sc.has_more;
+        let user_id = self.current_user_id().await;
+        let applied = self
+            .sync_apply_use_case
+            .apply_single_conversation_page(conversation_id, &user_id, 0, &sc)
+            .await?;
+        if applied.has_decoded_items {
+            self.transition_sync(&run, SyncTransition::DataReceived);
+        }
+        self.transition_sync(&run, SyncTransition::SyncDone);
+        Ok(has_more)
+    }
+
     pub async fn sync_conversation_from_seq_with_context(
         &self,
         conversation_id: &str,
@@ -1139,8 +1932,12 @@ fn should_repair_operation_only_gap(start_seq: u64, from_seq: u64, next_seq: u64
 
 #[cfg(test)]
 mod tests {
-    use super::{build_read_ack, max_applied_event_prefix_seq, should_repair_operation_only_gap};
+    use super::{
+        build_read_ack, max_applied_event_prefix_seq, should_repair_operation_only_gap,
+        single_response_from_multi_slice,
+    };
     use flare_proto::common::ack::Payload as AckPayload;
+    use flare_proto::common::{ConversationSyncSlice, SyncSliceItem};
 
     fn make_event(seq: u64) -> flare_proto::common::Event {
         flare_proto::common::Event {
@@ -1189,5 +1986,87 @@ mod tests {
         assert!(should_repair_operation_only_gap(3, 3, 3));
         assert!(!should_repair_operation_only_gap(0, 0, 0));
         assert!(!should_repair_operation_only_gap(3, 3, 4));
+    }
+
+    #[test]
+    fn snapshot_cursor_watermark_extracts_ms_from_paging_and_plain_forms() {
+        use super::snapshot_cursor_watermark_ms;
+        // 分页游标 "ms|cid" → 取 ms（旧 parse::<u64> 得 0，列表游标从不前进）。
+        assert_eq!(snapshot_cursor_watermark_ms("2000|conv-9"), 2000);
+        // 纯 ms 回显 → 原样。
+        assert_eq!(snapshot_cursor_watermark_ms("1735"), 1735);
+        // 空/非法 → 0（调用方跳过保存，不倒退游标）。
+        assert_eq!(snapshot_cursor_watermark_ms(""), 0);
+        assert_eq!(snapshot_cursor_watermark_ms("abc|c1"), 0);
+    }
+
+    #[test]
+    fn critical_events_skip_requires_known_watermark_at_or_below_checkpoint() {
+        use crate::kernel::watermark_provably_clean;
+        // 摘要水位 ≤ 已检查位点 → 可证明无新事件，跳过。
+        assert!(watermark_provably_clean(10, 10));
+        assert!(watermark_provably_clean(10, 12));
+        // 水位领先位点 → 必须查。
+        assert!(!watermark_provably_clean(13, 12));
+        // 水位未知(0) → 保守照拉。
+        assert!(!watermark_provably_clean(0, 12));
+    }
+
+    #[test]
+    fn snapshot_cutover_triggers_on_stale_or_hint_recovery() {
+        use super::snapshot_cutover_required;
+        use flare_proto::common::{SyncRecoveryHint, SyncSessionHints, SyncStaleContext};
+
+        assert!(!snapshot_cutover_required(None, None));
+
+        let refetch_stale = SyncStaleContext {
+            recommended_action: SyncRecoveryHint::RefetchSnapshot as i32,
+            ..Default::default()
+        };
+        assert!(snapshot_cutover_required(Some(&refetch_stale), None));
+
+        let resync_stale = SyncStaleContext {
+            recommended_action: SyncRecoveryHint::ResyncConversation as i32,
+            ..Default::default()
+        };
+        assert!(snapshot_cutover_required(Some(&resync_stale), None));
+
+        let replay_ok = SyncStaleContext {
+            recommended_action: SyncRecoveryHint::ReplayEvents as i32,
+            ..Default::default()
+        };
+        assert!(!snapshot_cutover_required(Some(&replay_ok), None));
+
+        let hint_resync = SyncSessionHints {
+            recovery_hint: SyncRecoveryHint::ResyncConversation as i32,
+            ..Default::default()
+        };
+        assert!(snapshot_cutover_required(None, Some(&hint_resync)));
+
+        let hint_none = SyncSessionHints::default();
+        assert!(!snapshot_cutover_required(None, Some(&hint_none)));
+    }
+
+    #[test]
+    fn multi_conversation_slice_reuses_single_page_shape() {
+        let slice = ConversationSyncSlice {
+            conversation_id: "conv-1".to_string(),
+            items: vec![SyncSliceItem {
+                conversation_seq: 7,
+                ..Default::default()
+            }],
+            max_conversation_seq: 9,
+            next_cursor: "next".to_string(),
+            has_more: true,
+        };
+
+        let single = single_response_from_multi_slice(slice);
+
+        assert_eq!(single.conversation_id, "conv-1");
+        assert_eq!(single.items.len(), 1);
+        assert_eq!(single.items[0].conversation_seq, 7);
+        assert_eq!(single.max_conversation_seq, 9);
+        assert_eq!(single.next_cursor, "next");
+        assert!(single.has_more);
     }
 }

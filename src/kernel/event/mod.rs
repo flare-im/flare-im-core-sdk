@@ -53,8 +53,8 @@ pub use selector::{
     SdkEventType, SyncEventType, ViewEventType,
 };
 pub use types::{
-    ConnectionEvent, ConversationEvent, ExtensionEvent, MessageEvent, NotificationEvent, SdkEvent,
-    SyncNotify, SyncPhase,
+    ConnectionEvent, ConversationEvent, ExtensionEvent, MessageEvent, NotificationEvent,
+    ReadinessStage, SdkEvent, SyncNotify, SyncPhase,
 };
 
 use std::sync::Arc;

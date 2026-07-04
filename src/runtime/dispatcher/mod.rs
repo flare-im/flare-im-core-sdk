@@ -1,7 +1,8 @@
 //! Router：下行载荷 → EventBus。与 flare-proto 对齐：消息=MessagePush，事件=Event/EventEnvelope，回执=SendAck；同步=`DataPacket.sync_response`→`SyncRes`，扩展=`DataPacket.user_custom`/`CustomData`。
 
 use std::collections::HashMap;
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::Duration;
 
 use flare_proto::common::MessageDeleteEvent;
 use flare_proto::common::MessageStatus;
@@ -14,13 +15,16 @@ use crate::application::notification::{
     NotificationInboundPipeline, partition_notification_durability,
 };
 use crate::application::projections::ConversationProjectionApplier;
-use crate::application::services::EventDeduper;
 use crate::application::services::IncomingMessageConverger;
 use crate::application::services::MessageDeduper;
+use crate::application::services::{EventDedupeKey, EventDeduper};
 use crate::domain::{DEFAULT_SYNC_LIMIT, SyncCursorVo, local_cleared_through_seq};
 use crate::infrastructure::persistence::StoreProvider;
 use crate::infrastructure::protocol::DownlinkPayload;
 use crate::kernel::event::{ConversationEvent, EventBus, ExtensionEvent, MessageEvent, SdkEvent};
+use flare_proto::common::TypingAggregatePacket;
+use crate::shared::util::time::{delay, now_millis};
+use self::typing_presence::TypingPresence;
 use crate::kernel::{ReliableSendQueuePort, SessionSyncRunner, SyncResponseHandler};
 use crate::model::IMMessage;
 use crate::runtime::ReliableSendQueue;
@@ -70,6 +74,8 @@ struct PersistJob {
     user_id: String,
 }
 
+const PERSIST_WORKER_BATCH_MAX_MESSAGES: usize = 128;
+
 pub struct Dispatcher {
     bus: EventBus,
     reliable_queue: Option<Arc<ReliableSendQueue>>,
@@ -87,6 +93,9 @@ pub struct Dispatcher {
     /// win#2：有界串行持久化 worker 的入队端。生产路径经 `start_persist_worker` 装载；
     /// 测试 harness 不装载 → `dispatch` 回退内联持久化（保持同步语义，既有断言不受影响）。
     persist_tx: OnceLock<mpsc::Sender<PersistJob>>,
+    /// Receive-side typing presence (per-conversation typing users + TTL). Fed from inbound
+    /// per-user Typing signals; the aggregated live set is re-emitted as TypingAggregate.
+    typing_presence: Mutex<TypingPresence>,
     metrics: MetricsRecorder,
 }
 
@@ -131,12 +140,68 @@ impl Dispatcher {
             seq_repair_state: Arc::new(AsyncMutex::new(HashMap::new())),
             waterline_pull_state: Arc::new(AsyncMutex::new(HashMap::new())),
             persist_tx: OnceLock::new(),
+            typing_presence: Mutex::new(TypingPresence::new()),
             metrics,
         }
     }
 
     pub fn bus(&self) -> &EventBus {
         &self.bus
+    }
+
+    /// Receive-side typing TTL: a user shows as typing for this long after the last inbound
+    /// signal, then auto-hides. > 2x the send-side heartbeat (TYPING_SOURCE_THROTTLE_MS=3s) so
+    /// a continuous typist never flickers off.
+    const TYPING_PRESENCE_TTL_MS: u64 = 7_000;
+
+    /// Feed an inbound per-user typing signal into the presence tracker; when the live set
+    /// changes, re-emit it as a unified TypingAggregate (which every platform already consumes
+    /// via onTypingAggregateChanged).
+    fn apply_typing_user(&self, conversation_id: &str, user_id: &str, typing: bool) {
+        let now = now_millis();
+        let changed = self.typing_presence.lock().ok().and_then(|mut p| {
+            p.apply_user(conversation_id, user_id, typing, now, Self::TYPING_PRESENCE_TTL_MS)
+        });
+        if let Some(users) = changed {
+            self.emit_typing_presence(conversation_id, users, now);
+        }
+    }
+
+    fn emit_typing_presence(&self, conversation_id: &str, typing_user_ids: Vec<String>, now: u64) {
+        let typing_count = typing_user_ids.len() as u32;
+        self.bus
+            .publish(SdkEvent::Message(MessageEvent::TypingAggregate {
+                conversation_id: conversation_id.to_string(),
+                event: TypingAggregatePacket {
+                    conversation_id: conversation_id.to_string(),
+                    typing_user_ids,
+                    typing_count,
+                    occurred_at: Some(now as i64),
+                },
+            }));
+    }
+
+    /// Start the background sweep that expires stale typing entries and re-emits the shrunken
+    /// set, so a dropped/silent peer's indicator auto-hides even without an explicit stop.
+    pub(crate) fn start_typing_sweep(self: &Arc<Self>) {
+        let weak = Arc::downgrade(self);
+        spawn_background(async move {
+            loop {
+                delay(Duration::from_millis(2_000)).await;
+                let Some(this) = weak.upgrade() else {
+                    break;
+                };
+                let now = now_millis();
+                let changed = match this.typing_presence.lock() {
+                    Ok(mut presence) => presence.prune(now),
+                    Err(_) => continue,
+                };
+                for (conversation_id, users) in changed {
+                    this.emit_typing_presence(&conversation_id, users, now);
+                }
+                drop(this);
+            }
+        });
     }
 
     /// 启动有界**串行**持久化 worker（A2 win#2）。生产路径在建连后调用一次；测试 harness 不调用
@@ -158,8 +223,23 @@ impl Dispatcher {
                 let Some(this) = weak.upgrade() else {
                     break;
                 };
-                this.persist_durable_batch(&job.messages, &job.user_id)
-                    .await;
+                let mut user_id = job.user_id;
+                let mut messages = job.messages;
+                while messages.len() < PERSIST_WORKER_BATCH_MAX_MESSAGES {
+                    match rx.try_recv() {
+                        Ok(next) if next.user_id == user_id => {
+                            messages.extend(next.messages);
+                        }
+                        Ok(next) => {
+                            this.persist_durable_batch(&messages, &user_id).await;
+                            user_id = next.user_id;
+                            messages = next.messages;
+                        }
+                        Err(tokio::sync::mpsc::error::TryRecvError::Empty) => break,
+                        Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => break,
+                    }
+                }
+                this.persist_durable_batch(&messages, &user_id).await;
                 drop(this); // 不跨下一次 recv().await 持 Arc，确保 Dispatcher 可释放
             }
         });
@@ -225,6 +305,28 @@ fn first_internal_gap_after_from(base_seq: u64, seqs: &[u64]) -> Option<u64> {
     first_internal_gap_after(&sorted)
 }
 
+fn seq_repair_gap_after(cursor_seq: u64, local_before_seq: u64, seqs: &[u64]) -> Option<u64> {
+    let prefix_gap = first_gap_after(cursor_seq, seqs);
+    let recent_internal_gap = first_internal_gap_after(seqs);
+    let recent_tail_gap = if local_before_seq > 0 {
+        first_gap_after(local_before_seq, seqs)
+    } else {
+        None
+    };
+    let recent_gap = match (recent_internal_gap, recent_tail_gap) {
+        (Some(internal), Some(tail)) => Some(internal.max(tail)),
+        (Some(internal), None) => Some(internal),
+        (None, Some(tail)) => Some(tail),
+        (None, None) => None,
+    };
+    match (prefix_gap, recent_gap) {
+        (Some(prefix), Some(recent)) if recent > prefix => Some(recent),
+        (Some(prefix), _) => Some(prefix),
+        (None, Some(recent)) => Some(recent),
+        (None, None) => None,
+    }
+}
+
 fn seq_repair_backoff_ms(attempt: u32) -> u64 {
     let shift = attempt.saturating_sub(1).min(6);
     SEQ_REPAIR_BASE_BACKOFF_MS
@@ -260,6 +362,7 @@ fn prune_seq_repair_state(states: &mut HashMap<String, SeqRepairState>, now_ms: 
 
 async fn local_waterline_reached_with_stores(
     stores: &Option<StoreProvider>,
+    user_id: &str,
     conversation_id: &str,
     target_seq: u64,
 ) -> bool {
@@ -271,25 +374,42 @@ async fn local_waterline_reached_with_stores(
     };
     if stores
         .conversations
-        .get_local_max_seq(conversation_id)
-        .await
-        .map(|seq| seq >= target_seq)
-        .unwrap_or(false)
-    {
-        return true;
-    }
-
-    stores
-        .conversations
         .get(conversation_id)
         .await
         .map(|conversation| {
             conversation
                 .map(|conversation| {
-                    local_cleared_through_seq(&conversation.ext).max(conversation.visible_after_seq)
-                        >= target_seq
+                    crate::domain::sync_visibility_floor(&conversation) >= target_seq
                 })
                 .unwrap_or(false)
+        })
+        .unwrap_or(false)
+    {
+        return true;
+    }
+
+    let user_id = user_id.trim();
+    if user_id.is_empty() {
+        return false;
+    }
+    let cursor_reached = stores
+        .cursors
+        .get_conversation_cursor(user_id, conversation_id)
+        .await
+        .map(|cursor| cursor.is_some_and(|cursor| cursor.last_seq >= target_seq))
+        .unwrap_or(false);
+    if !cursor_reached {
+        return false;
+    }
+
+    stores
+        .messages
+        .get_by_conversation(conversation_id, target_seq.saturating_add(1), 1)
+        .await
+        .map(|messages| {
+            messages
+                .iter()
+                .any(|message| message.conversation_seq == target_seq)
         })
         .unwrap_or(false)
 }
@@ -323,6 +443,7 @@ fn now_ms() -> u64 {
 
 mod dispatch;
 mod seq_repair;
+mod typing_presence;
 #[cfg(test)]
 mod tests;
 mod waterline;

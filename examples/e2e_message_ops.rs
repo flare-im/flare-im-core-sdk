@@ -23,7 +23,12 @@ async fn main() -> Result<()> {
         .await?;
     let message = apis
         .message_build_api
-        .create_text(&conversation.conversation_id, "hello message ops", false)
+        .create_text(
+            &conversation.conversation_id,
+            "hello message ops",
+            false,
+            &[],
+        )
         .await?;
     let ack = apis.message_api.send_no_oss(message).await?;
     println!("sent: {:?}", ack);

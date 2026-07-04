@@ -9,6 +9,8 @@ use crate::model::conversation::ConversationType;
 use crate::model::message::{MessageStatus, ReactionAction};
 use crate::model::{Conversation, IMMessage, MessageSearchKind, MessageSearchQuery, MessageType};
 use sqlx::SqlitePool;
+use sqlx::sqlite::SqlitePoolOptions;
+use tokio::time::{Duration, sleep};
 
 async fn make_repo() -> SqliteMessageRepo {
     let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
@@ -40,6 +42,23 @@ fn text_message(
     ));
     message.materialize_encoded_content_from_elem();
     message
+}
+
+#[tokio::test]
+async fn save_batch_preserves_typed_thread_id() {
+    let repo = make_repo().await;
+    let mut message = text_message("thread-reply-1", "conv-thread", "u1", 1, 1_000, "reply");
+    message.thread_id = Some("thread-root-1".to_string());
+
+    repo.save_batch(&[message]).await.unwrap();
+
+    let stored = repo
+        .get_by_message_ids(&["thread-reply-1".to_string()])
+        .await
+        .unwrap()
+        .pop()
+        .expect("message should be stored");
+    assert_eq!(stored.thread_id.as_deref(), Some("thread-root-1"));
 }
 
 #[tokio::test]
@@ -497,7 +516,7 @@ async fn init_schema_backfills_fts_for_existing_messages() {
         .fetch_one(&pool)
         .await
         .unwrap();
-    assert_eq!(version, 2);
+    assert_eq!(version, 3);
 
     let repo = SqliteMessageRepo::new(pool);
     let results = repo.search("searchable", 10).await.unwrap();
@@ -543,6 +562,48 @@ async fn fts_search_tracks_save_update_and_delete() {
 
     repo.delete("server-fts-live").await.unwrap();
     assert!(repo.search("索引更新", 10).await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn large_save_batch_backfills_fts_after_hot_path_commit() {
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .unwrap();
+    sqlite_init_schema(&pool).await.unwrap();
+    let repo = SqliteMessageRepo::new(pool);
+    let messages = (0..33)
+        .map(|index| {
+            let text = if index == 32 {
+                "large batch searchable needle"
+            } else {
+                "large batch filler"
+            };
+            text_message(
+                &format!("server-fts-large-{index}"),
+                "conv-fts-large",
+                "u2",
+                index as u64 + 1,
+                1_000 + index as u64,
+                text,
+            )
+        })
+        .collect::<Vec<_>>();
+
+    repo.save_batch(&messages).await.unwrap();
+
+    let mut results = Vec::new();
+    for _ in 0..20 {
+        results = repo.search("needle", 10).await.unwrap();
+        if !results.is_empty() {
+            break;
+        }
+        sleep(Duration::from_millis(25)).await;
+    }
+
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].server_id, "server-fts-large-32");
 }
 
 #[tokio::test]
@@ -654,6 +715,13 @@ async fn save_batch_collapses_self_echo_with_same_client_msg_id() {
         .unwrap();
     assert_eq!(batch.len(), 1);
     assert_eq!(batch[0].server_id, "server-dupe-1");
+
+    let by_server_batch = repo
+        .get_by_message_ids(&["server-dupe-1".to_string(), "missing".to_string()])
+        .await
+        .unwrap();
+    assert_eq!(by_server_batch.len(), 1);
+    assert_eq!(by_server_batch[0].server_id, "server-dupe-1");
 
     let timeline = repo.get_by_conversation("conv-dupe", 0, 10).await.unwrap();
     assert_eq!(timeline.len(), 1);
@@ -1144,4 +1212,48 @@ async fn apply_reaction_event_before_message_arrival_is_not_lost() {
             .map(|entry| entry.count),
         Some(1)
     );
+}
+
+/// 身份缓存读路径:命中缓存→当前身份;miss→消息内嵌发送时快照;都无→回退 sender_id。
+/// 印证"写时/同步时把身份喂进缓存,读时直接批量 join,无需逐条组装"的设计。
+#[tokio::test]
+async fn timeline_read_resolves_current_identity_then_falls_back() {
+    use crate::application::usecases::MessageViewAssembler;
+    use crate::domain::{UserProfile, UserWriter};
+    use crate::infrastructure::persistence::sqlite::user_repo::SqliteUserProfileRepo;
+    use std::sync::Arc;
+
+    let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+    sqlite_init_schema(&pool).await.unwrap();
+    let messages = Arc::new(SqliteMessageRepo::new(pool.clone()));
+    let user_repo = Arc::new(SqliteUserProfileRepo::new(pool.clone()));
+
+    let m1 = text_message("s1", "conv", "u1", 1, 1_000, "from u1"); // 将命中缓存
+    let mut m2 = text_message("s2", "conv", "u2", 2, 2_000, "from u2");
+    m2.sender_name = "Bob".to_string(); // 无缓存,但消息内嵌快照
+    let m3 = text_message("s3", "conv", "u3", 3, 3_000, "from u3"); // 无缓存且无快照
+    messages.save_batch(&[m1, m2, m3]).await.unwrap();
+
+    // 业务端 upsert 等价:把当前身份写进缓存
+    user_repo
+        .save_batch(&[UserProfile {
+            user_id: "u1".into(),
+            nickname: "Alice".into(),
+            avatar_url: String::new(),
+        }])
+        .await
+        .unwrap();
+
+    let assembler = MessageViewAssembler::new(messages.clone(), user_repo.clone());
+    let list = assembler.list("conv", 0, 50).await.unwrap();
+    let name_of = |id: &str| {
+        list.iter()
+            .find(|m| m.server_id == id)
+            .unwrap()
+            .display_name()
+            .to_string()
+    };
+    assert_eq!(name_of("s1"), "Alice", "缓存命中→当前身份");
+    assert_eq!(name_of("s2"), "Bob", "缓存 miss→内嵌发送时快照");
+    assert_eq!(name_of("s3"), "u3", "都无→回退 sender_id");
 }

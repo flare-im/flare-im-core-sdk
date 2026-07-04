@@ -73,8 +73,9 @@ pub(crate) fn run(client_root: &Path, args: &[String]) -> Result<()> {
                 built.insert(BuildStep::IosUniversal);
             }
             BuildStep::Android => {
-                build_android_jni(&layout)?;
-                built.insert(BuildStep::Android);
+                if build_android_jni(&layout)? {
+                    built.insert(BuildStep::Android);
+                }
             }
             BuildStep::MacosBundleCopy => {
                 copy_macos_flutter_dylib(&layout)?;
@@ -213,10 +214,12 @@ impl ArtifactLayout {
                 .join("ios/FFI/build")
                 .join(static_lib_name()),
             flutter_android_jni_root: flutter_example.join("android/app/src/main/jniLibs"),
-            native_host_dir: client_root.join("native/artifacts/host"),
-            native_wasm_dir: client_root.join("native/artifacts/wasm"),
-            native_ios_dir: client_root.join("native/artifacts/ios"),
-            native_android_dir: client_root.join("native/artifacts/android"),
+            // Canonical artifact output lives in the core repo under dist/ (single source of
+            // truth). The client repo pulls from here via its `make sync` command.
+            native_host_dir: core_root.join("dist/host"),
+            native_wasm_dir: core_root.join("dist/wasm"),
+            native_ios_dir: core_root.join("dist/ios"),
+            native_android_dir: core_root.join("dist/android"),
             wasm_pkg_dir: core_root.join("bindings/wasm/pkg"),
             flutter_example,
         }
@@ -381,8 +384,15 @@ fn build_macos_universal_ffi(layout: &ArtifactLayout) -> Result<()> {
 
 fn build_wasm(layout: &ArtifactLayout) -> Result<()> {
     ensure_rust_target("wasm32-unknown-unknown")?;
+    // WASM 产物按体积优化（网络传输 + 浏览器编译时间都随字节数走）：
+    // opt-level=z（默认 3 → 5.0MB，z+wasm-opt → 3.2MB，gzip 1.5→1.18MB）。
+    // 仅作用于本次 wasm 构建，不影响 native release 的 opt-level。
+    let wasm_size_env = [(
+        "CARGO_PROFILE_RELEASE_OPT_LEVEL".to_string(),
+        "z".to_string(),
+    )];
     if let Some(wasm_pack) = wasm_pack_command(&layout.core_root) {
-        run_command(
+        run_command_env(
             &layout.core_root.join("bindings/wasm"),
             path_str(&wasm_pack)?,
             &[
@@ -394,9 +404,10 @@ fn build_wasm(layout: &ArtifactLayout) -> Result<()> {
                 "--out-name",
                 "flare_im_core_sdk",
             ],
+            &wasm_size_env,
         )?;
     } else {
-        run_command(
+        run_command_env(
             &layout.core_root,
             "cargo",
             &[
@@ -409,6 +420,7 @@ fn build_wasm(layout: &ArtifactLayout) -> Result<()> {
                 "-p",
                 WASM_PACKAGE,
             ],
+            &wasm_size_env,
         )?;
     }
 
@@ -534,10 +546,14 @@ struct AndroidTarget {
     clang_prefix: &'static str,
 }
 
-fn build_android_jni(layout: &ArtifactLayout) -> Result<()> {
-    let ndk_root = env::var_os("ANDROID_NDK_ROOT")
-        .map(PathBuf::from)
-        .context("ANDROID_NDK_ROOT is required for android builds")?;
+fn build_android_jni(layout: &ArtifactLayout) -> Result<bool> {
+    let Some(ndk_root) = env::var_os("ANDROID_NDK_ROOT").map(PathBuf::from) else {
+        eprintln!(
+            "[build] ANDROID_NDK_ROOT not set - skipping Android JNI build \
+             (set ANDROID_NDK_ROOT to include android)."
+        );
+        return Ok(false);
+    };
     let llvm_bin = android_llvm_bin(&ndk_root)?;
     let api_level = android_api_level();
     let shim_bin = ensure_android_compiler_shims(layout, &llvm_bin, &api_level)?;
@@ -577,7 +593,7 @@ fn build_android_jni(layout: &ArtifactLayout) -> Result<()> {
             .join(", "),
         layout.flutter_android_jni_root.display()
     );
-    Ok(())
+    Ok(true)
 }
 
 fn android_api_level() -> String {

@@ -6,8 +6,8 @@
 use flare_proto::common::{
     CapabilityPacket, CustomEvent, MarkEvent, MessageDeleteEvent, MessageRecallEvent,
     MessageRetentionExpiredEvent, MessageRetentionPurgedEvent, MessageRetentionScheduledEvent,
-    PinEvent, PresenceHintPacket, ReadReceiptEvent, SendAck, TypingStatePacket, UnmarkEvent,
-    UnpinEvent,
+    PinEvent, PresenceHintPacket, ReadReceiptEvent, SendAck, TypingAggregatePacket,
+    TypingStatePacket, UnmarkEvent, UnpinEvent,
 };
 
 use crate::kernel::{SdkState, SyncRunContext, SyncState};
@@ -64,6 +64,12 @@ pub enum MessageEvent {
     Typing {
         conversation_id: String,
         event: TypingStatePacket,
+    },
+    /// 网关聚合的"N 人正在输入"（超大群：服务端按会话聚合后下发，替代逐用户 Typing）。
+    /// `event.typing_user_ids` 为采样姓名集合，`event.typing_count` 为总人数；客户端按自身 user_id 过滤显示。
+    TypingAggregate {
+        conversation_id: String,
+        event: TypingAggregatePacket,
     },
     /// 消息正文已更新（本地编辑确认或服务端推送/同步下发后，本地库已写入新 `content`）
     Edited {
@@ -163,6 +169,20 @@ pub enum ConversationEvent {
     Deleted { conversation_id: String },
 }
 
+/// 三层就绪阶段：本地优先三层收敛的可观察信号。
+/// 始终对 UI 可见（即使底层 sync 为 Silent 的热启/重连），供 UI 决定何时出图 / 收起骨架。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReadinessStage {
+    /// T0 本地水合完成：本地缓存已可出图（会话列表 / 上次会话），无需等待网络。
+    LocalReady,
+    /// T1 前台新鲜度达成：首屏 top-N 与前台会话已与服务端对齐。
+    ForegroundFresh,
+    /// T2 环境收敛完成：长尾会话 / 已读 / 关键事件等已补齐。
+    Converged,
+    /// 降级：首屏部分失败，展示本地 / 空态，后台继续补偿（非永久 loading）。
+    Degraded,
+}
+
 /// 同步域事件：状态、阶段、进度、任务完成/失败
 ///
 /// 命名为 `SyncNotify`（非 `Sync`），避免与 Rust `std::marker::Sync` 及 wire 层 `flare_proto::common::Sync` 混淆。
@@ -201,12 +221,31 @@ pub enum SyncNotify {
         run: SyncRunContext,
         task: String,
     },
+    /// 三层就绪信号：始终对 UI 可见，即使底层 run 为 Silent（热启 / 重连）。
+    Readiness {
+        run: SyncRunContext,
+        stage: ReadinessStage,
+    },
 }
 
 impl SyncNotify {
+    pub fn should_publish(&self) -> bool {
+        match self {
+            // 就绪信号与 resync 提示始终可见：UI 据此出图 / 刷新读模型，不受 sync 静默影响。
+            Self::ResyncNeeded { .. } | Self::Readiness { .. } => true,
+            Self::StateChanged { run, .. }
+            | Self::Started { run }
+            | Self::Finished { run, .. }
+            | Self::Failed { run, .. }
+            | Self::Progress { run, .. }
+            | Self::TaskCompleted { run, .. } => run.visibility.emits_status_events(),
+        }
+    }
+
     pub fn is_user_visible(&self) -> bool {
         match self {
-            Self::ResyncNeeded { .. } => true,
+            // 就绪信号与 resync 提示始终可见：UI 据此出图 / 刷新读模型，不受 sync 静默影响。
+            Self::ResyncNeeded { .. } | Self::Readiness { .. } => true,
             Self::StateChanged { run, .. }
             | Self::Started { run }
             | Self::Finished { run, .. }
@@ -251,4 +290,31 @@ pub enum SdkEvent {
     Sync(SyncNotify),
     View(ViewUpdate),
     Extension(ExtensionEvent),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ReadinessStage, SyncNotify};
+    use crate::kernel::SyncRunContext;
+
+    #[test]
+    fn readiness_is_always_user_visible_even_for_silent_run() {
+        // 热启(warm_start) / 重连的 run 为 Silent，但三层就绪信号必须仍可见，
+        // 否则会被 event_bus publish 的 silent-sync 丢弃规则吞掉，UI 收不到"可出图/已收敛"信号。
+        for stage in [
+            ReadinessStage::LocalReady,
+            ReadinessStage::ForegroundFresh,
+            ReadinessStage::Converged,
+            ReadinessStage::Degraded,
+        ] {
+            let ev = SyncNotify::Readiness {
+                run: SyncRunContext::warm_start(),
+                stage,
+            };
+            assert!(
+                ev.is_user_visible(),
+                "readiness {stage:?} must stay visible for silent run"
+            );
+        }
+    }
 }

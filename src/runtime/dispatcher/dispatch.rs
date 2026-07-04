@@ -103,7 +103,7 @@ impl Dispatcher {
                 );
                 self.dispatch_single_event(&ev).await;
             }
-            DownlinkPayload::EventEnvelope(env) => {
+            DownlinkPayload::EventEnvelope(mut env) => {
                 self.metrics.counter_with_labels(
                     "dispatcher.payload_total",
                     &[MetricLabel::new("type", "event_envelope")],
@@ -119,8 +119,33 @@ impl Dispatcher {
                     max_conversation_seq = env.max_conversation_seq,
                     "dispatch EventEnvelope (push/sync)"
                 );
-                for ev in &env.events {
-                    self.dispatch_single_event(ev).await;
+                // 信封内的**消息事件**合并为一个 ReceivedBatch（避免逐条回调，与 MessagePush 一致）；
+                // 非消息事件（recall/edit/reaction/read 等）仍逐条处理。
+                // 消息 payload 按值 move（不再 message+Event 双份深克隆）；失败回滚只保留小去重键。
+                let current_user_id = self.current_user_id.read().await.clone();
+                let mut batch_messages: Vec<IMMessage> = Vec::new();
+                let mut batched_keys: Vec<EventDedupeKey> = Vec::new();
+                for mut ev in std::mem::take(&mut env.events) {
+                    if matches!(&ev.payload, Some(EventPayload::Message(_))) {
+                        if self.event_deduper.record_if_new(&ev).await {
+                            if let Some(key) = EventDeduper::key_for(&ev) {
+                                batched_keys.push(key);
+                            }
+                            if let Some(EventPayload::Message(m)) = ev.payload.take() {
+                                batch_messages.push(IMMessage::new(m));
+                            }
+                        }
+                    } else {
+                        self.dispatch_single_event(&ev).await;
+                    }
+                }
+                if !batch_messages.is_empty() {
+                    self.dispatch_inbound_message_event_batch(
+                        batch_messages,
+                        batched_keys,
+                        &current_user_id,
+                    )
+                    .await;
                 }
                 self.maybe_trigger_event_envelope_waterline(&env).await;
             }
@@ -208,6 +233,9 @@ impl Dispatcher {
                 .await;
                 match control.payload {
                     Some(flare_proto::common::realtime_control_packet::Payload::Typing(typing)) => {
+                        // Feed the presence tracker (per-user -> unified TypingAggregate with TTL);
+                        // keep the raw per-user event for existing consumers.
+                        self.apply_typing_user(&conversation_id, &typing.user_id, typing.typing);
                         self.bus.publish(SdkEvent::Message(MessageEvent::Typing {
                             conversation_id,
                             event: typing,
@@ -220,6 +248,17 @@ impl Dispatcher {
                             .publish(SdkEvent::Message(MessageEvent::PresenceChanged {
                                 conversation_id,
                                 event: presence,
+                            }));
+                    }
+                    Some(
+                        flare_proto::common::realtime_control_packet::Payload::TypingAggregate(
+                            aggregate,
+                        ),
+                    ) => {
+                        self.bus
+                            .publish(SdkEvent::Message(MessageEvent::TypingAggregate {
+                                conversation_id,
+                                event: aggregate,
                             }));
                     }
                     Some(flare_proto::common::realtime_control_packet::Payload::Custom(data)) => {
@@ -244,6 +283,36 @@ impl Dispatcher {
             }
         }
         Ok(())
+    }
+
+    /// 把信封内的消息事件作为**一个批次**汇聚→落库→投递（一个 ReceivedBatch）。镜像 `dispatch_single_event`
+    /// 的消息处理路径但批量化；任一步失败则忘记这些事件（解除去重）以便后续重投。
+    async fn dispatch_inbound_message_event_batch(
+        &self,
+        mut messages: Vec<IMMessage>,
+        dedupe_keys: Vec<EventDedupeKey>,
+        current_user_id: &str,
+    ) {
+        if let Some(converger) = &self.incoming_message_converger {
+            match converger.converge_messages(current_user_id, messages).await {
+                Ok(converged) => messages = converged,
+                Err(error) => {
+                    warn!(error = %error, "event envelope message batch converge failed");
+                    self.event_deduper.forget_keys(&dedupe_keys).await;
+                    return;
+                }
+            }
+        }
+        if messages.is_empty() {
+            return;
+        }
+        // 复用统一持久化管线（save_batch → 会话投影 → seq 补偿）；失败回滚去重键，
+        // 事件下次重放（幂等）。
+        if self.stores.is_some() && !self.persist_durable_batch(&messages, current_user_id).await {
+            self.event_deduper.forget_keys(&dedupe_keys).await;
+            return;
+        }
+        self.notification_pipeline.finish_batch(messages).await;
     }
 
     /// 分发单条 Event（从 EventEnvelope 或单条 Event 下行复用）

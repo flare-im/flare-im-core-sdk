@@ -1,5 +1,5 @@
+use flare_im_core_sdk::serde_json::{Value, json};
 use flare_im_core_sdk::{ErrorCode, FlareError};
-use serde_json::{Value, json};
 
 pub fn binding_invalid_parameter(message: impl Into<String>) -> FlareError {
     FlareError::localized(ErrorCode::InvalidParameter, message.into())

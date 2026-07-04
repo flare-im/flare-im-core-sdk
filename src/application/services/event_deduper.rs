@@ -6,7 +6,7 @@ use tokio::sync::Mutex;
 const DEFAULT_DEDUPE_CAPACITY: usize = 4096;
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
-enum EventDedupeKey {
+pub(crate) enum EventDedupeKey {
     EventId(String),
     Seq {
         conversation_id: String,
@@ -73,9 +73,24 @@ impl EventDeduper {
         let Some(key) = dedupe_key_for_event(event) else {
             return;
         };
+        self.forget_keys(std::slice::from_ref(&key)).await;
+    }
+
+    /// 事件的去重键（接收热路径可只保留小 key 而非克隆整个 Event 供失败回滚）。
+    pub(crate) fn key_for(event: &flare_proto::common::Event) -> Option<EventDedupeKey> {
+        dedupe_key_for_event(event)
+    }
+
+    /// 批量回滚：一次锁内移除多个 key（失败路径把整批事件退回"未见过"）。
+    pub(crate) async fn forget_keys(&self, keys: &[EventDedupeKey]) {
+        if keys.is_empty() {
+            return;
+        }
         let mut state = self.state.lock().await;
-        state.seen.remove(&key);
-        state.order.retain(|stored| stored != &key);
+        for key in keys {
+            state.seen.remove(key);
+        }
+        state.order.retain(|stored| !keys.contains(stored));
     }
 }
 

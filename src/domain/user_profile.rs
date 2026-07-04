@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 
 /// 用户资料：显示名称 + 头像，供消息发送者/会话最后一条发送者展示
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct UserProfile {
     pub user_id: String,
     /// 展示用名称（昵称或业务 display_name）

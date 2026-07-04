@@ -275,6 +275,24 @@ pub const API_OPERATIONS: &[ApiOperation] = &[
         dev_only: false,
     },
     ApiOperation {
+        id: "sync.bootstrap_startup_home",
+        module: "sync",
+        core: Some("IMClient::bootstrap_startup_home"),
+        c_symbol: Some("flare_sdk_invoke_json"),
+        c_dispatch_op: None,
+        tauri: None,
+        dev_only: false,
+    },
+    ApiOperation {
+        id: "sync.conversation_history_backfill",
+        module: "sync",
+        core: Some("IMClient::backfill_conversation_history"),
+        c_symbol: Some("flare_sdk_invoke_json"),
+        c_dispatch_op: None,
+        tauri: None,
+        dev_only: false,
+    },
+    ApiOperation {
         id: "event.subscribe",
         module: "events",
         core: Some("EventBus::subscribe"),
@@ -1571,6 +1589,12 @@ pub const EVENT_DESCRIPTORS: &[EventDescriptor] = &[
         tauri: Some("im://message_read_receipt"),
     },
     EventDescriptor {
+        id: "message.typing_aggregate",
+        c_code: 2021,
+        c_code_name: "FLARE_EVENT_MESSAGE_TYPING_AGGREGATE",
+        tauri: Some("im://message_typing_aggregate"),
+    },
+    EventDescriptor {
         id: "message.retention_scheduled",
         c_code: 2012,
         c_code_name: "FLARE_EVENT_MESSAGE_RETENTION_SCHEDULED",
@@ -1701,6 +1725,12 @@ pub const EVENT_DESCRIPTORS: &[EventDescriptor] = &[
         c_code: 4007,
         c_code_name: "FLARE_EVENT_SYNC_RESYNC_NEEDED",
         tauri: Some("im://resync_needed"),
+    },
+    EventDescriptor {
+        id: "sync.readiness",
+        c_code: 4008,
+        c_code_name: "FLARE_EVENT_SYNC_READINESS",
+        tauri: Some("im://sync_readiness"),
     },
     EventDescriptor {
         id: "view.updated",

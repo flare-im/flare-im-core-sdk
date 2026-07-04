@@ -41,6 +41,11 @@ impl IMClient {
         let g = self.read_inner_async().await?;
         if let Some(engine) = g.engine.as_ref() {
             engine.set_heartbeat_app_state(state).await?;
+            // I9：同步收敛跟随前后台降配（后台批/页减半，让电让带宽）。
+            engine
+                .sync_manager()
+                .attention()
+                .set_app_in_background(matches!(state, HeartbeatAppState::Background));
         }
         if matches!(state, HeartbeatAppState::Foreground) {
             let client = self.clone();
@@ -314,7 +319,7 @@ impl IMClient {
                 let path =
                     resolve_sdk_data_root(snap.1.as_ref().and_then(|cfg| cfg.data_url.as_deref()))?;
                 #[cfg(not(target_arch = "wasm32"))]
-                tokio::fs::create_dir_all(&path).await.map_err(|e| {
+                std::fs::create_dir_all(&path).map_err(|e| {
                     FlareError::localized(
                         ErrorCode::InvalidParameter,
                         format!("sdk data root create_dir_all failed: {}", e),
@@ -372,6 +377,11 @@ impl IMClient {
             inner.http_request_context = snap.3;
         }
         inner.current_user_id = Some(user_id.to_string());
+        // 本地会话身份随 prepare 建立：bootstrap_startup_home / 视图等本地优先
+        // 读路径在 connect 之前即可出图（热启动 T0）。
+        if let Some(engine) = inner.engine.as_ref() {
+            engine.adopt_local_session_identity(user_id).await;
+        }
         let session_generation = inner.session_generation;
         *self.inner.write().await = inner;
         self.store_session_generation_snapshot(session_generation);
@@ -473,7 +483,6 @@ impl IMClient {
             self.spawn_state_snapshot_watcher(current_generation, bus.clone());
             self.spawn_terminal_session_watcher(current_generation, bus.clone());
             self.spawn_reconnect_session_watcher(current_generation, bus);
-            self.spawn_foreground_sync_worker(current_generation);
         }
         Ok(())
     }

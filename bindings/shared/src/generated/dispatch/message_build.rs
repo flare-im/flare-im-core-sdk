@@ -8,7 +8,7 @@ use crate::dispatch_support::*;
 use crate::{BindingResponse, binding_operation_not_supported};
 use flare_im_core_sdk::Result;
 use flare_im_core_sdk::client::api::MessageBuildApi;
-use serde_json::Value;
+use flare_im_core_sdk::serde_json::{self, Value};
 use std::sync::Arc;
 
 pub const MESSAGE_BUILD_OPERATIONS: &[&str] = &[
@@ -52,7 +52,13 @@ pub async fn dispatch_message_build(
         "create_text" => {
             let conversation_id_s = conversation_id(&request)?;
             let text_s = json_string(&request, "text")?;
-            json(api.create_text(&conversation_id_s, &text_s, false).await?)
+            let mention_all_v = optional_bool(&request, "mentionAll")?.unwrap_or(false);
+            let mention_users_v =
+                optional_value::<Vec<String>>(&request, "mentionUsers")?.unwrap_or_default();
+            json(
+                api.create_text(&conversation_id_s, &text_s, mention_all_v, &mention_users_v)
+                    .await?,
+            )
         }
         "create_quote" => {
             let conversation_id_s = conversation_id(&request)?;

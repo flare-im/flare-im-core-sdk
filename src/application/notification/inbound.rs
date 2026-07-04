@@ -100,12 +100,8 @@ impl NotificationInboundPipeline {
 
         self.bus
             .publish(SdkEvent::Message(MessageEvent::ReceivedBatch {
-                messages: received_messages.clone(),
+                messages: received_messages,
             }));
-
-        for message in received_messages {
-            self.publish_received_message(message);
-        }
     }
 }
 
@@ -183,7 +179,26 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn finish_batch_publishes_batch_and_preserves_single_message_callbacks() {
+    async fn finish_one_publishes_single_message_callback() {
+        let bus = EventBus::new();
+        let pipeline = test_pipeline(bus.clone());
+        let (single_tx, mut single_rx) = mpsc::unbounded_channel();
+
+        let _single_sub = bus.on_message(move |message| {
+            let _ = single_tx.send(message.server_id.clone());
+        });
+
+        pipeline.finish_one(plain_message("srv-1", 1)).await;
+
+        let single_id = timeout(Duration::from_millis(200), single_rx.recv())
+            .await
+            .expect("expected single callback")
+            .expect("single callback channel closed");
+        assert_eq!(single_id, "srv-1");
+    }
+
+    #[tokio::test]
+    async fn finish_batch_publishes_batch_without_single_message_replay() {
         let bus = EventBus::new();
         let pipeline = test_pipeline(bus.clone());
         let (batch_tx, mut batch_rx) = mpsc::unbounded_channel();
@@ -207,23 +222,10 @@ mod tests {
             .expect("batch callback channel closed");
         assert_eq!(batch_size, 2);
 
-        let mut single_ids = vec![
-            timeout(Duration::from_millis(200), single_rx.recv())
-                .await
-                .expect("expected first single callback")
-                .expect("single callback channel closed"),
-            timeout(Duration::from_millis(200), single_rx.recv())
-                .await
-                .expect("expected second single callback")
-                .expect("single callback channel closed"),
-        ];
-        single_ids.sort();
-        assert_eq!(single_ids, vec!["srv-1".to_string(), "srv-2".to_string()]);
-
-        let extra_single = timeout(Duration::from_millis(80), single_rx.recv()).await;
+        let single = timeout(Duration::from_millis(80), single_rx.recv()).await;
         assert!(
-            extra_single.is_err(),
-            "single callbacks should match input size"
+            single.is_err(),
+            "batch inbound is canonical and should not replay per-message callbacks"
         );
     }
 }

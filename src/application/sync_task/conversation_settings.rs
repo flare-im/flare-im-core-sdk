@@ -40,18 +40,19 @@ impl SyncTask for ConversationSettingsSyncTask {
         Box::pin(async move {
             debug!(task = "conversation_user_settings", "sync phase start");
             ctx.report_progress("syncing conversation settings");
-            let list = ctx.store.conversations.list().await?;
+            // 共享快照：与同 phase 其他任务复用一次 list 查询。
+            let list = ctx.conversations_snapshot().await?;
             let mut pushed = 0usize;
-            for conversation in list {
-                if !is_settings_dirty(&conversation) {
+            for conversation in list.iter() {
+                if !is_settings_dirty(conversation) {
                     continue;
                 }
-                let base = user_settings_version(&conversation);
+                let base = user_settings_version(conversation);
                 handler
                     .push_conversation_user_settings_from_local(
                         &conversation.conversation_id,
                         base,
-                        &conversation,
+                        conversation,
                     )
                     .await?;
                 pushed = pushed.saturating_add(1);

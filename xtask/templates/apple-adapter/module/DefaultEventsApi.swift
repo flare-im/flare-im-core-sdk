@@ -139,6 +139,9 @@ public final class DefaultEventsApi: EventsApiProtocol {
     public func onInputStatusChanged(_ listener: @escaping EventCallback<TypingEvent>) -> any EventSubscription {
         registerTyped(listener)
     }
+    public func onTypingAggregateChanged(_ listener: @escaping EventCallback<TypingAggregateEvent>) -> any EventSubscription {
+        registerTyped(listener)
+    }
     public func onMessageBurned(_ listener: @escaping EventCallback<MessageMutationEvent>) -> any EventSubscription {
         registerTyped(listener)
     }
@@ -236,6 +239,12 @@ private func nativeEventFromCode(eventType: Int, payload: Any?) throws -> Any {
             conversationId: try requiredString(json["conversationId"]?.value, "conversationId"),
             userId: try requiredString(json["userId"]?.value, "userId"),
             typing: try requiredBool(json["typing"]?.value, "typing")
+        )
+    case EventCode.messageTypingAggregate:
+        return TypingAggregateEvent(
+            conversationId: try requiredString(json["conversationId"]?.value, "conversationId"),
+            typingUserIds: try requiredStringList(json["typingUserIds"]?.value, "typingUserIds", "TypingAggregateEvent"),
+            typingCount: UInt32(try requiredUInt64(json["typingCount"]?.value, "typingCount"))
         )
     case EventCode.messageReadReceipt:
         return ReadReceiptEvent(
@@ -650,7 +659,7 @@ private func dispatchToListener(_ listener: any FlareImEventListener, event: Any
         case .pinned: listener.onMessagePinned(mutation)
         case .unpinned: listener.onMessageUnpinned(mutation)
         case .received, .receivedBatch, .sendAck, .sendFailed, .capability,
-             .typing, .reactionChanged, .readReceipt, .burnScheduled,
+             .typing, .typingAggregate, .reactionChanged, .readReceipt, .burnScheduled,
              .hardDeleted, .marked, .unmarked, .retentionScheduled,
              .presenceChanged, .callSignal, .custom:
             break
@@ -660,6 +669,7 @@ private func dispatchToListener(_ listener: any FlareImEventListener, event: Any
     if let read = event as? ReadReceiptEvent { listener.onMessageReadReceipt(read); return }
     if let reaction = event as? ReactionChangedEvent { listener.onMessageReactionChanged(reaction); return }
     if let typing = event as? TypingEvent { listener.onInputStatusChanged(typing); return }
+    if let aggregate = event as? TypingAggregateEvent { listener.onTypingAggregateChanged(aggregate); return }
     if let view = event as? ViewUpdate { listener.onViewUpdated(view); return }
     if let conversation = event as? ConversationEvent {
         switch conversation.name {

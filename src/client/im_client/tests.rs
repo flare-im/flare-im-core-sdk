@@ -2,10 +2,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use super::{
-    FOREGROUND_SYNC_DESKTOP_INTERVAL_SECS, FOREGROUND_SYNC_MOBILE_INTERVAL_SECS, HeartbeatAppState,
-    IMClient, NetworkChangeEvent, SdkConfigOverlay, SdkResourceProfile, SdkState,
-    foreground_sync_interval_for_profile, reconnect_delay_bounds_secs, reconnect_delay_secs,
-    should_skip_reconnect_for_disconnect_reason,
+    HeartbeatAppState, IMClient, NetworkChangeEvent, SdkConfigOverlay, SdkState,
+    reconnect_delay_bounds_secs, reconnect_delay_secs, should_skip_reconnect_for_disconnect_reason,
 };
 use crate::infrastructure::persistence::in_memory_empty_im_provider;
 use crate::infrastructure::transport::http::HttpRequestContext;
@@ -28,22 +26,6 @@ fn reconnect_delay_uses_capped_exponential_backoff_with_jitter_window() {
             "attempt {attempt} delay {actual} outside {min}..={max}"
         );
     }
-}
-
-#[test]
-fn foreground_sync_interval_uses_low_latency_mobile_default() {
-    assert_eq!(
-        foreground_sync_interval_for_profile(None),
-        Duration::from_secs(FOREGROUND_SYNC_MOBILE_INTERVAL_SECS)
-    );
-    assert_eq!(
-        foreground_sync_interval_for_profile(Some(SdkResourceProfile::Mobile)),
-        Duration::from_secs(FOREGROUND_SYNC_MOBILE_INTERVAL_SECS)
-    );
-    assert_eq!(
-        foreground_sync_interval_for_profile(Some(SdkResourceProfile::Desktop)),
-        Duration::from_secs(FOREGROUND_SYNC_DESKTOP_INTERVAL_SECS)
-    );
 }
 
 #[tokio::test]

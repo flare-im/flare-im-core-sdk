@@ -4,7 +4,7 @@
 //! channels. Tauri only adapts the shared tuple into `Emitter::emit`.
 
 use flare_im_core_sdk::event::SdkEvent;
-use serde_json::Value;
+use flare_im_core_sdk::serde_json::Value;
 
 pub fn sdk_event_to_tauri(ev: &SdkEvent) -> Option<(String, Value)> {
     flare_im_core_sdk_bindings_runtime::sdk_event_channel_payload(ev)

@@ -14,6 +14,38 @@ impl MessageReader for SqliteMessageRepo {
         row.map(|r| self.row_to_immessage(&r)).transpose()
     }
 
+    async fn get_by_message_ids(&self, message_ids: &[String]) -> Result<Vec<IMMessage>> {
+        if message_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut out = Vec::with_capacity(message_ids.len());
+        let mut seen = HashSet::with_capacity(message_ids.len());
+        for chunk in message_ids.chunks(super::super::SQLITE_IN_CHUNK) {
+            let placeholders = super::super::in_placeholders(chunk.len());
+            let sql = format!(
+                r#"SELECT {} FROM messages
+                   WHERE server_id IN ({})
+                   ORDER BY server_id ASC"#,
+                MESSAGE_SELECT_COLS, placeholders
+            );
+            let mut query = sqlx::query(&sql);
+            for id in chunk {
+                query = query.bind(id);
+            }
+            let rows = query
+                .fetch_all(&self.pool)
+                .await
+                .map_err(|e| FlareError::localized(ErrorCode::DatabaseError, e.to_string()))?;
+            for row in &rows {
+                let message = self.row_to_immessage(row)?;
+                if seen.insert(message.server_id.clone()) {
+                    out.push(message);
+                }
+            }
+        }
+        Ok(out)
+    }
+
     async fn get_by_client_msg_id(&self, client_msg_id: &str) -> Result<Option<IMMessage>> {
         let row = sqlx::query(&format!(
             r#"SELECT {} FROM messages
@@ -40,11 +72,8 @@ impl MessageReader for SqliteMessageRepo {
         let mut out = Vec::with_capacity(client_msg_ids.len());
         let mut seen = HashSet::with_capacity(client_msg_ids.len());
         // 单次 `IN (...)` 替代逐条查询；分块以兼容 SQLite 较保守的绑定参数上限。
-        for chunk in client_msg_ids.chunks(500) {
-            let placeholders = std::iter::repeat("?")
-                .take(chunk.len())
-                .collect::<Vec<_>>()
-                .join(", ");
+        for chunk in client_msg_ids.chunks(super::super::SQLITE_IN_CHUNK) {
+            let placeholders = super::super::in_placeholders(chunk.len());
             let sql = format!(
                 r#"SELECT {} FROM messages
                    WHERE client_msg_id IN ({})
@@ -156,6 +185,20 @@ impl MessageReader for SqliteMessageRepo {
             out.push(self.row_to_immessage(&row)?);
         }
         Ok(out)
+    }
+
+    async fn oldest_conversation_seq(&self, conversation_id: &str) -> Result<Option<u64>> {
+        let row: Option<i64> = sqlx::query_scalar(
+            r#"SELECT MIN(conversation_seq) FROM messages
+               WHERE conversation_id = ? AND conversation_seq > 0"#,
+        )
+        .bind(conversation_id)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| FlareError::localized(ErrorCode::DatabaseError, e.to_string()))?;
+        Ok(row
+            .and_then(|seq| u64::try_from(seq).ok())
+            .filter(|seq| *seq > 0))
     }
 
     async fn search(&self, keyword: &str, limit: u32) -> Result<Vec<IMMessage>> {

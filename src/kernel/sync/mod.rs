@@ -11,23 +11,43 @@
 
 mod checkpoint;
 mod conversation_summary_sync;
+mod domain;
+mod domain_registry;
+mod driver;
 mod error;
+mod global_cursor;
 mod manager;
+mod media_warmup;
 mod orchestrator;
 mod progress;
 mod response_handler;
+mod scheduler;
+mod startup_timing;
 mod task;
 
 #[allow(unused_imports)]
 pub use checkpoint::{CheckpointStore, SyncCheckpoint};
 pub use conversation_summary_sync::ConversationSummarySync;
+pub use domain::{
+    ApplyOutcome, ConvergencePriority, DomainCursor, DomainDelta, DomainId, DomainItem,
+    DomainPhase, LaneSpec, SyncDomain, SyncDomainContext,
+};
+pub use domain_registry::{
+    GlobalDomainItem, GlobalStreamRouteReport, RouteReport, SyncDomainRegistry,
+};
+pub use driver::{ConvergeTarget, ConvergenceDriver, DrainReport};
 #[allow(unused_imports)]
 pub use error::{SyncError, SyncResult};
+pub use global_cursor::{DeviceGlobalSyncPoint, DeviceGlobalSyncPointStore};
 pub use manager::SyncManager;
+pub use media_warmup::{MediaWarmupCandidate, MediaWarmupItem, MediaWarmupPlan};
 #[allow(unused_imports)]
 pub use progress::{EventBusProgressReporter, SyncProgress, SyncProgressReporter};
 pub use response_handler::SyncResponseHandler;
+pub use scheduler::{AttentionRegistry, AttentionState, ConvergenceScheduler, ConvergenceTarget};
+pub use startup_timing::{StartupSyncTiming, StartupSyncWaitReport};
 pub use task::{
-    SessionSyncRunner, SyncContext, SyncFailurePolicy, SyncMode, SyncPhase, SyncReason,
-    SyncRunContext, SyncScope, SyncTask, SyncTaskResult, SyncTrigger, SyncVisibility,
+    SessionSyncRunner, SharedConversationsSnapshot, StartupClass, SyncContext, SyncFailurePolicy,
+    SyncMode, SyncPhase, SyncReason, SyncRunContext, SyncScope, SyncTask, SyncTaskResult,
+    SyncTrigger, SyncVisibility, watermark_provably_clean,
 };

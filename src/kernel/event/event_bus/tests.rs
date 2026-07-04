@@ -4,6 +4,7 @@ use crate::kernel::event::{
     ConnectionEvent, ConnectionEventType, CustomEventDefinition, MessageEvent, MessageEventType,
     SdkEvent, SyncNotify,
 };
+use crate::kernel::fsm::SyncState;
 use std::sync::{
     Arc,
     atomic::{AtomicU64, Ordering},
@@ -41,6 +42,54 @@ async fn publish_keeps_user_visible_sync_events() {
     assert!(matches!(
         received,
         SdkEvent::Sync(SyncNotify::Started { .. })
+    ));
+}
+
+#[tokio::test]
+async fn publish_keeps_warm_start_calibration_sync_status_events() {
+    let bus = EventBus::new();
+    let mut rx = bus.subscribe_raw();
+
+    let outcome = bus.publish(SdkEvent::Sync(SyncNotify::Started {
+        run: SyncRunContext::warm_start(),
+    }));
+
+    assert!(matches!(
+        outcome,
+        PublishOutcome::Published { receiver_count } if receiver_count >= 1
+    ));
+    let received = rx
+        .try_recv()
+        .expect("warm-start calibration sync status should be emitted");
+    assert!(matches!(
+        received,
+        SdkEvent::Sync(SyncNotify::Started { .. })
+    ));
+}
+
+#[tokio::test]
+async fn publish_keeps_warm_start_calibration_sync_state_events() {
+    let bus = EventBus::new();
+    let mut rx = bus.subscribe_raw();
+
+    let outcome = bus.publish(SdkEvent::Sync(SyncNotify::StateChanged {
+        run: SyncRunContext::warm_start(),
+        state: SyncState::CatchingUp,
+    }));
+
+    assert!(matches!(
+        outcome,
+        PublishOutcome::Published { receiver_count } if receiver_count >= 1
+    ));
+    let received = rx
+        .try_recv()
+        .expect("warm-start calibration sync state should be emitted");
+    assert!(matches!(
+        received,
+        SdkEvent::Sync(SyncNotify::StateChanged {
+            state: SyncState::CatchingUp,
+            ..
+        })
     ));
 }
 

@@ -1570,6 +1570,13 @@
       "description": "列表、搜索、绑定层使用的纯文本预览。",
       "type": "string"
     },
+    "threadId": {
+      "description": "话题/线程根消息 ID；普通消息为空，话题回复使用该 typed field。",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "updatedAt": {
       "format": "uint64",
       "minimum": 0,

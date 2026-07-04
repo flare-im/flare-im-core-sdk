@@ -320,6 +320,7 @@ pub enum SyncEventType {
     Failed,
     Progress,
     TaskCompleted,
+    Readiness,
 }
 
 impl SyncEventType {
@@ -333,6 +334,7 @@ impl SyncEventType {
                 | (Self::Failed, SyncNotify::Failed { .. })
                 | (Self::Progress, SyncNotify::Progress { .. })
                 | (Self::TaskCompleted, SyncNotify::TaskCompleted { .. })
+                | (Self::Readiness, SyncNotify::Readiness { .. })
         )
     }
 }
@@ -553,7 +555,8 @@ impl SdkEvent {
             Self::Message(MessageEvent::Recalled { .. }) => {
                 SdkEventType::Message(MessageEventType::Recalled)
             }
-            Self::Message(MessageEvent::Typing { .. }) => {
+            Self::Message(MessageEvent::Typing { .. })
+            | Self::Message(MessageEvent::TypingAggregate { .. }) => {
                 SdkEventType::Message(MessageEventType::Typing)
             }
             Self::Message(MessageEvent::Edited { .. }) => {
@@ -638,6 +641,9 @@ impl SdkEvent {
             Self::Sync(SyncNotify::Progress { .. }) => SdkEventType::Sync(SyncEventType::Progress),
             Self::Sync(SyncNotify::TaskCompleted { .. }) => {
                 SdkEventType::Sync(SyncEventType::TaskCompleted)
+            }
+            Self::Sync(SyncNotify::Readiness { .. }) => {
+                SdkEventType::Sync(SyncEventType::Readiness)
             }
             Self::View(_) => SdkEventType::View(ViewEventType::Updated),
             Self::Extension(event) => SdkEventType::Extension(ExtensionEventType::named(

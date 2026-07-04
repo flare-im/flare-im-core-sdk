@@ -8,6 +8,21 @@ use crate::shared::error::Result;
 #[async_trait]
 pub trait ConversationReader: Send + Sync {
     async fn get(&self, conversation_id: &str) -> Result<Option<Conversation>>;
+    /// 是否存在任何会话（启动冷/热分类用）。默认回退 `list()`；SQL 后端应覆盖为
+    /// `SELECT EXISTS(... LIMIT 1)`——分类只需要存在性，不需要整张带 JOIN 的列表。
+    async fn has_any(&self) -> Result<bool> {
+        Ok(!self.list().await?.is_empty())
+    }
+    /// 批量点查（I7 批量优于 N+1）：默认逐条回退；SQL 后端应覆盖为单条 IN 查询。
+    async fn get_many(&self, conversation_ids: &[String]) -> Result<Vec<Conversation>> {
+        let mut out = Vec::with_capacity(conversation_ids.len());
+        for conversation_id in conversation_ids {
+            if let Some(conversation) = self.get(conversation_id).await? {
+                out.push(conversation);
+            }
+        }
+        Ok(out)
+    }
     /// 列表：置顶优先，再按 last_message_at 倒序
     async fn list(&self) -> Result<Vec<Conversation>>;
     async fn list_by_query(&self, query: &ConversationListQuery) -> Result<Vec<Conversation>> {
@@ -130,6 +145,22 @@ pub trait ConversationWriter: Send + Sync {
     /// 查询本地消息表中的最大 seq（用于将显式 read_seq clamp 到本地已知上界）。
     async fn get_local_max_seq(&self, _conversation_id: &str) -> Result<u64> {
         Ok(0)
+    }
+
+    /// 批量本地最大 seq（I7 批量优于 N+1）：默认逐条回退；SQL 后端覆盖为 GROUP BY 一次查询。
+    /// 返回表保证覆盖全部入参（无消息的会话为 0）。
+    async fn get_local_max_seqs(
+        &self,
+        conversation_ids: &[String],
+    ) -> Result<std::collections::HashMap<String, u64>> {
+        let mut out = std::collections::HashMap::with_capacity(conversation_ids.len());
+        for conversation_id in conversation_ids {
+            out.insert(
+                conversation_id.clone(),
+                self.get_local_max_seq(conversation_id).await?,
+            );
+        }
+        Ok(out)
     }
 
     /// 用户资料变更后，刷新单聊展示名/头像及最后发送者展示字段；返回受影响的会话 ID。

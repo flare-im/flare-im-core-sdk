@@ -513,6 +513,47 @@ async fn remove_conflicting_client_msg_rows_tx(
     Ok(())
 }
 
+async fn remove_conflicting_local_client_msg_rows_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    client_msg_id: &str,
+    target_server_id: &str,
+) -> Result<()> {
+    let client_msg_id = client_msg_id.trim();
+    let target_server_id = target_server_id.trim();
+    if client_msg_id.is_empty() || target_server_id.is_empty() {
+        return Ok(());
+    }
+
+    let rows = sqlx::query(
+        r#"SELECT server_id
+           FROM messages
+           WHERE client_msg_id = ? AND server_id <> ?
+             AND is_local = 1 AND failed = 0 AND sending = 1"#,
+    )
+    .bind(client_msg_id)
+    .bind(target_server_id)
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(sqlx_err)?;
+
+    for row in rows {
+        let old_server_id: String = row.try_get("server_id").map_err(sqlx_err)?;
+        delete_message_fts_by_server_id_tx(tx, &old_server_id).await?;
+    }
+
+    sqlx::query(
+        r#"DELETE FROM messages
+           WHERE client_msg_id = ? AND server_id <> ?
+             AND is_local = 1 AND failed = 0 AND sending = 1"#,
+    )
+    .bind(client_msg_id)
+    .bind(target_server_id)
+    .execute(&mut **tx)
+    .await
+    .map_err(sqlx_err)?;
+    Ok(())
+}
+
 async fn insert_message_rows_tx(
     tx: &mut Transaction<'_, Sqlite>,
     rows: &[MessagePersistRow<'_>],
@@ -539,7 +580,7 @@ async fn insert_message_rows_tx(
            sender_display_name, encoded_content, status,
            retention_policy, retention_state,
            is_read, is_recalled, is_edited,
-           reply_to, quote_preview, mention_users, mention_all, attributes, extensions, version, updated_at, text,
+           reply_to, quote_preview, thread_id, mention_users, mention_all, attributes, extensions, version, updated_at, text,
            sending, failed, is_local, sort_ts)
         "#,
     );
@@ -568,6 +609,7 @@ async fn insert_message_rows_tx(
             .push_bind(if m.is_edited { 1i32 } else { 0 })
             .push_bind(&m.reply_to)
             .push_bind(&m.quote_preview)
+            .push_bind(&m.thread_id)
             .push_bind(&row.mention_users_json)
             .push_bind(if m.mention_all { 1i32 } else { 0 })
             .push_bind(&merged_attributes_json[index])
@@ -759,7 +801,7 @@ const MESSAGE_SELECT_COLS: &str = r#"server_id, conversation_id, client_msg_id, 
     sender_name, sender_avatar, sender_display_name, encoded_content, status,
     retention_policy, retention_state,
     is_read, is_recalled, is_edited,
-    reply_to, quote_preview, mention_users, mention_all, attributes, extensions, version, updated_at, text,
+    reply_to, quote_preview, thread_id, mention_users, mention_all, attributes, extensions, version, updated_at, text,
     sending, failed, is_local, sort_ts"#;
 
 pub struct SqliteMessageRepo {
@@ -824,6 +866,13 @@ impl SqliteMessageRepo {
         let is_edited: i32 = row.try_get("is_edited").map_err(sqlx_err)?;
         let reply_to: Option<String> = row.try_get("reply_to").map_err(sqlx_err)?;
         let quote_preview: Option<String> = row.try_get("quote_preview").map_err(sqlx_err)?;
+        let thread_id: Option<String> = row
+            .try_get::<Option<String>, _>("thread_id")
+            .map_err(sqlx_err)?
+            .and_then(|thread_id| {
+                let trimmed = thread_id.trim();
+                (!trimmed.is_empty()).then(|| trimmed.to_string())
+            });
         let mention_users_json: Option<String> = row.try_get("mention_users").map_err(sqlx_err)?;
         let mention_all: i32 = row.try_get("mention_all").map_err(sqlx_err)?;
         let extra_json: Option<String> = row.try_get("attributes").map_err(sqlx_err)?;
@@ -886,6 +935,7 @@ impl SqliteMessageRepo {
             sender_display_name,
             reply_to,
             quote_preview,
+            thread_id,
             status,
             retention_policy: decode_optional_proto::<MessageRetentionPolicy>(
                 retention_policy_bytes,

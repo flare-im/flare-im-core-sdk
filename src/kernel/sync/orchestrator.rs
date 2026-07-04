@@ -3,14 +3,16 @@
 use std::sync::Arc;
 
 use crate::infrastructure::persistence::StoreProvider;
-use crate::kernel::event::{EventBus, SdkEvent, SyncNotify, SyncPhase};
-use crate::shared::util::{BackgroundTask, now_millis, spawn_background, spawn_background_task};
+use crate::kernel::event::{EventBus, ReadinessStage, SdkEvent, SyncNotify, SyncPhase};
+use crate::shared::util::{BackgroundTask, now_millis, spawn_background_task};
 use tokio::task::JoinSet;
 use tracing::{debug, warn};
 
 use super::checkpoint::CheckpointStore;
 use super::progress::{EventBusProgressReporter, SyncProgressReporter};
-use super::task::{SyncContext, SyncFailurePolicy, SyncMode, SyncRunContext, SyncTask};
+use super::task::{
+    SharedConversationsSnapshot, SyncContext, SyncFailurePolicy, SyncMode, SyncRunContext, SyncTask,
+};
 
 pub struct Orchestrator {
     store: StoreProvider,
@@ -87,6 +89,11 @@ impl Orchestrator {
                 run: run.clone(),
                 phase: SyncPhase::Init,
             }));
+            // T1 前台新鲜度达成：首屏会话快照已与服务端对齐。
+            bus.publish(SdkEvent::Sync(SyncNotify::Readiness {
+                run: run.clone(),
+                stage: ReadinessStage::ForegroundFresh,
+            }));
 
             bus.publish(SdkEvent::Sync(SyncNotify::Started {
                 run: bg_run.clone(),
@@ -103,8 +110,13 @@ impl Orchestrator {
             .await;
 
             bus.publish(SdkEvent::Sync(SyncNotify::Finished {
-                run: bg_run,
+                run: bg_run.clone(),
                 phase: SyncPhase::Background,
+            }));
+            // T2 环境收敛完成：长尾会话 / 已读 / 关键事件等已补齐。
+            bus.publish(SdkEvent::Sync(SyncNotify::Readiness {
+                run: bg_run,
+                stage: ReadinessStage::Converged,
             }));
         })
     }
@@ -115,15 +127,12 @@ impl Orchestrator {
         user_id: String,
         run: SyncRunContext,
         tasks: Vec<Arc<dyn SyncTask>>,
-    ) {
-        if tasks.is_empty() {
-            return;
-        }
+    ) -> BackgroundTask {
         let store = self.store.clone();
         let bus = self.bus.clone();
         let checkpoint_store = self.checkpoint_store.clone();
         let weight: u32 = tasks.iter().map(|task| task.weight()).sum();
-        spawn_background(async move {
+        spawn_background_task(async move {
             let progress_reporter: Arc<dyn SyncProgressReporter> = Arc::new(
                 EventBusProgressReporter::new(bus.clone(), run.clone(), weight),
             );
@@ -137,7 +146,7 @@ impl Orchestrator {
                 tasks,
             )
             .await;
-        });
+        })
     }
 }
 
@@ -151,6 +160,8 @@ async fn run_phase(
     tasks: Vec<Arc<dyn SyncTask>>,
 ) -> PhaseOutcome {
     let mut join_set = JoinSet::new();
+    // 同 phase 各任务共享同一份会话列表快照（首个用到的任务触发一次查询）。
+    let shared_conversations = SharedConversationsSnapshot::default();
     for task in tasks {
         let task_id = task.id().to_string();
         let weight = task.weight();
@@ -165,6 +176,7 @@ async fn run_phase(
             store: store.clone(),
             progress: Some(progress.clone()),
             checkpoint_store: Some(checkpoint_store.clone()),
+            conversations: shared_conversations.clone(),
         };
         let bus = bus.clone();
         let run = run.clone();

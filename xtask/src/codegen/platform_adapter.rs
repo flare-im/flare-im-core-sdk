@@ -32,8 +32,27 @@ fn dart_build_request_wire_lines(model: &Value) -> Vec<String> {
             .unwrap_or(true);
         match type_name {
             "String" | "Boolean" | "Int32" | "Int64" | "UInt32" | "UInt64" | "Float" | "Double" => {
-                if required || type_name == "Boolean" {
+                if type_name == "Boolean" && !required {
+                    let default = field
+                        .get("default")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false);
+                    lines.push(format!("      '{wire}': request.{name} ?? {default},"));
+                } else if required || type_name == "Boolean" {
                     lines.push(format!("      '{wire}': request.{name},"));
+                } else {
+                    lines.push(format!(
+                        "      if (request.{name} != null) '{wire}': request.{name}!"
+                    ));
+                }
+            }
+            "StringList" => {
+                if required {
+                    lines.push(format!("      '{wire}': request.{name},"));
+                } else if field.get("default").and_then(Value::as_array).is_some() {
+                    lines.push(format!(
+                        "      '{wire}': request.{name} ?? const <String>[],"
+                    ));
                 } else {
                     lines.push(format!(
                         "      if (request.{name} != null) '{wire}': request.{name}!"
@@ -524,6 +543,9 @@ fn emit_kotlin_map_adapter(spec: &Value, module: &Value) -> String {
             )),
             "CloseViewResponse" => lines.push(format!(
                 "        return closeViewResponseFromJson(invokeMap(bridge, NativeCallMap.{descriptor}{req}))"
+            )),
+            "RuntimeHealthResponse" => lines.push(format!(
+                "        return runtimeHealthResponseFromJson(invokeMap(bridge, NativeCallMap.{descriptor}{req}))"
             )),
             _ => lines.push(format!(
                 "        return invokeMap(bridge, NativeCallMap.{descriptor}{req})"

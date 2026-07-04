@@ -13,14 +13,19 @@ use crate::extension::middleware::MiddlewareChain;
 use crate::infrastructure::persistence::StoreProvider;
 use crate::infrastructure::protocol::{Codec, PacketSender};
 use crate::infrastructure::transport::{SocketHandler, SocketTransport};
-use crate::kernel::event::{ConnectionEvent as SdkConnectionEvent, EventBus, SdkEvent};
+use crate::kernel::event::{
+    ConnectionEvent as SdkConnectionEvent, EventBus, ReadinessStage, SdkEvent, SyncNotify,
+};
 use crate::kernel::{
     ConnectionEvent, ConnectionFsm, ConnectionState, ConversationSummarySync, CurrentUserIdStore,
-    SdkState, SessionSyncRunner, SyncManager, SyncResponseHandler, SyncRunContext,
+    SdkState, SessionSyncRunner, StartupClass, SyncManager, SyncResponseHandler, SyncRunContext,
 };
 use crate::runtime::{ReliableSendQueue, ReliableSendQueueConfig};
 use crate::shared::error::FlareError;
+use crate::shared::util::{BackgroundTask, delay, spawn_background_task};
 use crate::spi::metrics::MetricsRecorder;
+
+use std::sync::Mutex as StdMutex;
 
 pub struct SdkEngine {
     stores: StoreProvider,
@@ -40,6 +45,8 @@ pub struct SdkEngine {
     event_deduper: EventDeduper,
     message_deduper: MessageDeduper,
     notification_pipeline: NotificationInboundPipeline,
+    /// 防熵探测循环（低频对账兜底），会话激活时装载、注销/断连时中止。
+    anti_entropy_probe: StdMutex<Option<BackgroundTask>>,
     metrics: MetricsRecorder,
 }
 
@@ -60,6 +67,40 @@ pub(crate) struct SdkEngineConfig {
     pub ack_max_retries: Option<u32>,
     pub ack_max_in_flight: Option<usize>,
     pub metrics: MetricsRecorder,
+}
+
+#[derive(Clone, Debug)]
+enum ReconnectPlan {
+    CatchUpOnly,
+    /// 重建传输，携带应先执行的 FSM 转移（决策集中在 plan_reconnect，执行侧不再二次 match state）。
+    ReconnectTransport {
+        transition: ConnectionEvent,
+    },
+    AlreadyReconnecting,
+    RejectInFlight,
+    RejectDifferentUser,
+}
+
+fn plan_reconnect(
+    state: ConnectionState,
+    current_user_id: &str,
+    requested_user_id: &str,
+    transport_connected: bool,
+) -> ReconnectPlan {
+    match state {
+        ConnectionState::Ready if current_user_id != requested_user_id => {
+            ReconnectPlan::RejectDifferentUser
+        }
+        ConnectionState::Ready if transport_connected => ReconnectPlan::CatchUpOnly,
+        ConnectionState::Ready => ReconnectPlan::ReconnectTransport {
+            transition: ConnectionEvent::ReconnectRequested,
+        },
+        ConnectionState::Disconnected => ReconnectPlan::ReconnectTransport {
+            transition: ConnectionEvent::ConnectRequested,
+        },
+        ConnectionState::Reconnecting => ReconnectPlan::AlreadyReconnecting,
+        ConnectionState::Connecting | ConnectionState::Connected => ReconnectPlan::RejectInFlight,
+    }
 }
 
 impl SdkEngine {
@@ -118,6 +159,7 @@ impl SdkEngine {
             event_deduper,
             message_deduper,
             notification_pipeline,
+            anti_entropy_probe: StdMutex::new(None),
             metrics,
         }
     }
@@ -164,7 +206,8 @@ impl SdkEngine {
                 "transport cleanup after connection failure failed"
             );
         }
-        *self.current_user_id.write().await = String::new();
+        // 连接失败保留本地会话身份：库与身份都属于该用户（prepare 已建立），
+        // 本地优先读路径（热启动离线出图）不因网络失败而失效；登出才清空。
         {
             let mut guard = self.connection_state.write().await;
             *guard = ConnectionState::Disconnected;
@@ -176,6 +219,13 @@ impl SdkEngine {
             error = %error,
             "connection attempt failed; engine state reset to Disconnected"
         );
+    }
+
+    /// prepare（本地半段登录）预写会话身份：本地优先读路径（各 API 的
+    /// `ensure_session_active`）在 connect 之前即可用。连接态由 `connection_state`
+    /// 单独把关；登出经 [`Self::deactivate_local_session`] 清空。
+    pub(crate) async fn adopt_local_session_identity(&self, user_id: &str) {
+        *self.current_user_id.write().await = user_id.to_string();
     }
 
     #[tracing::instrument(skip(self, token, sync_run), fields(user_id = %user_id, trigger = ?sync_run.trigger))]
@@ -199,6 +249,7 @@ impl SdkEngine {
         ));
         // A2 win#2：建连后启动有界串行持久化 worker，使接收热路径的落盘脱离 socket 读循环。
         dispatcher.start_persist_worker();
+        dispatcher.start_typing_sweep();
         let listener = Arc::new(SocketHandler::new(
             dispatcher,
             self.codec.clone(),
@@ -261,8 +312,23 @@ impl SdkEngine {
         }
 
         self.transition(ConnectionEvent::ConnectRequested).await;
-        self.connect_after_state_transition(user_id, token, SyncRunContext::initial_login())
+        // 启动分类：本地已有该用户数据 → 热启动（静默补齐，不阻塞首屏）；本地空 → 冷启动（用户可见 gate）。
+        let startup = StartupClass::classify(self.has_local_user_data().await);
+        tracing::debug!(?startup, "startup classified");
+        self.connect_after_state_transition(user_id, token, startup.startup_sync_run())
             .await
+    }
+
+    /// 廉价判定本地是否已有当前用户可展示数据（会话非空即视为热启动）。
+    /// 存在性探测（EXISTS），不拉整张带 JOIN 的列表。
+    async fn has_local_user_data(&self) -> bool {
+        match self.stores.conversations.has_any().await {
+            Ok(has_any) => has_any,
+            Err(error) => {
+                tracing::warn!(error = %error, "本地数据探测失败，按冷启动处理");
+                false
+            }
+        }
     }
 
     pub async fn mark_transport_disconnected(&self) {
@@ -275,27 +341,44 @@ impl SdkEngine {
         user_id: &str,
         token: &str,
     ) -> crate::shared::error::Result<()> {
-        let state = *self.connection_state.read().await;
-        match state {
-            ConnectionState::Ready => self.transition(ConnectionEvent::ReconnectRequested).await,
-            ConnectionState::Disconnected => {
-                self.transition(ConnectionEvent::ConnectRequested).await
+        let (state, current_uid) = {
+            let state = *self.connection_state.read().await;
+            let current_uid = self.current_user_id.read().await.clone();
+            (state, current_uid)
+        };
+        let transport_connected = self.transport.is_connected().await;
+        match plan_reconnect(state, &current_uid, user_id, transport_connected) {
+            ReconnectPlan::CatchUpOnly => {
+                tracing::debug!(
+                    %user_id,
+                    "reconnect catch-up only: transport is still connected"
+                );
+                self.bootstrap_nonblocking(SyncRunContext::reconnect())
+                    .await?;
+                Ok(())
             }
-            ConnectionState::Reconnecting => {}
-            ConnectionState::Connecting | ConnectionState::Connected => {
+            ReconnectPlan::ReconnectTransport { transition } => {
+                self.transition(transition).await;
+                self.sync_manager.stop_sync();
+                self.transport.disconnect().await?;
+                self.connect_after_state_transition(user_id, token, SyncRunContext::reconnect())
+                    .await
+            }
+            ReconnectPlan::AlreadyReconnecting => Ok(()),
+            ReconnectPlan::RejectInFlight => {
                 return Err(FlareError::general_error(
                     "connect already in progress, skip reconnect",
                 ));
             }
+            ReconnectPlan::RejectDifferentUser => Err(FlareError::general_error(format!(
+                "already connected as {}, disconnect first before reconnecting as {}",
+                current_uid, user_id
+            ))),
         }
-
-        self.sync_manager.stop_sync();
-        self.transport.disconnect().await?;
-        self.connect_after_state_transition(user_id, token, SyncRunContext::reconnect())
-            .await
     }
 
     pub(crate) async fn deactivate_local_session(&self) {
+        self.abort_anti_entropy_probe();
         self.sync_manager.stop_sync();
         if let Some(queue) = &self.reliable_queue {
             queue.shutdown();
@@ -321,16 +404,105 @@ impl SdkEngine {
         &mut self,
         sync_run: SyncRunContext,
     ) -> crate::shared::error::Result<()> {
+        self.bootstrap_with(sync_run, false).await
+    }
+
+    async fn bootstrap_nonblocking(
+        &mut self,
+        sync_run: SyncRunContext,
+    ) -> crate::shared::error::Result<()> {
+        self.bootstrap_with(sync_run, true).await
+    }
+
+    /// 低频防熵探测：每隔 [`ANTI_ENTROPY_INTERVAL`] 做一次摘要级静默对账（O(变化)，
+    /// 零增量时=1 个空响应 RPC）。兜"连接健康但下行事件被静默丢失、且无任何后续帧/触发"的
+    /// 极端窗口——事件驱动触发（waterline/重连/前台）覆盖不到它。
+    ///
+    /// 与 C2 删除的 30s 扁平前台轮询不同：这是端到端**源头对账**（网关无源头水位，
+    /// 心跳捎带水位方案被否——对账必须问数据源头，本质上就是这次轻量增量同步），
+    /// 周期长一个数量级、成本 O(变化)。会话注销/断连时中止。
+    fn spawn_anti_entropy_probe(&self) {
+        const ANTI_ENTROPY_INTERVAL: Duration = Duration::from_secs(300);
+        let Some(summary_sync) = self.conversation_summary_sync.clone() else {
+            return;
+        };
+        let current_user_id = self.current_user_id.clone();
+        let task = spawn_background_task(async move {
+            loop {
+                delay(ANTI_ENTROPY_INTERVAL).await;
+                let user_id = current_user_id.read().await.clone();
+                if user_id.is_empty() {
+                    break;
+                }
+                if let Err(error) = summary_sync
+                    .sync_foreground_convergence(
+                        &user_id,
+                        SyncRunContext::silent_multidevice_private_data(),
+                    )
+                    .await
+                {
+                    tracing::debug!(error = %error, "anti-entropy probe failed (best-effort)");
+                }
+            }
+        });
+        let previous = {
+            let mut guard = self
+                .anti_entropy_probe
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            guard.replace(task)
+        };
+        if let Some(previous) = previous {
+            previous.abort();
+        }
+    }
+
+    fn abort_anti_entropy_probe(&self) {
+        let previous = {
+            let mut guard = self
+                .anti_entropy_probe
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            guard.take()
+        };
+        if let Some(previous) = previous {
+            previous.abort();
+        }
+    }
+
+    /// `nonblocking=true` 走不抢占当前编排的 catch-up（热重连/网络切换）；否则抢占式全量编排。
+    async fn bootstrap_with(
+        &mut self,
+        sync_run: SyncRunContext,
+        nonblocking: bool,
+    ) -> crate::shared::error::Result<()> {
         let user_id = self.current_user_id.read().await.clone();
         if user_id.is_empty() {
             return Ok(());
         }
-        self.sync_manager.run_with_context(
-            &user_id,
-            sync_run,
-            self.stores.clone(),
-            self.bus.clone(),
-        );
+        // T0 本地水合就绪：本地缓存此刻已可出图，UI 可立即收起骨架、不必等网络同步。
+        // 始终发布（即使热启/重连的 sync 为 Silent），因 Readiness 恒对 UI 可见。
+        self.bus.publish(SdkEvent::Sync(SyncNotify::Readiness {
+            run: sync_run.clone(),
+            stage: ReadinessStage::LocalReady,
+        }));
+        if nonblocking {
+            self.sync_manager.run_nonblocking_with_context(
+                &user_id,
+                sync_run,
+                self.stores.clone(),
+                self.bus.clone(),
+            );
+        } else {
+            self.sync_manager.run_with_context(
+                &user_id,
+                sync_run,
+                self.stores.clone(),
+                self.bus.clone(),
+            );
+        }
+        // 会话激活即（重）装载防熵探测（重复调用会替换并中止旧循环，幂等）。
+        self.spawn_anti_entropy_probe();
         Ok(())
     }
 
@@ -407,7 +579,7 @@ mod tests {
     use tokio::sync::RwLock;
     use tokio::time::{Duration, timeout};
 
-    use super::{SdkEngine, SdkEngineConfig};
+    use super::{ReconnectPlan, SdkEngine, SdkEngineConfig, plan_reconnect};
     use crate::application::notification::{
         NotificationHandlerRegistry, NotificationInboundPipeline,
     };
@@ -417,8 +589,8 @@ mod tests {
     use crate::infrastructure::persistence::memory_im::in_memory_im_provider;
     use crate::infrastructure::protocol::{Codec, ProtobufCodec};
     use crate::infrastructure::transport::SocketTransport;
-    use crate::kernel::CurrentUserIdStore;
     use crate::kernel::event::EventBus;
+    use crate::kernel::{ConnectionState, CurrentUserIdStore};
     use crate::model::IMMessage;
     use crate::spi::metrics::MetricsRecorder;
 
@@ -448,6 +620,35 @@ mod tests {
             ack_max_in_flight: Some(4),
             metrics: MetricsRecorder::disabled(),
         })
+    }
+
+    #[test]
+    fn reconnect_plan_uses_catch_up_only_when_ready_transport_is_alive() {
+        use crate::kernel::ConnectionEvent;
+        assert!(matches!(
+            plan_reconnect(ConnectionState::Ready, "u1", "u1", true),
+            ReconnectPlan::CatchUpOnly
+        ));
+        assert!(matches!(
+            plan_reconnect(ConnectionState::Ready, "u1", "u1", false),
+            ReconnectPlan::ReconnectTransport {
+                transition: ConnectionEvent::ReconnectRequested
+            }
+        ));
+        assert!(matches!(
+            plan_reconnect(ConnectionState::Disconnected, "", "u1", false),
+            ReconnectPlan::ReconnectTransport {
+                transition: ConnectionEvent::ConnectRequested
+            }
+        ));
+        assert!(matches!(
+            plan_reconnect(ConnectionState::Ready, "u1", "u2", true),
+            ReconnectPlan::RejectDifferentUser
+        ));
+        assert!(matches!(
+            plan_reconnect(ConnectionState::Connecting, "u1", "u1", false),
+            ReconnectPlan::RejectInFlight
+        ));
     }
 
     #[tokio::test]

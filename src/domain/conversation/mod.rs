@@ -10,7 +10,7 @@ pub use id::*;
 pub use identity::{ConversationIdRewrite, ConversationIdentityService};
 pub use local_clear::{
     EXT_LOCAL_CLEARED_THROUGH_SEQ, filter_messages_after_clear, local_cleared_through_seq,
-    message_visible_after_clear, set_local_cleared_through_seq,
+    message_visible_after_clear, set_local_cleared_through_seq, sync_visibility_floor,
 };
 pub use models::ConversationReadDecision;
 pub use read::ConversationReadService;

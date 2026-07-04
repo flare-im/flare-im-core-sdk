@@ -2,6 +2,14 @@
 //!
 //! 仅负责 CRUD 与表结构；连接池由调用方创建（见 [storage/sqlite] 的 `create_pool`）。
 
+/// IN 批量查询的统一分块大小（SQLite 默认绑定变量上限 999，留余量）。
+pub(crate) const SQLITE_IN_CHUNK: usize = 500;
+
+/// 生成 `?,?,...` 占位符串（配合 [`SQLITE_IN_CHUNK`] 分块使用）。
+pub(crate) fn in_placeholders(count: usize) -> String {
+    vec!["?"; count].join(",")
+}
+
 mod conversation_participant_repo;
 mod conversation_repo;
 mod cursor_repo;

@@ -32,21 +32,24 @@ impl SyncEventApplier {
         }
     }
 
+    /// 逐条应用事件，返回与入参**一一对齐**的应用结果（true=已应用或已覆盖，可计入游标；
+    /// false=目标暂不可用/应用失败，必须留在游标之外等待重放——游标越过它就等于永久丢弃）。
     pub(crate) async fn apply_events(
         &self,
         user_id: &str,
         events: &[flare_proto::common::Event],
         mode: ReplayMode,
-    ) -> Vec<u64> {
-        let mut applied_seqs = Vec::new();
+    ) -> Vec<bool> {
+        let mut outcomes = Vec::with_capacity(events.len());
         for event in events {
             if !self.event_deduper.record_if_new(event).await {
-                applied_seqs.push(event.conversation_seq);
+                outcomes.push(true);
                 continue;
             }
             match self.apply_event(user_id, event, mode).await {
-                Ok(true) => applied_seqs.push(event.conversation_seq),
+                Ok(true) => outcomes.push(true),
                 Ok(false) => {
+                    outcomes.push(false);
                     self.event_deduper.forget(event).await;
                     tracing::warn!(
                         conversation_id = %event.conversation_id,
@@ -56,6 +59,7 @@ impl SyncEventApplier {
                     );
                 }
                 Err(error) => {
+                    outcomes.push(false);
                     self.event_deduper.forget(event).await;
                     tracing::warn!(
                         conversation_id = %event.conversation_id,
@@ -67,7 +71,7 @@ impl SyncEventApplier {
                 }
             }
         }
-        applied_seqs
+        outcomes
     }
 
     async fn apply_event(
@@ -532,9 +536,7 @@ impl SyncEventApplier {
             .conversations
             .get(&event.conversation_id)
             .await?
-            .map(|conversation| {
-                local_cleared_through_seq(&conversation.ext).max(conversation.visible_after_seq)
-            })
+            .map(|conversation| crate::domain::sync_visibility_floor(&conversation))
             .unwrap_or_default();
         Ok(cleared_floor >= target_seq)
     }

@@ -9,7 +9,7 @@ use crate::{BindingResponse, binding_operation_not_supported};
 use flare_im_core_sdk::Result;
 use flare_im_core_sdk::client::api::MessageApi;
 use flare_im_core_sdk::model::MessageSearchQuery;
-use serde_json::Value;
+use flare_im_core_sdk::serde_json::{self, Value};
 
 pub const MESSAGE_DISPATCH_OPERATIONS: &[&str] = &[
     "get",

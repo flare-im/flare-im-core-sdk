@@ -4,8 +4,9 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use flare_im_core_sdk::plugin::SdkPluginManifest;
-use schemars::schema_for;
-use serde::Deserialize;
+use flare_im_core_sdk::schemars::schema_for;
+use flare_im_core_sdk::serde::Deserialize;
+use flare_im_core_sdk::serde_json;
 use sha2::{Digest, Sha256};
 
 pub(crate) fn run(sdk_root: &Path, command: &str) -> Result<()> {

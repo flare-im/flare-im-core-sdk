@@ -145,6 +145,16 @@ const CORE_SCHEMA_SPECS: &[CoreSchemaSpec] = &[
         file_name: "sync_conversation_summaries_response.schema.json",
         sdk_name: "SyncConversationSummariesResponse",
     },
+    CoreSchemaSpec {
+        group: "sync",
+        file_name: "startup_home_sync_request.schema.json",
+        sdk_name: "StartupHomeSyncRequest",
+    },
+    CoreSchemaSpec {
+        group: "sync",
+        file_name: "startup_home_sync_response.schema.json",
+        sdk_name: "StartupHomeSyncResponse",
+    },
 ];
 
 #[derive(Clone, Debug)]
@@ -1101,9 +1111,22 @@ fn build_catalog_entry(
     existing: Option<&Value>,
 ) -> Result<Value> {
     if let Some(existing) = existing {
-        let mut merged = existing.clone();
-        merged["sourceOperation"] = Value::String(source_operation.to_string());
-        return Ok(merged);
+        return Ok(json!({
+            "op": op,
+            "method": method_by_op(op)?,
+            "request": request_by_op(op)?,
+            "contentType": content_type_by_op(op)?,
+            "messageType": message_type_by_op(op)?,
+            "summary": existing
+                .get("summary")
+                .and_then(Value::as_str)
+                .unwrap_or("Build message"),
+            "stability": existing
+                .get("stability")
+                .and_then(Value::as_str)
+                .unwrap_or("stable"),
+            "sourceOperation": source_operation,
+        }));
     }
     Ok(json!({
         "op": op,
@@ -1183,7 +1206,7 @@ fn content_type_by_op(op: &str) -> Result<&'static str> {
     Ok(match op {
         "create_text" => "text",
         "create_quote" => "quote",
-        "create_thread_reply" => "thread",
+        "create_thread_reply" => "text",
         "create_forward" => "forward",
         "create_image" => "image",
         "create_image_group" => "image_group",
@@ -1223,7 +1246,7 @@ fn message_type_by_op(op: &str) -> Result<i64> {
         "create_link_card" => 11,
         "create_forward" => 12,
         "create_mini_program" => 13,
-        "create_thread_reply" => 14,
+        "create_thread_reply" => 1,
         "create_quote" => 15,
         "create_rich_doc" => 30,
         "create_image_group" => 32,

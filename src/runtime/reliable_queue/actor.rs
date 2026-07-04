@@ -17,7 +17,7 @@ use crate::infrastructure::protocol::PacketSender;
 use crate::kernel::event::{EventBus, MessageEvent, SdkEvent};
 use crate::kernel::{CurrentUserIdStore, ReliableSendQueuePort};
 use crate::model::IMMessage;
-use crate::model::message::MessageLocalState;
+use crate::model::message::{MessageLocalState, MessageStatus};
 use crate::shared::error::{ErrorCode, FlareError, Result};
 use crate::shared::util::id;
 use crate::shared::util::spawn_background_task;
@@ -91,6 +91,8 @@ struct QueueState {
     adaptive_window: AdaptiveInFlightWindow,
     /// 当前在途消息；ACK 按 client_msg_id 精确收敛。
     in_flight: HashMap<String, InFlightSend>,
+    /// 已被服务端接收但尚未持久化确认的消息；释放发送窗口，但保留 pending 以便恢复。
+    awaiting_durable: HashMap<String, AwaitingDurableAck>,
     /// client_msg_id -> 已重试次数
     retry_count: HashMap<String, u32>,
     /// 提前/乱序到达的 ACK，等待对应 pending 成为当前处理项后再收敛
@@ -99,6 +101,11 @@ struct QueueState {
 }
 
 struct InFlightSend {
+    entry: PendingSendVo,
+    deadline_ms: u64,
+}
+
+struct AwaitingDurableAck {
     entry: PendingSendVo,
     deadline_ms: u64,
 }
@@ -153,6 +160,7 @@ impl AdaptiveInFlightWindow {
 enum AckApplyResult {
     Terminal,
     KeepInFlight,
+    AwaitDurable,
 }
 
 #[cfg(test)]
@@ -227,6 +235,7 @@ impl ReliableSendQueue {
             max_in_flight,
             adaptive_window,
             in_flight: HashMap::new(),
+            awaiting_durable: HashMap::new(),
             retry_count: HashMap::new(),
             pending_acks: HashMap::new(),
             metrics,
@@ -398,20 +407,50 @@ async fn handle_command(st: &mut QueueState, cmd: QueueCommand) -> Result<()> {
             st.metrics.counter("reliable_queue.ack_received_total", 1);
             let ack = *ack;
             if let Some(in_flight) = st.in_flight.remove(&ack.client_msg_id) {
-                if apply_ack_and_publish(st, &in_flight.entry, ack).await
-                    == AckApplyResult::KeepInFlight
-                {
-                    st.in_flight
-                        .insert(in_flight.entry.client_msg_id.clone(), in_flight);
+                match apply_ack_and_publish(st, &in_flight.entry, ack).await {
+                    AckApplyResult::Terminal => {}
+                    AckApplyResult::KeepInFlight => {
+                        st.in_flight
+                            .insert(in_flight.entry.client_msg_id.clone(), in_flight);
+                    }
+                    AckApplyResult::AwaitDurable => {
+                        st.awaiting_durable.insert(
+                            in_flight.entry.client_msg_id.clone(),
+                            AwaitingDurableAck {
+                                entry: in_flight.entry,
+                                deadline_ms: deadline_after(st.timeout_duration),
+                            },
+                        );
+                    }
                 }
+            } else if let Some(awaiting) = st.awaiting_durable.remove(&ack.client_msg_id) {
+                match apply_ack_and_publish(st, &awaiting.entry, ack).await {
+                    AckApplyResult::Terminal => {}
+                    AckApplyResult::KeepInFlight | AckApplyResult::AwaitDurable => {
+                        st.awaiting_durable.insert(
+                            awaiting.entry.client_msg_id.clone(),
+                            AwaitingDurableAck {
+                                entry: awaiting.entry,
+                                deadline_ms: awaiting.deadline_ms,
+                            },
+                        );
+                    }
+                }
+            } else if st.pending_reader.get(&ack.client_msg_id).await?.is_some() {
+                st.pending_acks.insert(ack.client_msg_id.clone(), ack);
             } else if MessageDeliveryService::accepted_from_ack(&ack).is_some()
                 || MessageDeliveryService::error_message_from_ack(&ack).is_some()
             {
+                if let Err(error) = apply_orphan_durable_ack(st, &ack).await {
+                    warn!(
+                        %error,
+                        client_msg_id = %ack.client_msg_id,
+                        "apply orphan durable ack failed"
+                    );
+                }
                 st.bus.publish(SdkEvent::Message(MessageEvent::SendAck {
                     ack: Box::new(ack),
                 }));
-            } else if st.pending_reader.get(&ack.client_msg_id).await?.is_some() {
-                st.pending_acks.insert(ack.client_msg_id.clone(), ack);
             }
             try_send_next(st).await?;
         }
@@ -438,6 +477,10 @@ async fn handle_command(st: &mut QueueState, cmd: QueueCommand) -> Result<()> {
 fn record_queue_health(st: &QueueState) {
     st.metrics
         .gauge("reliable_queue.in_flight", st.in_flight.len() as i64);
+    st.metrics.gauge(
+        "reliable_queue.awaiting_durable",
+        st.awaiting_durable.len() as i64,
+    );
     st.metrics
         .gauge("reliable_queue.pending_acks", st.pending_acks.len() as i64);
     st.metrics.gauge(
@@ -600,6 +643,21 @@ async fn reset_pending_on_login(st: &mut QueueState) -> Result<Vec<String>> {
         .await?;
         dropped.push(id);
     }
+    let awaiting_entries = st
+        .awaiting_durable
+        .drain()
+        .map(|(_, awaiting)| awaiting.entry)
+        .collect::<Vec<_>>();
+    for awaiting in awaiting_entries {
+        let id = awaiting.client_msg_id.clone();
+        mark_send_failed_and_publish(
+            st,
+            &awaiting,
+            "server accepted queue dropped during login session reset",
+        )
+        .await?;
+        dropped.push(id);
+    }
 
     let pending_entries = st.pending_reader.list().await?;
     for entry in pending_entries {
@@ -674,6 +732,11 @@ async fn check_timeout(st: &mut QueueState) -> Result<()> {
         try_send_next(st).await?;
         return Ok(());
     }
+    if reconcile_awaiting_durable_terminal_states(st).await? {
+        try_send_next(st).await?;
+        return Ok(());
+    }
+    check_awaiting_durable_timeout(st).await?;
     let ids = st.in_flight.keys().cloned().collect::<Vec<_>>();
     for client_msg_id in ids {
         let Some(in_flight) = st.in_flight.remove(&client_msg_id) else {
@@ -727,6 +790,63 @@ async fn check_timeout(st: &mut QueueState) -> Result<()> {
         }
     }
     try_send_next(st).await?;
+    Ok(())
+}
+
+async fn check_awaiting_durable_timeout(st: &mut QueueState) -> Result<()> {
+    let ids = st.awaiting_durable.keys().cloned().collect::<Vec<_>>();
+    for client_msg_id in ids {
+        let Some(awaiting) = st.awaiting_durable.remove(&client_msg_id) else {
+            continue;
+        };
+        let entry = awaiting.entry;
+        if !is_deadline_elapsed(awaiting.deadline_ms) {
+            st.awaiting_durable.insert(
+                entry.client_msg_id.clone(),
+                AwaitingDurableAck {
+                    entry,
+                    deadline_ms: awaiting.deadline_ms,
+                },
+            );
+            continue;
+        }
+
+        note_send_congestion(st, "durable_ack_timeout");
+        let retries = st
+            .retry_count
+            .get(&entry.client_msg_id)
+            .copied()
+            .unwrap_or(0);
+        match MessageDeliveryService::decide_timeout_expiry(retries, st.max_retries) {
+            RetryDecision::Retry { next_retry_count } => {
+                st.metrics.counter_with_labels(
+                    "reliable_queue.send_retry_total",
+                    &[MetricLabel::new("reason", "durable_ack_timeout")],
+                    1,
+                );
+                st.retry_count
+                    .insert(entry.client_msg_id.clone(), next_retry_count);
+                dispatch_send_attempt(st, entry, next_retry_count);
+            }
+            RetryDecision::Fail { reason } => {
+                st.metrics.counter_with_labels(
+                    "reliable_queue.send_failed_total",
+                    &[MetricLabel::new("reason", "durable_ack_timeout")],
+                    1,
+                );
+                let _ = st.pending_writer.pop(&entry.client_msg_id).await;
+                st.retry_count.remove(&entry.client_msg_id);
+                let failed_msg = MessageDeliveryService::mark_failed(&entry.message);
+                if let Err(e) = st.message_store.save_batch(&[failed_msg]).await {
+                    warn!(%e, "persist durable-timeout failed message state failed");
+                }
+                st.bus.publish(SdkEvent::Message(MessageEvent::SendFailed {
+                    client_msg_id: entry.client_msg_id,
+                    reason: reason.to_string(),
+                }));
+            }
+        }
+    }
     Ok(())
 }
 
@@ -800,6 +920,68 @@ async fn reconcile_in_flight_terminal_states(st: &mut QueueState) -> Result<bool
     Ok(progressed)
 }
 
+async fn reconcile_awaiting_durable_terminal_states(st: &mut QueueState) -> Result<bool> {
+    let ids = st.awaiting_durable.keys().cloned().collect::<Vec<_>>();
+    if ids.is_empty() {
+        return Ok(false);
+    }
+    let snapshot_by_id: HashMap<String, DeliveryLocalSnapshot> = st
+        .message_store
+        .get_by_client_msg_ids(&ids)
+        .await?
+        .iter()
+        .map(|message| {
+            (
+                message.client_msg_id.clone(),
+                DeliveryLocalSnapshot::from(message),
+            )
+        })
+        .collect();
+    let mut progressed = false;
+
+    for client_msg_id in ids {
+        let Some(awaiting) = st.awaiting_durable.remove(&client_msg_id) else {
+            continue;
+        };
+        let entry = awaiting.entry;
+        let local_snapshot = snapshot_by_id.get(&entry.client_msg_id);
+
+        match MessageDeliveryService::reconcile_in_flight(local_snapshot, &entry.client_msg_id) {
+            InFlightReconcileDecision::KeepWaiting => {
+                st.awaiting_durable.insert(
+                    entry.client_msg_id.clone(),
+                    AwaitingDurableAck {
+                        entry,
+                        deadline_ms: awaiting.deadline_ms,
+                    },
+                );
+            }
+            InFlightReconcileDecision::MarkFailed { reason } => {
+                let _ = st.pending_writer.pop(&entry.client_msg_id).await?;
+                st.retry_count.remove(&entry.client_msg_id);
+                st.bus.publish(SdkEvent::Message(MessageEvent::SendFailed {
+                    client_msg_id: entry.client_msg_id.clone(),
+                    reason: reason.to_string(),
+                }));
+                progressed = true;
+            }
+            InFlightReconcileDecision::SynthesizeAck { snapshot } => {
+                let _ = st.pending_writer.pop(&entry.client_msg_id).await?;
+                st.retry_count.remove(&entry.client_msg_id);
+                st.bus.publish(SdkEvent::Message(MessageEvent::SendAck {
+                    ack: Box::new(MessageDeliveryService::synthetic_ack(
+                        &entry.client_msg_id,
+                        &snapshot,
+                    )),
+                }));
+                progressed = true;
+            }
+        }
+    }
+
+    Ok(progressed)
+}
+
 async fn try_send_next(st: &mut QueueState) -> Result<()> {
     loop {
         let current_limit = st.adaptive_window.current();
@@ -807,7 +989,8 @@ async fn try_send_next(st: &mut QueueState) -> Result<()> {
         if available == 0 {
             return Ok(());
         }
-        let excluded = st.in_flight.keys().cloned().collect::<Vec<_>>();
+        let mut excluded = st.in_flight.keys().cloned().collect::<Vec<_>>();
+        excluded.extend(st.awaiting_durable.keys().cloned());
         let entries = st
             .pending_reader
             .list_oldest_excluding(&excluded, available)
@@ -903,14 +1086,26 @@ async fn try_send_next(st: &mut QueueState) -> Result<()> {
                 PendingDispatchDecision::SendNow => {}
             }
             if let Some(ack) = st.pending_acks.remove(&entry.client_msg_id) {
-                if apply_ack_and_publish(st, &entry, ack).await == AckApplyResult::KeepInFlight {
-                    st.in_flight.insert(
-                        entry.client_msg_id.clone(),
-                        InFlightSend {
-                            entry,
-                            deadline_ms: deadline_after(st.timeout_duration),
-                        },
-                    );
+                match apply_ack_and_publish(st, &entry, ack).await {
+                    AckApplyResult::Terminal => {}
+                    AckApplyResult::KeepInFlight => {
+                        st.in_flight.insert(
+                            entry.client_msg_id.clone(),
+                            InFlightSend {
+                                entry,
+                                deadline_ms: deadline_after(st.timeout_duration),
+                            },
+                        );
+                    }
+                    AckApplyResult::AwaitDurable => {
+                        st.awaiting_durable.insert(
+                            entry.client_msg_id.clone(),
+                            AwaitingDurableAck {
+                                entry,
+                                deadline_ms: deadline_after(st.timeout_duration),
+                            },
+                        );
+                    }
                 }
                 made_progress = true;
                 continue;
@@ -990,10 +1185,16 @@ async fn apply_ack_and_publish(
         return AckApplyResult::Terminal;
     }
     if MessageDeliveryService::accepted_from_ack(&ack).is_some() {
+        let latency_ms = id::now_millis().saturating_sub(entry.enqueued_at_ms);
+        st.metrics.histogram(
+            "reliable_queue.server_accepted_latency_ms",
+            latency_ms as f64,
+        );
+        note_send_success(st);
         st.bus.publish(SdkEvent::Message(MessageEvent::SendAck {
             ack: Box::new(ack),
         }));
-        return AckApplyResult::KeepInFlight;
+        return AckApplyResult::AwaitDurable;
     }
     let _ = st.pending_writer.pop(&ack.client_msg_id).await;
     st.retry_count.remove(&ack.client_msg_id);
@@ -1014,6 +1215,36 @@ async fn apply_ack_and_publish(
     AckApplyResult::Terminal
 }
 
+async fn apply_orphan_durable_ack(st: &mut QueueState, ack: &SendAck) -> Result<()> {
+    let Some(accepted) = MessageDeliveryService::durable_accepted_from_ack(ack) else {
+        return Ok(());
+    };
+    let client_msg_id = ack.client_msg_id.trim();
+    if client_msg_id.is_empty() {
+        return Ok(());
+    }
+    let Some(local) = st.message_store.get_by_client_msg_id(client_msg_id).await? else {
+        return Ok(());
+    };
+    if !orphan_durable_ack_should_update(&local, client_msg_id, accepted.conversation_seq) {
+        return Ok(());
+    }
+    let msg = MessageDeliveryService::mark_sent_from_ack(&local, ack);
+    st.message_store
+        .update_after_ack(client_msg_id, &msg)
+        .await?;
+    update_conversation_last_message(st, &msg).await?;
+    Ok(())
+}
+
+fn orphan_durable_ack_should_update(local: &IMMessage, client_msg_id: &str, ack_seq: u64) -> bool {
+    let pending_like = local.server_id == client_msg_id
+        || local.local_state.is_local
+        || local.local_state.sending
+        || local.status < MessageStatus::Sent as i32;
+    pending_like || local.conversation_seq == 0 || ack_seq > local.conversation_seq
+}
+
 #[cfg(all(test, feature = "storage-sqlite"))]
 mod tests {
     use super::{ReliableSendQueue, ReliableSendQueueConfig};
@@ -1028,6 +1259,7 @@ mod tests {
     use crate::infrastructure::protocol::{Codec, PacketSender, ProtobufCodec};
     use crate::kernel::CurrentUserIdStore;
     use crate::kernel::event::{EventBus, MessageEvent, SdkEvent};
+    use crate::model::message::MessageStatus;
     use crate::model::{Conversation, IMMessage};
     use crate::spi::metrics::MetricsRecorder;
     use flare_proto::common::{SendAccepted, SendAck, SendAckDurability, send_ack};
@@ -1189,7 +1421,7 @@ mod tests {
 
     #[cfg(feature = "storage-sqlite")]
     #[tokio::test]
-    async fn transient_ack_keeps_pending_message_recoverable() {
+    async fn broker_ack_keeps_pending_message_recoverable() {
         let bus = EventBus::new();
         let mut receiver = bus.subscribe_raw();
         let current_user_id: CurrentUserIdStore = Arc::new(RwLock::new("u1".to_string()));
@@ -1212,9 +1444,9 @@ mod tests {
             metrics: MetricsRecorder::disabled(),
         });
         let mut message = IMMessage::new(flare_proto::common::Message::default());
-        message.client_msg_id = "client-transient".to_string();
-        message.server_id = "client-transient".to_string();
-        message.conversation_id = "conv-transient".to_string();
+        message.client_msg_id = "client-broker".to_string();
+        message.server_id = "client-broker".to_string();
+        message.conversation_id = "conv-broker".to_string();
         message.sender_id = "u1".to_string();
 
         queue.enqueue(message).await.unwrap();
@@ -1229,13 +1461,13 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(20)).await;
         queue
             .on_ack(SendAck {
-                client_msg_id: "client-transient".to_string(),
-                conversation_id: "conv-transient".to_string(),
+                client_msg_id: "client-broker".to_string(),
+                conversation_id: "conv-broker".to_string(),
                 result: Some(send_ack::Result::Accepted(SendAccepted {
-                    server_msg_id: "server-transient".to_string(),
+                    server_msg_id: "server-broker".to_string(),
                     conversation_seq: 9,
                     server_time: 0,
-                    durability: SendAckDurability::TransientAccepted as i32,
+                    durability: SendAckDurability::BrokerAccepted as i32,
                 })),
                 ..Default::default()
             })
@@ -1244,27 +1476,136 @@ mod tests {
 
         let event = timeout(Duration::from_millis(200), receiver.recv())
             .await
-            .expect("expected transient send ack")
+            .expect("expected broker send ack")
             .expect("bus closed");
         assert!(matches!(
             event,
             SdkEvent::Message(MessageEvent::SendAck { .. })
         ));
         assert!(
-            pending_store
-                .get("client-transient")
-                .await
-                .unwrap()
-                .is_some(),
-            "transient ack must not clear recoverable pending state"
+            pending_store.get("client-broker").await.unwrap().is_some(),
+            "broker ack must not clear recoverable pending state"
         );
         let local = message_store
-            .get_by_client_msg_id("client-transient")
+            .get_by_client_msg_id("client-broker")
             .await
             .unwrap()
             .expect("local optimistic message should remain");
         assert!(local.local_state.sending);
         assert!(local.local_state.is_local);
+        assert_eq!(local.server_id, "client-broker");
+        assert_eq!(local.conversation_seq, 0);
+    }
+
+    #[cfg(feature = "storage-sqlite")]
+    #[tokio::test]
+    async fn broker_ack_releases_window_without_clearing_pending() {
+        let bus = EventBus::new();
+        let mut receiver = bus.subscribe_raw();
+        let current_user_id: CurrentUserIdStore = Arc::new(RwLock::new("u1".to_string()));
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        sqlite_init_schema(&pool).await.unwrap();
+        let pending_store = Arc::new(SqlitePendingSendRepo::new(pool.clone()));
+        let message_store = Arc::new(SqliteMessageRepo::new(pool.clone()));
+        let conversation_store = Arc::new(SqliteConversationRepo::new(pool));
+        let queue = ReliableSendQueue::new(ReliableSendQueueConfig {
+            pending_reader: pending_store.clone(),
+            pending_writer: pending_store.clone(),
+            sender: dummy_sender(),
+            message_store,
+            conversation_store,
+            current_user_id,
+            bus,
+            timeout_secs: Some(60),
+            max_retries: Some(3),
+            max_in_flight: Some(1),
+            metrics: MetricsRecorder::disabled(),
+        });
+
+        for client_msg_id in ["client-broker-window-1", "client-broker-window-2"] {
+            let mut message = IMMessage::new(flare_proto::common::Message::default());
+            message.client_msg_id = client_msg_id.to_string();
+            message.server_id = client_msg_id.to_string();
+            message.conversation_id = "conv-broker-window".to_string();
+            message.sender_id = "u1".to_string();
+            queue.enqueue(message).await.unwrap();
+        }
+        for _ in 0..2 {
+            let optimistic_event = timeout(Duration::from_millis(200), receiver.recv())
+                .await
+                .expect("expected optimistic message event")
+                .expect("bus closed");
+            assert!(matches!(
+                optimistic_event,
+                SdkEvent::Message(MessageEvent::ReceivedBatch { .. })
+            ));
+        }
+
+        queue
+            .on_ack(SendAck {
+                client_msg_id: "client-broker-window-1".to_string(),
+                conversation_id: "conv-broker-window".to_string(),
+                result: Some(send_ack::Result::Accepted(SendAccepted {
+                    server_msg_id: "server-broker-window-1".to_string(),
+                    conversation_seq: 1,
+                    server_time: 0,
+                    durability: SendAckDurability::BrokerAccepted as i32,
+                })),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        let broker_event = timeout(Duration::from_millis(200), receiver.recv())
+            .await
+            .expect("expected broker send ack")
+            .expect("bus closed");
+        assert!(matches!(
+            broker_event,
+            SdkEvent::Message(MessageEvent::SendAck { .. })
+        ));
+        assert!(
+            pending_store
+                .get("client-broker-window-1")
+                .await
+                .unwrap()
+                .is_some(),
+            "broker ack must keep first message recoverable"
+        );
+
+        queue
+            .on_ack(SendAck {
+                client_msg_id: "client-broker-window-2".to_string(),
+                conversation_id: "conv-broker-window".to_string(),
+                result: Some(send_ack::Result::Accepted(SendAccepted {
+                    server_msg_id: "server-broker-window-2".to_string(),
+                    conversation_seq: 2,
+                    server_time: 0,
+                    durability: SendAckDurability::Persisted as i32,
+                })),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        let persisted_event = timeout(Duration::from_millis(200), receiver.recv())
+            .await
+            .expect("expected second persisted send ack after broker window release")
+            .expect("bus closed");
+        match persisted_event {
+            SdkEvent::Message(MessageEvent::SendAck { ack }) => {
+                assert_eq!(ack.client_msg_id, "client-broker-window-2");
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+        assert!(
+            pending_store
+                .get("client-broker-window-2")
+                .await
+                .unwrap()
+                .is_none(),
+            "persisted ack should clear the second message"
+        );
     }
 
     #[cfg(feature = "storage-sqlite")]
@@ -1300,7 +1641,7 @@ mod tests {
                     server_msg_id: "server-orphan".to_string(),
                     conversation_seq: 10,
                     server_time: 0,
-                    durability: SendAckDurability::BrokerAccepted as i32,
+                    durability: SendAckDurability::Persisted as i32,
                 })),
                 ..Default::default()
             })
@@ -1317,6 +1658,73 @@ mod tests {
             }
             other => panic!("unexpected event: {other:?}"),
         }
+    }
+
+    #[cfg(feature = "storage-sqlite")]
+    #[tokio::test]
+    async fn orphan_later_persisted_ack_advances_local_canonical_seq() {
+        let bus = EventBus::new();
+        let mut receiver = bus.subscribe_raw();
+        let current_user_id: CurrentUserIdStore = Arc::new(RwLock::new("u1".to_string()));
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        sqlite_init_schema(&pool).await.unwrap();
+        let pending_store = Arc::new(SqlitePendingSendRepo::new(pool.clone()));
+        let message_store = Arc::new(SqliteMessageRepo::new(pool.clone()));
+        let conversation_store = Arc::new(SqliteConversationRepo::new(pool));
+        let mut local = IMMessage::new(flare_proto::common::Message::default());
+        local.server_id = "server-old".to_string();
+        local.client_msg_id = "client-late-persisted".to_string();
+        local.conversation_id = "conv-late-persisted".to_string();
+        local.sender_id = "u1".to_string();
+        local.conversation_seq = 10;
+        local.status = MessageStatus::Sent as i32;
+        message_store.save_batch(&[local]).await.unwrap();
+
+        let queue = ReliableSendQueue::new(ReliableSendQueueConfig {
+            pending_reader: pending_store.clone(),
+            pending_writer: pending_store,
+            sender: dummy_sender(),
+            message_store: message_store.clone(),
+            conversation_store,
+            current_user_id,
+            bus,
+            timeout_secs: Some(60),
+            max_retries: Some(3),
+            max_in_flight: Some(32),
+            metrics: MetricsRecorder::disabled(),
+        });
+
+        queue
+            .on_ack(SendAck {
+                client_msg_id: "client-late-persisted".to_string(),
+                conversation_id: "conv-late-persisted".to_string(),
+                result: Some(send_ack::Result::Accepted(SendAccepted {
+                    server_msg_id: "server-new".to_string(),
+                    conversation_seq: 42,
+                    server_time: 1234,
+                    durability: SendAckDurability::Persisted as i32,
+                })),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        let event = timeout(Duration::from_millis(200), receiver.recv())
+            .await
+            .expect("expected orphan persisted send ack")
+            .expect("bus closed");
+        assert!(matches!(
+            event,
+            SdkEvent::Message(MessageEvent::SendAck { .. })
+        ));
+        assert!(message_store.get("server-old").await.unwrap().is_none());
+        let stored = message_store
+            .get_by_client_msg_id("client-late-persisted")
+            .await
+            .unwrap()
+            .expect("canonical row should remain addressable by client id");
+        assert_eq!(stored.server_id, "server-new");
+        assert_eq!(stored.conversation_seq, 42);
     }
 
     #[cfg(feature = "storage-sqlite")]
@@ -1371,7 +1779,7 @@ mod tests {
                     server_msg_id: "server-pipe-2".to_string(),
                     conversation_seq: 2,
                     server_time: 0,
-                    durability: SendAckDurability::BrokerAccepted as i32,
+                    durability: SendAckDurability::Persisted as i32,
                 })),
                 ..Default::default()
             })

@@ -195,6 +195,7 @@ Map<String, Object?> messageToWireMap(Message message) {
     'senderDisplayName': message.senderDisplayName,
     if (message.replyTo != null) 'replyTo': message.replyTo!,
     if (message.quotePreview != null) 'quotePreview': message.quotePreview!,
+    if (message.threadId != null) 'threadId': message.threadId!,
     'status': message.status,
     'isRead': message.isRead,
     'isRecalled': message.isRecalled,
@@ -550,6 +551,10 @@ SdkErrorPayload? sdkErrorPayloadFromJson(Object? value) {
   if (value is String) {
     final normalized = value.trim();
     if (normalized.isEmpty || normalized == 'null') return null;
+    return SdkErrorPayload(
+      code: 'native_error',
+      message: normalized,
+    );
   }
   if (value is! Map) {
     final normalized = value.toString().trim();
@@ -666,6 +671,7 @@ Message messageFromJson(Object? value) {
     senderDisplayName: stringFieldOrEmpty(json, 'senderDisplayName'),
     replyTo: json['replyTo']?.toString(),
     quotePreview: json['quotePreview']?.toString(),
+    threadId: json['threadId']?.toString(),
     status: intValue(json['status']),
     isRead: boolValue(json['isRead']),
     isRecalled: boolValue(json['isRecalled']),

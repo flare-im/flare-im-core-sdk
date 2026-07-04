@@ -1,4 +1,24 @@
 use super::*;
+use crate::shared::util::spawn_background;
+
+const INLINE_FTS_BATCH_LIMIT: usize = 32;
+
+#[derive(Clone)]
+struct MessageFtsBackfillRow {
+    server_id: String,
+    conversation_id: String,
+    search_text: Option<String>,
+}
+
+impl MessageFtsBackfillRow {
+    fn from_persist_row(row: &MessagePersistRow<'_>) -> Self {
+        Self {
+            server_id: row.message.server_id.clone(),
+            conversation_id: row.message.conversation_id.clone(),
+            search_text: row.search_text.clone(),
+        }
+    }
+}
 
 #[async_trait]
 impl MessageWriter for SqliteMessageRepo {
@@ -32,35 +52,26 @@ impl MessageWriter for SqliteMessageRepo {
             .map_err(|e| FlareError::localized(ErrorCode::DatabaseError, e.to_string()))?;
         let mut rows = Vec::with_capacity(persistable.len());
         for m in persistable {
-            remove_conflicting_client_msg_rows_tx(
-                &mut tx,
-                &m.client_msg_id,
-                &m.server_id,
-                &m.conversation_id,
-            )
-            .await?;
+            remove_conflicting_local_client_msg_rows_tx(&mut tx, &m.client_msg_id, &m.server_id)
+                .await?;
 
-            let client_msg_id = m.client_msg_id.trim();
             let server_id = m.server_id.trim();
             if !server_id.is_empty() {
                 rows.retain(|row: &MessagePersistRow<'_>| {
                     let row_server_id = row.message.server_id.trim();
-                    let row_client_msg_id = row.message.client_msg_id.trim();
-                    if row_server_id == server_id {
-                        return false;
-                    }
-                    client_msg_id.is_empty()
-                        || row_client_msg_id != client_msg_id
-                        || row_server_id == server_id
+                    row_server_id != server_id
                 });
             }
             rows.push(MessagePersistRow::from_message(m));
         }
 
         let mut latest_per_conversation: HashMap<&str, &IMMessage> = HashMap::new();
+        let should_update_fts_inline = rows.len() <= INLINE_FTS_BATCH_LIMIT;
         for chunk in rows.chunks(MESSAGE_SAVE_BATCH_INSERT_CHUNK_SIZE) {
             insert_message_rows_tx(&mut tx, chunk).await?;
-            upsert_message_fts_rows_tx(&mut tx, chunk).await?;
+            if should_update_fts_inline {
+                upsert_message_fts_rows_tx(&mut tx, chunk).await?;
+            }
             replace_reaction_snapshot_rows_tx(&mut tx, chunk).await?;
             for row in chunk {
                 let m = row.message;
@@ -80,9 +91,19 @@ impl MessageWriter for SqliteMessageRepo {
         for (_, latest) in latest_per_conversation {
             upsert_conversation_snapshot_tx(&mut tx, latest).await?;
         }
+        let deferred_fts_rows = if should_update_fts_inline {
+            Vec::new()
+        } else {
+            rows.iter()
+                .map(MessageFtsBackfillRow::from_persist_row)
+                .collect()
+        };
         tx.commit()
             .await
             .map_err(|e| FlareError::localized(ErrorCode::DatabaseError, e.to_string()))?;
+        if !deferred_fts_rows.is_empty() {
+            schedule_message_fts_backfill(self.pool.clone(), deferred_fts_rows);
+        }
         Ok(())
     }
 
@@ -294,9 +315,9 @@ impl MessageWriter for SqliteMessageRepo {
                sender_display_name, encoded_content, status,
                retention_policy, retention_state,
                is_read, is_recalled, is_edited,
-               reply_to, quote_preview, mention_users, mention_all, attributes, extensions, version, updated_at, text,
+               reply_to, quote_preview, thread_id, mention_users, mention_all, attributes, extensions, version, updated_at, text,
                sending, failed, is_local, sort_ts)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"#,
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"#,
         )
         .bind(&message.server_id)
         .bind(&message.conversation_id)
@@ -321,6 +342,7 @@ impl MessageWriter for SqliteMessageRepo {
         .bind(if message.is_edited { 1i32 } else { 0 })
         .bind(&message.reply_to)
         .bind(&message.quote_preview)
+        .bind(&message.thread_id)
         .bind(&mention_users_json)
         .bind(if message.mention_all { 1i32 } else { 0 })
         .bind(&extra_json)
@@ -349,4 +371,86 @@ impl MessageWriter for SqliteMessageRepo {
             .map_err(|e| FlareError::localized(ErrorCode::DatabaseError, e.to_string()))?;
         Ok(())
     }
+}
+
+fn schedule_message_fts_backfill(pool: SqlitePool, rows: Vec<MessageFtsBackfillRow>) {
+    spawn_background(async move {
+        let row_count = rows.len();
+        if let Err(error) = backfill_message_fts_rows(pool, rows).await {
+            tracing::warn!(
+                %error,
+                row_count,
+                "message FTS backfill failed after large batch save"
+            );
+        }
+    });
+}
+
+async fn backfill_message_fts_rows(
+    pool: SqlitePool,
+    rows: Vec<MessageFtsBackfillRow>,
+) -> Result<()> {
+    if rows.is_empty() {
+        return Ok(());
+    }
+
+    let mut tx = pool.begin().await.map_err(sqlx_err)?;
+    for chunk in rows.chunks(MESSAGE_SAVE_BATCH_INSERT_CHUNK_SIZE) {
+        upsert_message_fts_backfill_rows_tx(&mut tx, chunk).await?;
+        tokio::task::yield_now().await;
+    }
+    tx.commit().await.map_err(sqlx_err)?;
+    Ok(())
+}
+
+async fn upsert_message_fts_backfill_rows_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    rows: &[MessageFtsBackfillRow],
+) -> Result<()> {
+    if rows.is_empty() {
+        return Ok(());
+    }
+
+    let mut delete_qb =
+        QueryBuilder::<Sqlite>::new("DELETE FROM messages_fts WHERE server_id IN (");
+    {
+        let mut separated = delete_qb.separated(", ");
+        for row in rows {
+            separated.push_bind(&row.server_id);
+        }
+    }
+    delete_qb.push(")");
+    delete_qb
+        .build()
+        .execute(&mut **tx)
+        .await
+        .map_err(sqlx_err)?;
+
+    let searchable = rows
+        .iter()
+        .filter_map(|row| {
+            row.search_text
+                .as_deref()
+                .map(str::trim)
+                .filter(|text| !text.is_empty())
+                .map(|text| (row, text))
+        })
+        .collect::<Vec<_>>();
+    if searchable.is_empty() {
+        return Ok(());
+    }
+
+    let mut insert_qb =
+        QueryBuilder::<Sqlite>::new("INSERT INTO messages_fts(server_id, conversation_id, text) ");
+    insert_qb.push_values(searchable, |mut b, (row, text)| {
+        b.push_bind(&row.server_id)
+            .push_bind(&row.conversation_id)
+            .push_bind(text);
+    });
+    insert_qb
+        .build()
+        .execute(&mut **tx)
+        .await
+        .map_err(sqlx_err)?;
+    Ok(())
 }

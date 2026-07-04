@@ -40,6 +40,13 @@ impl SyncProgress {
             self.completed_weight as f32 / self.total_weight as f32
         }
     }
+
+    /// wire 契约上的进度值：**0–100 的整数百分比**（见各端 `SyncEvent.progress`
+    /// "Progress percentage from 0 to 100"）。发 0–1 的 `ratio()` 会让强类型端
+    /// （Flutter/Apple 的整数解码）在非整数比例上抛异常崩事件流。
+    pub fn percent(&self) -> f32 {
+        (self.ratio() * 100.0).round()
+    }
 }
 
 /// 进度上报器：任务与引擎内部用于上报「当前任务描述」与「权重完成」
@@ -79,7 +86,7 @@ impl EventBusProgressReporter {
         self.bus.publish(SdkEvent::Sync(SyncNotify::Progress {
             run: self.run.clone(),
             task: progress.current_task.clone(),
-            progress: progress.ratio(),
+            progress: progress.percent(),
             detail: format!("{} / {}", progress.completed_weight, progress.total_weight),
         }));
     }
@@ -100,7 +107,7 @@ impl SyncProgressReporter for EventBusProgressReporter {
             self.bus.publish(SdkEvent::Sync(SyncNotify::Progress {
                 run: self.run.clone(),
                 task: g.current_task.clone(),
-                progress: g.ratio(),
+                progress: g.percent(),
                 detail,
             }));
         }

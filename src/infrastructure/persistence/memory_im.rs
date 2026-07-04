@@ -52,6 +52,24 @@ impl MemoryMessageStore {
         data.retain(|key, stored| key == keep_key || stored.client_msg_id != client_msg_id);
     }
 
+    fn remove_conflicting_local_client_msg_rows(
+        data: &mut HashMap<String, IMMessage>,
+        client_msg_id: &str,
+        keep_key: &str,
+    ) {
+        let client_msg_id = client_msg_id.trim();
+        if client_msg_id.is_empty() {
+            return;
+        }
+        data.retain(|key, stored| {
+            key == keep_key
+                || stored.client_msg_id != client_msg_id
+                || !stored.local_state.is_local
+                || stored.local_state.failed
+                || !(stored.local_state.sending || stored.local_state.uploading)
+        });
+    }
+
     fn get_mut_by_any_message_id<'a>(
         data: &'a mut HashMap<String, IMMessage>,
         message_id: &str,
@@ -123,6 +141,19 @@ impl MessageReader for MemoryMessageStore {
         Ok(msgs)
     }
 
+    async fn oldest_conversation_seq(&self, conversation_id: &str) -> Result<Option<u64>> {
+        Ok(self
+            .data
+            .read()
+            .await
+            .values()
+            .filter(|message| {
+                message.conversation_id == conversation_id && message.conversation_seq > 0
+            })
+            .map(|message| message.conversation_seq)
+            .min())
+    }
+
     async fn search(&self, _keyword: &str, limit: u32) -> Result<Vec<IMMessage>> {
         Ok(self
             .data
@@ -171,22 +202,24 @@ impl MessageWriter for MemoryMessageStore {
         let mut data = self.data.write().await;
         for msg in messages {
             let key = Self::storage_key(msg);
-            let existing_attributes = data
-                .get(&key)
-                .or_else(|| {
-                    data.values().find(|stored| {
-                        (!msg.server_id.trim().is_empty() && stored.server_id == msg.server_id)
-                            || (!msg.client_msg_id.trim().is_empty()
-                                && stored.client_msg_id == msg.client_msg_id)
+            let existing_attributes = if !msg.server_id.trim().is_empty() {
+                data.values()
+                    .find(|stored| stored.server_id == msg.server_id)
+                    .map(|stored| stored.attributes.clone())
+            } else {
+                data.values()
+                    .find(|stored| {
+                        !msg.client_msg_id.trim().is_empty()
+                            && stored.client_msg_id == msg.client_msg_id
                     })
-                })
-                .map(|stored| stored.attributes.clone());
+                    .map(|stored| stored.attributes.clone())
+            };
             let mut next = msg.clone();
             if let Some(existing_attributes) = existing_attributes {
                 next.attributes =
                     merge_message_event_attributes(next.attributes, existing_attributes);
             }
-            Self::remove_conflicting_client_msg_rows(&mut data, &msg.client_msg_id, &key);
+            Self::remove_conflicting_local_client_msg_rows(&mut data, &msg.client_msg_id, &key);
             data.insert(key, next);
         }
         Ok(())
@@ -807,6 +840,33 @@ mod tests {
             .unwrap();
         assert_eq!(timeline.len(), 1);
         assert_eq!(timeline[0].server_id, "server-memory-1");
+    }
+
+    #[tokio::test]
+    async fn save_batch_keeps_distinct_server_messages_with_same_client_msg_id() {
+        let store = MemoryMessageStore::new();
+        let mut first = local_message("server-memory-remote-1", "client-memory-shared");
+        first.conversation_seq = 10;
+        first.local_state.sending = false;
+        first.local_state.is_local = false;
+        let mut second = local_message("server-memory-remote-2", "client-memory-shared");
+        second.conversation_seq = 11;
+        second.local_state.sending = false;
+        second.local_state.is_local = false;
+
+        store.save_batch(&[first, second]).await.unwrap();
+
+        let timeline = store
+            .get_by_conversation("conv-memory-dupe", 0, 10)
+            .await
+            .unwrap();
+        let server_ids = timeline
+            .iter()
+            .map(|message| message.server_id.as_str())
+            .collect::<std::collections::HashSet<_>>();
+        assert_eq!(timeline.len(), 2);
+        assert!(server_ids.contains("server-memory-remote-1"));
+        assert!(server_ids.contains("server-memory-remote-2"));
     }
 
     #[tokio::test]

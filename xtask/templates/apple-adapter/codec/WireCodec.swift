@@ -77,7 +77,7 @@ private let SDK_EVENT_KIND_WIRE_ORDER: [SdkEventKind] = [.lifecycle, .connection
 private let LIFECYCLE_EVENT_NAME_WIRE_ORDER: [LifecycleEventName] = [.initializing, .initialized, .initFailed, .loginSucceeded, .loginFailed, .loggedOut, .disposed]
 private let SDK_CONNECTION_STATE_WIRE_ORDER: [SdkConnectionState] = [.disconnected, .connecting, .connected, .ready, .reconnecting]
 private let CONNECTION_EVENT_NAME_WIRE_ORDER: [ConnectionEventName] = [.connecting, .connected, .ready, .disconnected, .reconnecting, .reconnectFailed, .stateChanged, .syncStateChanged, .serverError, .kickedOff, .tokenExpired]
-private let MESSAGE_EVENT_NAME_WIRE_ORDER: [MessageEventName] = [.received, .receivedBatch, .sendAck, .sendFailed, .capability, .recalled, .typing, .edited, .reactionChanged, .deleted, .readReceipt, .burnScheduled, .burned, .hardDeleted, .pinned, .unpinned, .marked, .unmarked, .retentionScheduled, .retentionExpired, .retentionPurged, .presenceChanged, .callSignal, .custom]
+private let MESSAGE_EVENT_NAME_WIRE_ORDER: [MessageEventName] = [.received, .receivedBatch, .sendAck, .sendFailed, .capability, .recalled, .typing, .typingAggregate, .edited, .reactionChanged, .deleted, .readReceipt, .burnScheduled, .burned, .hardDeleted, .pinned, .unpinned, .marked, .unmarked, .retentionScheduled, .retentionExpired, .retentionPurged, .presenceChanged, .callSignal, .custom]
 private let CONVERSATION_EVENT_NAME_WIRE_ORDER: [ConversationEventName] = [.synced, .created, .updated, .unreadCountChanged, .deleted]
 private let SYNC_EVENT_NAME_WIRE_ORDER: [SyncEventName] = [.stateChanged, .started, .finished, .failed, .progress, .taskCompleted, .resyncNeeded]
 private let PROGRESS_EVENT_NAME_WIRE_ORDER: [ProgressEventName] = [.syncProgress, .uploadProgress, .downloadProgress]
@@ -932,6 +932,7 @@ func messageToWireMap(_ message: Message) -> [String: AnySendable] {
     if let content = message.content { out["content"] = AnySendable(messageContentToWireMap(content).mapValues { $0.value }) }
     if let replyTo = message.replyTo { out["replyTo"] = AnySendable(replyTo) }
     if let quotePreview = message.quotePreview { out["quotePreview"] = AnySendable(quotePreview) }
+    if let threadId = message.threadId { out["threadId"] = AnySendable(threadId) }
     if let localState = message.localState { out["localState"] = AnySendable(messageLocalStateToMap(localState).mapValues { $0.value }) }
     return out
 }
@@ -1539,6 +1540,7 @@ public func messageFromJson(_ value: Any) throws -> Message {
         source: Int32(try requiredUInt64Field(json, "source", "Message")),
         status: Int32(try requiredUInt64Field(json, "status", "Message")),
         textPreview: try requiredStringField(json, "textPreview", "Message"),
+        threadId: json["threadId"] as? String,
         updatedAt: try requiredUInt64Field(json, "updatedAt", "Message"),
         version: try requiredUInt64Field(json, "version", "Message"),
         timelineKey: try requiredStringField(json, "timelineKey", "Message"),

@@ -88,9 +88,7 @@ impl SyncApplyUseCase {
             .conversations
             .get(conversation_id)
             .await?
-            .map(|conversation| {
-                local_cleared_through_seq(&conversation.ext).max(conversation.visible_after_seq)
-            })
+            .map(|conversation| crate::domain::sync_visibility_floor(&conversation))
             .unwrap_or_default();
         Ok(local_message_sync_start_seq(
             cursor_seq,
@@ -107,41 +105,26 @@ impl SyncApplyUseCase {
         response: &SingleConversationSyncRes,
     ) -> Result<AppliedSingleConversationPage> {
         let decoded = decode_single_conversation_items(response, known_seq);
-        let applied_item_seqs = decoded.applied_item_seqs.clone();
 
-        let _ = self
+        // I1 顺序契约：游标只计入「落库有保证」的 seq——消息/skip/tombstone（save_batch 失败整页出错）
+        // + 应用**成功**的事件。失败事件留在游标之外形成缺口，由既有 has_seq_gap 补拉重放；
+        // 若在此处计入解码 seq，游标会越过失败事件造成永久丢失。
+        let event_outcomes = self
             .event_applier
             .apply_events(user_id, &decoded.events, ReplayMode::SingleConversation)
             .await;
-
-        let cleared_floor = self
-            .stores
-            .conversations
-            .get(conversation_id)
-            .await?
-            .map(|c| local_cleared_through_seq(&c.ext).max(c.visible_after_seq))
-            .unwrap_or(0);
-
-        let fresh_messages = filter_messages_after_clear(
-            self.incoming_message_converger
-                .converge_messages(user_id, decoded.messages)
-                .await?,
-            cleared_floor,
+        let mut applied_item_seqs = decoded.covered_item_seqs.clone();
+        applied_item_seqs.extend(
+            decoded
+                .event_item_seqs
+                .iter()
+                .zip(&event_outcomes)
+                .filter(|(seq, applied)| **seq > 0 && **applied)
+                .map(|(seq, _)| *seq),
         );
 
-        if !fresh_messages.is_empty() {
-            let (durable_messages, ephemeral_messages): (Vec<IMMessage>, Vec<IMMessage>) =
-                partition_notification_durability(fresh_messages);
-            if !durable_messages.is_empty() {
-                self.stores.messages.save_batch(&durable_messages).await?;
-                self.conversation_projection_applier
-                    .apply_synced_messages(&durable_messages, user_id)
-                    .await?;
-            }
-            let mut inbound = durable_messages;
-            inbound.extend(ephemeral_messages);
-            self.notification_pipeline.finish_batch(inbound).await;
-        }
+        self.persist_converged_messages(user_id, conversation_id, decoded.messages)
+            .await?;
 
         let safe_max_seq = max_contiguous_seq(known_seq, &applied_item_seqs);
         let has_seq_gap = response.max_conversation_seq > safe_max_seq;
@@ -166,14 +149,91 @@ impl SyncApplyUseCase {
         })
     }
 
+    /// I2 gap-too-large 快照切换：应用一行会话快照（最新页消息 + 服务端权威已读/未读），
+    /// 返回快照水位 `last_conversation_seq` 供调用方在**落库成功后**推进游标（守 I1 顺序契约）。
+    /// 更旧历史不在此拉取——由既有 backfill 按需补。
+    pub async fn apply_snapshot_row(
+        &self,
+        user_id: &str,
+        row: flare_proto::common::SnapshotConversationRow,
+    ) -> Result<u64> {
+        // 按值消费：快照行的消息 move 进收敛管线（冷启 bundle 每页 50×30 条，免整页深拷贝）。
+        let messages: Vec<IMMessage> = row.messages.into_iter().map(IMMessage::new).collect();
+        self.persist_converged_messages(user_id, &row.conversation_id, messages)
+            .await?;
+        // 快照行携带服务端权威已读/未读，直接覆盖本地摘要（LWW：快照即最新状态）。
+        if let Err(error) = self
+            .stores
+            .conversations
+            .update_unread(
+                &row.conversation_id,
+                row.unread_count.max(0) as u32,
+                row.last_read_seq,
+            )
+            .await
+        {
+            tracing::warn!(
+                conversation_id = %row.conversation_id,
+                error = %error,
+                "快照切换：覆盖本地未读/已读失败（消息已落库，游标仍可推进）"
+            );
+        }
+        Ok(row.last_conversation_seq)
+    }
+
+    /// 消息收敛落库管线（页应用/快照行应用共用）：清空水位过滤 → 身份规范化+pending 合并 →
+    /// durable 落库 + 会话投影 → 视图/通知投递。`save_batch` 失败向上传播（游标因此不动，守 I1）。
+    async fn persist_converged_messages(
+        &self,
+        user_id: &str,
+        conversation_id: &str,
+        messages: Vec<IMMessage>,
+    ) -> Result<()> {
+        let cleared_floor = self
+            .stores
+            .conversations
+            .get(conversation_id)
+            .await?
+            .map(|c| crate::domain::sync_visibility_floor(&c))
+            .unwrap_or(0);
+        let fresh_messages = filter_messages_after_clear(
+            self.incoming_message_converger
+                .converge_messages(user_id, messages)
+                .await?,
+            cleared_floor,
+        );
+        if fresh_messages.is_empty() {
+            return Ok(());
+        }
+        let (durable_messages, ephemeral_messages): (Vec<IMMessage>, Vec<IMMessage>) =
+            partition_notification_durability(fresh_messages);
+        if !durable_messages.is_empty() {
+            self.stores.messages.save_batch(&durable_messages).await?;
+            self.conversation_projection_applier
+                .apply_synced_messages(&durable_messages, user_id)
+                .await?;
+        }
+        let mut inbound = durable_messages;
+        inbound.extend(ephemeral_messages);
+        self.notification_pipeline.finish_batch(inbound).await;
+        Ok(())
+    }
+
     pub async fn apply_critical_events(
         &self,
         user_id: &str,
         events: &[flare_proto::common::Event],
     ) -> Vec<u64> {
-        self.event_applier
+        let outcomes = self
+            .event_applier
             .apply_events(user_id, events, ReplayMode::CriticalEvents)
-            .await
+            .await;
+        events
+            .iter()
+            .zip(outcomes)
+            .filter(|(_, applied)| *applied)
+            .map(|(event, _)| event.conversation_seq)
+            .collect()
     }
 
     pub async fn apply_conversations(
@@ -337,6 +397,9 @@ impl SyncApplyUseCase {
         Ok(())
     }
 
+    /// 增量页应用后的游标保存：**钳制到本地连续物化位点**（I1——游标不越过未落库消息）。
+    /// 仅适用于"逐页增量"的真实会话消息游标；水位/检查点/快照建立型游标用
+    /// [`Self::save_watermark_with_remote`]（钳制会把它们清零导致静默不保存）。
     pub async fn save_cursor_with_remote<F, Fut>(
         &self,
         user_id: &str,
@@ -348,26 +411,168 @@ impl SyncApplyUseCase {
         F: FnOnce(String, String, u64) -> Fut,
         Fut: std::future::Future<Output = Result<()>>,
     {
+        // 连续性证明的下界（floor）：只需证明 (floor, last_seq] 窗口——
+        // ① 旧游标保存时其下连续性已被证明（归纳）；② 清空水位/可见边界之下的消息本地**有意缺失**，
+        //   从 0 证明会让清空过历史的会话游标永久卡死。
+        // 同时把每页保存的扫描成本从 O(全历史) 降到 O(本页窗口)。
+        let prior_cursor_seq = self
+            .stores
+            .cursors
+            .get_conversation_cursor(user_id, conversation_id)
+            .await?
+            .map(|cursor| cursor.last_seq)
+            .unwrap_or(0);
+        let cleared_floor = self
+            .stores
+            .conversations
+            .get(conversation_id)
+            .await?
+            .map(|c| crate::domain::sync_visibility_floor(&c))
+            .unwrap_or(0);
+        let floor_seq = prior_cursor_seq.max(cleared_floor);
+        if last_seq <= floor_seq {
+            // 不倒退：目标位点已被旧游标/清空水位覆盖。
+            return Ok(());
+        }
+
+        let safe_last_seq = self
+            .local_materialized_contiguous_seq(conversation_id, last_seq, floor_seq)
+            .await?;
+        if safe_last_seq < last_seq {
+            tracing::warn!(
+                user_id = %user_id,
+                conversation_id = %conversation_id,
+                requested_last_seq = last_seq,
+                materialized_last_seq = safe_last_seq,
+                floor_seq,
+                "clamping conversation cursor to local materialized contiguous seq"
+            );
+        }
+        if safe_last_seq <= floor_seq {
+            return Ok(());
+        }
+        self.persist_cursor_and_push_remote(user_id, conversation_id, safe_last_seq, update_remote)
+            .await
+    }
+
+    /// 水位/检查点型游标保存（**不做连续性钳制**）：
+    /// - 伪 key（`__conversations__` 列表水位、`critical_event:*` 检查点）没有本地消息行，
+    ///   连续性钳制恒为 0 → 会静默跳过保存；
+    /// - 快照建立型游标（gap-too-large 切换、冷启 bundle）语义即"覆盖到水位、旧史 lazy backfill"，
+    ///   本地只有最新一页，contiguous-from-0 必为 0。
+    /// 语义正确性由调用方保证（快照/水位本身就是服务端权威）。
+    pub async fn save_watermark_with_remote<F, Fut>(
+        &self,
+        user_id: &str,
+        cursor_key: &str,
+        last_seq: u64,
+        update_remote: F,
+    ) -> Result<()>
+    where
+        F: FnOnce(String, String, u64) -> Fut,
+        Fut: std::future::Future<Output = Result<()>>,
+    {
+        if last_seq == 0 {
+            return Ok(());
+        }
+        self.persist_cursor_and_push_remote(user_id, cursor_key, last_seq, update_remote)
+            .await
+    }
+
+    /// 批量水位保存（本地半段）：跳过 seq==0，一次批量写（SQLite=单事务）。
+    /// 远端推送由调用方按需处理（消息游标走去抖队列，关键位点无远端）。
+    pub async fn save_watermarks(&self, user_id: &str, entries: &[(String, u64)]) -> Result<()> {
+        let now = now_ms();
+        let cursors: Vec<SyncCursorVo> = entries
+            .iter()
+            .filter(|(_, seq)| *seq > 0)
+            .map(|(cursor_key, last_seq)| SyncCursorVo {
+                user_id: user_id.to_string(),
+                conversation_id: cursor_key.clone(),
+                last_seq: *last_seq,
+                synced_at: now,
+            })
+            .collect();
+        if cursors.is_empty() {
+            return Ok(());
+        }
+        self.stores
+            .cursors
+            .save_conversation_cursors(&cursors)
+            .await
+    }
+
+    async fn persist_cursor_and_push_remote<F, Fut>(
+        &self,
+        user_id: &str,
+        cursor_key: &str,
+        last_seq: u64,
+        update_remote: F,
+    ) -> Result<()>
+    where
+        F: FnOnce(String, String, u64) -> Fut,
+        Fut: std::future::Future<Output = Result<()>>,
+    {
         self.stores
             .cursors
             .save_conversation_cursor(&SyncCursorVo {
                 user_id: user_id.to_string(),
-                conversation_id: conversation_id.to_string(),
+                conversation_id: cursor_key.to_string(),
                 last_seq,
                 synced_at: now_ms(),
             })
             .await?;
         if let Err(error) =
-            update_remote(user_id.to_string(), conversation_id.to_string(), last_seq).await
+            update_remote(user_id.to_string(), cursor_key.to_string(), last_seq).await
         {
             tracing::warn!(
                 user_id = %user_id,
-                conversation_id = %conversation_id,
+                cursor_key = %cursor_key,
                 error = %error,
                 "update remote cursor failed"
             );
         }
         Ok(())
+    }
+
+    /// 本地物化连续位点：从 `target_seq` 向下扫描到 `floor_seq`（floor 之下的连续性由
+    /// 上一次保存/清空语义保证，无需重证）。返回从 floor 起算的最大连续位点。
+    async fn local_materialized_contiguous_seq(
+        &self,
+        conversation_id: &str,
+        target_seq: u64,
+        floor_seq: u64,
+    ) -> Result<u64> {
+        if target_seq == 0 {
+            return Ok(0);
+        }
+
+        const PAGE_LIMIT: u32 = 512;
+        let mut before_seq = target_seq.saturating_add(1);
+        let mut seqs = Vec::new();
+        loop {
+            let page = self
+                .stores
+                .messages
+                .get_by_conversation(conversation_id, before_seq, PAGE_LIMIT)
+                .await?;
+            if page.is_empty() {
+                break;
+            }
+            let min_seq = page
+                .iter()
+                .map(|message| message.conversation_seq)
+                .filter(|seq| *seq > 0)
+                .min()
+                .unwrap_or(0);
+            seqs.extend(page.into_iter().map(|message| message.conversation_seq));
+            if min_seq <= floor_seq.saturating_add(1) || seqs.len() < PAGE_LIMIT as usize {
+                break;
+            }
+            before_seq = min_seq;
+        }
+
+        Ok(max_contiguous_seq(floor_seq, &seqs).min(target_seq))
     }
 }
 

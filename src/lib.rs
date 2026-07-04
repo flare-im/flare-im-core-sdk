@@ -34,6 +34,12 @@ pub(crate) mod runtime;
 pub(crate) mod shared;
 pub mod spi;
 
+/// Re-export serialization crates for platform binding runtimes that must share
+/// the exact same serde/serde_json crate instances as SDK model types.
+pub use schemars;
+pub use serde;
+pub use serde_json;
+
 /// Event subscription and SDK event payload facade.
 pub mod event {
     pub use crate::kernel::event::*;

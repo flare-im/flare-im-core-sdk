@@ -29,6 +29,10 @@ fn sdk_device_info(config: &SdkConfig) -> DeviceInfo {
     DeviceInfo::new(device_id, platform)
         .with_model(model)
         .with_app_version("1.0.0".to_string())
+        .with_metadata(
+            "desired_conflict_strategy".to_string(),
+            "platform_exclusive".to_string(),
+        )
 }
 
 /// Socket 传输层 — 基于 flare-core 的多协议长连接封装
@@ -131,16 +135,20 @@ impl SocketTransport {
             );
         }
 
-        let flare_client = builder
-            .build_with_race()
-            .await
-            .map_err(|e| FlareError::connection_failed(e.to_string()))?;
-
+        // Close the previous socket before opening the next one. Hot relogin and
+        // reconnect paths must not briefly overlap two same-user connections,
+        // because the gateway can legitimately delay the new CONNACK while it
+        // waits for the old connection to expire.
         if let Some(old_client) = self.client.lock().await.take()
             && let Err(error) = old_client.disconnect().await
         {
             warn!(error = %error, "closing stale socket client before reconnect failed");
         }
+
+        let flare_client = builder
+            .build_with_race()
+            .await
+            .map_err(|e| FlareError::connection_failed(e.to_string()))?;
 
         *self.client.lock().await = Some(flare_client);
 
@@ -207,5 +215,20 @@ impl SocketTransport {
             #[cfg(target_arch = "wasm32")]
             Some(client) => client.is_connected_async().await,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sdk_device_info_requests_platform_exclusive_sessions() {
+        let info = sdk_device_info(&SdkConfig::default());
+
+        assert_eq!(
+            info.metadata.get("desired_conflict_strategy"),
+            Some(&"platform_exclusive".to_string())
+        );
     }
 }

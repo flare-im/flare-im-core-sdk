@@ -1,4 +1,4 @@
-use serde_json::Value;
+use flare_im_core_sdk::serde_json::Value;
 
 #[derive(Debug, Clone)]
 pub struct BindingRequest {

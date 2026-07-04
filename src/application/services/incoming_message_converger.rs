@@ -1,3 +1,4 @@
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock};
 
 use crate::domain::{
@@ -46,32 +47,24 @@ impl IncomingMessageConverger {
         current_user_id: &str,
         messages: Vec<IMMessage>,
     ) -> Result<Vec<IMMessage>> {
+        let (mut messages, rewrites) = canonicalize_incoming_messages(messages, current_user_id);
+        for rewrite in rewrites {
+            self.apply_identity_rewrite(rewrite).await?;
+        }
+        for message in &mut messages {
+            MessageDeliveryService::normalize_incoming_server_state(message);
+        }
+        let local_by_client = self.local_by_client_msg_id(&messages).await?;
+        let local_by_server = self.local_by_server_id(&messages).await?;
         let mut out = Vec::with_capacity(messages.len());
         for message in messages {
-            let mut message = message;
-            if let Some(rewrite) = ConversationIdentityService::canonicalize_single_chat_message(
-                &mut message,
-                current_user_id,
-            ) {
-                self.apply_identity_rewrite(rewrite).await?;
-            }
-            let local_by_client = if message.client_msg_id.trim().is_empty() {
-                None
-            } else {
-                self.message_store
-                    .get_by_client_msg_id(&message.client_msg_id)
-                    .await?
-            };
-            let local_by_server = if message.server_id.trim().is_empty() {
-                None
-            } else {
-                self.message_store.get(&message.server_id).await?
-            };
+            let local_by_client = trimmed_lookup(&local_by_client, &message.client_msg_id);
+            let local_by_server = trimmed_lookup(&local_by_server, &message.server_id);
             match MessageDeliveryService::decide_incoming_message_convergence(
                 current_user_id,
                 &message,
-                local_by_client.as_ref(),
-                local_by_server.as_ref(),
+                local_by_client,
+                local_by_server,
             ) {
                 IncomingMessageConvergenceDecision::EmitReceived => out.push(message),
                 IncomingMessageConvergenceDecision::MergePendingAndAck => {
@@ -85,7 +78,7 @@ impl IncomingMessageConverger {
                         queue.on_ack(ack).await?;
                     } else {
                         let merged = MessageDeliveryService::merge_incoming_as_sent(
-                            local_by_client.as_ref(),
+                            local_by_client,
                             &message,
                         );
                         self.message_store
@@ -96,10 +89,57 @@ impl IncomingMessageConverger {
                         }));
                     }
                 }
-                IncomingMessageConvergenceDecision::DropDuplicate => {}
+                IncomingMessageConvergenceDecision::DropDuplicate => {
+                    if let Some(local) = local_by_server
+                        && message.status > local.status
+                        && !message.server_id.trim().is_empty()
+                    {
+                        self.message_store
+                            .update_status(&message.server_id, message.status)
+                            .await?;
+                    }
+                }
             }
         }
         Ok(out)
+    }
+
+    async fn local_by_client_msg_id(
+        &self,
+        messages: &[IMMessage],
+    ) -> Result<HashMap<String, IMMessage>> {
+        let ids = unique_non_empty_ids(
+            messages
+                .iter()
+                .map(|message| message.client_msg_id.as_str()),
+        );
+        if ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+        Ok(self
+            .message_store
+            .get_by_client_msg_ids(&ids)
+            .await?
+            .into_iter()
+            .filter_map(|message| keyed_message(message.client_msg_id.clone(), message))
+            .collect())
+    }
+
+    async fn local_by_server_id(
+        &self,
+        messages: &[IMMessage],
+    ) -> Result<HashMap<String, IMMessage>> {
+        let ids = unique_non_empty_ids(messages.iter().map(|message| message.server_id.as_str()));
+        if ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+        Ok(self
+            .message_store
+            .get_by_message_ids(&ids)
+            .await?
+            .into_iter()
+            .filter_map(|message| keyed_message(message.server_id.clone(), message))
+            .collect())
     }
 
     async fn apply_identity_rewrite(&self, rewrite: ConversationIdRewrite) -> Result<()> {
@@ -125,6 +165,57 @@ impl IncomingMessageConverger {
     }
 }
 
+fn canonicalize_incoming_messages(
+    messages: Vec<IMMessage>,
+    current_user_id: &str,
+) -> (Vec<IMMessage>, Vec<ConversationIdRewrite>) {
+    let mut seen = HashSet::new();
+    let mut rewrites = Vec::new();
+    let mut out = Vec::with_capacity(messages.len());
+    for mut message in messages {
+        let Some(rewrite) = ConversationIdentityService::canonicalize_single_chat_message(
+            &mut message,
+            current_user_id,
+        ) else {
+            out.push(message);
+            continue;
+        };
+        let key = (rewrite.from.clone(), rewrite.to.clone());
+        if seen.insert(key) {
+            rewrites.push(rewrite);
+        }
+        out.push(message);
+    }
+    (out, rewrites)
+}
+
+fn unique_non_empty_ids<'a>(ids: impl Iterator<Item = &'a str>) -> Vec<String> {
+    let mut seen = HashSet::new();
+    ids.filter_map(|id| {
+        let id = id.trim();
+        if id.is_empty() || !seen.insert(id.to_string()) {
+            None
+        } else {
+            Some(id.to_string())
+        }
+    })
+    .collect()
+}
+
+fn keyed_message(key: String, message: IMMessage) -> Option<(String, IMMessage)> {
+    let key = key.trim();
+    if key.is_empty() {
+        None
+    } else {
+        Some((key.to_string(), message))
+    }
+}
+
+fn trimmed_lookup<'a>(map: &'a HashMap<String, IMMessage>, key: &str) -> Option<&'a IMMessage> {
+    let key = key.trim();
+    if key.is_empty() { None } else { map.get(key) }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -139,6 +230,7 @@ mod tests {
     };
     use crate::kernel::event::EventBus;
     use crate::model::conversation::ConversationType;
+    use crate::model::message::MessageStatus;
     use crate::model::{Conversation, IMMessage};
 
     fn single_message(server_id: &str, conversation_id: &str, peer: &str, seq: u64) -> IMMessage {
@@ -203,5 +295,36 @@ mod tests {
         );
         assert!(conversations.get(peer).await.unwrap().is_none());
         assert!(conversations.get(&canonical).await.unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn duplicate_server_message_refreshes_lower_local_status() {
+        let current_user = "me";
+        let peer = "peer";
+        let conversation_id = generate_single_chat_conversation_id(current_user, peer);
+        let messages = Arc::new(MemoryMessageStore::new());
+        let conversations = Arc::new(MemoryConversationStore::new());
+
+        let mut local = single_message("server-1", &conversation_id, peer, 7);
+        local.status = MessageStatus::Created as i32;
+        messages.save_one(&local).await.unwrap();
+
+        let mut incoming = single_message("server-1", &conversation_id, peer, 7);
+        incoming.status = MessageStatus::Created as i32;
+        let converger =
+            IncomingMessageConverger::new(messages.clone(), conversations, EventBus::new(), None);
+
+        let fresh = converger
+            .converge_messages(current_user, vec![incoming])
+            .await
+            .unwrap();
+
+        assert!(fresh.is_empty());
+        let stored = messages
+            .get_by_message_ids(&["server-1".to_string()])
+            .await
+            .unwrap();
+        assert_eq!(stored.len(), 1);
+        assert_eq!(stored[0].status, MessageStatus::Sent as i32);
     }
 }

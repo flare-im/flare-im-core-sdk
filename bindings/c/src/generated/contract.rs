@@ -159,6 +159,7 @@ pub const EVENT_CODES: &[(&str, i32)] = &[
     ("message.reaction_changed", 2009),
     ("message.deleted", 2010),
     ("message.read_receipt", 2011),
+    ("message.typing_aggregate", 2021),
     ("message.retention_scheduled", 2012),
     ("message.retention_expired", 2013),
     ("message.retention_purged", 2014),
@@ -181,6 +182,7 @@ pub const EVENT_CODES: &[(&str, i32)] = &[
     ("sync.task_completed", 4005),
     ("sync.state_changed", 4006),
     ("sync.resync_needed", 4007),
+    ("sync.readiness", 4008),
     ("view.updated", 6001),
     ("extension.event", 5001),
 ];

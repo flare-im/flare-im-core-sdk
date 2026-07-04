@@ -16,7 +16,6 @@ use crate::client::api::{
     CapabilityApi, ConversationApi, MediaApi, MessageApi, MessageBuildApi, PresenceApi, ViewApi,
 };
 use crate::client::builder::{IMClientBuilder, IMClientExtensionComponents};
-use crate::client::config::SdkResourceProfile;
 use crate::client::connected_apis::ConnectedApis;
 use crate::client::lifecycle::{SdkConfigOverlay, resolve_sdk_data_root};
 use crate::extension::ExtensionRuntime;
@@ -33,16 +32,12 @@ use flare_core::common::HeartbeatAppState;
 use flare_proto::common::MessageStatus;
 use rand::Rng;
 use std::future::Future;
-use std::time::Duration;
 
 use crate::shared::util::spawn_background;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 
 const HEARTBEAT_APP_STATE_FOREGROUND: u8 = 0;
 const HEARTBEAT_APP_STATE_BACKGROUND: u8 = 1;
-const FOREGROUND_SYNC_INITIAL_DELAY_SECS: u64 = 1;
-const FOREGROUND_SYNC_DESKTOP_INTERVAL_SECS: u64 = 2;
-const FOREGROUND_SYNC_MOBILE_INTERVAL_SECS: u64 = 3;
 
 mod async_accessors;
 mod extension_lifecycle;
@@ -127,6 +122,7 @@ pub struct IMClient {
     session_generation_snapshot: Arc<AtomicU64>,
     heartbeat_app_state_snapshot: Arc<AtomicU8>,
     network_reconnect_in_flight: Arc<AtomicBool>,
+    startup_convergence_in_flight: Arc<AtomicBool>,
 }
 
 #[derive(Clone)]
@@ -137,6 +133,7 @@ pub(crate) struct WeakIMClient {
     session_generation_snapshot: Weak<AtomicU64>,
     heartbeat_app_state_snapshot: Weak<AtomicU8>,
     network_reconnect_in_flight: Weak<AtomicBool>,
+    startup_convergence_in_flight: Weak<AtomicBool>,
 }
 
 impl WeakIMClient {
@@ -148,6 +145,7 @@ impl WeakIMClient {
             session_generation_snapshot: self.session_generation_snapshot.upgrade()?,
             heartbeat_app_state_snapshot: self.heartbeat_app_state_snapshot.upgrade()?,
             network_reconnect_in_flight: self.network_reconnect_in_flight.upgrade()?,
+            startup_convergence_in_flight: self.startup_convergence_in_flight.upgrade()?,
         })
     }
 }
@@ -166,6 +164,7 @@ impl IMClient {
             session_generation_snapshot: Arc::new(AtomicU64::new(0)),
             heartbeat_app_state_snapshot: Arc::new(AtomicU8::new(HEARTBEAT_APP_STATE_FOREGROUND)),
             network_reconnect_in_flight: Arc::new(AtomicBool::new(false)),
+            startup_convergence_in_flight: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -188,6 +187,7 @@ impl IMClient {
             session_generation_snapshot: Arc::new(AtomicU64::new(generation)),
             heartbeat_app_state_snapshot: Arc::new(AtomicU8::new(HEARTBEAT_APP_STATE_FOREGROUND)),
             network_reconnect_in_flight: Arc::new(AtomicBool::new(false)),
+            startup_convergence_in_flight: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -199,6 +199,7 @@ impl IMClient {
             session_generation_snapshot: Arc::downgrade(&self.session_generation_snapshot),
             heartbeat_app_state_snapshot: Arc::downgrade(&self.heartbeat_app_state_snapshot),
             network_reconnect_in_flight: Arc::downgrade(&self.network_reconnect_in_flight),
+            startup_convergence_in_flight: Arc::downgrade(&self.startup_convergence_in_flight),
         }
     }
 
@@ -268,6 +269,7 @@ impl IMClient {
         );
     }
 
+    #[cfg(test)]
     fn is_app_foreground_snapshot(&self) -> bool {
         self.heartbeat_app_state_snapshot.load(Ordering::Acquire) == HEARTBEAT_APP_STATE_FOREGROUND
     }
@@ -424,8 +426,12 @@ impl IMClient {
         g.environment = environment;
         let data_root =
             resolve_sdk_data_root(sdk_config.as_ref().and_then(|cfg| cfg.data_url.as_deref()))?;
+        // Synchronous dir creation: this runs inside a host command future (e.g. the Tauri
+        // tokio runtime), and core's `tokio::fs` (a possibly different tokio version) would
+        // look up its own runtime handle and panic with "no reactor running". A one-time
+        // mkdir needs no async anyway.
         #[cfg(not(target_arch = "wasm32"))]
-        tokio::fs::create_dir_all(&data_root).await.map_err(|e| {
+        std::fs::create_dir_all(&data_root).map_err(|e| {
             FlareError::localized(
                 ErrorCode::InvalidParameter,
                 format!("sdk data root create_dir_all failed: {}", e),
@@ -455,7 +461,7 @@ impl IMClient {
         let p = root.join(relative.as_ref());
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(parent) = p.parent() {
-            tokio::fs::create_dir_all(parent).await.map_err(|e| {
+            std::fs::create_dir_all(parent).map_err(|e| {
                 FlareError::localized(
                     ErrorCode::InvalidParameter,
                     format!("resolve_data_subpath create_dir_all failed: {}", e),
@@ -595,6 +601,42 @@ impl IMClient {
     pub async fn stores_async(&self) -> Result<StoreProvider> {
         self.with_engine_async(|e| e.stores().clone()).await
     }
+
+    /// 业务端**推送**用户资料(名称/头像)到本地身份缓存,并刷新受影响会话的展示。
+    ///
+    /// "读多写少"下身份的写入口:业务同步好友/用户(有变化时)调用本方法把变更写进缓存;
+    /// 读路径(消息/会话)直接对缓存批量 join 渲染**当前身份**,无需逐条组装。缓存 miss 时
+    /// 消息回退内嵌的发送时快照(见 `IMMessage::display_name()` 回退链),名字不会掉成裸 ID。
+    ///
+    /// IM core 不拥有用户身份;名字/头像的数据源由业务端提供(本方法 push,或 `ProfileProvider` pull)。
+    pub async fn upsert_user_profiles(
+        &self,
+        profiles: Vec<crate::domain::UserProfile>,
+    ) -> Result<()> {
+        let profiles: Vec<crate::domain::UserProfile> = profiles
+            .into_iter()
+            .filter(|p| !p.user_id.trim().is_empty())
+            .collect();
+        if profiles.is_empty() {
+            return Ok(());
+        }
+        let stores = self.stores_async().await?;
+        let mut affected: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        for profile in &profiles {
+            for conversation_id in stores.apply_user_profile(profile).await? {
+                affected.insert(conversation_id);
+            }
+        }
+        // 通知受影响会话刷新展示;打开中的时间线在下次读取时按缓存重渲染当前身份。
+        if let Ok(bus) = self.bus().await {
+            for conversation_id in affected {
+                bus.publish(SdkEvent::Conversation(
+                    crate::kernel::event::ConversationEvent::Updated { conversation_id },
+                ));
+            }
+        }
+        Ok(())
+    }
 }
 
 fn should_skip_reconnect_for_disconnect_reason(reason: &str) -> bool {
@@ -609,13 +651,6 @@ fn should_skip_reconnect_for_disconnect_reason(reason: &str) -> bool {
         || lower.contains("token expired")
         || lower.contains("401")
         || lower.contains("credential expired")
-}
-
-fn foreground_sync_interval_for_profile(profile: Option<SdkResourceProfile>) -> Duration {
-    match profile.unwrap_or(SdkResourceProfile::Mobile) {
-        SdkResourceProfile::Desktop => Duration::from_secs(FOREGROUND_SYNC_DESKTOP_INTERVAL_SECS),
-        SdkResourceProfile::Mobile => Duration::from_secs(FOREGROUND_SYNC_MOBILE_INTERVAL_SECS),
-    }
 }
 
 fn reconnect_delay_secs(base_interval_secs: u64, attempt: u32) -> u64 {

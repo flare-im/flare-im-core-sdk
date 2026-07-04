@@ -187,6 +187,14 @@
       "tauri": "im://message_read_receipt"
     },
     {
+      "id": "message.typing_aggregate",
+      "core": "SdkEvent::Message(MessageEvent::TypingAggregate)",
+      "cCode": 2021,
+      "cCodeName": "FLARE_EVENT_MESSAGE_TYPING_AGGREGATE",
+      "cJson": { "type": "message", "event": "typing_aggregate", "fields": ["conversationId", "typingUserIds", "typingCount"] },
+      "tauri": "im://message_typing_aggregate"
+    },
+    {
       "id": "message.retention_scheduled",
       "core": "SdkEvent::Message(MessageEvent::RetentionScheduled)",
       "cCode": 2012,
@@ -361,6 +369,14 @@
       "cCodeName": "FLARE_EVENT_SYNC_RESYNC_NEEDED",
       "cJson": { "type": "sync", "event": "resync_needed", "fields": ["scope", "reason", "droppedEvents"] },
       "tauri": "im://resync_needed"
+    },
+    {
+      "id": "sync.readiness",
+      "core": "SdkEvent::Sync(SyncNotify::Readiness)",
+      "cCode": 4008,
+      "cCodeName": "FLARE_EVENT_SYNC_READINESS",
+      "cJson": { "type": "sync", "event": "readiness", "fields": ["runId", "trigger", "scope", "visibility", "reason", "stage"] },
+      "tauri": "im://sync_readiness"
     },
     {
       "id": "view.updated",

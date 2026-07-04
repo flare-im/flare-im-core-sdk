@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Core-owned startup sync policy shared by all platform SDKs.",
+  "properties": {
+    "backfillVisibleHistories": {
+      "default": false,
+      "type": "boolean"
+    },
+    "conversationLimit": {
+      "default": 100,
+      "format": "uint32",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "historyBackfillLimit": {
+      "default": 500,
+      "format": "int32",
+      "type": "integer"
+    },
+    "historyBackfillMaxConversations": {
+      "default": 100,
+      "format": "uint32",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "historyBackfillMaxPagesPerConversation": {
+      "default": 128,
+      "format": "uint32",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "startBackgroundConvergence": {
+      "default": true,
+      "type": "boolean"
+    }
+  },
+  "title": "StartupHomeSyncRequest",
+  "type": "object",
+  "xFlareGeneratedBy": "flare-im-core-sdk-xtask",
+  "xFlareRustType": "StartupHomeSyncRequest"
+}

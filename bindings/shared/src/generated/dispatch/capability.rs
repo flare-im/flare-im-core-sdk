@@ -9,7 +9,7 @@ use crate::{BindingResponse, binding_operation_not_supported};
 use flare_im_core_sdk::Result;
 use flare_im_core_sdk::client::IMClient;
 use flare_im_core_sdk::client::api::CapabilityApi;
-use serde_json::Value;
+use flare_im_core_sdk::serde_json::{self, Value};
 use std::sync::Arc;
 
 pub const CAPABILITY_DISPATCH_OPERATIONS: &[&str] = &[

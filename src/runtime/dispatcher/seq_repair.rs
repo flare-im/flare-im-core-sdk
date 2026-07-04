@@ -40,18 +40,19 @@ impl Dispatcher {
     }
 
     /// 持久化一批 durable 消息（save_batch → 会话投影），成功后推进同步游标。
+    /// 返回是否 durable：事件批路径据此回滚去重键（事件下次重放）；push 路径先投递后持久化可忽略。
     /// A2：已与视图投递（finish_batch）解耦；win#2 将把对本方法的调用移到有界串行后台 worker，
     /// 使 socket 读循环不再被持久化 I/O 头阻塞。单 worker 串行可保持游标推进无竞态。
     pub(super) async fn persist_durable_batch(
         &self,
         durable_messages: &[IMMessage],
         current_user_id: &str,
-    ) {
+    ) -> bool {
         let Some(stores) = self.stores.as_ref() else {
-            return;
+            return true;
         };
         if durable_messages.is_empty() {
-            return;
+            return true;
         }
         let mut durable = true;
         if let Err(e) = stores.messages.save_batch(durable_messages).await {
@@ -69,6 +70,7 @@ impl Dispatcher {
             self.repair_message_seq_after_persist(durable_messages)
                 .await;
         }
+        durable
     }
 
     pub(super) async fn repair_message_seq_after_persist(&self, messages: &[IMMessage]) {
@@ -114,22 +116,14 @@ impl Dispatcher {
                 .local_tail_seqs_before_incoming(&conversation_id, min_incoming_seq)
                 .await;
             let local_before_seq = local_tail_seqs.last().copied().unwrap_or(0);
-            let base_seq = if local_before_seq > 0 {
-                local_before_seq
-            } else {
-                cursor_seq
-            };
+            let base_seq = cursor_seq;
             let mut continuity_window = local_tail_seqs;
             continuity_window.extend(seqs.iter().copied());
             continuity_window.sort_unstable();
             continuity_window.dedup();
-            let window_gap_after = first_internal_gap_after_from(base_seq, &continuity_window)
-                .or_else(|| first_gap_after(base_seq, &seqs));
-            let contiguous_seq = if window_gap_after.is_some() {
-                base_seq.min(window_gap_after.unwrap_or(base_seq))
-            } else {
-                max_contiguous_seq(base_seq, &seqs)
-            };
+            let contiguous_seq = max_contiguous_seq(base_seq, &continuity_window);
+            let window_gap_after =
+                seq_repair_gap_after(base_seq, local_before_seq, &continuity_window);
             if contiguous_seq > cursor_seq
                 && let Err(error) = stores
                     .cursors

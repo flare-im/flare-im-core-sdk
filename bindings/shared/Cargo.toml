@@ -13,9 +13,6 @@ path = "src/lib.rs"
 
 [dependencies]
 flare-im-core-sdk = { path = "../.." }
-flare-proto = { workspace = true }
-serde = { workspace = true }
-serde_json = { workspace = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 tokio = { workspace = true }

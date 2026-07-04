@@ -42,6 +42,7 @@ pub enum BindingEventId {
     MessageReactionChanged,
     MessageDeleted,
     MessageReadReceipt,
+    MessageTypingAggregate,
     MessageRetentionScheduled,
     MessageRetentionExpired,
     MessageRetentionPurged,
@@ -64,6 +65,7 @@ pub enum BindingEventId {
     SyncTaskCompleted,
     SyncStateChanged,
     SyncResyncNeeded,
+    SyncReadiness,
     ViewUpdated,
     ExtensionEvent,
 }
