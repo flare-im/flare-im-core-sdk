@@ -1,6 +1,6 @@
 [package]
 name = "flare-im-core-sdk-bindings-runtime"
-version = "0.1.0"
+version = "1.0.3"
 edition = "2024"
 rust-version = "1.94.0"
 authors = ["Flare Team"]
@@ -12,7 +12,7 @@ name = "flare_im_core_sdk_bindings_runtime"
 path = "src/lib.rs"
 
 [dependencies]
-flare-im-core-sdk = { version = "0.2.0", path = "../.." }
+flare-im-core-sdk = { version = "1.0.3", path = "../.." }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 tokio = { workspace = true }

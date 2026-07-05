@@ -1,6 +1,6 @@
 [package]
 name = "flare-im-core-sdk-ffi"
-version = "0.3.0"
+version = "1.0.3"
 edition = "2024"
 rust-version = "1.94.0"
 authors = ["Flare Team"]
@@ -12,8 +12,8 @@ name = "flare_im_core_sdk_ffi"
 crate-type = ["cdylib", "staticlib"]
 
 [dependencies]
-flare-im-core-sdk-bindings-runtime = { version = "0.1.0", path = "../shared" }
-flare-im-core-sdk = { version = "0.2.0", path = "../..", features = ["lifecycle-sqlite"] }
+flare-im-core-sdk-bindings-runtime = { version = "1.0.3", path = "../shared" }
+flare-im-core-sdk = { version = "1.0.3", path = "../..", features = ["lifecycle-sqlite"] }
 flare-proto = { version = "1.0.3", path = "../../../flare-proto" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync"] }
 serde = { version = "1.0", features = ["derive"] }

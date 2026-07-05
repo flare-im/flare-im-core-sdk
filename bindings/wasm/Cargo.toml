@@ -1,6 +1,6 @@
 [package]
 name = "flare-im-core-sdk-wasm"
-version = "0.2.0"
+version = "1.0.3"
 edition.workspace = true
 rust-version.workspace = true
 authors.workspace = true
@@ -24,9 +24,9 @@ production-runtime = []
 console_error_panic_hook = "0.1"
 async-trait = "0.1"
 flare-core = { workspace = true, default-features = false, features = ["wasm"] }
-flare-im-core-sdk-bindings-runtime = { version = "0.1.0", path = "../shared" }
-flare-im-core-sdk-storage-indexeddb = { version = "0.2.0", path = "../../storage/indexeddb" }
-flare-im-core-sdk = { version = "0.2.0", path = "../.." }
+flare-im-core-sdk-bindings-runtime = { version = "1.0.3", path = "../shared" }
+flare-im-core-sdk-storage-indexeddb = { version = "1.0.3", path = "../../storage/indexeddb" }
+flare-im-core-sdk = { version = "1.0.3", path = "../.." }
 flare-proto = { workspace = true }
 js-sys = "0.3"
 serde = { workspace = true }
