@@ -1,5 +1,9 @@
 use super::*;
 
+/// Inbound delivery lag above this is logged at warn so a slow-to-arrive message stands out in
+/// client logs; normal deliveries stay at debug.
+const SLOW_DELIVERY_LOG_THRESHOLD_MS: u64 = 1000;
+
 impl Dispatcher {
     pub(super) fn event_conversation_id(event: &flare_proto::common::Event) -> &str {
         let outer = event.conversation_id.trim();
@@ -293,6 +297,29 @@ impl Dispatcher {
         dedupe_keys: Vec<EventDedupeKey>,
         current_user_id: &str,
     ) {
+        // Delivery-lag visibility (recv side): server create time vs local receipt. On a
+        // co-located dev stack clock skew is ~0, so this approximates end-to-end delivery latency
+        // and surfaces the "message arrives late" case that server logs cannot show. Uses the
+        // newest created_at (smallest lag) so historical sync-backfill batches are not flagged.
+        if let Some(newest_created_at) = messages.iter().map(|m| m.created_at).max() {
+            if newest_created_at > 0 {
+                let lag_ms =
+                    crate::shared::util::time::now_millis().saturating_sub(newest_created_at);
+                if lag_ms > SLOW_DELIVERY_LOG_THRESHOLD_MS {
+                    warn!(
+                        lag_ms,
+                        count = messages.len(),
+                        "slow delivery: inbound message batch lag exceeded threshold"
+                    );
+                } else {
+                    tracing::debug!(
+                        lag_ms,
+                        count = messages.len(),
+                        "inbound message batch delivery lag"
+                    );
+                }
+            }
+        }
         if let Some(converger) = &self.incoming_message_converger {
             match converger.converge_messages(current_user_id, messages).await {
                 Ok(converged) => messages = converged,

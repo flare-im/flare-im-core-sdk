@@ -1159,6 +1159,18 @@ async fn update_conversation_last_message(st: &QueueState, message: &IMMessage) 
         .await
 }
 
+/// Send-to-ack latency above this is logged at warn so a slow send stands out in client logs
+/// without a metrics backend; normal sends stay at debug.
+const SLOW_SEND_LOG_THRESHOLD_MS: u64 = 1000;
+
+fn log_send_latency(client_msg_id: &str, latency_ms: u64, stage: &str) {
+    if latency_ms > SLOW_SEND_LOG_THRESHOLD_MS {
+        warn!(%client_msg_id, latency_ms, stage, "slow send: ack latency exceeded threshold");
+    } else {
+        debug!(%client_msg_id, latency_ms, stage, "send ack latency");
+    }
+}
+
 async fn apply_ack_and_publish(
     st: &mut QueueState,
     entry: &PendingSendVo,
@@ -1170,6 +1182,7 @@ async fn apply_ack_and_publish(
         let latency_ms = id::now_millis().saturating_sub(entry.enqueued_at_ms);
         st.metrics
             .histogram("reliable_queue.send_ack_latency_ms", latency_ms as f64);
+        log_send_latency(&ack.client_msg_id, latency_ms, "durable");
         note_send_success(st);
         let msg = MessageDeliveryService::mark_sent_from_ack(&entry.message, &ack);
         let cid = ack.client_msg_id.clone();
@@ -1190,6 +1203,7 @@ async fn apply_ack_and_publish(
             "reliable_queue.server_accepted_latency_ms",
             latency_ms as f64,
         );
+        log_send_latency(&ack.client_msg_id, latency_ms, "accepted");
         note_send_success(st);
         st.bus.publish(SdkEvent::Message(MessageEvent::SendAck {
             ack: Box::new(ack),
