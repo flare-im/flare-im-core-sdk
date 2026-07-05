@@ -1,6 +1,6 @@
 [package]
 name = "xtask"
-version = "0.1.0"
+version = "1.0.3"
 edition = "2024"
 rust-version = "1.94.0"
 authors = ["Flare Team"]
@@ -13,7 +13,7 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow = { workspace = true }
-flare-im-core-sdk = { path = ".." }
+flare-im-core-sdk = "1.0.3"
 flare-proto = { workspace = true }
 regex = "1.10"
 schemars = { workspace = true }

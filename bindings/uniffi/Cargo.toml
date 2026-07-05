@@ -1,6 +1,6 @@
 [package]
 name = "flare-im-core-sdk-uniffi"
-version = "0.2.0"
+version = "1.0.3"
 edition = "2024"
 rust-version = "1.94.0"
 authors = ["Flare Team"]
@@ -16,10 +16,10 @@ publish = false
 crate-type = ["cdylib", "staticlib"]
 
 [dependencies]
-flare-im-core-sdk-bindings-runtime = { path = "../shared" }
-flare-im-core-sdk = { path = "../.." }
-flare-im-core-sdk-storage-sqlite = { path = "../../storage/sqlite" }
-flare-proto = { path = "../../../flare-proto" }
+flare-im-core-sdk-bindings-runtime = "1.0.3"
+flare-im-core-sdk = "1.0.3"
+flare-im-core-sdk-storage-sqlite = "1.0.3"
+flare-proto = "1.0.3"
 uniffi = "0.28"
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 prost = "0.14"

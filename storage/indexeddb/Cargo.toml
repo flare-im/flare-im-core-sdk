@@ -1,6 +1,6 @@
 [package]
 name = "flare-im-core-sdk-storage-indexeddb"
-version = "0.2.0"
+version = "1.0.3"
 edition = "2024"
 rust-version = "1.94.0"
 authors = ["Flare Team"]
@@ -13,7 +13,7 @@ path = "src/lib.rs"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 async-trait = "0.1"
-flare-im-core-sdk = { version = "0.2.0", path = "../.." }
+flare-im-core-sdk = "1.0.3"
 js-sys = "0.3"
 serde = { workspace = true }
 serde_json = { workspace = true }
