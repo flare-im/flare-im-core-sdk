@@ -111,7 +111,10 @@ impl TypingPresence {
             }
             // Report whenever an expired entry is physically dropped, emitting the new live set.
             if removed_any {
-                changed.push((conversation_id.clone(), self.snapshot(&conversation_id, now_ms)));
+                changed.push((
+                    conversation_id.clone(),
+                    self.snapshot(&conversation_id, now_ms),
+                ));
             }
         }
         changed
@@ -129,11 +132,7 @@ impl TypingPresence {
             }
         }
         let after = self.snapshot(conversation_id, now_ms);
-        if before == after {
-            None
-        } else {
-            Some(after)
-        }
+        if before == after { None } else { Some(after) }
     }
 }
 
@@ -146,7 +145,10 @@ mod tests {
     #[test]
     fn user_typing_then_stop() {
         let mut p = TypingPresence::new();
-        assert_eq!(p.apply_user("c", "u1", true, 0, TTL), Some(vec!["u1".into()]));
+        assert_eq!(
+            p.apply_user("c", "u1", true, 0, TTL),
+            Some(vec!["u1".into()])
+        );
         // re-applying the same state does not report a change
         assert_eq!(p.apply_user("c", "u1", true, 1000, TTL), None);
         assert_eq!(p.apply_user("c", "u1", false, 2000, TTL), Some(vec![]));

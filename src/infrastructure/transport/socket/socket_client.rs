@@ -148,7 +148,12 @@ impl SocketTransport {
         let flare_client = builder
             .build_with_race()
             .await
-            .map_err(|e| FlareError::connection_failed(e.to_string()))?;
+            .map_err(|e| {
+                FlareError::connection_failed(format!(
+                    "connect failed primary={primary_url} ws={ws_url} policy={policy:?} default_transport={:?}: {e}",
+                    self.config.default_transport
+                ))
+            })?;
 
         *self.client.lock().await = Some(flare_client);
 

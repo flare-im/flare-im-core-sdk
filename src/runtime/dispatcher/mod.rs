@@ -11,6 +11,7 @@ use prost::Message;
 use tokio::sync::{Mutex as AsyncMutex, RwLock, mpsc};
 use tracing::warn;
 
+use self::typing_presence::TypingPresence;
 use crate::application::notification::{
     NotificationInboundPipeline, partition_notification_durability,
 };
@@ -22,14 +23,13 @@ use crate::domain::{DEFAULT_SYNC_LIMIT, SyncCursorVo, local_cleared_through_seq}
 use crate::infrastructure::persistence::StoreProvider;
 use crate::infrastructure::protocol::DownlinkPayload;
 use crate::kernel::event::{ConversationEvent, EventBus, ExtensionEvent, MessageEvent, SdkEvent};
-use flare_proto::common::TypingAggregatePacket;
-use crate::shared::util::time::{delay, now_millis};
-use self::typing_presence::TypingPresence;
 use crate::kernel::{ReliableSendQueuePort, SessionSyncRunner, SyncResponseHandler};
 use crate::model::IMMessage;
 use crate::runtime::ReliableSendQueue;
 use crate::shared::util::spawn_background;
+use crate::shared::util::time::{delay, now_millis};
 use crate::spi::metrics::{MetricLabel, MetricsRecorder};
+use flare_proto::common::TypingAggregatePacket;
 
 const SEQ_REPAIR_BASE_BACKOFF_MS: u64 = 1_000;
 const SEQ_REPAIR_MAX_BACKOFF_MS: u64 = 60_000;
@@ -160,7 +160,13 @@ impl Dispatcher {
     fn apply_typing_user(&self, conversation_id: &str, user_id: &str, typing: bool) {
         let now = now_millis();
         let changed = self.typing_presence.lock().ok().and_then(|mut p| {
-            p.apply_user(conversation_id, user_id, typing, now, Self::TYPING_PRESENCE_TTL_MS)
+            p.apply_user(
+                conversation_id,
+                user_id,
+                typing,
+                now,
+                Self::TYPING_PRESENCE_TTL_MS,
+            )
         });
         if let Some(users) = changed {
             self.emit_typing_presence(conversation_id, users, now);
@@ -443,7 +449,7 @@ fn now_ms() -> u64 {
 
 mod dispatch;
 mod seq_repair;
-mod typing_presence;
 #[cfg(test)]
 mod tests;
+mod typing_presence;
 mod waterline;

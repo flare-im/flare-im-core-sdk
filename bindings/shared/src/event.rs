@@ -138,9 +138,10 @@ pub fn sdk_event_payload(ev: &SdkEvent) -> Option<(&'static str, Value)> {
             "message.received_batch",
             json!({ "messages": messages.iter().map(message_json).collect::<Vec<_>>() }),
         ),
-        SdkEvent::Message(MessageEvent::SendAck { ack }) => {
-            ("message.send_ack", send_ack_json(ack.as_ref()))
-        }
+        SdkEvent::Message(MessageEvent::SendAck { ack }) => (
+            "message.send_ack",
+            json!({ "ack": send_ack_json(ack.as_ref()) }),
+        ),
         SdkEvent::Message(MessageEvent::SendFailed {
             client_msg_id,
             reason,
@@ -442,6 +443,24 @@ mod tests {
 
         assert_eq!(payload["ackId"], "client-1");
         assert_ne!(payload["ackId"], serde_json::Value::Null);
+    }
+
+    #[test]
+    fn send_ack_event_payload_wraps_ack_contract() {
+        let ack = SendAck {
+            client_msg_id: "client-1".to_string(),
+            conversation_id: "conversation-1".to_string(),
+            ack_id: None,
+            result: None,
+        };
+        let (event, payload) =
+            sdk_event_payload(&SdkEvent::Message(MessageEvent::SendAck { ack: Box::new(ack) }))
+                .expect("send ack should map to sdk event payload");
+
+        assert_eq!(event, "message.send_ack");
+        assert!(payload.get("ack").is_some_and(Value::is_object));
+        assert_eq!(payload["ack"]["ackId"], "client-1");
+        assert!(payload.get("ackId").is_none());
     }
 
     #[test]

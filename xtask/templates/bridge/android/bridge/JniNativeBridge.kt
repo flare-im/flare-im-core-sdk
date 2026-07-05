@@ -191,7 +191,7 @@ class JniNativeBridge(
                 continuation.resumeWithException(
                     FlareSdkException(
                         code = "native_submit_failed",
-                        message = "Native C ABI submit failed for ${descriptor.operation}.",
+                        message = "Native C ABI submit failed for ${descriptor.operation} (submitCode=$submitCode, cApi=${descriptor.cApi}).",
                         operation = descriptor.operation,
                         details = mapOf("submitCode" to submitCode.toString(), "cApi" to descriptor.cApi),
                     ),

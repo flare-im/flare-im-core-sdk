@@ -417,8 +417,8 @@
           "id": "message.send",
           "core": "MessageApi::send",
           "c": [
-            "flare_message_send",
-            "flare_message_dispatch_json:send"
+            "flare_message_dispatch_json:send",
+            "flare_message_send"
           ],
           "tauri": "sdk_message_dispatch_json"
         },

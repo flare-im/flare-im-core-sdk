@@ -26,6 +26,21 @@ use crate::types::{FlareHandle, FlareResultCallback, FlareString};
 pub const FLARE_FFI_CONTRACT_VERSION: &str =
     flare_im_core_sdk_bindings_runtime::BINDING_CONTRACT_VERSION;
 
+fn parse_store_config_json(store_config_json: *const c_char) -> Result<Option<SdkConfigOverlay>, i32> {
+    if store_config_json.is_null() {
+        return Ok(None);
+    }
+
+    let value = parse_json::<serde_json::Value>(store_config_json)?;
+    if matches!(value.as_object(), Some(object) if object.is_empty()) {
+        return Ok(None);
+    }
+
+    serde_json::from_value(value)
+        .map(Some)
+        .map_err(|_| crate::error_convert::FLARE_ERR_JSON_PARSE)
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn flare_sdk_create() -> FlareHandle {
     abi::catch_ffi_handle(|| {
@@ -157,16 +172,12 @@ pub extern "C" fn flare_sdk_login(
             }
         };
 
-        let login_config = if store_config_json.is_null() {
-            None
-        } else {
-            match parse_json::<SdkConfigOverlay>(store_config_json) {
-                Ok(config) => Some(config),
-                Err(code) => {
-                    let ctx = CallbackContext::new(context, callback);
-                    return_error(&ctx, code, "Invalid store_config JSON");
-                    return code;
-                }
+        let login_config = match parse_store_config_json(store_config_json) {
+            Ok(config) => config,
+            Err(code) => {
+                let ctx = CallbackContext::new(context, callback);
+                return_error(&ctx, code, "Invalid store_config JSON");
+                return code;
             }
         };
 
@@ -223,16 +234,12 @@ pub extern "C" fn flare_sdk_prepare(
             }
         };
 
-        let prepare_config = if store_config_json.is_null() {
-            None
-        } else {
-            match parse_json::<SdkConfigOverlay>(store_config_json) {
-                Ok(config) => Some(config),
-                Err(code) => {
-                    let ctx = CallbackContext::new(context, callback);
-                    return_error(&ctx, code, "Invalid store_config JSON");
-                    return code;
-                }
+        let prepare_config = match parse_store_config_json(store_config_json) {
+            Ok(config) => config,
+            Err(code) => {
+                let ctx = CallbackContext::new(context, callback);
+                return_error(&ctx, code, "Invalid store_config JSON");
+                return code;
             }
         };
 

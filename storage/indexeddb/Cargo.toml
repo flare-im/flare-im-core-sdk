@@ -13,7 +13,7 @@ path = "src/lib.rs"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 async-trait = "0.1"
-flare-im-core-sdk = { path = "../.." }
+flare-im-core-sdk = { version = "0.2.0", path = "../.." }
 js-sys = "0.3"
 serde = { workspace = true }
 serde_json = { workspace = true }
