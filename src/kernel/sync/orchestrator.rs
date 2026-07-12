@@ -5,6 +5,7 @@ use std::sync::Arc;
 use crate::infrastructure::persistence::StoreProvider;
 use crate::kernel::event::{EventBus, ReadinessStage, SdkEvent, SyncNotify, SyncPhase};
 use crate::shared::util::{BackgroundTask, now_millis, spawn_background_task};
+#[cfg(not(target_arch = "wasm32"))]
 use tokio::task::JoinSet;
 use tracing::{debug, warn};
 
@@ -159,7 +160,16 @@ async fn run_phase(
     progress_reporter: Arc<dyn SyncProgressReporter>,
     tasks: Vec<Arc<dyn SyncTask>>,
 ) -> PhaseOutcome {
-    let mut join_set = JoinSet::new();
+    // 执行器：native 用 tokio JoinSet（跨线程并行）；wasm 单线程用 FuturesUnordered
+    // （并发但不跨线程，且**无需 tokio 运行时上下文**——sync 在 detached spawn_local 中运行，
+    // 没有进入 runtime，`JoinSet::spawn` 会 panic "no reactor running"）。返回 Option<String>：
+    // Some(task_id) 表示必需任务失败需终止本轮。
+    #[cfg(not(target_arch = "wasm32"))]
+    let mut executor: JoinSet<Option<String>> = JoinSet::new();
+    #[cfg(target_arch = "wasm32")]
+    let mut executor: futures::stream::FuturesUnordered<
+        std::pin::Pin<Box<dyn std::future::Future<Output = Option<String>>>>,
+    > = futures::stream::FuturesUnordered::new();
     // 同 phase 各任务共享同一份会话列表快照（首个用到的任务触发一次查询）。
     let shared_conversations = SharedConversationsSnapshot::default();
     for task in tasks {
@@ -180,7 +190,7 @@ async fn run_phase(
         };
         let bus = bus.clone();
         let run = run.clone();
-        join_set.spawn(async move {
+        let fut = async move {
             let started_ms = now_millis();
             debug!(task = %task_id, mode = ?mode, weight = weight, "sync task started");
             match task.execute(ctx.clone()).await {
@@ -219,15 +229,20 @@ async fn run_phase(
                 }
             }
             None
-        });
+        };
+        #[cfg(not(target_arch = "wasm32"))]
+        executor.spawn(fut);
+        #[cfg(target_arch = "wasm32")]
+        executor.push(Box::pin(fut));
     }
     debug!(
-        task_count = join_set.len(),
+        task_count = executor.len(),
         "sync phase waiting for all tasks"
     );
     let mut failed_required = false;
     let mut failed_tasks = Vec::new();
-    while let Some(res) = join_set.join_next().await {
+    #[cfg(not(target_arch = "wasm32"))]
+    while let Some(res) = executor.join_next().await {
         match res {
             Ok(Some(task_id)) => {
                 failed_required = true;
@@ -238,6 +253,16 @@ async fn run_phase(
                 failed_required = true;
                 failed_tasks.push("join_error".to_string());
                 warn!(error = %e, "sync task join error");
+            }
+        }
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        use futures::StreamExt;
+        while let Some(res) = executor.next().await {
+            if let Some(task_id) = res {
+                failed_required = true;
+                failed_tasks.push(task_id);
             }
         }
     }
