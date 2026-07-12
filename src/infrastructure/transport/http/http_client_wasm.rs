@@ -91,7 +91,44 @@ pub async fn fetch_bytes_with_headers(
     context_headers: HashMap<String, String>,
     extra_headers: Option<&HashMap<String, String>>,
 ) -> Result<(Vec<u8>, HashMap<String, String>)> {
+    // 浏览器 `fetch` 全程持有 `JsFuture`/`web_sys` 句柄，其 future 本质 `!Send`。
+    // 若让它直接冒泡到 SyncTask::execute，会连带把 IMClient（`Arc<RwLock<Inner>>`，
+    // 内含 `Vec<Arc<dyn SyncTask>>`）去 Send/Sync 化，波及全栈。这里把 `!Send` 工作
+    // 搬进 `spawn_local`，对外只等待 oneshot 接收端（`Result<_, FlareError>` 是 Send），
+    // 从而返回一个 Send future —— transport 边界一处收口，上层维持 Send + Sync。
+    let method = method.to_string();
     let url = append_query(url, query);
+    let content_type = content_type.map(|s| s.to_string());
+    let extra_headers = extra_headers.cloned();
+
+    let (tx, rx) = futures::channel::oneshot::channel();
+    wasm_bindgen_futures::spawn_local(async move {
+        let result = fetch_bytes_with_headers_local(
+            &method,
+            url,
+            body,
+            content_type.as_deref(),
+            context_headers,
+            extra_headers.as_ref(),
+        )
+        .await;
+        // 接收端被丢弃（调用方取消）时忽略发送失败。
+        let _ = tx.send(result);
+    });
+    rx.await
+        .map_err(|_| FlareError::system("http fetch task dropped before completion"))?
+}
+
+/// `!Send` 内部实现：真正执行浏览器 `fetch`。仅经 [`fetch_bytes_with_headers`]
+/// 在 `spawn_local` 内调用，`url` 已在外层完成 query 拼接。
+async fn fetch_bytes_with_headers_local(
+    method: &str,
+    url: String,
+    body: Option<Vec<u8>>,
+    content_type: Option<&str>,
+    context_headers: HashMap<String, String>,
+    extra_headers: Option<&HashMap<String, String>>,
+) -> Result<(Vec<u8>, HashMap<String, String>)> {
     let window =
         web_sys::window().ok_or_else(|| FlareError::system("browser window unavailable"))?;
     let headers = Headers::new()
