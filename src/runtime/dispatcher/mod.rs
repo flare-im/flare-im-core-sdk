@@ -284,6 +284,40 @@ fn first_gap_after(known_seq: u64, seqs: &[u64]) -> Option<u64> {
     has_later.then_some(contiguous)
 }
 
+/// 纵深防御检测：实时批次中"本地发出却拿到回退 `conversation_seq`"的消息。
+///
+/// 时间线严格按 `conversation_seq` 升序渲染；正常情况下本端**新发**的消息必然拿到会话内
+/// 迄今最高的 seq。若一条本地发出的消息拿到 **≤ 已观测高水位** 的 seq，说明服务端序列分配
+/// 发生回退（Redis 高水位丢失、与持久化历史脱节等），该消息会被排进历史中间。
+///
+/// 本函数仅做**检测**（返回回退的 seq 列表，空=正常），不改动排序——faking 顺序会掩盖服务端
+/// 数据损坏并可能拆散因果顺序；真正的修复在服务端 floor 自愈（见 `flare-im-seq`）。检出后由
+/// 调用方发遥测告警，使该类异常可观测。
+///
+/// 判据：`sender_id == current_user_id`（本端发出）且 `conversation_seq > 0`
+/// 且 `conversation_seq <= observed_high_water`（已观测高水位，通常取会话同步游标 seq）。
+fn detect_outgoing_seq_regressions(
+    incoming: &[IMMessage],
+    current_user_id: &str,
+    observed_high_water: u64,
+) -> Vec<u64> {
+    if current_user_id.trim().is_empty() || observed_high_water == 0 {
+        return Vec::new();
+    }
+    let mut regressed = incoming
+        .iter()
+        .filter(|message| {
+            message.sender_id == current_user_id
+                && message.conversation_seq > 0
+                && message.conversation_seq <= observed_high_water
+        })
+        .map(|message| message.conversation_seq)
+        .collect::<Vec<_>>();
+    regressed.sort_unstable();
+    regressed.dedup();
+    regressed
+}
+
 fn first_internal_gap_after(seqs: &[u64]) -> Option<u64> {
     let mut sorted = seqs
         .iter()

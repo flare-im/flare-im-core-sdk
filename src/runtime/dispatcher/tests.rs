@@ -1,6 +1,6 @@
 use super::{
-    Dispatcher, first_gap_after, first_internal_gap_after, first_internal_gap_after_from,
-    is_waterline_ping, max_contiguous_seq,
+    Dispatcher, detect_outgoing_seq_regressions, first_gap_after, first_internal_gap_after,
+    first_internal_gap_after_from, is_waterline_ping, max_contiguous_seq,
 };
 use super::{
     SEQ_REPAIR_IDLE_TTL_MS, SEQ_REPAIR_MAX_BACKOFF_MS, SEQ_REPAIR_MAX_TRACKED_CONVERSATIONS,
@@ -1680,6 +1680,36 @@ fn seq_helpers_ignore_duplicates_and_find_contiguous_tail() {
     assert_eq!(max_contiguous_seq(10, &[12, 13]), 10);
     assert_eq!(first_gap_after(10, &[11, 13, 14]), Some(11));
     assert_eq!(first_gap_after(10, &[11, 12, 13]), None);
+}
+
+fn message_with(sender: &str, seq: u64) -> IMMessage {
+    IMMessage::new(flare_proto::common::Message {
+        sender_id: sender.to_string(),
+        conversation_seq: seq,
+        ..Default::default()
+    })
+}
+
+#[test]
+fn detects_outgoing_message_that_got_a_regressed_seq() {
+    // 本端(u1)发出的消息拿到 seq=8/9，但会话已同步到高水位 76 → 回退，应被检出。
+    let batch = vec![message_with("u1", 8), message_with("u1", 9)];
+    assert_eq!(detect_outgoing_seq_regressions(&batch, "u1", 76), vec![8, 9]);
+}
+
+#[test]
+fn ignores_incoming_and_forward_progress_and_missing_baseline() {
+    // 对端(u2)的历史消息即使 seq 低也不算本端回退（只测本端新发）。
+    let incoming_only = vec![message_with("u2", 8), message_with("u2", 9)];
+    assert!(detect_outgoing_seq_regressions(&incoming_only, "u1", 76).is_empty());
+    // 本端消息拿到更高 seq（正常前进）→ 不报。
+    let forward = vec![message_with("u1", 77), message_with("u1", 78)];
+    assert!(detect_outgoing_seq_regressions(&forward, "u1", 76).is_empty());
+    // 无高水位基线(0) 或无 user → 不误报。
+    assert!(detect_outgoing_seq_regressions(&[message_with("u1", 8)], "u1", 0).is_empty());
+    assert!(detect_outgoing_seq_regressions(&[message_with("u1", 8)], "", 76).is_empty());
+    // seq==high_water 边界视为回退（撞号，见观测数据 seq=9 撞旧消息）。
+    assert_eq!(detect_outgoing_seq_regressions(&[message_with("u1", 76)], "u1", 76), vec![76]);
 }
 
 // ---- TEST-1: 生成式属性测试(seq-gap 辅助函数 = 游标推进/补拉正确性的支点)----

@@ -111,6 +111,32 @@ impl Dispatcher {
                     continue;
                 }
             };
+            // 纵深防御：本端新发消息若拿到 ≤ 已同步高水位的回退 seq，说明服务端序列分配异常
+            // （见 flare-im-seq floor 自愈）。仅告警使异常可观测，不改排序。
+            let regressed_seqs = detect_outgoing_seq_regressions(messages, &user_id, cursor_seq)
+                .into_iter()
+                .filter(|seq| {
+                    messages.iter().any(|message| {
+                        message.conversation_id == conversation_id
+                            && message.conversation_seq == *seq
+                    })
+                })
+                .collect::<Vec<_>>();
+            if !regressed_seqs.is_empty() {
+                warn!(
+                    conversation_id = %conversation_id,
+                    cursor_seq,
+                    regressed_seqs = ?regressed_seqs,
+                    "检测到本端发出的消息拿到回退 conversation_seq（服务端序列分配异常）；\
+                     时间线可能错位，请检查服务端 seq floor 自愈"
+                );
+                self.metrics.counter_with_labels(
+                    "sdk.seq.outgoing_regression_detected",
+                    &[MetricLabel::new("conversation", conversation_id.clone())],
+                    regressed_seqs.len() as u64,
+                );
+            }
+
             let min_incoming_seq = seqs.first().copied().unwrap_or_default();
             let local_tail_seqs = self
                 .local_tail_seqs_before_incoming(&conversation_id, min_incoming_seq)
