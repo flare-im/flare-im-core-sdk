@@ -377,6 +377,49 @@ mod tests {
         );
     }
 
+    fn error_ack() -> SendAck {
+        SendAck {
+            client_msg_id: "client-1".to_string(),
+            conversation_id: "conv-1".to_string(),
+            result: Some(send_ack::Result::Error(flare_proto::common::ErrorDetail {
+                code: 13,
+                reason: "MESSAGE_SEND_FAILED".to_string(),
+                message: "pre_send rejected: SOCIAL_BLOCKED".to_string(),
+                track: String::new(),
+            })),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn error_ack_is_terminal_failure_not_accepted() {
+        // 服务端 pre_send 拒发(拉黑/非好友)→ SendAck.result = Error。客户端据此判定为失败
+        // (既非 accepted 也非 durable),驱动 reliable_queue::apply_ack_and_publish 走 mark_failed 分支,
+        // 而非误当已送达/AwaitDurable。回归护栏:失败发送必须能被前端渲染为「发送失败/重发」。
+        let ack = error_ack();
+        assert!(MessageDeliveryService::accepted_from_ack(&ack).is_none());
+        assert!(MessageDeliveryService::durable_accepted_from_ack(&ack).is_none());
+        assert_eq!(
+            MessageDeliveryService::error_message_from_ack(&ack).as_deref(),
+            Some("pre_send rejected: SOCIAL_BLOCKED")
+        );
+    }
+
+    #[test]
+    fn mark_failed_sets_failed_status_and_local_state() {
+        // mark_failed 必须产出 proto MessageStatus::Failed(4) + local_state.failed,
+        // 前端 messageStateToNumber 据此显示失败/重发指示(而非单勾已送达)。
+        let mut msg = IMMessage::new(flare_proto::common::Message::default());
+        msg.client_msg_id = "client-1".to_string();
+        msg.status = MessageStatus::Sent as i32;
+        msg.local_state.sending = true;
+
+        let failed = MessageDeliveryService::mark_failed(&msg);
+        assert_eq!(failed.status, MessageStatus::Failed as i32);
+        assert!(failed.local_state.failed);
+        assert!(!failed.local_state.sending);
+    }
+
     #[test]
     fn pending_dispatch_drops_cross_account_entry() {
         let decision =
