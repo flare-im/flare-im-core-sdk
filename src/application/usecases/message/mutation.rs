@@ -177,7 +177,6 @@ impl MessageMutationUseCase {
             bus.publish(SdkEvent::Message(MessageEvent::Edited {
                 conversation_id: conversation_id.to_string(),
                 server_msg_id: resolved.server_id().to_string(),
-                edit_version: None,
             }));
         }
         Ok(())

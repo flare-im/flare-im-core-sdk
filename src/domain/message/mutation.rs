@@ -72,7 +72,6 @@ impl MessageMutationService {
                 conversation_id: conversation_id.to_string(),
                 server_msg_id: target.server_id().to_string(),
                 new_content: new_content.clone(),
-                edit_version: 0,
                 reason: String::new(),
                 show_edited_mark: true,
             },
@@ -264,14 +263,12 @@ mod tests {
                 conversation_id,
                 server_msg_id,
                 new_content: transport_content,
-                edit_version,
                 show_edited_mark,
                 ..
             } => {
                 assert_eq!(conversation_id, "c1");
                 assert_eq!(server_msg_id, "s1");
                 assert_eq!(transport_content, new_content);
-                assert_eq!(edit_version, 0);
                 assert!(show_edited_mark);
             }
             _ => panic!("expected edit transport action"),

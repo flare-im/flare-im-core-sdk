@@ -19,6 +19,7 @@ use wasm_bindgen_futures::spawn_local;
 /// Abort handle for long-lived SDK background workers.
 pub struct BackgroundTask {
     cancel: Arc<AtomicBool>,
+    finished: Arc<AtomicBool>,
     #[cfg(not(target_arch = "wasm32"))]
     abort: Option<tokio::task::AbortHandle>,
 }
@@ -31,12 +32,20 @@ impl BackgroundTask {
             abort.abort();
         }
     }
+
+    /// Whether the worker has completed (ran to completion or was aborted).
+    ///
+    /// Finished handles can be dropped by holders to avoid unbounded growth.
+    pub fn is_finished(&self) -> bool {
+        self.finished.load(Ordering::Relaxed) || self.cancel.load(Ordering::Relaxed)
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 struct CancellableFuture {
     inner: Pin<Box<dyn Future<Output = ()> + Send>>,
     cancel: Arc<AtomicBool>,
+    finished: Arc<AtomicBool>,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -46,12 +55,17 @@ impl Future for CancellableFuture {
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.as_mut().get_mut();
         if this.cancel.load(Ordering::Relaxed) {
+            this.finished.store(true, Ordering::Relaxed);
             return Poll::Ready(());
         }
         match this.inner.as_mut().poll(cx) {
-            Poll::Ready(()) => Poll::Ready(()),
+            Poll::Ready(()) => {
+                this.finished.store(true, Ordering::Relaxed);
+                Poll::Ready(())
+            }
             Poll::Pending => {
                 if this.cancel.load(Ordering::Relaxed) {
+                    this.finished.store(true, Ordering::Relaxed);
                     Poll::Ready(())
                 } else {
                     Poll::Pending
@@ -62,13 +76,18 @@ impl Future for CancellableFuture {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn wrap_cancellable<F>(future: F, cancel: Arc<AtomicBool>) -> CancellableFuture
+fn wrap_cancellable<F>(
+    future: F,
+    cancel: Arc<AtomicBool>,
+    finished: Arc<AtomicBool>,
+) -> CancellableFuture
 where
     F: Future<Output = ()> + Send + 'static,
 {
     CancellableFuture {
         inner: Box::pin(future),
         cancel,
+        finished,
     }
 }
 
@@ -76,6 +95,7 @@ where
 struct WasmCancellableFuture {
     inner: Pin<Box<dyn Future<Output = ()>>>,
     cancel: Arc<AtomicBool>,
+    finished: Arc<AtomicBool>,
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -85,12 +105,17 @@ impl Future for WasmCancellableFuture {
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.as_mut().get_mut();
         if this.cancel.load(Ordering::Relaxed) {
+            this.finished.store(true, Ordering::Relaxed);
             return Poll::Ready(());
         }
         match this.inner.as_mut().poll(cx) {
-            Poll::Ready(()) => Poll::Ready(()),
+            Poll::Ready(()) => {
+                this.finished.store(true, Ordering::Relaxed);
+                Poll::Ready(())
+            }
             Poll::Pending => {
                 if this.cancel.load(Ordering::Relaxed) {
+                    this.finished.store(true, Ordering::Relaxed);
                     Poll::Ready(())
                 } else {
                     Poll::Pending
@@ -101,14 +126,45 @@ impl Future for WasmCancellableFuture {
 }
 
 #[cfg(target_arch = "wasm32")]
-fn wrap_cancellable<F>(future: F, cancel: Arc<AtomicBool>) -> WasmCancellableFuture
+fn wrap_cancellable<F>(
+    future: F,
+    cancel: Arc<AtomicBool>,
+    finished: Arc<AtomicBool>,
+) -> WasmCancellableFuture
 where
     F: Future<Output = ()> + 'static,
 {
     WasmCancellableFuture {
         inner: Box::pin(future),
         cancel,
+        finished,
     }
+}
+
+/// 无环境 runtime 时共用的进程级后台 runtime。
+///
+/// 原生 FFI 宿主（iOS/Android 同步桥）从非 tokio 线程调入时，FTS backfill、waterline 补拉等
+/// fire-and-forget 都走这条 fallback：**每次起一个 OS 线程 + current_thread runtime** 会在
+/// 高频路径上把线程当一次性资源用。共享一个小型多线程 runtime 后，任务由其 worker 直接驱动。
+///
+/// 静态 `OnceLock` 持有，进程存续期不 drop（drop `Runtime` 会等待在跑的任务）。
+#[cfg(not(target_arch = "wasm32"))]
+fn fallback_runtime() -> Option<&'static tokio::runtime::Runtime> {
+    use std::sync::OnceLock;
+    static RUNTIME: OnceLock<Option<tokio::runtime::Runtime>> = OnceLock::new();
+    RUNTIME
+        .get_or_init(|| {
+            tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(2)
+                .thread_name("flare-sdk-background")
+                .enable_all()
+                .build()
+                .map_err(|error| {
+                    tracing::warn!(error = %error, "build shared background runtime failed");
+                })
+                .ok()
+        })
+        .as_ref()
 }
 
 /// Spawn a fire-and-forget background task.
@@ -121,17 +177,10 @@ where
         std::mem::drop(tokio::spawn(future));
         return;
     }
-    let _ = thread::Builder::new()
-        .name("flare-sdk-background".into())
-        .spawn(move || {
-            let Ok(rt) = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-            else {
-                return;
-            };
-            rt.block_on(future);
-        });
+    let Some(runtime) = fallback_runtime() else {
+        return;
+    };
+    std::mem::drop(runtime.spawn(future));
 }
 
 /// Spawn a fire-and-forget background task.
@@ -150,46 +199,28 @@ where
     F: Future<Output = ()> + Send + 'static,
 {
     let cancel = Arc::new(AtomicBool::new(false));
-    let wrapped = wrap_cancellable(future, cancel.clone());
+    let finished = Arc::new(AtomicBool::new(false));
+    let wrapped = wrap_cancellable(future, cancel.clone(), finished.clone());
     let abort = if tokio::runtime::Handle::try_current().is_ok() {
         let join = tokio::spawn(wrapped);
         let abort = join.abort_handle();
         drop(join);
         Some(abort)
+    } else if let Some(runtime) = fallback_runtime() {
+        // 共享 runtime 直接给出 abort handle：不再每任务起线程，也省掉回传 handle 的
+        // 通道 + 1s 超时（超时曾让 abort 静默失效）。
+        let join = runtime.spawn(wrapped);
+        let abort = join.abort_handle();
+        drop(join);
+        Some(abort)
     } else {
-        let (tx, rx) = mpsc::sync_channel(1);
-        match thread::Builder::new()
-            .name("flare-sdk-background-task".into())
-            .spawn(move || {
-                let Ok(rt) = tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                else {
-                    let _ = tx.send(None);
-                    return;
-                };
-                let join = rt.spawn(wrapped);
-                let abort = join.abort_handle();
-                let _ = tx.send(Some(abort));
-                let _ = rt.block_on(join);
-            }) {
-            Ok(_) => match rx.recv_timeout(Duration::from_secs(1)) {
-                Ok(abort) => abort,
-                Err(error) => {
-                    tracing::warn!(
-                        error = %error,
-                        "background task thread did not return abort handle"
-                    );
-                    None
-                }
-            },
-            Err(error) => {
-                tracing::warn!(error = %error, "spawn background task thread failed");
-                None
-            }
-        }
+        None
     };
-    BackgroundTask { cancel, abort }
+    BackgroundTask {
+        cancel,
+        finished,
+        abort,
+    }
 }
 
 /// Spawn an abortable background worker.
@@ -199,7 +230,8 @@ where
     F: Future<Output = ()> + 'static,
 {
     let cancel = Arc::new(AtomicBool::new(false));
-    let wrapped = wrap_cancellable(future, cancel.clone());
+    let finished = Arc::new(AtomicBool::new(false));
+    let wrapped = wrap_cancellable(future, cancel.clone(), finished.clone());
     spawn_local(wrapped);
-    BackgroundTask { cancel }
+    BackgroundTask { cancel, finished }
 }

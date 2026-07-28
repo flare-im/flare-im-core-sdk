@@ -33,7 +33,7 @@ mod listeners;
 mod receivers;
 use dispatch::{
     RecoverableRwLock, dispatch_any_callbacks, dispatch_callbacks, dispatch_callbacks_with,
-    dispatch_route_callbacks,
+    dispatch_route_callbacks, take_unreported_callback_drops,
 };
 pub use receivers::{
     EventReceiveError, EventReceiver, FilteredEventReceiver, RawSdkEvent, SharedEventReceiver,
@@ -45,6 +45,16 @@ pub enum PublishOutcome {
     DroppedSilentSync,
     DroppedByMiddleware,
     NoReceivers,
+}
+
+/// 释放 `reporting_callback_drops` 门的 RAII 卫兵：即便补发路径 panic 也不会把门
+/// 永久留在占用态（那会让此后所有回调丢弃都不再被通报）。
+struct ReportingGuard<'a>(&'a AtomicBool);
+
+impl Drop for ReportingGuard<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
 }
 
 fn same_arc<T: ?Sized>(left: &Arc<T>, right: &Arc<T>) -> bool {
@@ -112,6 +122,8 @@ pub struct EventBus {
     typed_callback_count: Arc<AtomicUsize>,
     route_callback_count: Arc<AtomicUsize>,
     any_callback_count: Arc<AtomicUsize>,
+    /// 正在补发回调丢弃通知（重入保护，见 `report_pending_callback_drops`）。
+    reporting_callback_drops: Arc<std::sync::atomic::AtomicBool>,
     last_connection_state: Arc<RwLock<Option<SdkState>>>,
     last_sync_state: Arc<RwLock<Option<SyncState>>>,
     last_sync_finished: Arc<RwLock<Option<SyncPhase>>>,
@@ -187,6 +199,7 @@ impl EventBus {
         let typed_callback_count = Arc::new(AtomicUsize::new(0));
         let route_callback_count = Arc::new(AtomicUsize::new(0));
         let any_callback_count = Arc::new(AtomicUsize::new(0));
+        let reporting_callback_drops = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let last_connection_state = Arc::new(RwLock::new(None));
         let last_sync_state = Arc::new(RwLock::new(None));
         let last_sync_finished = Arc::new(RwLock::new(None));
@@ -230,6 +243,7 @@ impl EventBus {
             typed_callback_count,
             route_callback_count,
             any_callback_count,
+            reporting_callback_drops,
             last_connection_state,
             last_sync_state,
             last_sync_finished,
@@ -645,10 +659,34 @@ impl EventBus {
         self.any_callback_count.load(Ordering::Acquire) > 0
     }
 
+    /// 回调队列曾丢弃投递 → 补发一条 `ResyncNeeded`，让应用层从 SDK 存储重建读模型。
+    ///
+    /// 丢弃本身是有意的削峰，但 `Fn` 回调消费者（`on_message` 等）没有 raw subscriber 的
+    /// lag 兜底，丢了就是消息不上屏且无任何提示。合并上报：一个丢弃窗口只发一条。
+    fn report_pending_callback_drops(&self) {
+        // 先拿门再取数：反过来会在「取走计数后发现门被占」时把那批丢弃数吞掉——
+        // 补发自身的嵌套 publish 与并发 publish 都会走到这条路径。门被占时一个数都不取，
+        // 计数留给持门者或下一次发布。
+        if self.reporting_callback_drops.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        let _guard = ReportingGuard(&self.reporting_callback_drops);
+        let dropped_events = take_unreported_callback_drops();
+        if dropped_events == 0 {
+            return;
+        }
+        self.publish(SdkEvent::Sync(SyncNotify::ResyncNeeded {
+            scope: "global".to_string(),
+            reason: "callback_dispatch_dropped".to_string(),
+            dropped_events,
+        }));
+    }
+
     pub fn publish(&self, mut event: SdkEvent) -> PublishOutcome {
         if matches!(&event, SdkEvent::Sync(sync) if !sync.should_publish()) {
             return PublishOutcome::DroppedSilentSync;
         }
+        self.report_pending_callback_drops();
         if self.middleware.before_publish(&mut event).is_drop() {
             return PublishOutcome::DroppedByMiddleware;
         }

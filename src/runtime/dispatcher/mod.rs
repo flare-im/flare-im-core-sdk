@@ -11,6 +11,7 @@ use prost::Message;
 use tokio::sync::{Mutex as AsyncMutex, RwLock, mpsc};
 use tracing::warn;
 
+use self::applied_events::AppliedEventSeqs;
 use self::typing_presence::TypingPresence;
 use crate::application::notification::{
     NotificationInboundPipeline, partition_notification_durability,
@@ -46,6 +47,9 @@ const WATERLINE_ATTR_CONVERSATION_ID: &str = "conversation_id";
 const WATERLINE_ATTR_CONVERSATION_ID_CAMEL: &str = "conversationId";
 const WATERLINE_ATTR_MAX_SEQ: &str = "max_conversation_seq";
 const WATERLINE_ATTR_MAX_SEQ_CAMEL: &str = "maxConversationSeq";
+/// waterline 动态连续性验证的最大跨度（`target_seq - cursor_seq`）。
+/// 超过该跨度视为本地明显落后，直接判未到位（触发合并补拉），不再逐 seq 验证。
+const WATERLINE_CONTINUITY_MAX_SPAN: u64 = 128;
 
 #[derive(Debug, Clone, Default)]
 struct SeqRepairState {
@@ -90,6 +94,9 @@ pub struct Dispatcher {
     conversation_projection_applier: Option<ConversationProjectionApplier>,
     seq_repair_state: Arc<AsyncMutex<HashMap<String, SeqRepairState>>>,
     waterline_pull_state: Arc<AsyncMutex<HashMap<String, WaterlinePullState>>>,
+    /// AUDIT-25-01：已应用操作事件占据的会话 seq（事件与消息共享 seq 分配器，
+    /// 这些 seq 永远没有消息行）；waterline / seq 缺口判定把它们视作已填充。
+    applied_event_seqs: AppliedEventSeqs,
     /// win#2：有界串行持久化 worker 的入队端。生产路径经 `start_persist_worker` 装载；
     /// 测试 harness 不装载 → `dispatch` 回退内联持久化（保持同步语义，既有断言不受影响）。
     persist_tx: OnceLock<mpsc::Sender<PersistJob>>,
@@ -139,6 +146,7 @@ impl Dispatcher {
             conversation_projection_applier,
             seq_repair_state: Arc::new(AsyncMutex::new(HashMap::new())),
             waterline_pull_state: Arc::new(AsyncMutex::new(HashMap::new())),
+            applied_event_seqs: AppliedEventSeqs::new(),
             persist_tx: OnceLock::new(),
             typing_presence: Mutex::new(TypingPresence::new()),
             metrics,
@@ -400,8 +408,13 @@ fn prune_seq_repair_state(states: &mut HashMap<String, SeqRepairState>, now_ms: 
     }
 }
 
+/// waterline 到位判定。事件与消息共享会话 seq 分配器（AUDIT-25-01），因此
+/// 「target seq 已到位」= target 有本地消息行 **或** target 已被记录为已应用操作事件；
+/// 游标未覆盖 target 时，用「本地消息行 + 已应用事件 seq」动态验证 `(cursor, target]`
+/// 连续填充，避免每条操作事件都触发一次全量单会话同步。
 async fn local_waterline_reached_with_stores(
     stores: &Option<StoreProvider>,
+    applied_event_seqs: &AppliedEventSeqs,
     user_id: &str,
     conversation_id: &str,
     target_seq: u64,
@@ -432,26 +445,53 @@ async fn local_waterline_reached_with_stores(
     if user_id.is_empty() {
         return false;
     }
-    let cursor_reached = stores
+    let cursor_seq = stores
         .cursors
         .get_conversation_cursor(user_id, conversation_id)
         .await
-        .map(|cursor| cursor.is_some_and(|cursor| cursor.last_seq >= target_seq))
-        .unwrap_or(false);
-    if !cursor_reached {
-        return false;
+        .map(|cursor| cursor.map(|cursor| cursor.last_seq).unwrap_or(0))
+        .unwrap_or(0);
+    if cursor_seq >= target_seq {
+        // 游标已覆盖：仍要求 target 对应本地消息行或已应用操作事件
+        // （防游标超前于本地数据，参见 waterline_uses_materialized_message_seq_not_cursor_seq）。
+        if applied_event_seqs.contains(conversation_id, target_seq).await {
+            return true;
+        }
+        return stores
+            .messages
+            .get_by_conversation(conversation_id, target_seq.saturating_add(1), 1)
+            .await
+            .map(|messages| {
+                messages
+                    .iter()
+                    .any(|message| message.conversation_seq == target_seq)
+            })
+            .unwrap_or(false);
     }
 
-    stores
+    // 游标未覆盖 target：动态验证 (cursor, target] 是否由本地消息行 + 已应用事件 seq 连续填充。
+    let span = target_seq - cursor_seq;
+    if span > WATERLINE_CONTINUITY_MAX_SPAN {
+        return false;
+    }
+    let mut window = stores
         .messages
-        .get_by_conversation(conversation_id, target_seq.saturating_add(1), 1)
+        .get_by_conversation(conversation_id, target_seq.saturating_add(1), span as u32)
         .await
         .map(|messages| {
             messages
                 .iter()
-                .any(|message| message.conversation_seq == target_seq)
+                .map(|message| message.conversation_seq)
+                .filter(|seq| *seq > cursor_seq)
+                .collect::<Vec<_>>()
         })
-        .unwrap_or(false)
+        .unwrap_or_default();
+    window.extend(
+        applied_event_seqs
+            .seqs_in_range(conversation_id, cursor_seq, target_seq)
+            .await,
+    );
+    max_contiguous_seq(cursor_seq, &window) >= target_seq
 }
 
 fn is_waterline_ping(kind: &str, attributes: &HashMap<String, String>) -> bool {
@@ -481,6 +521,7 @@ fn now_ms() -> u64 {
     crate::shared::util::now_millis()
 }
 
+mod applied_events;
 mod dispatch;
 mod seq_repair;
 #[cfg(test)]

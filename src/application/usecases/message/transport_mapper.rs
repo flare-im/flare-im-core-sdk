@@ -27,7 +27,6 @@ pub fn event_from_transport_action(action: &MessageTransportAction) -> Event {
             conversation_id,
             server_msg_id,
             new_content,
-            edit_version,
             reason,
             show_edited_mark,
         } => Event {
@@ -37,7 +36,6 @@ pub fn event_from_transport_action(action: &MessageTransportAction) -> Event {
                 server_msg_id: server_msg_id.clone(),
                 new_content: flare_proto::common::MessageContent::decode(new_content.as_slice())
                     .ok(),
-                edit_version: *edit_version,
                 reason: reason.clone(),
                 show_edited_mark: *show_edited_mark,
             })),

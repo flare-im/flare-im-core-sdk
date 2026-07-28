@@ -16,6 +16,8 @@ const REPLAY_DISPATCH_CAPACITY: usize = 1024;
 const REPLAY_DELAY_MS: u64 = 10;
 static CALLBACK_DISPATCH_DROPPED: AtomicU64 = AtomicU64::new(0);
 static REPLAY_DISPATCH_DROPPED: AtomicU64 = AtomicU64::new(0);
+/// 已丢弃但尚未向应用层通报的回调数（见 [`take_unreported_callback_drops`]）。
+static CALLBACK_DROP_UNREPORTED: AtomicU64 = AtomicU64::new(0);
 
 /// Single long-lived event dispatch thread sender.
 ///
@@ -54,6 +56,7 @@ pub(super) fn spawn_callback(f: impl FnOnce() + Send + 'static) {
         Ok(()) => {}
         Err(std::sync::mpsc::TrySendError::Full(_)) => {
             let dropped = CALLBACK_DISPATCH_DROPPED.fetch_add(1, Ordering::Relaxed) + 1;
+            CALLBACK_DROP_UNREPORTED.fetch_add(1, Ordering::Relaxed);
             if dropped == 1 || dropped.is_multiple_of(1024) {
                 warn!(
                     total_dropped = dropped,
@@ -62,9 +65,24 @@ pub(super) fn spawn_callback(f: impl FnOnce() + Send + 'static) {
             }
         }
         Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
+            CALLBACK_DROP_UNREPORTED.fetch_add(1, Ordering::Relaxed);
             warn!("EventBus dispatch thread unavailable; callback dropped");
         }
     }
+}
+
+/// 取走「尚未向应用层通报」的回调丢弃计数（取走即清零）。
+///
+/// 回调队列满时丢弃是有意的削峰，但 `on_message` 这类 `Fn` 回调消费者一旦丢了就是丢了
+/// （raw subscriber 有 lag→ResyncNeeded 兜底，回调没有）→ 消息不上屏且无重同步提示。
+/// `EventBus::publish` 在下一次发布前取走该计数并补发一条 `ResyncNeeded`。
+///
+/// **进程级语义**：分发队列本身是进程级单例（一条 `flare-sdk-event-dispatch` 线程供所有
+/// EventBus 共用），故计数也是进程级——由**下一个发布的 bus** 通报。单 client（当前唯一的
+/// 构造路径 `client/builder.rs`）下等价于按 bus 归属；若将来支持多账号多 bus 并存，需把
+/// 计数下放到 bus 并由 `dispatch_callbacks*` 逐层传入，否则 A 号的丢弃会通报到 B 号。
+pub(super) fn take_unreported_callback_drops() -> u64 {
+    CALLBACK_DROP_UNREPORTED.swap(0, Ordering::AcqRel)
 }
 
 #[cfg(target_arch = "wasm32")]

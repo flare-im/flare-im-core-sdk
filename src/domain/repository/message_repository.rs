@@ -194,7 +194,8 @@ pub trait MessageReader: Send + Sync {
 pub trait MessageWriter: Send + Sync {
     async fn save_batch(&self, messages: &[IMMessage]) -> Result<()>;
     async fn save_one(&self, message: &IMMessage) -> Result<()>;
-    async fn update_status(&self, message_id: &str, status: i32) -> Result<()>;
+    /// 更新消息状态；返回受影响行数（`0` 表示本地尚无该消息，调用方可据此保留事件重放）。
+    async fn update_status(&self, message_id: &str, status: i32) -> Result<u64>;
     /// 更新消息正文；`Ok(true)` 表示至少更新了一行（`server_id` 或 `client_msg_id` 命中）。
     async fn update_content(&self, message_id: &str, new_content: Vec<u8>) -> Result<bool>;
     async fn delete(&self, message_id: &str) -> Result<()>;

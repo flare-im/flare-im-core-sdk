@@ -346,3 +346,52 @@ async fn disconnect_clears_shared_http_auth_context() {
     assert_eq!(headers.get("x-user-id"), None);
     assert_eq!(headers.get("x-tenant-id").map(String::as_str), Some("0"));
 }
+
+/// AUDIT-25-02 契约：设备标识必须由**同一处**决定，供登录签 token 与 CONNECT 上报共用。
+/// 网关在两侧都非空且不等时直接拒连，此前两处各自取值无对齐机制，只能给登录传空绕过。
+#[tokio::test]
+async fn bind_device_id_writes_then_reads_back_the_same_value() {
+    let client = IMClient::new();
+
+    // 未配置：只读返回 None（连接侧届时回退到进程级临时标识）
+    assert_eq!(client.bind_device_id(None).await, None);
+
+    // 写入后回显，且后续只读拿到同一个值 —— 登录与连接因此同源
+    assert_eq!(
+        client.bind_device_id(Some("device-alpha".to_string())).await,
+        Some("device-alpha".to_string())
+    );
+    assert_eq!(
+        client.bind_device_id(None).await,
+        Some("device-alpha".to_string()),
+        "a later read must not invent a different device id"
+    );
+
+    // 空白输入按未提供处理：不得清空已绑定值
+    assert_eq!(
+        client.bind_device_id(Some("   ".to_string())).await,
+        Some("device-alpha".to_string()),
+        "blank input is a read, not a reset"
+    );
+}
+
+/// `init` 已配置 device_id 时，只读路径要能取到它（社交登录据此复用同一个值）。
+#[tokio::test]
+async fn bind_device_id_reads_value_configured_at_init() {
+    let client = IMClient::new();
+    client
+        .init(
+            None,
+            Some(SdkConfigOverlay {
+                device_id: Some("device-from-init".to_string()),
+                ..Default::default()
+            }),
+        )
+        .await
+        .expect("init must succeed");
+
+    assert_eq!(
+        client.bind_device_id(None).await,
+        Some("device-from-init".to_string())
+    );
+}

@@ -1468,13 +1468,15 @@ async fn apply_message_extra_with_seq<F>(
 where
     F: FnMut(&mut HashMap<String, String>),
 {
+    // 读改写必须同事务：seq 判定（is_stale_operation）与 UPDATE 交错会让旧事件覆盖新事件。
+    let mut tx = pool.begin().await.map_err(sqlx_err)?;
     let rows = sqlx::query(
         r#"SELECT server_id, attributes FROM messages
            WHERE server_id = ? OR client_msg_id = ?"#,
     )
     .bind(message_id)
     .bind(message_id)
-    .fetch_all(pool)
+    .fetch_all(&mut *tx)
     .await
     .map_err(sqlx_err)?;
 
@@ -1482,7 +1484,6 @@ where
         return Ok(OperationApplyResult::NotFound);
     }
 
-    let mut tx = pool.begin().await.map_err(sqlx_err)?;
     let mut applied_any = false;
     for row in rows {
         let server_id: String = row.try_get("server_id").map_err(sqlx_err)?;

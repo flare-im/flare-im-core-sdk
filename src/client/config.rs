@@ -8,13 +8,7 @@ use flare_core::common::config_types::{
 use crate::shared::util::RELIABLE_QUEUE_MAX_IN_FLIGHT;
 use std::path::PathBuf;
 #[cfg(not(target_arch = "wasm32"))]
-use std::{
-    sync::atomic::{AtomicU64, Ordering},
-    time::{SystemTime, UNIX_EPOCH},
-};
-
-#[cfg(not(target_arch = "wasm32"))]
-static DEFAULT_DEVICE_SEQ: AtomicU64 = AtomicU64::new(1);
+use std::time::{SystemTime, UNIX_EPOCH};
 
 fn new_default_device_id() -> String {
     #[cfg(not(target_arch = "wasm32"))]
@@ -23,13 +17,37 @@ fn new_default_device_id() -> String {
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_millis();
-        let seq = DEFAULT_DEVICE_SEQ.fetch_add(1, Ordering::Relaxed);
-        format!("sdk-device-{}-{millis:x}-{seq}", std::process::id())
+        format!("sdk-device-{}-{millis:x}", std::process::id())
     }
     #[cfg(target_arch = "wasm32")]
     {
         format!("sdk-web-{}", uuid::Uuid::new_v4())
     }
+}
+
+/// 未配置 `device_id` 时的进程级兜底标识（**同一进程内恒定**）。
+///
+/// 曾经每次调用都新生成一个值，后果有二：
+/// 1. 每次重连都以「新设备」身份上报 → 服务端设备表被无限刷入僵尸设备；
+/// 2. 与登录时签进 token 的 device_id 必然不等 → 网关按设备绑定判定拒绝连接，
+///    这正是「device_id 只能传空」这一绕过手法的由来（多端互踢语义因此做不了）。
+///
+/// 进程级恒定只解决 (1) 和进程内一致性：**跨重启仍会变**。要拿到 token 绑定与
+/// 多端互踢，宿主必须提供按平台持久化的稳定值（iOS keychain / Android SharedPreferences /
+/// Web localStorage / 桌面配置文件），经 `SdkConfigOverlay.device_id` 传入，
+/// 并把**同一个值**用于社交登录——见 `SdkConfig::effective_device_id`。
+fn process_fallback_device_id() -> &'static str {
+    static FALLBACK: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    FALLBACK.get_or_init(|| {
+        let id = new_default_device_id();
+        tracing::warn!(
+            device_id = %id,
+            "no device_id configured; using an ephemeral per-process id. \
+             Token device binding and multi-device kick are unavailable until the host \
+             supplies a persisted SdkConfigOverlay.device_id and uses the same value at login."
+        );
+        id
+    })
 }
 
 /// Wire transport kind for init overlay and protocol race ordering.
@@ -284,13 +302,17 @@ impl SdkConfig {
         tls
     }
 
+    /// 本次连接上报的设备标识。
+    ///
+    /// 优先用宿主配置的稳定值；缺省时回退到进程级恒定的临时值
+    /// （见 [`process_fallback_device_id`]，会打一次 warn）。
     pub fn effective_device_id(&self) -> String {
         self.device_id
             .as_deref()
             .map(str::trim)
             .filter(|id| !id.is_empty())
             .map(ToOwned::to_owned)
-            .unwrap_or_else(new_default_device_id)
+            .unwrap_or_else(|| process_fallback_device_id().to_string())
     }
 }
 
@@ -372,14 +394,24 @@ mod tests {
         let default_id = SdkConfig::default().effective_device_id();
         assert!(!default_id.trim().is_empty());
 
-        let another_default_id = SdkConfig::default().effective_device_id();
-        assert_ne!(default_id, another_default_id);
-
         let explicit = SdkConfig {
             device_id: Some("device-42".to_string()),
             ..SdkConfig::default()
         };
         assert_eq!(explicit.effective_device_id(), "device-42");
+    }
+
+    /// 兜底 device_id 必须在进程内恒定。此前每次调用新生成 → 每次重连都以「新设备」
+    /// 上报（服务端设备表被刷入僵尸设备），且与登录时签进 token 的值必然不等
+    /// （网关设备绑定校验拒连，逼出「device_id 传空」的绕过手法）。
+    #[test]
+    fn fallback_device_id_is_stable_within_the_process() {
+        let first = SdkConfig::default().effective_device_id();
+        let second = SdkConfig::default().effective_device_id();
+        assert_eq!(
+            first, second,
+            "a device is one device: the fallback must not change between calls or reconnects"
+        );
     }
 }
 

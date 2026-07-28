@@ -442,6 +442,35 @@ impl IMClient {
         Ok(())
     }
 
+    /// 绑定 / 读取本客户端 CONNECT 时上报的设备标识。
+    ///
+    /// **契约**：该值必须与登录时签进 `im_connect_token` 的 `device_id` 一致——网关在两侧
+    /// 都非空且不相等时直接拒绝连接（设备绑定校验）。组合入口（如社交 SDK 的
+    /// `FlareAppClient`）应在登录**之前**用本方法确定唯一值，再把同一个值同时用于社交登录
+    /// 与本连接，避免两处各自取值而漂移。
+    ///
+    /// - 传 `Some` 非空值：写入配置并回显（须在 [`Self::login`] / 建连之前调用）；
+    /// - 传 `None` 或空值：只读，返回当前已配置值；未配置则返回 `None`，届时连接会回退到
+    ///   进程级临时标识（跨重启会变，token 绑定与多端互踢不可用，见 `SdkConfig::effective_device_id`）。
+    pub async fn bind_device_id(&self, device_id: Option<String>) -> Option<String> {
+        let requested = device_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+            .map(ToOwned::to_owned);
+        let mut g = self.inner.write().await;
+        if let Some(id) = requested {
+            g.sdk_config.get_or_insert_with(Default::default).device_id = Some(id.clone());
+            return Some(id);
+        }
+        g.sdk_config
+            .as_ref()
+            .and_then(|cfg| cfg.device_id.as_deref())
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+            .map(ToOwned::to_owned)
+    }
+
     /// 返回当前配置的 SDK 数据根目录（未传 `dataUrl` 时为 SDK 默认系统数据目录）。
     pub async fn data_root(&self) -> Option<PathBuf> {
         self.inner.read().await.data_root.clone()

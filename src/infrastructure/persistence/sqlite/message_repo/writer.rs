@@ -111,9 +111,9 @@ impl MessageWriter for SqliteMessageRepo {
         MessageWriter::save_batch(self, std::slice::from_ref(message)).await
     }
 
-    async fn update_status(&self, message_id: &str, status: i32) -> Result<()> {
+    async fn update_status(&self, message_id: &str, status: i32) -> Result<u64> {
         let recalled = MessageStatus::Recalled as i32;
-        if status == recalled {
+        let result = if status == recalled {
             sqlx::query(
                 r#"UPDATE messages SET status = ?, is_recalled = 1
                    WHERE server_id = ? OR client_msg_id = ?"#,
@@ -132,7 +132,7 @@ impl MessageWriter for SqliteMessageRepo {
                 .await
         }
         .map_err(|e| FlareError::localized(ErrorCode::DatabaseError, e.to_string()))?;
-        Ok(())
+        Ok(result.rows_affected())
     }
 
     async fn update_content(&self, message_id: &str, new_content: Vec<u8>) -> Result<bool> {

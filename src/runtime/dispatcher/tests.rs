@@ -1,6 +1,6 @@
 use super::{
-    Dispatcher, detect_outgoing_seq_regressions, first_gap_after, first_internal_gap_after,
-    first_internal_gap_after_from, is_waterline_ping, max_contiguous_seq,
+    Dispatcher, EventPayload, detect_outgoing_seq_regressions, first_gap_after,
+    first_internal_gap_after, first_internal_gap_after_from, is_waterline_ping, max_contiguous_seq,
 };
 use super::{
     SEQ_REPAIR_IDLE_TTL_MS, SEQ_REPAIR_MAX_BACKOFF_MS, SEQ_REPAIR_MAX_TRACKED_CONVERSATIONS,
@@ -375,11 +375,12 @@ impl MessageWriter for MemoryMessageStore {
         self.save_batch(std::slice::from_ref(message)).await
     }
 
-    async fn update_status(&self, message_id: &str, status: i32) -> Result<()> {
+    async fn update_status(&self, message_id: &str, status: i32) -> Result<u64> {
         if let Some(message) = self.data.write().await.get_mut(message_id) {
             message.status = status;
+            return Ok(1);
         }
-        Ok(())
+        Ok(0)
     }
 
     async fn update_content(&self, _message_id: &str, _new_content: Vec<u8>) -> Result<bool> {
@@ -2015,6 +2016,166 @@ async fn standalone_event_waterline_triggers_message_sync() {
     );
 }
 
+/// AUDIT-25-01 回归夹具：本地已有 conv 的消息 seq=1..=`local_max`、游标停在 `cursor`。
+fn waterline_fixture()
+-> (Arc<MemoryMessageStore>, Arc<crate::infrastructure::persistence::MemorySyncCursorStore>, StoreProvider)
+{
+    let message_store = Arc::new(MemoryMessageStore::new());
+    let cursor_store = Arc::new(crate::infrastructure::persistence::MemorySyncCursorStore::new());
+    let stores = StoreProvider {
+        messages: message_store.clone(),
+        conversations: Arc::new(NoopConversationStore),
+        conversation_participants: None,
+        cursors: cursor_store.clone(),
+        pending_send_reader: None,
+        pending_send_writer: None,
+        upload_manifest_store: None,
+        media_cache_store: None,
+        media_cache_admin: None,
+        user_file_download_store: None,
+        user_profiles_reader: None,
+        user_profiles_writer: None,
+    };
+    (message_store, cursor_store, stores)
+}
+
+async fn seed_waterline_conversation(
+    message_store: &Arc<MemoryMessageStore>,
+    cursor_store: &Arc<crate::infrastructure::persistence::MemorySyncCursorStore>,
+    conversation_id: &str,
+    local_max: u64,
+) {
+    for seq in 1..=local_max {
+        let mut message = IMMessage::new(flare_proto::common::Message {
+            server_id: format!("m-{seq}"),
+            client_msg_id: format!("c-{seq}"),
+            conversation_id: conversation_id.to_string(),
+            sender_id: "u2".to_string(),
+            conversation_seq: seq,
+            ..Default::default()
+        });
+        message.conversation_seq = seq;
+        message_store.save_batch(&[message]).await.unwrap();
+    }
+    cursor_store
+        .save_conversation_cursor(&SyncCursorVo {
+            user_id: "u1".to_string(),
+            conversation_id: conversation_id.to_string(),
+            last_seq: local_max,
+            synced_at: 1,
+        })
+        .await
+        .unwrap();
+}
+
+fn waterline_dispatcher(stores: StoreProvider, sync: Arc<RecordingSessionSyncRunner>) -> Dispatcher {
+    let bus = EventBus::new();
+    Dispatcher::new(
+        bus.clone(),
+        None,
+        None,
+        Some(sync),
+        Some(stores),
+        Arc::new(RwLock::new("u1".to_string())) as CurrentUserIdStore,
+        EventDeduper::new(Some(64)),
+        test_notification_pipeline(bus),
+        MetricsRecorder::disabled(),
+    )
+}
+
+/// AUDIT-25-01：操作事件与消息共享 seq 空间。本地消息到 seq=10、游标=10 时，
+/// 一条 seq=11 的操作事件（如已读回执）是**连续**的下一个 seq，不得触发全量单会话同步。
+/// 修复前该判定必然假阴性 → 活跃群里每条已读/reaction 都打一次同步 RPC。
+#[tokio::test]
+async fn applied_operation_event_seq_does_not_trigger_message_sync() {
+    let (message_store, cursor_store, stores) = waterline_fixture();
+    seed_waterline_conversation(&message_store, &cursor_store, "conv-op", 10).await;
+    let sync = Arc::new(RecordingSessionSyncRunner::new());
+    let dispatcher = waterline_dispatcher(stores, sync.clone());
+
+    dispatcher
+        .dispatch(DownlinkPayload::Event(Event {
+            conversation_id: "conv-op".to_string(),
+            conversation_seq: 11,
+            payload: Some(EventPayload::Read(flare_proto::common::ReadReceiptEvent {
+                conversation_id: "conv-op".to_string(),
+                ..Default::default()
+            })),
+            ..Default::default()
+        }))
+        .await
+        .unwrap();
+
+    // 给后台补拉任务留出窗口：不应有任何同步调用。
+    tokio::time::sleep(Duration::from_millis(120)).await;
+    assert!(
+        sync.message_sync_calls().await.is_empty(),
+        "contiguous operation-event seq must not trigger a full conversation sync"
+    );
+}
+
+/// 反向保证：真缺口（seq 跳跃，中间既无消息行也无已应用事件）仍必须触发同步补拉。
+#[tokio::test]
+async fn genuine_seq_gap_still_triggers_message_sync() {
+    let (message_store, cursor_store, stores) = waterline_fixture();
+    seed_waterline_conversation(&message_store, &cursor_store, "conv-gap", 10).await;
+    let sync = Arc::new(RecordingSessionSyncRunner::new());
+    let dispatcher = waterline_dispatcher(stores, sync.clone());
+
+    dispatcher
+        .dispatch(DownlinkPayload::Event(Event {
+            conversation_id: "conv-gap".to_string(),
+            // 11..=19 从未到达 → 真缺口
+            conversation_seq: 20,
+            payload: Some(EventPayload::Read(flare_proto::common::ReadReceiptEvent {
+                conversation_id: "conv-gap".to_string(),
+                ..Default::default()
+            })),
+            ..Default::default()
+        }))
+        .await
+        .unwrap();
+
+    timeout(Duration::from_millis(200), sync.notify.notified())
+        .await
+        .expect("a genuine seq gap must still trigger message sync");
+    assert_eq!(
+        sync.message_sync_calls().await,
+        vec!["conv-gap".to_string()]
+    );
+}
+
+/// 事件与消息交错：连续多条操作事件逐个填充 seq，连续性判定应随之推进而始终不触发同步。
+#[tokio::test]
+async fn interleaved_operation_events_keep_waterline_contiguous() {
+    let (message_store, cursor_store, stores) = waterline_fixture();
+    seed_waterline_conversation(&message_store, &cursor_store, "conv-mix", 5).await;
+    let sync = Arc::new(RecordingSessionSyncRunner::new());
+    let dispatcher = waterline_dispatcher(stores, sync.clone());
+
+    for seq in 6..=9u64 {
+        dispatcher
+            .dispatch(DownlinkPayload::Event(Event {
+                conversation_id: "conv-mix".to_string(),
+                conversation_seq: seq,
+                event_id: format!("e-{seq}"),
+                payload: Some(EventPayload::Read(flare_proto::common::ReadReceiptEvent {
+                    conversation_id: "conv-mix".to_string(),
+                    ..Default::default()
+                })),
+                ..Default::default()
+            }))
+            .await
+            .unwrap();
+    }
+
+    tokio::time::sleep(Duration::from_millis(120)).await;
+    assert!(
+        sync.message_sync_calls().await.is_empty(),
+        "a contiguous run of operation events must stay gap-free"
+    );
+}
+
 #[tokio::test]
 async fn in_flight_waterline_ping_runs_follow_up_pull() {
     let bus = EventBus::new();
@@ -2208,6 +2369,95 @@ async fn recall_event_without_outer_conversation_id_publishes_local_message_conv
         }
         other => panic!("unexpected event: {other:?}"),
     }
+}
+
+/// Recall 先于消息到达：事件不得被吞（去重键须回滚），消息落库后重放同一事件应生效。
+#[tokio::test]
+async fn recall_event_before_message_arrival_is_forgotten_and_replayable() {
+    let bus = EventBus::new();
+    let mut receiver = bus.subscribe_raw();
+    let current_user_id: CurrentUserIdStore = Arc::new(RwLock::new("u1".to_string()));
+    let message_store = Arc::new(MemoryMessageStore::new());
+    let stores = StoreProvider {
+        messages: message_store.clone(),
+        conversations: Arc::new(NoopConversationStore),
+        conversation_participants: None,
+        cursors: Arc::new(NoopSyncCursorStore),
+        pending_send_reader: None,
+        pending_send_writer: None,
+        upload_manifest_store: None,
+        media_cache_store: None,
+        media_cache_admin: None,
+        user_file_download_store: None,
+        user_profiles_reader: None,
+        user_profiles_writer: None,
+    };
+    let dispatcher = Dispatcher::new(
+        bus.clone(),
+        None,
+        None,
+        None,
+        Some(stores),
+        current_user_id,
+        EventDeduper::new(Some(64)),
+        test_notification_pipeline(bus),
+        MetricsRecorder::disabled(),
+    );
+
+    let recall_event = Event {
+        event_id: "recall-replay-1".to_string(),
+        conversation_id: "conversation-1".to_string(),
+        payload: Some(ProtoEventPayload::Recall(MessageRecallEvent {
+            server_msg_id: "server-1".to_string(),
+            ..Default::default()
+        })),
+        ..Default::default()
+    };
+
+    // 本地尚无目标消息：不应发布 Recalled（事件被留待重放）。
+    dispatcher
+        .dispatch(DownlinkPayload::Event(recall_event.clone()))
+        .await
+        .unwrap();
+    assert!(
+        timeout(Duration::from_millis(100), receiver.recv())
+            .await
+            .is_err(),
+        "recall without local message must not publish Recalled"
+    );
+
+    // 消息到达后重放同一事件（同 event_id）：若去重键未回滚将被永久吞掉。
+    let mut message = IMMessage::new(flare_proto::common::Message::default());
+    message.server_id = "server-1".to_string();
+    message.conversation_id = "conversation-1".to_string();
+    message_store.save_one(&message).await.unwrap();
+
+    dispatcher
+        .dispatch(DownlinkPayload::Event(recall_event))
+        .await
+        .unwrap();
+
+    let event = timeout(Duration::from_millis(200), receiver.recv())
+        .await
+        .expect("replayed recall should publish Recalled")
+        .expect("bus closed");
+    match event {
+        SdkEvent::Message(MessageEvent::Recalled {
+            conversation_id, ..
+        }) => {
+            assert_eq!(conversation_id, "conversation-1");
+        }
+        other => panic!("unexpected event: {other:?}"),
+    }
+    let stored = message_store
+        .get("server-1")
+        .await
+        .unwrap()
+        .expect("message should exist");
+    assert_eq!(
+        stored.status,
+        crate::model::message::MessageStatus::Recalled as i32
+    );
 }
 
 #[tokio::test]

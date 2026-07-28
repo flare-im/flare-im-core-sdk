@@ -127,7 +127,6 @@ impl SyncEventApplier {
             self.bus.publish(SdkEvent::Message(MessageEvent::Edited {
                 conversation_id: event.conversation_id.clone(),
                 server_msg_id: edit.server_msg_id.clone(),
-                edit_version: Some(edit.edit_version),
             }));
             self.publish_extension_if_needed(event, mode, false);
             return Ok(true);

@@ -595,8 +595,8 @@ mod tests {
             Ok(())
         }
 
-        async fn update_status(&self, _message_id: &str, _status: i32) -> Result<()> {
-            Ok(())
+        async fn update_status(&self, _message_id: &str, _status: i32) -> Result<u64> {
+            Ok(0)
         }
 
         async fn update_content(&self, _message_id: &str, _new_content: Vec<u8>) -> Result<bool> {

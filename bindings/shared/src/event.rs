@@ -164,14 +164,12 @@ pub fn sdk_event_payload(ev: &SdkEvent) -> Option<(&'static str, Value)> {
         SdkEvent::Message(MessageEvent::Edited {
             conversation_id,
             server_msg_id,
-            edit_version,
         }) => (
             "message.edited",
             json!({
                 "conversationId": conversation_id,
                 "messageId": server_msg_id,
-                "serverMsgId": server_msg_id,
-                "editVersion": edit_version
+                "serverMsgId": server_msg_id
             }),
         ),
         SdkEvent::Message(MessageEvent::ReactionChanged {

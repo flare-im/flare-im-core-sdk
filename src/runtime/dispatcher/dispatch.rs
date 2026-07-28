@@ -342,12 +342,35 @@ impl Dispatcher {
         self.notification_pipeline.finish_batch(messages).await;
     }
 
+    /// 回滚一次事件应用：去重键 + 已应用事件 seq 一并撤销，使事件可被后续同步重放。
+    ///
+    /// 两者必须同进同退——只回滚去重键会让 [`AppliedEventSeqs`] 里留下未真正应用的 seq，
+    /// 把真缺口误判成已填充。
+    pub(super) async fn rollback_applied_event(&self, ev: &flare_proto::common::Event) {
+        self.event_deduper.forget(ev).await;
+        let conversation_id = Self::event_conversation_id(ev);
+        if !conversation_id.is_empty() {
+            self.applied_event_seqs
+                .unrecord(conversation_id, ev.conversation_seq)
+                .await;
+        }
+    }
+
     /// 分发单条 Event（从 EventEnvelope 或单条 Event 下行复用）
     pub(super) async fn dispatch_single_event(&self, ev: &flare_proto::common::Event) {
         if !self.event_deduper.record_if_new(ev).await {
             return;
         }
         if !matches!(&ev.payload, Some(EventPayload::Message(_))) {
+            // 操作事件与消息共享会话 seq 分配器（AUDIT-25-01）：先登记该 seq 已被
+            // 本地填充，再做 waterline 判定，否则每条操作事件都会被当成缺口而触发
+            // 一次全量单会话同步。应用失败时由 `rollback_applied_event` 撤销。
+            let conversation_id = Self::event_conversation_id(ev);
+            if !conversation_id.is_empty() {
+                self.applied_event_seqs
+                    .record(conversation_id, ev.conversation_seq)
+                    .await;
+            }
             self.maybe_trigger_event_waterline(ev).await;
         }
         let mut messages: Vec<IMMessage> = Vec::new();
@@ -364,7 +387,7 @@ impl Dispatcher {
                     Ok(converged) => messages = converged,
                     Err(error) => {
                         warn!(error = %error, "single event message converge failed");
-                        self.event_deduper.forget(ev).await;
+                        self.rollback_applied_event(ev).await;
                         return;
                     }
                 }
@@ -372,13 +395,13 @@ impl Dispatcher {
             if let Some(ref stores) = self.stores {
                 if let Err(e) = stores.messages.save_batch(&messages).await {
                     warn!(error = %e, "single event message save_batch failed");
-                    self.event_deduper.forget(ev).await;
+                    self.rollback_applied_event(ev).await;
                     return;
                 } else if let Some(applier) = &self.conversation_projection_applier
                     && let Err(e) = applier.apply_messages(&messages, &current_user_id).await
                 {
                     warn!(error = %e, "single event conversation projection failed");
-                    self.event_deduper.forget(ev).await;
+                    self.rollback_applied_event(ev).await;
                     return;
                 }
                 self.repair_message_seq_after_persist(&messages).await;
@@ -389,19 +412,33 @@ impl Dispatcher {
         if let Some(p) = &ev.payload {
             match p {
                 EventPayload::Recall(recall) => {
-                    if let Some(ref stores) = self.stores
-                        && let Err(e) = stores
+                    if let Some(ref stores) = self.stores {
+                        match stores
                             .messages
                             .update_status(&recall.server_msg_id, MessageStatus::Recalled as i32)
                             .await
-                    {
-                        warn!(
-                            error = %e,
-                            server_msg_id = %recall.server_msg_id,
-                            "Recall: update_status failed; event will be retried"
-                        );
-                        self.event_deduper.forget(ev).await;
-                        return;
+                        {
+                            Ok(0) => {
+                                // 目标消息尚未落库（事件先于消息到达）：与 Edit/Reaction/Delete
+                                // 的 NotFound 路径一致，回滚去重键保留事件可重放。
+                                warn!(
+                                    server_msg_id = %recall.server_msg_id,
+                                    "Recall: no local row matched; event will be retried after message sync"
+                                );
+                                self.rollback_applied_event(ev).await;
+                                return;
+                            }
+                            Ok(_) => {}
+                            Err(e) => {
+                                warn!(
+                                    error = %e,
+                                    server_msg_id = %recall.server_msg_id,
+                                    "Recall: update_status failed; event will be retried"
+                                );
+                                self.rollback_applied_event(ev).await;
+                                return;
+                            }
+                        }
                     }
                     let conversation_id = self
                         .message_operation_conversation_id(conversation_id, &recall.server_msg_id)
@@ -418,7 +455,7 @@ impl Dispatcher {
                             server_msg_id = %edit.server_msg_id,
                             "Event Edit missing new_content; event will be retried"
                         );
-                        self.event_deduper.forget(ev).await;
+                        self.rollback_applied_event(ev).await;
                         return;
                     };
                     if let Some(ref stores) = self.stores {
@@ -440,12 +477,12 @@ impl Dispatcher {
                                     server_msg_id = %edit.server_msg_id,
                                     "Event Edit: no local row matched; event will be retried after message sync"
                                 );
-                                self.event_deduper.forget(ev).await;
+                                self.rollback_applied_event(ev).await;
                                 return;
                             }
                             Err(e) => {
                                 warn!(error = %e, server_msg_id = %edit.server_msg_id, "Event Edit apply_edit_event failed");
-                                self.event_deduper.forget(ev).await;
+                                self.rollback_applied_event(ev).await;
                                 return;
                             }
                         }
@@ -454,7 +491,6 @@ impl Dispatcher {
                         self.bus.publish(SdkEvent::Message(MessageEvent::Edited {
                             conversation_id: conversation_id.to_string(),
                             server_msg_id: edit.server_msg_id.clone(),
-                            edit_version: Some(edit.edit_version),
                         }));
                     }
                 }
@@ -482,12 +518,12 @@ impl Dispatcher {
                                     server_msg_id = %reaction.server_msg_id,
                                     "Event Reaction: no local row matched; event will be retried after message sync"
                                 );
-                                self.event_deduper.forget(ev).await;
+                                self.rollback_applied_event(ev).await;
                                 return;
                             }
                             Err(error) => {
                                 warn!(error = %error, server_msg_id = %reaction.server_msg_id, "Event Reaction apply failed");
-                                self.event_deduper.forget(ev).await;
+                                self.rollback_applied_event(ev).await;
                                 return;
                             }
                         }
@@ -521,12 +557,12 @@ impl Dispatcher {
                                         server_msg_id = %delete.server_msg_id,
                                         "Event Delete: no local row matched; event will be retried after message sync"
                                     );
-                                    self.event_deduper.forget(ev).await;
+                                    self.rollback_applied_event(ev).await;
                                     return;
                                 }
                                 Err(error) => {
                                     warn!(error = %error, server_msg_id = %delete.server_msg_id, "Event Delete apply failed");
-                                    self.event_deduper.forget(ev).await;
+                                    self.rollback_applied_event(ev).await;
                                     return;
                                 }
                             }
@@ -580,7 +616,7 @@ impl Dispatcher {
                             message_id = %retention_scheduled.server_msg_id,
                             "Event RetentionScheduled missing policy/state; event will be retried"
                         );
-                        self.event_deduper.forget(ev).await;
+                        self.rollback_applied_event(ev).await;
                         return;
                     };
                     if let Some(ref stores) = self.stores {
@@ -604,12 +640,12 @@ impl Dispatcher {
                                     message_id = %retention_scheduled.server_msg_id,
                                     "Event RetentionScheduled: no local row matched; event will be retried after message sync"
                                 );
-                                self.event_deduper.forget(ev).await;
+                                self.rollback_applied_event(ev).await;
                                 return;
                             }
                             Err(error) => {
                                 warn!(error = %error, message_id = %retention_scheduled.server_msg_id, "Event RetentionScheduled apply failed");
-                                self.event_deduper.forget(ev).await;
+                                self.rollback_applied_event(ev).await;
                                 return;
                             }
                         }
@@ -629,7 +665,7 @@ impl Dispatcher {
                             message_id = %retention_expired.server_msg_id,
                             "Event RetentionExpired missing state; event will be retried"
                         );
-                        self.event_deduper.forget(ev).await;
+                        self.rollback_applied_event(ev).await;
                         return;
                     };
                     if let Some(ref stores) = self.stores {
@@ -652,12 +688,12 @@ impl Dispatcher {
                                     message_id = %retention_expired.server_msg_id,
                                     "Event RetentionExpired: no local row matched; event will be retried after message sync"
                                 );
-                                self.event_deduper.forget(ev).await;
+                                self.rollback_applied_event(ev).await;
                                 return;
                             }
                             Err(error) => {
                                 warn!(error = %error, message_id = %retention_expired.server_msg_id, "Event RetentionExpired apply failed");
-                                self.event_deduper.forget(ev).await;
+                                self.rollback_applied_event(ev).await;
                                 return;
                             }
                         }
@@ -677,7 +713,7 @@ impl Dispatcher {
                             message_id = %retention_purged.server_msg_id,
                             "Event RetentionPurged missing state; event will be retried"
                         );
-                        self.event_deduper.forget(ev).await;
+                        self.rollback_applied_event(ev).await;
                         return;
                     };
                     if let Some(ref stores) = self.stores {
@@ -700,12 +736,12 @@ impl Dispatcher {
                                     message_id = %retention_purged.server_msg_id,
                                     "Event RetentionPurged: no local row matched; event will be retried after message sync"
                                 );
-                                self.event_deduper.forget(ev).await;
+                                self.rollback_applied_event(ev).await;
                                 return;
                             }
                             Err(error) => {
                                 warn!(error = %error, message_id = %retention_purged.server_msg_id, "Event RetentionPurged apply failed");
-                                self.event_deduper.forget(ev).await;
+                                self.rollback_applied_event(ev).await;
                                 return;
                             }
                         }
@@ -735,12 +771,12 @@ impl Dispatcher {
                                     server_msg_id = %pin.server_msg_id,
                                     "Event Pin: no local row matched; event will be retried after message sync"
                                 );
-                                self.event_deduper.forget(ev).await;
+                                self.rollback_applied_event(ev).await;
                                 return;
                             }
                             Err(error) => {
                                 warn!(error = %error, server_msg_id = %pin.server_msg_id, "Event Pin apply failed");
-                                self.event_deduper.forget(ev).await;
+                                self.rollback_applied_event(ev).await;
                                 return;
                             }
                         }
@@ -769,12 +805,12 @@ impl Dispatcher {
                                     server_msg_id = %unpin.server_msg_id,
                                     "Event Unpin: no local row matched; event will be retried after message sync"
                                 );
-                                self.event_deduper.forget(ev).await;
+                                self.rollback_applied_event(ev).await;
                                 return;
                             }
                             Err(error) => {
                                 warn!(error = %error, server_msg_id = %unpin.server_msg_id, "Event Unpin apply failed");
-                                self.event_deduper.forget(ev).await;
+                                self.rollback_applied_event(ev).await;
                                 return;
                             }
                         }
@@ -813,12 +849,12 @@ impl Dispatcher {
                                     server_msg_id = %mark.server_msg_id,
                                     "Event Mark: no local row matched; event will be retried after message sync"
                                 );
-                                self.event_deduper.forget(ev).await;
+                                self.rollback_applied_event(ev).await;
                                 return;
                             }
                             Err(error) => {
                                 warn!(error = %error, server_msg_id = %mark.server_msg_id, "Event Mark apply failed");
-                                self.event_deduper.forget(ev).await;
+                                self.rollback_applied_event(ev).await;
                                 return;
                             }
                         }
@@ -853,12 +889,12 @@ impl Dispatcher {
                                     server_msg_id = %unmark.server_msg_id,
                                     "Event Unmark: no local row matched; event will be retried after message sync"
                                 );
-                                self.event_deduper.forget(ev).await;
+                                self.rollback_applied_event(ev).await;
                                 return;
                             }
                             Err(error) => {
                                 warn!(error = %error, server_msg_id = %unmark.server_msg_id, "Event Unmark apply failed");
-                                self.event_deduper.forget(ev).await;
+                                self.rollback_applied_event(ev).await;
                                 return;
                             }
                         }

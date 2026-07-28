@@ -75,8 +75,6 @@ pub enum MessageEvent {
     Edited {
         conversation_id: String,
         server_msg_id: String,
-        /// 服务端编辑版本（`MessageEditEvent.edit_version`），无则 `None`
-        edit_version: Option<i32>,
     },
     /// 消息反应已变化（添加/移除）
     ReactionChanged {

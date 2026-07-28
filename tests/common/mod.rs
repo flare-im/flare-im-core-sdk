@@ -153,7 +153,7 @@ impl MessageWriter for MemoryMessageStore {
         MessageWriter::save_batch(self, std::slice::from_ref(message)).await
     }
 
-    async fn update_status(&self, message_id: &str, status: i32) -> Result<()> {
+    async fn update_status(&self, message_id: &str, status: i32) -> Result<u64> {
         let mut data = self.data.write().await;
         let recalled = MessageStatus::Recalled as i32;
         let apply = |msg: &mut IMMessage| {
@@ -164,15 +164,15 @@ impl MessageWriter for MemoryMessageStore {
         };
         if let Some(msg) = data.get_mut(message_id) {
             apply(msg);
-            return Ok(());
+            return Ok(1);
         }
         for msg in data.values_mut() {
             if msg.server_id == message_id || msg.client_msg_id == message_id {
                 apply(msg);
-                break;
+                return Ok(1);
             }
         }
-        Ok(())
+        Ok(0)
     }
 
     async fn update_content(&self, message_id: &str, new_content: Vec<u8>) -> Result<bool> {

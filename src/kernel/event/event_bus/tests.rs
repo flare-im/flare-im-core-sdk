@@ -1,4 +1,4 @@
-use super::{EventBus, PublishOutcome, RecoverableRwLock};
+use super::{EventBus, PublishOutcome, RecoverableRwLock, ReportingGuard};
 use crate::kernel::SyncRunContext;
 use crate::kernel::event::{
     ConnectionEvent, ConnectionEventType, CustomEventDefinition, MessageEvent, MessageEventType,
@@ -517,4 +517,25 @@ async fn broad_custom_event_filter_matches_all_custom_events() {
         received,
         SdkEvent::Message(MessageEvent::Custom { .. })
     ));
+}
+
+/// 补发路径 panic 时 `reporting_callback_drops` 门必须仍被释放——否则门永久占用，
+/// 此后所有回调丢弃都不再向应用层通报（静默降级，比丢弃本身更难排查）。
+#[test]
+fn reporting_guard_releases_gate_even_on_panic() {
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    let gate = AtomicBool::new(false);
+
+    assert!(!gate.swap(true, Ordering::AcqRel), "gate starts free");
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        let _guard = ReportingGuard(&gate);
+        panic!("resync publish blew up");
+    }));
+    assert!(result.is_err(), "the panic must have propagated");
+    assert!(
+        !gate.load(Ordering::Acquire),
+        "gate must be released so later drops are still reported"
+    );
 }

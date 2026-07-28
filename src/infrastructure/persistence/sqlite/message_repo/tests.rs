@@ -62,6 +62,34 @@ async fn save_batch_preserves_typed_thread_id() {
 }
 
 #[tokio::test]
+async fn update_status_reports_missing_target_and_applies_when_present() {
+    let repo = make_repo().await;
+
+    // 本地尚无该消息：必须反馈 0 行，供调用方保留事件重放（Recall 先于消息到达）。
+    let affected = repo
+        .update_status("missing-server-id", MessageStatus::Recalled as i32)
+        .await
+        .unwrap();
+    assert_eq!(affected, 0);
+
+    let message = text_message("server-recall-1", "conv-recall", "u1", 1, 1_000, "hello");
+    repo.save_batch(&[message]).await.unwrap();
+
+    let affected = repo
+        .update_status("server-recall-1", MessageStatus::Recalled as i32)
+        .await
+        .unwrap();
+    assert!(affected > 0);
+    let stored = repo
+        .get("server-recall-1")
+        .await
+        .unwrap()
+        .expect("message should be stored");
+    assert!(stored.is_recalled);
+    assert_eq!(stored.status, MessageStatus::Recalled as i32);
+}
+
+#[tokio::test]
 async fn get_by_conversation_repairs_single_chat_channel_alias_messages() {
     let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
     sqlite_init_schema(&pool).await.unwrap();

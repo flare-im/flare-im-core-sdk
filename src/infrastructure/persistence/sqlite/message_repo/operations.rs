@@ -8,6 +8,9 @@ impl MessageStore for SqliteMessageRepo {
         new_content: Vec<u8>,
         event_seq: Option<u64>,
     ) -> Result<EditApplyResult> {
+        // 读改写必须同事务：SELECT（lastEditEventSeq 判定）与 UPDATE 之间若允许并发
+        // 编辑事件交错，旧事件可能覆盖新事件。WAL 下并发写会以 BUSY 失败并走事件重放。
+        let mut tx = self.pool.begin().await.map_err(sqlx_err)?;
         let row = sqlx::query(
             r#"SELECT attributes
                FROM messages
@@ -16,7 +19,7 @@ impl MessageStore for SqliteMessageRepo {
         )
         .bind(message_id)
         .bind(message_id)
-        .fetch_optional(&self.pool)
+        .fetch_optional(&mut *tx)
         .await
         .map_err(sqlx_err)?;
 
@@ -57,7 +60,6 @@ impl MessageStore for SqliteMessageRepo {
         attributes.insert("messageFsmState".to_string(), "EDITED".to_string());
         attributes.insert("lastEditedAt".to_string(), now_ms.to_string());
 
-        let mut tx = self.pool.begin().await.map_err(sqlx_err)?;
         let rows = sqlx::query(
             r#"UPDATE messages
                SET encoded_content = ?, is_edited = 1, text = ?, updated_at = ?, attributes = ?

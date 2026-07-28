@@ -88,7 +88,9 @@ impl SyncManager {
     ) {
         let tasks = self.registered_tasks();
         let handle = Orchestrator::new(store, bus).run(user_id, run, tasks);
-        lock_recovered(&self.background).push(handle);
+        let mut background = lock_recovered(&self.background);
+        background.retain(|task| !task.is_finished());
+        background.push(handle);
     }
 
     /// 立即停止当前同步编排（用于登出/被踢/断连后的会话硬重置）。
@@ -123,7 +125,9 @@ impl SyncManager {
             run,
             selected,
         );
-        lock_recovered(&self.background).push(handle);
+        let mut background = lock_recovered(&self.background);
+        background.retain(|task| !task.is_finished());
+        background.push(handle);
     }
 
     fn abort_background_tasks(&self) {

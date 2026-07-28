@@ -101,7 +101,7 @@ impl IMClient {
                 let Some(snapshot_client) = client.upgrade() else {
                     break;
                 };
-                let (user_id, token, interval_secs, max_attempts) =
+                let (user_id, mut token, interval_secs, max_attempts) =
                     match snapshot_client.reconnect_snapshot(generation).await {
                         Some(snapshot) => snapshot,
                         None => break,
@@ -164,6 +164,15 @@ impl IMClient {
                             "skip stale reconnect event because transport is already connected"
                         );
                         break;
+                    }
+
+                    // 每次尝试前重取 token：默认无限重试下，一次性快照的 token 过期后
+                    // 会永远失败。取不到（如世代切换）时沿用上一枚，保持原有重试节奏，
+                    // 由世代校验与 TokenExpired 终态路径负责收尾。
+                    if let Some((_, fresh_token, _, _)) =
+                        reconnect_client.reconnect_snapshot(generation).await
+                    {
+                        token = fresh_token;
                     }
 
                     match reconnect_client

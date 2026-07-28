@@ -42,8 +42,14 @@ impl Dispatcher {
             .or_else(|| attr_u64(attributes, WATERLINE_ATTR_MAX_SEQ_CAMEL))
             .unwrap_or(0);
         let user_id = self.current_user_id.read().await.clone();
-        if local_waterline_reached_with_stores(&self.stores, &user_id, conversation_id, target_seq)
-            .await
+        if local_waterline_reached_with_stores(
+            &self.stores,
+            &self.applied_event_seqs,
+            &user_id,
+            conversation_id,
+            target_seq,
+        )
+        .await
         {
             tracing::debug!(
                 source,
@@ -86,6 +92,7 @@ impl Dispatcher {
 
         let states = self.waterline_pull_state.clone();
         let stores = self.stores.clone();
+        let applied_event_seqs = self.applied_event_seqs.clone();
         let conversation_id = conversation_id.to_string();
         let user_id = user_id.to_string();
         let source = source.to_string();
@@ -122,6 +129,7 @@ impl Dispatcher {
 
                 if local_waterline_reached_with_stores(
                     &stores,
+                    &applied_event_seqs,
                     &user_id,
                     &conversation_id,
                     pending_target_seq,
@@ -184,7 +192,13 @@ impl Dispatcher {
         target_seq: u64,
     ) -> bool {
         let user_id = self.current_user_id.read().await.clone();
-        local_waterline_reached_with_stores(&self.stores, &user_id, conversation_id, target_seq)
-            .await
+        local_waterline_reached_with_stores(
+            &self.stores,
+            &self.applied_event_seqs,
+            &user_id,
+            conversation_id,
+            target_seq,
+        )
+        .await
     }
 }

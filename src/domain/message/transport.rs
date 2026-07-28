@@ -8,7 +8,6 @@ pub enum MessageTransportAction {
         conversation_id: String,
         server_msg_id: String,
         new_content: Vec<u8>,
-        edit_version: i32,
         reason: String,
         show_edited_mark: bool,
     },

@@ -403,12 +403,12 @@ impl MessageWriter for PersistingMessageStore {
         MessageWriter::save_batch(self, std::slice::from_ref(message)).await
     }
 
-    async fn update_status(&self, message_id: &str, status: i32) -> Result<()> {
-        self.inner.update_status(message_id, status).await?;
+    async fn update_status(&self, message_id: &str, status: i32) -> Result<u64> {
+        let affected = self.inner.update_status(message_id, status).await?;
         if let Some(message) = self.get_by_any_message_id(message_id).await? {
             self.persist_message_spawn(message);
         }
-        Ok(())
+        Ok(affected)
     }
 
     async fn update_content(&self, message_id: &str, new_content: Vec<u8>) -> Result<bool> {

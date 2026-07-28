@@ -159,7 +159,7 @@
       "core": "SdkEvent::Message(MessageEvent::Edited)",
       "cCode": 2008,
       "cCodeName": "FLARE_EVENT_MESSAGE_EDITED",
-      "cJson": { "type": "message", "event": "edited", "fields": ["conversationId", "serverMsgId", "editVersion"] },
+      "cJson": { "type": "message", "event": "edited", "fields": ["conversationId", "serverMsgId"] },
       "tauri": "im://message_edited"
     },
     {
