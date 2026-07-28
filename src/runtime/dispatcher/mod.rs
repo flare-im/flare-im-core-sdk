@@ -94,7 +94,7 @@ pub struct Dispatcher {
     conversation_projection_applier: Option<ConversationProjectionApplier>,
     seq_repair_state: Arc<AsyncMutex<HashMap<String, SeqRepairState>>>,
     waterline_pull_state: Arc<AsyncMutex<HashMap<String, WaterlinePullState>>>,
-    /// AUDIT-25-01：已应用操作事件占据的会话 seq（事件与消息共享 seq 分配器，
+    /// 已应用操作事件占据的会话 seq（事件与消息共享 seq 分配器，
     /// 这些 seq 永远没有消息行）；waterline / seq 缺口判定把它们视作已填充。
     applied_event_seqs: AppliedEventSeqs,
     /// win#2：有界串行持久化 worker 的入队端。生产路径经 `start_persist_worker` 装载；
@@ -408,7 +408,7 @@ fn prune_seq_repair_state(states: &mut HashMap<String, SeqRepairState>, now_ms: 
     }
 }
 
-/// waterline 到位判定。事件与消息共享会话 seq 分配器（AUDIT-25-01），因此
+/// waterline 到位判定。事件与消息共享会话 seq 分配器，因此
 /// 「target seq 已到位」= target 有本地消息行 **或** target 已被记录为已应用操作事件；
 /// 游标未覆盖 target 时，用「本地消息行 + 已应用事件 seq」动态验证 `(cursor, target]`
 /// 连续填充，避免每条操作事件都触发一次全量单会话同步。

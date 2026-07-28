@@ -2016,7 +2016,7 @@ async fn standalone_event_waterline_triggers_message_sync() {
     );
 }
 
-/// AUDIT-25-01 回归夹具：本地已有 conv 的消息 seq=1..=`local_max`、游标停在 `cursor`。
+/// 回归夹具：本地已有 conv 的消息 seq=1..=`local_max`、游标停在 `cursor`。
 fn waterline_fixture()
 -> (Arc<MemoryMessageStore>, Arc<crate::infrastructure::persistence::MemorySyncCursorStore>, StoreProvider)
 {
@@ -2083,7 +2083,7 @@ fn waterline_dispatcher(stores: StoreProvider, sync: Arc<RecordingSessionSyncRun
     )
 }
 
-/// AUDIT-25-01：操作事件与消息共享 seq 空间。本地消息到 seq=10、游标=10 时，
+/// 操作事件与消息共享 seq 空间。本地消息到 seq=10、游标=10 时，
 /// 一条 seq=11 的操作事件（如已读回执）是**连续**的下一个 seq，不得触发全量单会话同步。
 /// 修复前该判定必然假阴性 → 活跃群里每条已读/reaction 都打一次同步 RPC。
 #[tokio::test]

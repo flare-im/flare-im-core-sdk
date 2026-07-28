@@ -347,7 +347,7 @@ async fn disconnect_clears_shared_http_auth_context() {
     assert_eq!(headers.get("x-tenant-id").map(String::as_str), Some("0"));
 }
 
-/// AUDIT-25-02 契约：设备标识必须由**同一处**决定，供登录签 token 与 CONNECT 上报共用。
+/// 契约：设备标识必须由**同一处**决定，供登录签 token 与 CONNECT 上报共用。
 /// 网关在两侧都非空且不等时直接拒连，此前两处各自取值无对齐机制，只能给登录传空绕过。
 #[tokio::test]
 async fn bind_device_id_writes_then_reads_back_the_same_value() {

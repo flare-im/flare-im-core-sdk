@@ -362,7 +362,7 @@ impl Dispatcher {
             return;
         }
         if !matches!(&ev.payload, Some(EventPayload::Message(_))) {
-            // 操作事件与消息共享会话 seq 分配器（AUDIT-25-01）：先登记该 seq 已被
+            // 操作事件与消息共享会话 seq 分配器：先登记该 seq 已被
             // 本地填充，再做 waterline 判定，否则每条操作事件都会被当成缺口而触发
             // 一次全量单会话同步。应用失败时由 `rollback_applied_event` 撤销。
             let conversation_id = Self::event_conversation_id(ev);

@@ -145,7 +145,7 @@ impl Dispatcher {
             let base_seq = cursor_seq;
             let mut continuity_window = local_tail_seqs;
             continuity_window.extend(seqs.iter().copied());
-            // 操作事件与消息共享会话 seq 分配器（AUDIT-25-01）：已应用的操作事件占据的 seq
+            // 操作事件与消息共享会话 seq 分配器：已应用的操作事件占据的 seq
             // 在消息序列里表现为「空洞」。不计入连续窗口会让每条 reaction/已读都被判成缺口，
             // 触发冗余补拉与 warn 噪音，且游标被卡在事件 seq 之前。
             continuity_window.extend(

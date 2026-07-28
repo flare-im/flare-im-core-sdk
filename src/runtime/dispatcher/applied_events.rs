@@ -1,17 +1,14 @@
-//! 已应用操作事件的会话 seq 注册表（AUDIT-25-01）。
+//! 已应用操作事件的会话 seq 注册表。
 //!
-//! 服务端给**所有**通用事件（recall/edit/reaction/read/pin/delete…）从与消息同一个
-//! 会话 seq 分配器分配 `conversation_seq`：操作事件占据的 seq 永远不会出现消息行。
-//! 若 waterline / seq 缺口判定只认消息行，这些 seq 会被当成「缺口」→ 每条操作事件
-//! 在接收端触发一次全量单会话同步（RPC 风暴）+ seq_repair 冗余补拉与 warn 噪音。
+//! 服务端给所有通用事件（recall/edit/reaction/read/pin/delete…）从与消息同一个分配器发
+//! `conversation_seq`，这些 seq 永远不会有对应的消息行。若连续性判定只认消息行，它们就被
+//! 当成缺口——活跃会话里每条已读、每个 reaction 都会触发一次全量单会话同步。
 //!
-//! 本注册表记录「已应用的操作事件 seq」，使连续性判定把它们视作已填充。
+//! 本注册表记录已应用的事件 seq，供 waterline 与 seq_repair 视作已填充。
 //!
-//! 有界内存态：按会话 LRU（上限 [`MAX_CONVERSATIONS`]），每会话只保留最大的
-//! [`MAX_SEQS_PER_CONVERSATION`] 个 seq（淘汰最小 = 最老）。不持久化：持久化的连续性
-//! 由会话同步游标承载（操作事件应用成功后游标照常推进并落库，见
-//! `Dispatcher::advance_cursor_over_applied_event`）；重启后最坏情况是针对陈旧事件
-//! seq 的 waterline ping 多触发一次合并补拉，可接受。
+//! 状态有界且不持久化：按会话 LRU（上限 [`MAX_CONVERSATIONS`]），每会话保留最大的
+//! [`MAX_SEQS_PER_CONVERSATION`] 个 seq。持久化的连续性由会话同步游标承载，重启后最坏
+//! 情况是陈旧事件 seq 的 waterline ping 多触发一次合并补拉。
 
 use std::collections::{BTreeSet, HashMap};
 use std::ops::Bound;
