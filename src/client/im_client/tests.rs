@@ -358,7 +358,9 @@ async fn bind_device_id_writes_then_reads_back_the_same_value() {
 
     // 写入后回显，且后续只读拿到同一个值 —— 登录与连接因此同源
     assert_eq!(
-        client.bind_device_id(Some("device-alpha".to_string())).await,
+        client
+            .bind_device_id(Some("device-alpha".to_string()))
+            .await,
         Some("device-alpha".to_string())
     );
     assert_eq!(

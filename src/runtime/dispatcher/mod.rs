@@ -454,7 +454,10 @@ async fn local_waterline_reached_with_stores(
     if cursor_seq >= target_seq {
         // 游标已覆盖：仍要求 target 对应本地消息行或已应用操作事件
         // （防游标超前于本地数据，参见 waterline_uses_materialized_message_seq_not_cursor_seq）。
-        if applied_event_seqs.contains(conversation_id, target_seq).await {
+        if applied_event_seqs
+            .contains(conversation_id, target_seq)
+            .await
+        {
             return true;
         }
         return stores

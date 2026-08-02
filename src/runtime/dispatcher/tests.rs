@@ -1695,7 +1695,10 @@ fn message_with(sender: &str, seq: u64) -> IMMessage {
 fn detects_outgoing_message_that_got_a_regressed_seq() {
     // 本端(u1)发出的消息拿到 seq=8/9，但会话已同步到高水位 76 → 回退，应被检出。
     let batch = vec![message_with("u1", 8), message_with("u1", 9)];
-    assert_eq!(detect_outgoing_seq_regressions(&batch, "u1", 76), vec![8, 9]);
+    assert_eq!(
+        detect_outgoing_seq_regressions(&batch, "u1", 76),
+        vec![8, 9]
+    );
 }
 
 #[test]
@@ -1710,7 +1713,10 @@ fn ignores_incoming_and_forward_progress_and_missing_baseline() {
     assert!(detect_outgoing_seq_regressions(&[message_with("u1", 8)], "u1", 0).is_empty());
     assert!(detect_outgoing_seq_regressions(&[message_with("u1", 8)], "", 76).is_empty());
     // seq==high_water 边界视为回退（撞号，见观测数据 seq=9 撞旧消息）。
-    assert_eq!(detect_outgoing_seq_regressions(&[message_with("u1", 76)], "u1", 76), vec![76]);
+    assert_eq!(
+        detect_outgoing_seq_regressions(&[message_with("u1", 76)], "u1", 76),
+        vec![76]
+    );
 }
 
 // ---- TEST-1: 生成式属性测试(seq-gap 辅助函数 = 游标推进/补拉正确性的支点)----
@@ -2017,9 +2023,11 @@ async fn standalone_event_waterline_triggers_message_sync() {
 }
 
 /// 回归夹具：本地已有 conv 的消息 seq=1..=`local_max`、游标停在 `cursor`。
-fn waterline_fixture()
--> (Arc<MemoryMessageStore>, Arc<crate::infrastructure::persistence::MemorySyncCursorStore>, StoreProvider)
-{
+fn waterline_fixture() -> (
+    Arc<MemoryMessageStore>,
+    Arc<crate::infrastructure::persistence::MemorySyncCursorStore>,
+    StoreProvider,
+) {
     let message_store = Arc::new(MemoryMessageStore::new());
     let cursor_store = Arc::new(crate::infrastructure::persistence::MemorySyncCursorStore::new());
     let stores = StoreProvider {
@@ -2068,7 +2076,10 @@ async fn seed_waterline_conversation(
         .unwrap();
 }
 
-fn waterline_dispatcher(stores: StoreProvider, sync: Arc<RecordingSessionSyncRunner>) -> Dispatcher {
+fn waterline_dispatcher(
+    stores: StoreProvider,
+    sync: Arc<RecordingSessionSyncRunner>,
+) -> Dispatcher {
     let bus = EventBus::new();
     Dispatcher::new(
         bus.clone(),

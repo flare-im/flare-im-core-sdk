@@ -26,7 +26,9 @@ use crate::types::{FlareHandle, FlareResultCallback, FlareString};
 pub const FLARE_FFI_CONTRACT_VERSION: &str =
     flare_im_core_sdk_bindings_runtime::BINDING_CONTRACT_VERSION;
 
-fn parse_store_config_json(store_config_json: *const c_char) -> Result<Option<SdkConfigOverlay>, i32> {
+fn parse_store_config_json(
+    store_config_json: *const c_char,
+) -> Result<Option<SdkConfigOverlay>, i32> {
     if store_config_json.is_null() {
         return Ok(None);
     }

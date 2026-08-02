@@ -451,9 +451,10 @@ mod tests {
             ack_id: None,
             result: None,
         };
-        let (event, payload) =
-            sdk_event_payload(&SdkEvent::Message(MessageEvent::SendAck { ack: Box::new(ack) }))
-                .expect("send ack should map to sdk event payload");
+        let (event, payload) = sdk_event_payload(&SdkEvent::Message(MessageEvent::SendAck {
+            ack: Box::new(ack),
+        }))
+        .expect("send ack should map to sdk event payload");
 
         assert_eq!(event, "message.send_ack");
         assert!(payload.get("ack").is_some_and(Value::is_object));

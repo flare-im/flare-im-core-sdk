@@ -143,7 +143,12 @@ mod tests {
             registry.seqs_in_range("c1", 0, u64::MAX).await,
             vec![3, 4, 6, 9]
         );
-        assert!(registry.seqs_in_range("missing", 0, u64::MAX).await.is_empty());
+        assert!(
+            registry
+                .seqs_in_range("missing", 0, u64::MAX)
+                .await
+                .is_empty()
+        );
     }
 
     #[tokio::test]
