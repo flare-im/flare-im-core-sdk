@@ -1434,7 +1434,7 @@ impl SyncProtocolAdapter {
                 cursor_entries.push((critical_event_cursor_key(&conversation_id), last_seq));
                 remote_pushes.push((conversation_id, last_seq));
             }
-            if total % YIELD_EVERY_ROWS == 0 {
+            if total.is_multiple_of(YIELD_EVERY_ROWS) {
                 crate::shared::util::yield_for_frame().await;
             }
         }
@@ -1685,7 +1685,7 @@ impl SyncProtocolAdapter {
         let conversation = self.stores.conversations.get(conversation_id).await?;
         let cleared_floor = conversation
             .as_ref()
-            .map(|c| crate::domain::sync_visibility_floor(&c))
+            .map(crate::domain::sync_visibility_floor)
             .unwrap_or(0);
         let local_max_seq = self
             .stores

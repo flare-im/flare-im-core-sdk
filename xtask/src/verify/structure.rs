@@ -457,13 +457,13 @@ fn scan_forbidden_event_contract_json_fields(root: &Path, errors: &mut Vec<Strin
     let batch_event = value
         .pointer("/cAbi/batchJson/events/0")
         .and_then(|value| value.as_object());
-    if let Some(event) = batch_event {
-        if event.keys().any(|key| key.contains('_')) {
-            fail(
-                errors,
-                "legacy event contract JSON field found in cAbi.batchJson",
-            );
-        }
+    if let Some(event) = batch_event
+        && event.keys().any(|key| key.contains('_'))
+    {
+        fail(
+            errors,
+            "legacy event contract JSON field found in cAbi.batchJson",
+        );
     }
 
     let Some(events) = value.get("events").and_then(|value| value.as_array()) else {

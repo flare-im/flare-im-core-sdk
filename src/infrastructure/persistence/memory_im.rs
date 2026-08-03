@@ -816,7 +816,10 @@ mod tests {
     async fn save_batch_collapses_existing_client_msg_id() {
         let store = MemoryMessageStore::new();
         let pending = local_message("client-memory-1", "client-memory-1");
-        store.save_batch(&[pending.clone()]).await.unwrap();
+        store
+            .save_batch(std::slice::from_ref(&pending))
+            .await
+            .unwrap();
 
         let mut echoed = pending;
         echoed.server_id = "server-memory-1".to_string();
@@ -873,7 +876,10 @@ mod tests {
     async fn update_after_ack_collapses_existing_client_msg_id() {
         let store = MemoryMessageStore::new();
         let stale = local_message("stale-memory-1", "client-memory-ack-1");
-        store.save_batch(&[stale.clone()]).await.unwrap();
+        store
+            .save_batch(std::slice::from_ref(&stale))
+            .await
+            .unwrap();
 
         let mut acked = stale;
         acked.server_id = "server-memory-ack-1".to_string();

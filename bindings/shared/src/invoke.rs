@@ -66,159 +66,6 @@ fn normalize_operation_json<'a>(
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use flare_im_core_sdk::client::IMClient;
-    use flare_im_core_sdk::client::api::{
-        CapabilityApi, ConversationApi, MediaApi, MessageApi, MessageBuildApi,
-    };
-    use std::sync::Arc;
-
-    struct DirectOnlySession {
-        client: IMClient,
-    }
-
-    impl DirectOnlySession {
-        fn new() -> Self {
-            Self {
-                client: IMClient::new(),
-            }
-        }
-    }
-
-    impl InvokeSession for DirectOnlySession {
-        fn client(&self) -> IMClient {
-            self.client.clone()
-        }
-
-        async fn message_api(&self) -> Result<MessageApi> {
-            unreachable!("direct route tests must not require message api")
-        }
-
-        async fn message_build_api(&self) -> Result<Arc<MessageBuildApi>> {
-            unreachable!("direct route tests must not require message build api")
-        }
-
-        async fn conversation_api(&self) -> Result<ConversationApi> {
-            unreachable!("direct route tests must not require conversation api")
-        }
-
-        async fn media_api(&self) -> Result<Arc<MediaApi>> {
-            unreachable!("direct route tests must not require media api")
-        }
-
-        async fn capability_api(&self) -> Result<Arc<CapabilityApi>> {
-            unreachable!("direct route tests must not require capability api")
-        }
-
-        async fn after_disconnect(&self) {}
-    }
-
-    #[test]
-    fn normalizes_message_builder_typed_dispatch_json_to_message_build() {
-        let normalized = normalize_operation_json(
-            "message_builder.dispatch",
-            r#"{"op":"create_text","conversationId":"c1","text":"hello"}"#,
-        )
-        .expect("message builder dispatch should normalize");
-
-        assert_eq!(normalized.name, "message.build");
-        assert_eq!(
-            normalized.request.as_ref(),
-            r#"{"conversationId":"c1","op":"create_text","text":"hello"}"#
-        );
-    }
-
-    #[test]
-    fn extracts_message_dispatch_operation_and_params() {
-        let request = serde_json::json!({
-            "op": "search_in_conversation",
-            "params": {
-                "conversationId": "c1",
-                "keyword": "hello"
-            }
-        });
-
-        let (operation, params) =
-            message_dispatch_parts(request).expect("dispatch request should split");
-
-        assert_eq!(operation, "search_in_conversation");
-        assert_eq!(params["conversationId"], "c1");
-        assert_eq!(params["keyword"], "hello");
-    }
-
-    #[test]
-    fn rejects_message_dispatch_without_params() {
-        let err = message_dispatch_parts(serde_json::json!({ "op": "search" }))
-            .expect_err("params is part of the public message.dispatch contract");
-
-        assert!(
-            err.to_string()
-                .contains("message.dispatch params is required")
-        );
-    }
-
-    #[tokio::test]
-    async fn direct_connection_state_returns_canonical_enum_string() {
-        let session = DirectOnlySession::new();
-
-        let response = invoke_api_id_json(&session, "connection.get_state", "{}")
-            .await
-            .expect("connection state");
-        let value = binding_response_to_value(response);
-
-        assert_eq!(value, serde_json::json!("disconnected"));
-    }
-
-    #[tokio::test]
-    async fn direct_boolean_routes_return_bare_booleans() {
-        let session = DirectOnlySession::new();
-
-        let connected = binding_response_to_value(
-            invoke_api_id_json(&session, "sdk.is_connected", "{}")
-                .await
-                .expect("is connected"),
-        );
-        let active = binding_response_to_value(
-            invoke_api_id_json(&session, "sdk.session_active", "{}")
-                .await
-                .expect("session active"),
-        );
-
-        assert_eq!(connected, serde_json::json!(false));
-        assert_eq!(active, serde_json::json!(false));
-    }
-
-    #[tokio::test]
-    async fn direct_rich_doc_normalization_runs_without_module_api() {
-        let session = DirectOnlySession::new();
-        let doc_json = r#"{
-            "type": "doc",
-            "version": 2,
-            "children": [{
-                "type": "paragraph",
-                "children": [{"type": "text", "text": "hello flare"}]
-            }]
-        }"#;
-        let request = serde_json::json!({
-            "docJson": doc_json,
-        });
-
-        let response = invoke_api_id_json(
-            &session,
-            "rich_doc_v2.normalize_from_doc_json",
-            &request.to_string(),
-        )
-        .await
-        .expect("rich doc direct normalize");
-        let value = binding_response_to_value(response);
-
-        assert_eq!(value["plainText"], "hello flare");
-        assert_eq!(value["contentSchema"], "rich_doc");
-    }
-}
-
 fn normalize_operation_json_with_request<'a>(
     operation: &str,
     request_json: &'a str,
@@ -483,9 +330,7 @@ async fn dispatch_view(
             >(request, "close view request")?;
             crate::dispatch_support::json(api.close(request).await?)
         }
-        _ => Err(binding_operation_not_supported(&format!(
-            "view.{operation}"
-        ))),
+        _ => Err(binding_operation_not_supported(format!("view.{operation}"))),
     }
 }
 
@@ -494,5 +339,158 @@ pub fn binding_response_to_value(response: BindingResponse) -> Value {
         Value::Null
     } else {
         response.payload
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use flare_im_core_sdk::client::IMClient;
+    use flare_im_core_sdk::client::api::{
+        CapabilityApi, ConversationApi, MediaApi, MessageApi, MessageBuildApi,
+    };
+    use std::sync::Arc;
+
+    struct DirectOnlySession {
+        client: IMClient,
+    }
+
+    impl DirectOnlySession {
+        fn new() -> Self {
+            Self {
+                client: IMClient::new(),
+            }
+        }
+    }
+
+    impl InvokeSession for DirectOnlySession {
+        fn client(&self) -> IMClient {
+            self.client.clone()
+        }
+
+        async fn message_api(&self) -> Result<MessageApi> {
+            unreachable!("direct route tests must not require message api")
+        }
+
+        async fn message_build_api(&self) -> Result<Arc<MessageBuildApi>> {
+            unreachable!("direct route tests must not require message build api")
+        }
+
+        async fn conversation_api(&self) -> Result<ConversationApi> {
+            unreachable!("direct route tests must not require conversation api")
+        }
+
+        async fn media_api(&self) -> Result<Arc<MediaApi>> {
+            unreachable!("direct route tests must not require media api")
+        }
+
+        async fn capability_api(&self) -> Result<Arc<CapabilityApi>> {
+            unreachable!("direct route tests must not require capability api")
+        }
+
+        async fn after_disconnect(&self) {}
+    }
+
+    #[test]
+    fn normalizes_message_builder_typed_dispatch_json_to_message_build() {
+        let normalized = normalize_operation_json(
+            "message_builder.dispatch",
+            r#"{"op":"create_text","conversationId":"c1","text":"hello"}"#,
+        )
+        .expect("message builder dispatch should normalize");
+
+        assert_eq!(normalized.name, "message.build");
+        assert_eq!(
+            normalized.request.as_ref(),
+            r#"{"conversationId":"c1","op":"create_text","text":"hello"}"#
+        );
+    }
+
+    #[test]
+    fn extracts_message_dispatch_operation_and_params() {
+        let request = serde_json::json!({
+            "op": "search_in_conversation",
+            "params": {
+                "conversationId": "c1",
+                "keyword": "hello"
+            }
+        });
+
+        let (operation, params) =
+            message_dispatch_parts(request).expect("dispatch request should split");
+
+        assert_eq!(operation, "search_in_conversation");
+        assert_eq!(params["conversationId"], "c1");
+        assert_eq!(params["keyword"], "hello");
+    }
+
+    #[test]
+    fn rejects_message_dispatch_without_params() {
+        let err = message_dispatch_parts(serde_json::json!({ "op": "search" }))
+            .expect_err("params is part of the public message.dispatch contract");
+
+        assert!(
+            err.to_string()
+                .contains("message.dispatch params is required")
+        );
+    }
+
+    #[tokio::test]
+    async fn direct_connection_state_returns_canonical_enum_string() {
+        let session = DirectOnlySession::new();
+
+        let response = invoke_api_id_json(&session, "connection.get_state", "{}")
+            .await
+            .expect("connection state");
+        let value = binding_response_to_value(response);
+
+        assert_eq!(value, serde_json::json!("disconnected"));
+    }
+
+    #[tokio::test]
+    async fn direct_boolean_routes_return_bare_booleans() {
+        let session = DirectOnlySession::new();
+
+        let connected = binding_response_to_value(
+            invoke_api_id_json(&session, "sdk.is_connected", "{}")
+                .await
+                .expect("is connected"),
+        );
+        let active = binding_response_to_value(
+            invoke_api_id_json(&session, "sdk.session_active", "{}")
+                .await
+                .expect("session active"),
+        );
+
+        assert_eq!(connected, serde_json::json!(false));
+        assert_eq!(active, serde_json::json!(false));
+    }
+
+    #[tokio::test]
+    async fn direct_rich_doc_normalization_runs_without_module_api() {
+        let session = DirectOnlySession::new();
+        let doc_json = r#"{
+            "type": "doc",
+            "version": 2,
+            "children": [{
+                "type": "paragraph",
+                "children": [{"type": "text", "text": "hello flare"}]
+            }]
+        }"#;
+        let request = serde_json::json!({
+            "docJson": doc_json,
+        });
+
+        let response = invoke_api_id_json(
+            &session,
+            "rich_doc_v2.normalize_from_doc_json",
+            &request.to_string(),
+        )
+        .await
+        .expect("rich doc direct normalize");
+        let value = binding_response_to_value(response);
+
+        assert_eq!(value["plainText"], "hello flare");
+        assert_eq!(value["contentSchema"], "rich_doc");
     }
 }

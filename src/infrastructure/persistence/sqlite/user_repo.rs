@@ -146,7 +146,7 @@ mod tests {
         assert_eq!(map.len(), 2, "only found, deduped, non-empty ids");
         assert_eq!(map.get("u1").unwrap().display_name(), "Alice");
         assert_eq!(map.get("u2").unwrap().display_name(), "Bob");
-        assert!(map.get("u9").is_none(), "missing profile absent");
+        assert!(!map.contains_key("u9"), "missing profile absent");
     }
 
     #[tokio::test]

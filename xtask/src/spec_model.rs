@@ -589,7 +589,18 @@ fn core_schema_field_required(name: &str, property: &Value, required: &BTreeSet<
     if name == "localState" && property.get("default").is_some() {
         return false;
     }
-    required.contains(name) || true
+    // ⚠️ 此处**行为等价于恒真**，原式为 `required.contains(name) || true`。
+    // clippy 把它标为 logic bug（`|| true` 让前半段成为死代码）。
+    //
+    // 保持原行为改写，因为它很可能是有意的：本函数处理的是 Rust `JsonSchema`
+    // 派生出来的 schema，非 `Option` 字段序列化时必然存在，因此「非 nullable
+    // 且不是带默认值的 localState」即必填，不依赖 schema 的 `required` 列表
+    // （该列表对 Rust 派生类型并不完整）。
+    //
+    // 若本意其实是 `required.contains(name)`，改动会让一批字段从必填变可选，
+    // 进而改变生成的 TS 类型 —— 属于需要人工确认的语义变更，不在此擅自更改。
+    let _ = required;
+    true
 }
 
 fn sdk_type_from_schema(schema: &Value) -> Result<String> {
@@ -617,13 +628,9 @@ fn sdk_type_from_schema(schema: &Value) -> Result<String> {
             };
             sdk_type_from_schema_type(kind, normalized)
         }
-        _ => {
-            if normalized.get("properties").is_some() {
-                Ok("JsonObject".to_string())
-            } else {
-                Ok("JsonObject".to_string())
-            }
-        }
+        // 无 type 字段时一律退到 JsonObject —— 原本按 properties 是否存在分了两支，
+        // 但两支返回值相同，判断没有作用。
+        _ => Ok("JsonObject".to_string()),
     }
 }
 

@@ -224,17 +224,17 @@ fn ts_build_wire_object_lines(
             } else {
                 access.to_string()
             };
-            let value_expr = if enums.contains_key(inner) {
-                list_source.clone()
-            } else if matches!(inner, "String" | "Int32" | "Int64" | "Float" | "Double") {
+            // 枚举与标量都直接透传，无需 map 转换 —— 合并同体分支。
+            let value_expr = if enums.contains_key(inner)
+                || matches!(inner, "String" | "Int32" | "Int64" | "Float" | "Double")
+            {
                 list_source.clone()
             } else {
                 let map_fn = ts_model_to_map_fn(inner);
                 format!("{list_source}.map((item) => {map_fn}(item))")
             };
-            if required {
-                lines.push(format!("{indent}{wire}: {value_expr},"));
-            } else if default_literal.is_some() {
+            // 必填、或虽可选但有默认值 —— 两种情况都无条件输出该字段。
+            if required || default_literal.is_some() {
                 lines.push(format!("{indent}{wire}: {value_expr},"));
             } else {
                 lines.push(format!(

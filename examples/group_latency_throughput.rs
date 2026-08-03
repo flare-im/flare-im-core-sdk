@@ -343,10 +343,8 @@ impl SendOutcomeStats {
             self.terminal_send_ids.insert(event.client_msg_id.clone());
             self.error_ack_ids.insert(event.client_msg_id.clone());
         }
-        if !is_duplicate {
-            if let Some(started_at) = sent_at.get(&event.client_msg_id).copied() {
-                self.ack_latencies.push(started_at.elapsed());
-            }
+        if !is_duplicate && let Some(started_at) = sent_at.get(&event.client_msg_id).copied() {
+            self.ack_latencies.push(started_at.elapsed());
         }
     }
 
@@ -398,6 +396,9 @@ fn record_connection_event(
     }
 }
 
+// 压测入口，14 个参数对应命令行可调的各项负载维度；
+// 包成结构体只会在调用处多一层样板，对一次性基准脚本不划算。
+#[allow(clippy::too_many_arguments)]
 async fn login_client(
     run: &str,
     user_id: &str,
@@ -745,7 +746,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
                     send_outcomes.record_enqueue_error(client_msg_id, error);
                 }
             }
-            if completed_sends % 500 == 0 || completed_sends == total {
+            if completed_sends.is_multiple_of(500) || completed_sends == total {
                 println!(
                     "progress enqueue {completed_sends}/{total} errors={} server_terminal={}",
                     send_outcomes.enqueue_failed_ids.len(),
@@ -773,7 +774,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
                 );
                 let terminal = send_outcomes.terminal_send_ids.len();
                 if terminal != last_ack_progress_terminal
-                    && (terminal % 500 == 0 || terminal == total)
+                    && (terminal.is_multiple_of(500) || terminal == total)
                 {
                     last_ack_progress_terminal = terminal;
                     println!(

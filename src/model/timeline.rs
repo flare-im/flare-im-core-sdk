@@ -150,6 +150,10 @@ pub struct ViewDeltaOp {
     rename_all = "camelCase",
     rename_all_fields = "camelCase"
 )]
+// 变体大小差异是 serde DTO 的固有形态：Timeline 变体内嵌完整 Conversation。
+// 加 Box 虽能收敛栈占用，但会改变各端绑定（wasm/ffi）构造与匹配这个公开类型的
+// 写法，代价远大于收益 —— 它是按值传递一次的增量载荷，不在热路径反复拷贝。
+#[allow(clippy::large_enum_variant)]
 pub enum ViewDelta {
     Timeline {
         ops: Vec<ViewDeltaOp>,

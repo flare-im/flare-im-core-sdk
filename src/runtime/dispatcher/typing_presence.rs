@@ -126,10 +126,10 @@ impl TypingPresence {
         now_ms: u64,
         before: Vec<String>,
     ) -> Option<Vec<String>> {
-        if let Some(users) = self.by_conversation.get_mut(conversation_id) {
-            if users.is_empty() {
-                self.by_conversation.remove(conversation_id);
-            }
+        if let Some(users) = self.by_conversation.get_mut(conversation_id)
+            && users.is_empty()
+        {
+            self.by_conversation.remove(conversation_id);
         }
         let after = self.snapshot(conversation_id, now_ms);
         if before == after { None } else { Some(after) }

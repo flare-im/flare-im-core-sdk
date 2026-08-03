@@ -133,6 +133,8 @@ async fn get_by_conversation_repairs_single_chat_channel_alias_messages() {
     );
 }
 
+// 测试辅助构造器，参数与被测消息字段一一对应；包成结构体反而更难读。
+#[allow(clippy::too_many_arguments)]
 fn file_message(
     server_id: &str,
     conversation_id: &str,

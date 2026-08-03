@@ -219,10 +219,10 @@ fn prompt_account(label: &str) -> Result<String> {
 }
 
 fn message_text(message: &IMMessage) -> Option<String> {
-    if let Some(Elem::Text(text)) = message.content.as_ref() {
-        if !text.text.is_empty() {
-            return Some(text.text.clone());
-        }
+    if let Some(Elem::Text(text)) = message.content.as_ref()
+        && !text.text.is_empty()
+    {
+        return Some(text.text.clone());
     }
     if !message.text_preview.is_empty() {
         return Some(message.text_preview.clone());

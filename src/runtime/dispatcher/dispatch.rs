@@ -301,23 +301,22 @@ impl Dispatcher {
         // co-located dev stack clock skew is ~0, so this approximates end-to-end delivery latency
         // and surfaces the "message arrives late" case that server logs cannot show. Uses the
         // newest created_at (smallest lag) so historical sync-backfill batches are not flagged.
-        if let Some(newest_created_at) = messages.iter().map(|m| m.created_at).max() {
-            if newest_created_at > 0 {
-                let lag_ms =
-                    crate::shared::util::time::now_millis().saturating_sub(newest_created_at);
-                if lag_ms > SLOW_DELIVERY_LOG_THRESHOLD_MS {
-                    warn!(
-                        lag_ms,
-                        count = messages.len(),
-                        "slow delivery: inbound message batch lag exceeded threshold"
-                    );
-                } else {
-                    tracing::debug!(
-                        lag_ms,
-                        count = messages.len(),
-                        "inbound message batch delivery lag"
-                    );
-                }
+        if let Some(newest_created_at) = messages.iter().map(|m| m.created_at).max()
+            && newest_created_at > 0
+        {
+            let lag_ms = crate::shared::util::time::now_millis().saturating_sub(newest_created_at);
+            if lag_ms > SLOW_DELIVERY_LOG_THRESHOLD_MS {
+                warn!(
+                    lag_ms,
+                    count = messages.len(),
+                    "slow delivery: inbound message batch lag exceeded threshold"
+                );
+            } else {
+                tracing::debug!(
+                    lag_ms,
+                    count = messages.len(),
+                    "inbound message batch delivery lag"
+                );
             }
         }
         if let Some(converger) = &self.incoming_message_converger {

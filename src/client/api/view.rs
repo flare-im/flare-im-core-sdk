@@ -971,15 +971,26 @@ fn merge_sorted_timeline(existing: Vec<IMMessage>, mut appended: Vec<IMMessage>)
     let mut right = appended.into_iter().peekable();
     loop {
         match (left.peek(), right.peek()) {
+            // 用 if let 取值而非 expect：本 crate 策略禁止生产路径出现
+            // expect/unwrap/panic（见 lib.rs 顶部 deny）。peek 后 next() 必为
+            // Some，但把这个「必然」写成不会 panic 的形式，代价为零。
             (Some(l), Some(r)) => {
-                if IMMessage::compare_for_timeline_asc(l, r).is_le() {
-                    merged.push(left.next().expect("peeked"));
-                } else {
-                    merged.push(right.next().expect("peeked"));
+                let take_left = IMMessage::compare_for_timeline_asc(l, r).is_le();
+                let taken = if take_left { left.next() } else { right.next() };
+                if let Some(v) = taken {
+                    merged.push(v);
                 }
             }
-            (Some(_), None) => merged.push(left.next().expect("peeked")),
-            (None, Some(_)) => merged.push(right.next().expect("peeked")),
+            (Some(_), None) => {
+                if let Some(v) = left.next() {
+                    merged.push(v);
+                }
+            }
+            (None, Some(_)) => {
+                if let Some(v) = right.next() {
+                    merged.push(v);
+                }
+            }
             (None, None) => break,
         }
     }

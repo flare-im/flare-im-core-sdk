@@ -15,51 +15,6 @@ impl SqlitePendingSendRepo {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::SqlitePendingSendRepo;
-    use crate::domain::{PendingSendReader, PendingSendVo, PendingSendWriter};
-    use crate::infrastructure::persistence::sqlite::init_schema;
-    use crate::model::IMMessage;
-    use sqlx::SqlitePool;
-
-    fn pending(client_msg_id: &str, enqueued_at_ms: u64) -> PendingSendVo {
-        let mut message = IMMessage::new(flare_proto::common::Message::default());
-        message.client_msg_id = client_msg_id.to_string();
-        message.conversation_id = "conv".to_string();
-        PendingSendVo {
-            client_msg_id: client_msg_id.to_string(),
-            conversation_id: "conv".to_string(),
-            message,
-            enqueued_at_ms,
-        }
-    }
-
-    #[tokio::test]
-    async fn list_oldest_excluding_filters_in_flight_and_limits() {
-        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
-        init_schema(&pool).await.unwrap();
-        let repo = SqlitePendingSendRepo::new(pool);
-        for entry in [
-            pending("client-1", 10),
-            pending("client-2", 20),
-            pending("client-3", 30),
-            pending("client-4", 40),
-        ] {
-            repo.push(entry).await.unwrap();
-        }
-
-        let excluded = vec!["client-1".to_string(), "client-3".to_string()];
-        let rows = repo.list_oldest_excluding(&excluded, 2).await.unwrap();
-
-        let ids = rows
-            .into_iter()
-            .map(|entry| entry.client_msg_id)
-            .collect::<Vec<_>>();
-        assert_eq!(ids, vec!["client-2".to_string(), "client-4".to_string()]);
-    }
-}
-
 fn encode_entry(vo: &PendingSendVo) -> Vec<u8> {
     vo.message.to_proto().encode_to_vec()
 }
@@ -194,5 +149,50 @@ impl PendingSendWriter for SqlitePendingSendRepo {
                 .map_err(|e| FlareError::localized(ErrorCode::DatabaseError, e.to_string()))?;
         }
         Ok(vo)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SqlitePendingSendRepo;
+    use crate::domain::{PendingSendReader, PendingSendVo, PendingSendWriter};
+    use crate::infrastructure::persistence::sqlite::init_schema;
+    use crate::model::IMMessage;
+    use sqlx::SqlitePool;
+
+    fn pending(client_msg_id: &str, enqueued_at_ms: u64) -> PendingSendVo {
+        let mut message = IMMessage::new(flare_proto::common::Message::default());
+        message.client_msg_id = client_msg_id.to_string();
+        message.conversation_id = "conv".to_string();
+        PendingSendVo {
+            client_msg_id: client_msg_id.to_string(),
+            conversation_id: "conv".to_string(),
+            message,
+            enqueued_at_ms,
+        }
+    }
+
+    #[tokio::test]
+    async fn list_oldest_excluding_filters_in_flight_and_limits() {
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        init_schema(&pool).await.unwrap();
+        let repo = SqlitePendingSendRepo::new(pool);
+        for entry in [
+            pending("client-1", 10),
+            pending("client-2", 20),
+            pending("client-3", 30),
+            pending("client-4", 40),
+        ] {
+            repo.push(entry).await.unwrap();
+        }
+
+        let excluded = vec!["client-1".to_string(), "client-3".to_string()];
+        let rows = repo.list_oldest_excluding(&excluded, 2).await.unwrap();
+
+        let ids = rows
+            .into_iter()
+            .map(|entry| entry.client_msg_id)
+            .collect::<Vec<_>>();
+        assert_eq!(ids, vec!["client-2".to_string(), "client-4".to_string()]);
     }
 }

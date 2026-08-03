@@ -689,7 +689,7 @@ mod tests {
             sort_ts: 1_000,
         };
 
-        let mut messages = vec![pending, history];
+        let mut messages = [pending, history];
         messages.sort_by(IMMessage::compare_for_timeline_asc);
 
         assert_eq!(messages[0].server_id, "server-history");
@@ -709,7 +709,7 @@ mod tests {
             sort_ts: 9_000,
         };
 
-        let mut messages = vec![history, pending];
+        let mut messages = [history, pending];
         messages.sort_by(IMMessage::compare_for_latest_window_desc);
 
         assert_eq!(messages[0].client_msg_id, "client-pending");
@@ -730,7 +730,7 @@ mod tests {
             sort_ts: 9_000,
         };
 
-        let mut messages = vec![newer_server, failed];
+        let mut messages = [newer_server, failed];
         messages.sort_by(IMMessage::compare_for_timeline_asc);
 
         assert_eq!(messages[0].client_msg_id, "client-failed");
@@ -769,7 +769,7 @@ mod tests {
         };
         let newest = message("client-new", "server-new", 11, 2_000);
 
-        let mut messages = vec![skewed_old, newest];
+        let mut messages = [skewed_old, newest];
         messages.sort_by(IMMessage::compare_for_latest_window_desc);
 
         assert_eq!(messages[0].server_id, "server-new");

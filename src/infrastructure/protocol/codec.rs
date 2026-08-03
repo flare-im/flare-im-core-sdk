@@ -271,7 +271,6 @@ mod tests {
                 payload: vec![1, 2, 3],
                 attributes: Default::default(),
             })),
-            ..Default::default()
         };
         let mut bytes = Vec::new();
         packet.encode(&mut bytes).unwrap();

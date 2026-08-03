@@ -460,6 +460,7 @@ impl SyncApplyUseCase {
     ///   连续性钳制恒为 0 → 会静默跳过保存；
     /// - 快照建立型游标（gap-too-large 切换、冷启 bundle）语义即"覆盖到水位、旧史 lazy backfill"，
     ///   本地只有最新一页，contiguous-from-0 必为 0。
+    ///
     /// 语义正确性由调用方保证（快照/水位本身就是服务端权威）。
     pub async fn save_watermark_with_remote<F, Fut>(
         &self,
