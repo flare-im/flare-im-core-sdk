@@ -169,7 +169,7 @@ Apache License 2.0。底层 `flare-core` 为 MIT，见对应仓库许可文件�
 
 企业场景另有 SSO / 组织架构 / 审计导出 / 数据驻留 / SLA 支持。
 
-咨询：`<BUSINESS-CONTACT-待填写>`
+咨询：`flare1522@163.com`
 
 > 边界划分与不变承诺见 [GOVERNANCE](https://github.com/flare-im/flare-im-core-server/blob/main/GOVERNANCE.md)。
 > 简言之：**已开源的不会被收回，鉴权与 hooks 契约永远开源、不会为逼迫付费而阉割。**
