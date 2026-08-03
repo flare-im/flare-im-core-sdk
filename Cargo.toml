@@ -21,9 +21,9 @@ authors = ["Flare Team"]
 license = "Apache-2.0"
 
 [workspace.dependencies]
-flare-proto = { version = "2.0.0", path = "../flare-proto" }
-flare-grpc-proto = { version = "2.0.0", path = "../flare-grpc-proto" }
-flare-core = { version = "1.0.3", path = "../flare-core", default-features = false }
+flare-proto = { version = "2.0.1", path = "../flare-proto" }
+flare-grpc-proto = { version = "2.0.1", path = "../flare-grpc-proto" }
+flare-core = { version = "1.1.0", path = "../flare-core", default-features = false }
 tonic = "0.14"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
@@ -45,7 +45,7 @@ cbindgen = "0.26"
 
 [package]
 name = "flare-im-core-sdk"
-version = "1.0.3"
+version = "1.1.0"
 edition = "2024"
 rust-version = "1.94.0"
 authors = ["Flare Team"]
@@ -110,7 +110,7 @@ uuid = { version = "1", features = ["v4", "js"] }
 
 sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "chrono"], optional = true }
 base64 = { version = "0.22" }
-flare-im-core-sdk-storage-sqlite = { version = "1.0.3", path = "storage/sqlite", optional = true }
+flare-im-core-sdk-storage-sqlite = { version = "1.1.0", path = "storage/sqlite", optional = true }
 # RichDoc v2：Markdown 归一化 + 检索串规范化（全目标可用）
 pulldown-cmark = "0.12"
 unicode-normalization = "0.1"
