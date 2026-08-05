@@ -163,7 +163,6 @@ enum AckApplyResult {
     AwaitDurable,
 }
 
-
 impl ReliableSendQueue {
     /// 构建队列并启动后台任务；收到 ack 需由调用方往 `on_ack` 注入。
     /// reader 与 writer 通常为同一实现体（如 SqlitePendingSendRepo）的两个 Arc。

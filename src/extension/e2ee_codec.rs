@@ -226,7 +226,11 @@ impl ContentCodec for X25519AeadCodec {
     }
 }
 
-/// 便捷构造：双方共享密钥已知时直接拿到 `Arc<dyn ContentCodec>`。
+/// 便捷构造：共享密钥已知时直接拿到 `Arc<dyn ContentCodec>`。
+///
+/// 仓库内部没有调用点 —— 它是给**接入方**的：如果你的密钥协商已经在别处完成
+/// （自有 KMS、Signal 库、硬件模块等），只想复用这里的 AEAD 部分，就从这里进，
+/// 不必去构造 X25519 密钥对。
 pub fn shared_secret_codec(shared: &[u8]) -> Result<Arc<dyn ContentCodec>> {
     Ok(Arc::new(X25519AeadCodec::from_shared_secret(shared)?))
 }
