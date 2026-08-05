@@ -30,6 +30,14 @@ jobs:
       - name: clippy
         run: cargo clippy --workspace --all-targets --features storage-sqlite -- -D warnings
 
+      # e2ee 是可选 feature：默认关闭时那条路径不参与编译，
+      # 不单独跑一遍的话，密码学实现坏了 CI 也不会知道。
+      - name: clippy（e2ee feature）
+        run: cargo clippy --features e2ee --all-targets --no-deps -- -D warnings
+
+      - name: test（e2ee feature）
+        run: cargo test --features e2ee --lib
+
       - name: test
         run: cargo test --features storage-sqlite
 

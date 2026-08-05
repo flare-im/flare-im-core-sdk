@@ -1,0 +1,140 @@
+//! 端到端加密演示：**服务端只看得到密文**。
+//!
+//! ```bash
+//! cd flare-im-core && ./scripts/start_server.sh     # 先起开源栈
+//! cd ../flare-im-core-sdk
+//! cargo run --example e2ee_demo --features "lifecycle-sqlite e2ee"
+//! ```
+//!
+//! 演示的是三件事，每一件都当场打印证据：
+//!
+//! 1. **发出去的是密文** —— 明文经 `ContentEncryptionInterceptor` 换成 Placeholder
+//!    信封，原文不出现在线格式里。
+//! 2. **服务端存的是密文** —— 从服务端把这条消息拉回来，打印它的落库形态：
+//!    类型是 Placeholder，载荷是密文，服务端无从解读。
+//! 3. **只有持钥方能还原** —— 用 Bob 的密钥解出原文；用第三方的密钥解不开。
+//!
+//! 密钥协商在这里是**手工**的（两端各自生成 X25519 密钥、直接交换公钥）。
+//! 真实产品里公钥的分发与轮换属于身份体系的职责，接口是
+//! `E2eeKeyManager` —— 这一步刻意留在开源边界之外，见 flare-im-core/QUICKSTART.md。
+
+use std::sync::Arc;
+
+use flare_im_core_sdk::model::conversation::ConversationType;
+use flare_im_core_sdk::prelude::*;
+
+#[path = "common/dev_token.rs"]
+mod dev_token;
+
+const CONVERSATION_PEER: &str = "e2ee_bob";
+
+#[tokio::main]
+async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
+    let secret = dev_token::require()?;
+
+    // ── 1. 两端各自生成 X25519 密钥，交换公钥 ────────────────────────────
+    // 私钥不出本端；线上只走过公钥。
+    let (alice_secret, alice_public) = X25519AeadCodec::generate_keypair();
+    let (bob_secret, bob_public) = X25519AeadCodec::generate_keypair();
+
+    let alice_codec = Arc::new(X25519AeadCodec::new(alice_secret, bob_public)?);
+    let bob_codec = X25519AeadCodec::new(bob_secret, alice_public)?;
+
+    // ── 2. 把加密拦截器挂进客户端 ────────────────────────────────────────
+    // 策略解析器决定哪些会话走 E2EE。这里对所有会话统一开启。
+    let resolver = Arc::new(StaticConversationEncryptionPolicyResolver::new(
+        ConversationEncryptionPolicy::e2e(),
+    ));
+
+    // conversation_encryption 是官方接线点：它同时登记 codec 与加密拦截器，
+    // 比自己 new 一个 ContentEncryptionInterceptor 更不容易漏掉一半。
+    let client = IMClient::builder()
+        .stores(in_memory_im_provider())
+        .conversation_encryption(resolver, alice_codec)
+        .build()?;
+    client.init(Some("e2ee-demo".into()), None).await?;
+
+    let token = IMClient::generate_core_token(CoreTokenConfig {
+        secret,
+        issuer: "flare-im-core".to_string(),
+        user_id: "e2ee_alice".to_string(),
+        ttl_secs: 3600,
+        device_id: None,
+        tenant_id: Some("0".to_string()),
+    })?;
+    let apis = client
+        .login(
+            "e2ee_alice",
+            Some(&token),
+            LoginDbKind::IndexedDb(in_memory_im_provider()),
+            |_, _| {},
+        )
+        .await?;
+
+    // ── 3. 发一条消息 ────────────────────────────────────────────────────
+    let plaintext = "见面地点改到中山路 42 号";
+    println!("原文            : {plaintext}");
+
+    let conversation = apis
+        .conversation_api
+        .get_one(CONVERSATION_PEER, &ConversationType::Single)
+        .await?;
+    let message = apis
+        .message_build_api
+        .create_text(&conversation.conversation_id, plaintext, false, &[])
+        .await?;
+    apis.message_api.send_no_oss(message).await?;
+
+    // ── 4. 从服务端拉回来，看它到底存了什么 ──────────────────────────────
+    // before_seq = 0 表示从最新开始取
+    let stored = apis
+        .message_api
+        .list(&conversation.conversation_id, 0, 1)
+        .await?;
+    let Some(stored) = stored.into_iter().next() else {
+        return Err("服务端没有返回刚发的消息".into());
+    };
+
+    let envelope =
+        encrypted_content_envelope(&stored).ok_or("这条消息不是加密信封 —— 拦截器没有生效")?;
+
+    println!("服务端消息类型  : {:?}（不是 Text）", stored.message_type);
+    println!("服务端可读文本  : {:?}", stored.text_preview);
+    println!("服务端载荷      : {} 字节密文", envelope.ciphertext.len());
+
+    // 明文绝不能出现在服务端拿到的任何字节里
+    let leaked = envelope
+        .ciphertext
+        .windows(plaintext.len())
+        .any(|w| w == plaintext.as_bytes())
+        || stored.text_preview.contains(plaintext);
+    if leaked {
+        return Err("明文泄漏到了服务端载荷".into());
+    }
+    println!("明文是否泄漏    : 否 ✅");
+
+    // ── 5. 只有持钥方解得开 ──────────────────────────────────────────────
+    let opened = bob_codec.decode(&envelope.ciphertext)?;
+    // 解出来的是序列化后的 MessageContent（protobuf），不是裸文本 —— 直接打印会
+    // 混进长度前缀等控制字节。这里只把可读文本摘出来，让证据一眼可辨。
+    let recovered = String::from_utf8_lossy(&opened.payload);
+    let readable: String = recovered
+        .chars()
+        .filter(|c| !c.is_control() && *c != '\u{0}')
+        .collect();
+    println!("Bob 解出        : {}", readable.trim());
+
+    let (stranger_secret, _) = X25519AeadCodec::generate_keypair();
+    let (_, stranger_peer) = X25519AeadCodec::generate_keypair();
+    let stranger = X25519AeadCodec::new(stranger_secret, stranger_peer)?;
+    match stranger.decode(&envelope.ciphertext) {
+        Ok(_) => return Err("第三方竟然解开了密文".into()),
+        Err(_) => println!("第三方解密      : 失败 ✅"),
+    }
+
+    if !readable.contains(plaintext) {
+        return Err("Bob 解出的内容与原文不一致".into());
+    }
+    println!("\n✅ E2EE 链路验证通过：服务端全程只见密文，仅持钥方可还原");
+    Ok(())
+}

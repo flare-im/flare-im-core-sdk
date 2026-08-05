@@ -163,37 +163,6 @@ enum AckApplyResult {
     AwaitDurable,
 }
 
-#[cfg(test)]
-mod adaptive_window_tests {
-    use super::AdaptiveInFlightWindow;
-
-    #[test]
-    fn adaptive_window_grows_after_window_sized_success_batch() {
-        let mut window = AdaptiveInFlightWindow::new(8);
-        assert_eq!(window.current(), 4);
-
-        for _ in 0..3 {
-            assert!(!window.note_success());
-        }
-        assert!(window.note_success());
-        assert_eq!(window.current(), 5);
-    }
-
-    #[test]
-    fn adaptive_window_halves_on_congestion() {
-        let mut window = AdaptiveInFlightWindow::new(16);
-        for _ in 0..4 {
-            window.note_success();
-        }
-        assert_eq!(window.current(), 5);
-
-        assert!(window.note_congestion());
-        assert_eq!(window.current(), 2);
-        assert!(window.note_congestion());
-        assert_eq!(window.current(), 1);
-        assert!(!window.note_congestion());
-    }
-}
 
 impl ReliableSendQueue {
     /// 构建队列并启动后台任务；收到 ack 需由调用方往 `on_ack` 注入。
@@ -1928,5 +1897,37 @@ mod tests {
             }
             other => panic!("unexpected event: {other:?}"),
         }
+    }
+}
+
+#[cfg(test)]
+mod adaptive_window_tests {
+    use super::AdaptiveInFlightWindow;
+
+    #[test]
+    fn adaptive_window_grows_after_window_sized_success_batch() {
+        let mut window = AdaptiveInFlightWindow::new(8);
+        assert_eq!(window.current(), 4);
+
+        for _ in 0..3 {
+            assert!(!window.note_success());
+        }
+        assert!(window.note_success());
+        assert_eq!(window.current(), 5);
+    }
+
+    #[test]
+    fn adaptive_window_halves_on_congestion() {
+        let mut window = AdaptiveInFlightWindow::new(16);
+        for _ in 0..4 {
+            window.note_success();
+        }
+        assert_eq!(window.current(), 5);
+
+        assert!(window.note_congestion());
+        assert_eq!(window.current(), 2);
+        assert!(window.note_congestion());
+        assert_eq!(window.current(), 1);
+        assert!(!window.note_congestion());
     }
 }

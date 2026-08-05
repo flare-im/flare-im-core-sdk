@@ -82,6 +82,9 @@ lifecycle-sqlite = ["storage-sqlite", "dep:flare-im-core-sdk-storage-sqlite"]
 quic = ["flare-core/quic"]
 # RichDoc v2 HTML 片段归一化；默认关闭以避免移动端无条件编译 HTML parser 重依赖。
 rich-doc-html = ["dep:scraper", "dep:ego-tree"]
+# 端到端加密的**参考实现**（XChaCha20-Poly1305 + X25519 + HKDF）。
+# 不开时 E2EE 管线仍在，只是需要接入方自带 ContentCodec。
+e2ee = ["dep:chacha20poly1305", "dep:x25519-dalek", "dep:hkdf"]
 # 兼容任务/产品层命名：链接预览同样依赖 HTML 解析能力。
 link-preview = ["rich-doc-html"]
 
@@ -102,6 +105,11 @@ prost-types = { workspace = true }
 tracing = "0.1"
 flate2 = "1.0"
 sha2 = "0.10"
+# E2EE 参考实现用：AEAD + X25519 ECDH + HKDF。
+# 放在可选 feature 后面 —— 不开 e2ee 的接入方不该为此背上密码学依赖。
+chacha20poly1305 = { version = "0.10", optional = true }
+x25519-dalek = { version = "2", optional = true, features = ["static_secrets"] }
+hkdf = { version = "0.12", optional = true }
 hmac = "0.12"
 rand = "0.8"
 hex = "0.4"
@@ -158,6 +166,10 @@ criterion = "0.5"
 [[bench]]
 name = "perf_baseline"
 harness = false
+
+[[example]]
+name = "e2ee_demo"
+required-features = ["lifecycle-sqlite", "e2ee"]
 
 [[example]]
 name = "two_clients_chat"

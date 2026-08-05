@@ -21,6 +21,11 @@ use crate::shared::error::Result;
 
 pub mod capability;
 pub mod encryption;
+
+/// E2EE 的参考 codec（XChaCha20-Poly1305 + X25519）。
+/// 需要 `e2ee` feature —— 不用 E2EE 的接入方不该背上密码学依赖。
+#[cfg(feature = "e2ee")]
+pub mod e2ee_codec;
 pub mod middleware;
 
 use capability::SdkCapabilityPlugin;

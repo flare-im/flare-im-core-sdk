@@ -113,6 +113,11 @@ pub mod prelude {
         ConversationStore, MediaCacheEntryVo, MediaCacheStatsVo, MessageStore, PendingSendVo,
         SyncCursorVo,
     };
+    /// E2EE 参考 codec（需 `e2ee` feature）。
+    #[cfg(feature = "e2ee")]
+    pub use crate::extension::e2ee_codec::{
+        E2EE_CODEC_CONTENT_TYPE, E2EE_CODEC_NAMESPACE, X25519AeadCodec, shared_secret_codec,
+    };
     pub use crate::extension::encryption::{
         ContentEncryptionInterceptor, ConversationEncryptionPolicy,
         ConversationEncryptionPolicyResolver, E2EE_CONTENT_TYPE, E2EE_FALLBACK_TEXT,
