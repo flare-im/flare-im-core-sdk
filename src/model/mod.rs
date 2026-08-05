@@ -29,7 +29,7 @@ pub use media::{
 };
 pub use message::{
     ConversationType, DeleteScope, DeleteType, IMMessage, MarkType, Message, MessageSource,
-    MessageStatus, MessageType, ReactionAction, SendAck,
+    MessageStatus, MessageType, ReactionAction, SendAck, SendAckDurability,
 };
 pub use search::{ConversationListQuery, MessageSearchKind, MessageSearchQuery};
 pub use sync::{

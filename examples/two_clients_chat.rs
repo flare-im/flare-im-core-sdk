@@ -261,7 +261,7 @@ impl ChatSide {
 }
 
 fn ack_label(ack: &SendAck) -> String {
-    use flare_proto::common::send_ack;
+    use flare_im_core_sdk::model::message::send_ack;
     match ack.result.as_ref() {
         Some(send_ack::Result::Accepted(accepted)) => {
             format!("seq={}", accepted.conversation_seq)

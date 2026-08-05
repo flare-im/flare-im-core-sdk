@@ -641,7 +641,7 @@ pub use flare_proto::common::MessageType;
 pub use flare_proto::common::send_ack;
 pub use flare_proto::common::{
     AudioInfo, ConversationType, DeleteScope, DeleteType, ImageFormat, ImageInfo, MarkType,
-    Message, MessageSource, MessageStatus, ReactionAction, SendAck, VideoInfo,
+    Message, MessageSource, MessageStatus, ReactionAction, SendAck, SendAckDurability, VideoInfo,
 };
 
 #[cfg(test)]

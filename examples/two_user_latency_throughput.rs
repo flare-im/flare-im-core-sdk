@@ -5,8 +5,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use flare_im_core_sdk::SdkConfigOverlay;
 use flare_im_core_sdk::model::conversation::ConversationType;
+use flare_im_core_sdk::model::message::{SendAck, SendAckDurability, send_ack};
 use flare_im_core_sdk::prelude::*;
-use flare_proto::common::{SendAck, SendAckDurability, send_ack};
 use tokio::sync::mpsc;
 
 fn env_usize(name: &str, default: usize) -> usize {
