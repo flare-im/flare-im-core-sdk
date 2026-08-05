@@ -1,13 +1,17 @@
 use flare_im_core_sdk::prelude::*;
 
+#[path = "common/dev_token.rs"]
+mod dev_token;
+
 #[tokio::main]
-async fn main() -> Result<()> {
+async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
+    let secret = dev_token::require()?;
     let client = IMClient::new();
     client
         .init(Some("e2e-full-event-observer".into()), None)
         .await?;
     let token = IMClient::generate_core_token(CoreTokenConfig {
-        secret: "insecure-secret".to_string(),
+        secret: secret.clone(),
         issuer: "flare-im-core".to_string(),
         user_id: "full_event_observer".to_string(),
         ttl_secs: 3600,
@@ -26,9 +30,14 @@ async fn main() -> Result<()> {
     let _any = client.on_any(|event| {
         println!("sdk event: {:?}", event);
     })?;
+    // media-control 侧把 call_id / room_id 当 UUID 解析，传 "call_full" / "room_a"
+    // 会被直接拒。示例用固定 UUID 而不是随机值，好让重复运行落在同一个房间、
+    // 结果可复现。
+    let call_id = "00000000-0000-4000-8000-0000000000c1";
+    let room_id = "00000000-0000-4000-8000-0000000000a1";
     let result = apis
         .capability_api
-        .rtc_sfu_join_room("example_full", "call_full", "room_a", Some("speaker"), None)
+        .rtc_sfu_join_room("example_full", call_id, room_id, Some("speaker"), None)
         .await?;
     println!("sfu join: {:?}", result.data);
     Ok(())

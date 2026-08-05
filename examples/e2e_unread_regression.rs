@@ -1,14 +1,18 @@
 use flare_im_core_sdk::model::conversation::ConversationType;
 use flare_im_core_sdk::prelude::*;
 
+#[path = "common/dev_token.rs"]
+mod dev_token;
+
 #[tokio::main]
-async fn main() -> Result<()> {
+async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
+    let secret = dev_token::require()?;
     let client = IMClient::new();
     client
         .init(Some("e2e-unread-regression".into()), None)
         .await?;
     let token = IMClient::generate_core_token(CoreTokenConfig {
-        secret: "insecure-secret".to_string(),
+        secret: secret.clone(),
         issuer: "flare-im-core".to_string(),
         user_id: "unread_regression".to_string(),
         ttl_secs: 3600,
