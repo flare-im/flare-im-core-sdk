@@ -266,7 +266,13 @@ impl SdkEngine {
         }
         *self.current_user_id.write().await = user_id.to_string();
         if let Some(queue) = &self.reliable_queue {
-            let _ = queue.recover_pending_for_current_user().await;
+            if let Err(error) = queue.recover_pending_for_current_user().await {
+                tracing::warn!(
+                    %user_id,
+                    %error,
+                    "recover pending sends after reconnect failed"
+                );
+            }
         }
         self.transition(ConnectionEvent::Connected).await;
         if let Err(error) = self.bootstrap(sync_run).await {

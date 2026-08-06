@@ -115,7 +115,14 @@ impl MessageListener for SocketHandler {
                                 "received SendAck (PayloadCommand Ack), dispatching to bus"
                             );
                             let payload = DownlinkPayload::SendAck(send_ack.clone());
-                            let _ = self.dispatcher.dispatch(payload).await;
+                            if let Err(error) = self.dispatcher.dispatch(payload).await {
+                                warn!(
+                                    frame_id = %frame.message_id,
+                                    client_msg_id = %send_ack.client_msg_id,
+                                    error = %error,
+                                    "dispatch SendAck to bus failed"
+                                );
+                            }
                         }
                         Some(AckPayload::Event(event_ack)) => {
                             debug!(
@@ -152,7 +159,14 @@ impl MessageListener for SocketHandler {
                             payload_type = pt,
                             "received push/data/event frame, dispatching to bus"
                         );
-                        let _ = self.dispatcher.dispatch(downlink).await;
+                        if let Err(error) = self.dispatcher.dispatch(downlink).await {
+                            warn!(
+                                frame_id = %frame.message_id,
+                                payload_type = pt,
+                                error = %error,
+                                "dispatch push/data/event frame to bus failed"
+                            );
+                        }
                     }
                     Err(e) => {
                         warn!(
