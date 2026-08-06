@@ -1,57 +1,70 @@
 # Flare IM Core SDK
 
-> ## ℹ️ 这是通信基础设施，不是开箱即用的 IM 产品
+English · **[中文](README.zh-CN.md)**
+
+> ## ℹ️ This is communication infrastructure, not a turnkey IM product
 >
-> 说在前面，免得你 clone 完才发现登不上去：**开源部分不含账号体系**
-> （没有注册登录、好友关系、群角色/审批/禁言、朋友圈）。
+> Up front, so you don't discover it only after cloning and failing to log in:
+> **the open-source part ships no account system** (no sign-up/login, friend
+> relationships, group roles/approval/muting, or moments/feed).
 >
-> 但它自带完整且可插拔的鉴权契约，两条路都在开源侧：
+> What it does ship is a complete, pluggable authentication contract — both
+> paths live on the open-source side:
 >
-> - **`CoreJwtTokenValidator`** —— 本地验 JWT。手签一个 token 就能跑起来做
->   demo / POC，**不需要任何用户体系**。
-> - **`HttpHookTokenValidator`** —— 把 token POST 到你自己的接口，
->   **这是接入自有用户体系的入口**。
+> - **`CoreJwtTokenValidator`** — validates JWTs locally. Hand-sign a token and
+>   you can run a demo / POC **without any user system at all**.
+> - **`HttpHookTokenValidator`** — POSTs the token to your own endpoint. **This
+>   is the entry point for wiring in your own user system.**
 >
-> 业务规则同理：`flare-im-core/crates/flare-im-hooks` 提供 9 个扩展点
-> （PreSend / PostSend / Delivery / Recall / MessageRead / MessageReaction /
-> ConversationLifecycle / ConversationMember / GetConversationParticipants）。
+> Business rules work the same way: `flare-im-core/crates/flare-im-hooks`
+> exposes 9 extension points (PreSend / PostSend / Delivery / Recall /
+> MessageRead / MessageReaction / ConversationLifecycle / ConversationMember /
+> GetConversationParticipants).
 >
-> 要上生产，你需要自行实现用户体系并按上述契约接入 —— 与 Sendbird /
-> Twilio Conversations 的「自带身份」模型一致，区别是 Flare 可自托管、
-> 协议与核心可审计。
+> To go to production you implement your own user system and plug it in via the
+> contracts above — the same "bring your own identity" model as Sendbird /
+> Twilio Conversations, except Flare can be self-hosted and its protocol and
+> core are auditable.
 >
-> 边界详情见 [GOVERNANCE.md](GOVERNANCE.md)。
+> For the exact boundary, see [GOVERNANCE.md](GOVERNANCE.md).
 
 
 [![Rust](https://img.shields.io/badge/rust-1.94+-orange.svg)](https://www.rust-lang.org/)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
-`flare-im-core-sdk` 是 Flare IM 的统一客户端核心。Rust core 负责 SDK 生命周期、消息/会话本地投影、同步任务入口、事件体系、媒体记录、能力包与扩展事件；C、Tauri、UniFFI、Wasm bindings 只做 ABI/IPC/语言边界转换。
+`flare-im-core-sdk` is Flare IM's unified client core. The Rust core owns the
+SDK lifecycle, local message/conversation projection, the sync-task entry
+points, the event system, media records, capability packs, and extension
+events; the C, Tauri, UniFFI, and Wasm bindings only translate the
+ABI / IPC / language boundary.
 
-## 核心边界
+## Core boundaries
 
-| 层 | 职责 |
+| Layer | Responsibility |
 | --- | --- |
-| `flare-core` | 传输、连接、帧、协商、心跳等基础通信能力 |
-| `flare-proto` | 唯一 wire contract，包含 `DataPacket`、`Message`、`SyncRes`、`CapabilityPacket` 等 |
-| `flare-im-core-sdk` | 客户端 IM 行为、离线本地状态、投影、outbound queue、事件路由、扩展能力入口 |
-| bindings | C/Tauri/UniFFI/Wasm 的边界适配，不复制核心语义 |
+| `flare-core` | Transport, connection, framing, negotiation, heartbeat, and other base communication primitives |
+| `flare-proto` | The single wire contract — `DataPacket`, `Message`, `SyncRes`, `CapabilityPacket`, etc. |
+| `flare-im-core-sdk` | Client IM behavior, offline local state, projection, the outbound queue, event routing, extension-capability entry points |
+| bindings | Boundary adapters for C/Tauri/UniFFI/Wasm — they never re-implement core semantics |
 
-## 当前生产模块
+## Current production modules
 
-`src/lib.rs` 只 re-export 当前 public contract。SDK 行为按边界放在 `client`、`application`、`domain`、`core`、`infrastructure`、`platform` 和 `extension` 中；旧 prototype route facade 不再是生产合同。
+`src/lib.rs` re-exports only the current public contract. SDK behavior is placed
+by boundary across `client`, `application`, `domain`, `core`,
+`infrastructure`, `platform`, and `extension`; the old prototype route facade
+is no longer the production contract.
 
-| 模块 | 职责 |
+| Module | Responsibility |
 | --- | --- |
-| `client/` | `IMClient` lifecycle、typed APIs、builder、登录会话、跨端 SDK 入口 |
-| `application/` | 用例编排、message/sync/presence/capability adapter、projection 更新 |
-| `domain/` | 消息、会话、同步游标、pending send 等业务不变量 |
-| `core/` | 事件总线、dispatcher、可靠队列、sync orchestrator |
-| `infrastructure/` | protobuf codec、packet sender、socket/http transport、memory/sqlite persistence |
-| `platform/` | media、transport、宿主能力端口 |
-| `extension/` | capability registry、middleware、RTC/SFU capability id helpers |
+| `client/` | `IMClient` lifecycle, typed APIs, builder, login session, the cross-platform SDK entry |
+| `application/` | Use-case orchestration, message/sync/presence/capability adapters, projection updates |
+| `domain/` | Business invariants — messages, conversations, sync cursors, pending sends |
+| `core/` | Event bus, dispatcher, reliable queue, sync orchestrator |
+| `infrastructure/` | protobuf codec, packet sender, socket/http transport, memory/sqlite persistence |
+| `platform/` | Media, transport, and host-capability ports |
+| `extension/` | Capability registry, middleware, RTC/SFU capability-id helpers |
 
-## 快速开始
+## Quick start
 
 ```rust
 use flare_im_core_sdk::prelude::*;
@@ -87,9 +100,12 @@ async fn main() -> Result<()> {
 }
 ```
 
-## Binding Runtime
+## Binding runtime
 
-Bindings 统一通过 `bindings/shared` crate 的 `BindingRequest` 进入当前 typed SDK。这个 shared runtime 只接入已经明确迁移到 vNext 的 route；旧 prototype JSON route 不会被兼容复活。
+Bindings all enter the current typed SDK through the `BindingRequest` of the
+`bindings/shared` crate. This shared runtime only wires up routes that have been
+explicitly migrated to vNext; the old prototype JSON routes are not revived for
+compatibility.
 
 ```rust
 let response = flare_im_core_sdk_bindings_runtime::invoke_json(
@@ -98,35 +114,47 @@ let response = flare_im_core_sdk_bindings_runtime::invoke_json(
 ).await;
 ```
 
-Contract 源在 `bindings/contract/*.json`；修改后运行 `rtk cargo xtask codegen` 更新生成表。`call_signal.proto` 已移除，RTC/SFU 通过 `DataPacket.capability` 和 `rtc.*` capability id 发送。
+Contract sources live in `bindings/contract/*.json`; after editing them, run
+`rtk cargo xtask codegen` to regenerate the tables. `call_signal.proto` has been
+removed — RTC/SFU is sent via `DataPacket.capability` and `rtc.*` capability ids.
 
-## 事件体系
+## Event system
 
-事件统一使用 `SdkEvent`：
+Events uniformly use `SdkEvent`:
 
-- `EventBus::subscribe()` 提供 typed Rust 事件流。
-- message mutation 事件来自 `event.proto` oneof payload；typing/presence/RTC 不占用 `conversation_seq`，走 DATA realtime/capability。
-- `bindings/contract/events.json` 维护跨平台 event id、C code 和 `im://*` 名称。
-- 自定义业务事件走 `ExtensionEvent` 或 `MessageEvent::Custom`，payload bytes 对 core 不透明。
+- `EventBus::subscribe()` provides a typed Rust event stream.
+- Message-mutation events come from the `event.proto` oneof payload;
+  typing/presence/RTC do not consume `conversation_seq` and travel over the
+  DATA realtime/capability channel.
+- `bindings/contract/events.json` maintains cross-platform event ids, C codes,
+  and `im://*` names.
+- Custom business events go through `ExtensionEvent` or `MessageEvent::Custom`;
+  their payload bytes are opaque to the core.
 
-## Outbox 和同步
+## Outbox and sync
 
-- 发送时先写入 bounded pending outbox；离线时只入队，`Ready` 且 transport 已连接时才即时发送。
-- `SendAck` accepted/error 都会收敛本地消息状态并移除 pending。
-- realtime 下行消息发现 `conversation_seq` 缺口时记录 gap，并通过单会话 sync 请求补拉。
-- 会话列表分页 cursor 使用服务端 string cursor；本地 adapter 只在需要时解析数值水位。
-- `SyncRes` / `EventEnvelope` 当前字段以 `max_conversation_seq`、`next_cursor` 和 oneof payload 为准。
+- On send, the message is first written to a bounded pending outbox; while
+  offline it is only enqueued, and it is sent immediately only once `Ready` and
+  the transport is connected.
+- Both `SendAck` accepted and error converge the local message state and remove
+  the pending entry.
+- When a realtime downstream message reveals a `conversation_seq` gap, the gap
+  is recorded and back-filled via a single-conversation sync request.
+- Conversation-list pagination uses the server's string cursor; the local
+  adapter only parses the numeric watermark when needed.
+- `SyncRes` / `EventEnvelope` fields are currently authoritative on
+  `max_conversation_seq`, `next_cursor`, and the oneof payload.
 
 ## Bindings
 
-| Binding | 目录 | 验证 |
+| Binding | Directory | Verification |
 | --- | --- | --- |
 | C ABI | `bindings/c` | `cargo check -p flare-im-core-sdk-ffi --all-targets` |
 | Tauri | `bindings/tauri` | `cargo check -p flare-im-core-sdk-tauri` |
 | UniFFI | `bindings/uniffi` | `cargo check --manifest-path bindings/uniffi/Cargo.toml`; `cargo test --manifest-path bindings/uniffi/Cargo.toml` |
 | Wasm | `bindings/wasm` | `cargo check -p flare-im-core-sdk-wasm --target wasm32-unknown-unknown` |
 
-## 开发验证
+## Development verification
 
 ```bash
 rtk cargo fmt --all -- --check
@@ -138,38 +166,50 @@ rtk cargo check -p flare-im-core-sdk-wasm --target wasm32-unknown-unknown --all-
 rtk cargo clippy --workspace --all-targets --all-features -- -D warnings
 ```
 
-## 服务端联调
+## Server integration testing
 
-本地服务端全栈由 `../flare-im-core/scripts/start_server.sh` 启动，并可用 `../flare-im-core/scripts/check_services.sh` 检查。当前 live gateway E2E 需要按 `SocketTransport` / `PacketSender` / typed API 重建；不要恢复旧 `memory://local` route facade 测试。
+The local full-stack server is started by
+`../flare-im-core/scripts/start_server.sh` and can be checked with
+`../flare-im-core/scripts/check_services.sh`. The current live-gateway E2E needs
+to be rebuilt on top of `SocketTransport` / `PacketSender` / the typed API; do
+not restore the old `memory://local` route-facade tests.
 
 ```bash
 rtk bash ../flare-im-core/scripts/check_services.sh
 ```
 
-## 许可
+## License
 
-Apache License 2.0。底层 `flare-core` 为 MIT，见对应仓库许可文件。
+Apache License 2.0. The underlying `flare-core` is MIT — see the license file in
+its repository.
 
 ---
 
-## 下一步
+## Next steps
 
-| 想做什么 | 去哪里 |
+| What you want | Where to go |
 |---|---|
-| **五分钟跑起来** | [QUICKSTART](https://github.com/flare-im/flare-im-core-server/blob/main/QUICKSTART.md) —— 起服务、手签 token、调通接口，**不需要自建用户体系** |
-| 接入自己的用户系统 | 实现 `TokenValidator`（`CoreJwtTokenValidator` 本地验签 / `HttpHookTokenValidator` 调你的接口） |
-| 加自己的业务规则 | `flare-im-hooks` 的 9 个扩展点：PreSend / PostSend / Delivery / Recall / MessageRead / MessageReaction / ConversationLifecycle / ConversationMember / GetConversationParticipants |
-| 做界面 | [`@flare-im/vue-ui`](https://www.npmjs.com/package/@flare-im/vue-ui) —— 107 个组件，四端一致的契约 |
-| 报安全问题 | [SECURITY.md](SECURITY.md)，**请勿开公开 issue** |
+| **Run it in five minutes** | [QUICKSTART](https://github.com/flare-im/flare-im-core-server/blob/main/QUICKSTART.md) — start the server, hand-sign a token, get a call through, **no self-built user system required** |
+| Wire in your own user system | Implement `TokenValidator` (`CoreJwtTokenValidator` for local verification / `HttpHookTokenValidator` to call your endpoint) |
+| Add your own business rules | The 9 `flare-im-hooks` extension points: PreSend / PostSend / Delivery / Recall / MessageRead / MessageReaction / ConversationLifecycle / ConversationMember / GetConversationParticipants |
+| Build a UI | [`@flare-im/vue-ui`](https://www.npmjs.com/package/@flare-im/vue-ui) — 107 components, one contract consistent across four platforms |
+| Report a security issue | [SECURITY.md](SECURITY.md) — **please do not open a public issue** |
 
-## 需要账号体系与社交能力时
+## When you need an account system and social features
 
-开源部分是**通信基础设施**。如果你需要的是现成的账号、好友关系、群治理（角色 / 入群审批 / 禁言）、朋友圈，
-这些在商业模块里 —— 自研这一层通常要数月，且都是与通信无关的重复劳动。
+The open-source part is **communication infrastructure**. If what you need is a
+ready-made account system, friend relationships, group governance (roles /
+join approval / muting), or a moments/feed, those live in the commercial
+modules — building this layer yourself usually takes months and is all
+communication-unrelated, repetitive work.
 
-企业场景另有 SSO / 组织架构 / 审计导出 / 数据驻留 / SLA 支持。
+Enterprise scenarios additionally cover SSO / org directory / audit export /
+data residency / SLA support.
 
-咨询：`flare1522@163.com`
+Inquiries: `flare1522@163.com`
 
-> 边界划分与不变承诺见 [GOVERNANCE](https://github.com/flare-im/flare-im-core-server/blob/main/GOVERNANCE.md)。
-> 简言之：**已开源的不会被收回，鉴权与 hooks 契约永远开源、不会为逼迫付费而阉割。**
+> For the boundary and its immutable guarantees, see
+> [GOVERNANCE](https://github.com/flare-im/flare-im-core-server/blob/main/GOVERNANCE.md).
+> In short: **what is already open-sourced will not be taken back, and the auth
+> and hooks contracts stay open forever — they will never be crippled to force
+> payment.**
