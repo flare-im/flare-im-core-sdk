@@ -1,74 +1,77 @@
 # Flare IM SDK - C ABI Bindings
 
-跨平台 C ABI SDK。它是当前多端客户端 SDK 的唯一通用 native L1
-边界，契约来源见 [`../contract/manifest.json`](../contract/manifest.json)。
-API、事件、错误的完整机器可读契约分别见：
+English · [中文](README.zh-CN.md)
+
+Cross-platform C ABI SDK. It is the single common native L1 boundary for the
+current multi-platform client SDK; the contract source is
+[`../contract/manifest.json`](../contract/manifest.json). The complete
+machine-readable contracts for APIs, events, and errors are, respectively:
 
 - [`../contract/apis.json`](../contract/apis.json)
 - [`../contract/events.json`](../contract/events.json)
 - [`../contract/errors.json`](../contract/errors.json)
 
-支持 iOS、Android、Flutter、鸿蒙、C/C++、Node、Unity、React Native native
-module 等通过 native bridge 接入的运行时。
+It supports runtimes that integrate over a native bridge: iOS, Android, Flutter,
+HarmonyOS, C/C++, Node, Unity, React Native native modules, and so on.
 
-## 架构
+## Architecture
 
-- **Rust 内部复杂,C ABI 外部简单**
-- **所有对象通过 handle 管理**
-- **异步 API 使用 callback**
-- **统一 error code 错误模型**
-- **显式内存管理**
+- **Complex inside (Rust), simple outside (C ABI)**
+- **All objects managed via handles**
+- **Async APIs use callbacks**
+- **Unified error-code error model**
+- **Explicit memory management**
 
-## 文件结构
+## File layout
 
 ```
 bindings/c/
-├── Cargo.toml          # 项目配置
-├── cbindgen.toml       # 头文件生成配置
-├── build.rs            # 构建脚本
-├── ARCHITECTURE.md     # 架构设计文档
+├── Cargo.toml          # project config
+├── cbindgen.toml       # header-generation config
+├── build.rs            # build script
+├── ARCHITECTURE.md     # architecture design doc
 └── src/
-    ├── abi.rs           # panic 边界与 FFI 返回保护
-    ├── client_sync.rs   # IMClient 同步/状态类透传
-    ├── dispatch.rs      # JSON 分发入口
-    ├── event.rs         # EventBus 订阅与事件 JSON 映射
+    ├── abi.rs           # panic boundary and FFI return protection
+    ├── client_sync.rs   # IMClient sync/state pass-through
+    ├── dispatch.rs      # JSON dispatch entry
+    ├── event.rs         # EventBus subscription and event JSON mapping
     ├── executor.rs      # async -> callback_once
     ├── ffi_runtime.rs   # Tokio runtime
-    ├── lib.rs           # 入口
-    ├── types.rs         # C ABI 类型定义
-    ├── registry.rs      # 句柄注册表
-    ├── error_convert.rs # 错误转换
-    ├── helpers.rs       # 辅助工具
-    └── lifecycle.rs     # 生命周期 API
+    ├── lib.rs           # entry point
+    ├── types.rs         # C ABI type definitions
+    ├── registry.rs      # handle registry
+    ├── error_convert.rs # error conversion
+    ├── helpers.rs       # helper utilities
+    └── lifecycle.rs     # lifecycle API
 ```
 
 ## API
 
-### 生命周期
+### Lifecycle
 
 ```c
-// 创建/释放
+// create / release
 FlareHandle flare_sdk_create();
 void flare_sdk_release(FlareHandle handle);
 
-// 初始化/登录/登出
+// init / login / logout
 int32_t flare_sdk_init(FlareHandle handle, const char* config_json, void* context, FlareResultCallback callback);
 int32_t flare_sdk_login(FlareHandle handle, const char* user_id, const char* token, const char* store_config_json, void* context, FlareResultCallback callback);
 int32_t flare_sdk_logout(FlareHandle handle, void* context, FlareResultCallback callback);
 int32_t flare_sdk_update_access_token(FlareHandle handle, const char* access_token, const char* tenant_id, void* context, FlareResultCallback callback);
 
-// 同步查询
+// synchronous queries
 FlareString flare_sdk_version();
 bool flare_sdk_is_connected(FlareHandle handle);
 
-// 当前用户 ID（异步，走 callback）
+// current user id (async, via callback)
 int32_t flare_sdk_current_user_id(FlareHandle handle, void* context, FlareResultCallback callback);
 
-// 开发用 JWT（同步，不依赖 handle；`secret`/`issuer` 可为 NULL 或空串用内置默认；`tenant_id` 可为 NULL；`ttl_secs==0` 表示 3600；须 flare_string_free）
+// dev JWT (synchronous, handle-independent; `secret`/`issuer` may be NULL or empty for the built-in defaults; `tenant_id` may be NULL; `ttl_secs==0` means 3600; must flare_string_free)
 FlareString flare_sdk_generate_core_token(const char* secret, const char* issuer, const char* user_id, const char* device_id, const char* tenant_id, uint64_t ttl_secs);
 ```
 
-### 内存管理
+### Memory management
 
 ```c
 void flare_string_free(FlareString s);
@@ -76,9 +79,9 @@ void flare_bytes_free(FlareBytes b);
 void flare_error_free(FlareError e);
 ```
 
-### API 覆盖
+### API coverage
 
-平台边界和稳定形状使用 direct C ABI，例如：
+Platform boundaries and stable shapes use the direct C ABI, e.g.:
 
 - lifecycle: `flare_sdk_*`
 - events: `flare_event_*`
@@ -88,7 +91,8 @@ void flare_error_free(FlareError e);
 - simple message paths: `flare_message_create_text`, `flare_message_send`,
   `flare_message_list`, `flare_message_recall`, `flare_message_delete`
 
-大型或快速演进的会话、媒体控制、消息构建、消息 mutation 使用 JSON dispatch：
+Large or fast-evolving conversation, media-control, message-build, and message
+mutation operations use JSON dispatch:
 
 ```c
 int32_t flare_conversation_dispatch_json(FlareHandle handle, const char* op, const char* params_json, void* context, FlareResultCallback callback);
@@ -97,46 +101,49 @@ int32_t flare_message_build_json(FlareHandle handle, const char* request_json, v
 int32_t flare_message_dispatch_json(FlareHandle handle, const char* op, const char* params_json, void* context, FlareResultCallback callback);
 ```
 
-所有 canonical API id、C entrypoint、Tauri command 的对应关系以
-[`../contract/apis.json`](../contract/apis.json) 为准。
+The mapping between every canonical API id, C entrypoint, and Tauri command is
+authoritative in [`../contract/apis.json`](../contract/apis.json).
 
-### 事件覆盖
+### Event coverage
 
-`flare_event_subscribe` 会逐条转发完整 `SdkEvent` 域事件。C callback 参数
-`event_type` 是稳定整数码，`event_json` 是 camelCase SDK JSON。高吞吐同步场景优先使用
-`flare_event_subscribe_batch`，一次 callback 收到:
+`flare_event_subscribe` forwards every full `SdkEvent` domain event one at a
+time. In the C callback, `event_type` is a stable integer code and `event_json`
+is camelCase SDK JSON. For high-throughput synchronous scenarios prefer
+`flare_event_subscribe_batch`, which delivers per callback:
 
 ```json
 { "events": [{ "eventType": 2001, "payload": {} }] }
 ```
 
-其中 `payload` 与逐条 callback 的 `event_json` 对象完全一致。事件码和 payload
-字段以 [`../contract/events.json`](../contract/events.json) 为准。
+where `payload` is identical to the per-event callback's `event_json` object.
+Event codes and payload fields are authoritative in
+[`../contract/events.json`](../contract/events.json).
 
-## 构建
+## Build
 
 ```bash
 cargo build -p flare-im-core-sdk-ffi --release
 ```
 
-### Flutter 示例（`examples/flare-core-flutter`）一键同步产物
+### One-shot artifact sync for the Flutter example (`examples/flare-core-flutter`)
 
-在 `bindings/c` 目录执行 `make flutter-sync`，会把 C ABI 产物同步到 Flutter 示例工程对应目录。
+Run `make flutter-sync` in the `bindings/c` directory to sync the C ABI
+artifacts into the corresponding directories of the Flutter example project.
 
-完整打包说明见 [`docs/flutter-packaging.md`](docs/flutter-packaging.md)。
+For full packaging instructions see [`docs/flutter-packaging.md`](docs/flutter-packaging.md).
 
-## 线程安全
+## Thread safety
 
-- callback 可能来自任意线程
-- 禁止在 callback 中阻塞或持锁
-- 所有 API 线程安全
+- callbacks may come from any thread
+- do not block or hold locks inside a callback
+- all APIs are thread-safe
 
-## 平台支持
+## Platform support
 
 - iOS (Swift/Objective-C)
 - Android (Kotlin/Java)
-- Flutter (Dart)：完整示例在 monorepo **`examples/flare-core-flutter/`**；在 **`bindings/c`** 执行 **`make flutter-sync`** 将 dylib / `.a` / `.so` 拷入该工程对应目录（见上节）
-- 鸿蒙 (ArkTS/C++)
+- Flutter (Dart): the full example is in the monorepo at **`examples/flare-core-flutter/`**; run **`make flutter-sync`** in **`bindings/c`** to copy the dylib / `.a` / `.so` into that project's corresponding directories (see the section above)
+- HarmonyOS (ArkTS/C++)
 - C/C++
 - Node.js (N-API)
 - Unity (C# P/Invoke)
