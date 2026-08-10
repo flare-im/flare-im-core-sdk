@@ -2,7 +2,7 @@
 
 English · **[中文](README.zh-CN.md)**
 
-> ## ℹ️ This is communication infrastructure, not a turnkey IM product
+> ## ℹ This is communication infrastructure, not a turnkey IM product
 >
 > Up front, so you don't discover it only after cloning and failing to log in:
 > **the open-source part ships no account system** (no sign-up/login, friend

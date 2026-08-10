@@ -264,14 +264,14 @@ mod executor;
 ### 禁止重复
 
 ```rust
-// ❌ 错误: 每个函数重复 spawn
+// ✗ 错误: 每个函数重复 spawn
 pub extern "C" fn flare_xxx(...) {
     instance.runtime.spawn(async move {
         // ...
     });
 }
 
-// ✅ 正确: 使用执行器
+// ✓ 正确: 使用执行器
 pub extern "C" fn flare_xxx(...) {
     execute_async(instance, ctx, op, to_json);
 }
@@ -280,10 +280,10 @@ pub extern "C" fn flare_xxx(...) {
 ### 错误处理
 
 ```rust
-// ❌ 错误: unwrap/panic
+// ✗ 错误: unwrap/panic
 let config = parse_json(config_json).unwrap();
 
-// ✅ 正确: 错误转换
+// ✓ 正确: 错误转换
 let config = match parse_json(config_json) {
     Ok(c) => c,
     Err(code) => {
@@ -364,12 +364,12 @@ final handle = flareSdkCreate();
 
 本 SDK 设计满足:
 
-1. ✅ 跨 iOS、Android、Flutter、鸿蒙
-2. ✅ ABI 稳定 (只使用基础类型)
-3. ✅ 异步安全 (callback 模型)
-4. ✅ 内存安全 (显式释放)
-5. ✅ 易扩展 (模块化设计)
-6. ✅ 易生成 bindings (cbindgen 兼容)
+1. ✓ 跨 iOS、Android、Flutter、鸿蒙
+2. ✓ ABI 稳定 (只使用基础类型)
+3. ✓ 异步安全 (callback 模型)
+4. ✓ 内存安全 (显式释放)
+5. ✓ 易扩展 (模块化设计)
+6. ✓ 易生成 bindings (cbindgen 兼容)
 
 核心优势:
 - 统一的错误模型
