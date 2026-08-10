@@ -496,9 +496,12 @@ fn upload_progress_percent(progress: &UploadProgress) -> u32 {
     if matches!(progress.phase, UploadPhase::Finished) {
         return 100;
     }
-    if progress.total_bytes > 0 {
-        return ((progress.uploaded_bytes.saturating_mul(100)) / progress.total_bytes).min(100)
-            as u32;
+    if let Some(percent) = progress
+        .uploaded_bytes
+        .saturating_mul(100)
+        .checked_div(progress.total_bytes)
+    {
+        return percent.min(100) as u32;
     }
     match progress.phase {
         UploadPhase::Preparing => 0,

@@ -91,7 +91,7 @@ impl MessageReader for MemoryMessageStore {
         if is_latest {
             msgs.sort_by(IMMessage::compare_for_latest_window_desc);
         } else {
-            msgs.sort_by(|a, b| b.conversation_seq.cmp(&a.conversation_seq));
+            msgs.sort_by_key(|m| std::cmp::Reverse(m.conversation_seq));
         }
         msgs.truncate(limit as usize);
         Ok(msgs)
@@ -128,7 +128,7 @@ impl MessageReader for MemoryMessageStore {
             })
             .cloned()
             .collect();
-        results.sort_by(|a, b| b.conversation_seq.cmp(&a.conversation_seq));
+        results.sort_by_key(|m| std::cmp::Reverse(m.conversation_seq));
         results.truncate(limit as usize);
         Ok(results)
     }
