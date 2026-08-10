@@ -403,6 +403,9 @@ impl From<ConversationParticipant> for flare_proto::common::ConversationParticip
             pinned: p.pinned,
             attributes,
             joined_at: u64_to_proto_ms(p.joined_at),
+            // 历史下限由服务端持有并在读取时执行，客户端无权设置：
+            // 回传 0 意为「本次请求不修改下限」（服务端对该字段只升不降）。
+            visible_from_seq: 0,
         }
     }
 }
