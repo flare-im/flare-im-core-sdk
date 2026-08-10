@@ -437,13 +437,19 @@ fn native_release_profiles_keep_ffi_panic_guards_effective() {
         "release-mobile inherits the native FFI profile and must not override panic=abort"
     );
 
-    for config_path in [
-        manifest.join(".cargo/config.toml"),
-        manifest
-            .parent()
-            .expect("flare-im root")
-            .join(".cargo/config.toml"),
-    ] {
+    // 本仓自己的 .cargo/config.toml 必须存在——它是本仓对 wasm 构建的承诺。
+    // 伞仓（上一级）那份属于另一个仓库：多仓开发布局下能看到，单仓 checkout（CI）
+    // 里不存在，此时跳过而非失败——否则「布局差异」会被误报成「架构违规」。
+    let own_config = manifest.join(".cargo/config.toml");
+    let workspace_config = manifest
+        .parent()
+        .expect("flare-im root")
+        .join(".cargo/config.toml");
+    let config_paths: Vec<_> = std::iter::once(own_config)
+        .chain(workspace_config.exists().then_some(workspace_config))
+        .collect();
+
+    for config_path in config_paths {
         let config = fs::read_to_string(&config_path)
             .unwrap_or_else(|error| panic!("read {}: {error}", config_path.display()));
         let wasm = toml_section(&config, "[target.wasm32-unknown-unknown]");
