@@ -30,6 +30,8 @@ jobs:
           clone https://github.com/flare-im/flare-core.git "../flare-core"
           clone https://github.com/flare-im/flare-proto.git "../flare-proto"
           clone https://github.com/flare-im/flare-grpc-proto.git "../flare-grpc-proto"
+          # 架构边界测试会跨仓校验七端 SDK 的事件分发实现，需要它在场
+          clone https://github.com/flare-im/flare-im-core-client-sdk.git "../flare-im-core-client-sdk"
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -89,6 +91,8 @@ jobs:
           clone https://github.com/flare-im/flare-core.git "../flare-core"
           clone https://github.com/flare-im/flare-proto.git "../flare-proto"
           clone https://github.com/flare-im/flare-grpc-proto.git "../flare-grpc-proto"
+          # 架构边界测试会跨仓校验七端 SDK 的事件分发实现，需要它在场
+          clone https://github.com/flare-im/flare-im-core-client-sdk.git "../flare-im-core-client-sdk"
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 

@@ -11,7 +11,11 @@ __pycache__/
 *.swp
 *.swo
 *~
-.cargo/
+# .cargo/config.toml 是项目构建配置（xtask 别名、wasm target 的 --cfg wasm_js 与
+# panic=abort），不是机器本地设置：不入库会让别人 clone 后 wasm 构建行为与本仓不一致，
+# 架构守卫测试也读不到它。只忽略真正本地的缓存产物。
+.cargo/registry/
+.cargo/git/
 platforms/
 
 # OS

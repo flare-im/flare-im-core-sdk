@@ -1,0 +1,5 @@
+[alias]
+xtask = "run -q -p xtask --"
+
+[target.wasm32-unknown-unknown]
+rustflags = ["--cfg", "wasm_js", "-C", "panic=abort"]
