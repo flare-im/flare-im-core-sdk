@@ -115,14 +115,12 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
 
     // ── 5. 只有持钥方解得开 ──────────────────────────────────────────────
     let opened = bob_codec.decode(&envelope.ciphertext)?;
-    // 解出来的是序列化后的 MessageContent（protobuf），不是裸文本 —— 直接打印会
-    // 混进长度前缀等控制字节。这里只把可读文本摘出来，让证据一眼可辨。
-    let recovered = String::from_utf8_lossy(&opened.payload);
-    let readable: String = recovered
-        .chars()
-        .filter(|c| !c.is_control() && *c != '\u{0}')
-        .collect();
-    println!("Bob 解出        : {}", readable.trim());
+    // 解出来的是序列化后的 MessageContent（protobuf），不是裸文本。**要按 protobuf 解**：
+    // 早先图省事按 UTF-8 强转再滤掉控制字符，protobuf 的字段/长度标记里有可打印字节
+    // （如 `$"`）滤不掉，于是这行「Bob 解出」会带上乱码前缀——恰恰是本 demo 唯一要
+    // 证明的那件事（仅持钥方可还原）看着像失败了。
+    let readable = decode_text(&opened.payload).ok_or("解出的内容不是可识别的文本消息")?;
+    println!("Bob 解出        : {readable}");
 
     let (stranger_secret, _) = X25519AeadCodec::generate_keypair();
     let (_, stranger_peer) = X25519AeadCodec::generate_keypair();
@@ -137,4 +135,19 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     }
     println!("\n✅ E2EE 链路验证通过：服务端全程只见密文，仅持钥方可还原");
     Ok(())
+}
+
+/// 从序列化的 `MessageContent` 里取出文本。
+///
+/// 这里刻意走真正的 protobuf 解码而不是字节转字符串：前者拿到的就是原文，
+/// 后者永远要跟编码框架里的杂字节缠斗。
+fn decode_text(payload: &[u8]) -> Option<String> {
+    use flare_proto::common::{MessageContent, message_content::Content};
+    use prost::Message as _;
+
+    match MessageContent::decode(payload).ok()?.content? {
+        Content::Text(text) => Some(text.text),
+        Content::RichText(rich) => Some(rich.plain_text),
+        _ => None,
+    }
 }
