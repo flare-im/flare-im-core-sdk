@@ -406,6 +406,8 @@ impl From<ConversationParticipant> for flare_proto::common::ConversationParticip
             // 历史下限由服务端持有并在读取时执行，客户端无权设置：
             // 回传 0 意为「本次请求不修改下限」（服务端对该字段只升不降）。
             visible_from_seq: 0,
+            // 「只接收@我」同理：由业务侧（群通知设置）投影下来，不由客户端回传。
+            mention_only: false,
         }
     }
 }
