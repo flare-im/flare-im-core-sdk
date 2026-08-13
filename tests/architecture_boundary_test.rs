@@ -47,7 +47,10 @@ fn strip_cfg_test_modules(source: &str) -> String {
             continue;
         }
 
-        if pending_cfg_test && trimmed.starts_with("mod tests") {
+        // 只认 `mod tests` 会漏掉任何自定义命名的测试模块（本仓常按内容命名，
+        // 例如 `mod quic_port_probe_tests`），于是测试代码被当成生产代码报违规。
+        // 判据应是「带 #[cfg(test)] 的任意 mod」——模块叫什么与它是不是测试无关。
+        if pending_cfg_test && (trimmed.starts_with("mod ") || trimmed.starts_with("pub mod ")) {
             in_test_module = true;
             brace_depth += line.matches('{').count() as i32;
             brace_depth -= line.matches('}').count() as i32;
