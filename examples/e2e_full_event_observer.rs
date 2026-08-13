@@ -43,10 +43,21 @@ async fn run() -> std::result::Result<(), Box<dyn std::error::Error>> {
     // 结果可复现。
     let call_id = "00000000-0000-4000-8000-0000000000c1";
     let room_id = "00000000-0000-4000-8000-0000000000a1";
-    let result = apis
+    // RTC 由 SFU 能力插件提供，而那个插件不在开源仓里。插件没起时这一步会失败，
+    // 但这个示例的主体（全事件面）已经跑完了——把它当作整例失败，会让只克隆公开仓
+    // 的人以为核心链路坏了。所以插件缺席时明确跳过并说明，其余错误照旧上报。
+    match apis
         .capability_api
         .rtc_sfu_join_room("example_full", call_id, room_id, Some("speaker"), None)
-        .await?;
-    println!("sfu join: {:?}", result.data);
+        .await
+    {
+        Ok(result) => println!("sfu join: {:?}", result.data),
+        Err(e) if format!("{e:?}").contains("flare-strom-sfu") => {
+            println!(
+                "sfu join: 跳过 —— SFU 能力插件未运行（RTC 由插件提供，不在开源栈内）"
+            );
+        }
+        Err(e) => return Err(e.into()),
+    }
     Ok(())
 }
