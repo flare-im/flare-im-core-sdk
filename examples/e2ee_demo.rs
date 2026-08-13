@@ -25,11 +25,19 @@ use flare_im_core_sdk::prelude::*;
 
 #[path = "common/dev_token.rs"]
 mod dev_token;
+#[path = "common/diagnose.rs"]
+mod diagnose;
 
 const CONVERSATION_PEER: &str = "e2ee_bob";
 
 #[tokio::main]
 async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
+    // 失败时先把「下一步该做什么」打出来，再原样返回错误。
+    // 默认冒泡出的是 Debug 结构体，对第一次跑示例的人几乎没有指导意义。
+    diagnose::explain(run().await)
+}
+
+async fn run() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let secret = dev_token::require()?;
 
     // ── 1. 两端各自生成 X25519 密钥，交换公钥 ────────────────────────────
