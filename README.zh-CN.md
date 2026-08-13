@@ -165,7 +165,7 @@ rtk bash ../flare-im-core/scripts/check_services.sh
 
 ## 许可
 
-Apache License 2.0。底层 `flare-core` 为 MIT，见对应仓库许可文件。
+Apache License 2.0，与底层 `flare-core` 一致，见对应仓库许可文件。
 
 ---
 

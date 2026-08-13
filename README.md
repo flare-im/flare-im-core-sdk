@@ -196,7 +196,7 @@ rtk bash ../flare-im-core/scripts/check_services.sh
 
 ## License
 
-Apache License 2.0. The underlying `flare-core` is MIT — see the license file in
+Apache License 2.0, same as the underlying `flare-core` — see the license file in
 its repository.
 
 ---
