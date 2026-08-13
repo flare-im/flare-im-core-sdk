@@ -1,4 +1,5 @@
 use flare_im_core_sdk::prelude::*;
+use std::time::Duration;
 
 #[path = "common/dev_token.rs"]
 mod dev_token;
@@ -43,21 +44,37 @@ async fn run() -> std::result::Result<(), Box<dyn std::error::Error>> {
     // 结果可复现。
     let call_id = "00000000-0000-4000-8000-0000000000c1";
     let room_id = "00000000-0000-4000-8000-0000000000a1";
-    // RTC 由 SFU 能力插件提供，而那个插件不在开源仓里。插件没起时这一步会失败，
-    // 但这个示例的主体（全事件面）已经跑完了——把它当作整例失败，会让只克隆公开仓
-    // 的人以为核心链路坏了。所以插件缺席时明确跳过并说明，其余错误照旧上报。
-    match apis
-        .capability_api
-        .rtc_sfu_join_room("example_full", call_id, room_id, Some("speaker"), None)
-        .await
+    // RTC 由 SFU 能力插件提供，而那个插件不在开源仓里。这个示例的主体（全事件面）
+    // 到此已经跑完，不该因为一个可选插件缺席就整例变红——那会让只克隆公开仓的人
+    // 以为核心链路坏了。
+    //
+    // 这里**必须自己限时**，不能等服务端报错：能力服务发现不到插件时是按周期重试
+    // 发现（实测约每 90 秒一轮），而不是快速失败。靠「错误信息里有没有插件名」来
+    // 判断，等于把示例的结束时间交给服务端的重试节奏——CI 上就因此挂到超时。
+    const RTC_PROBE_TIMEOUT: Duration = Duration::from_secs(10);
+    match tokio::time::timeout(
+        RTC_PROBE_TIMEOUT,
+        apis.capability_api.rtc_sfu_join_room(
+            "example_full",
+            call_id,
+            room_id,
+            Some("speaker"),
+            None,
+        ),
+    )
+    .await
     {
-        Ok(result) => println!("sfu join: {:?}", result.data),
-        Err(e) if format!("{e:?}").contains("flare-strom-sfu") => {
+        Ok(Ok(result)) => println!("sfu join: {:?}", result.data),
+        Ok(Err(e)) if format!("{e:?}").contains("flare-strom-sfu") => {
+            println!("sfu join: 跳过 —— SFU 能力插件未运行（RTC 由插件提供，不在开源栈内）");
+        }
+        Ok(Err(e)) => return Err(e.into()),
+        Err(_elapsed) => {
             println!(
-                "sfu join: 跳过 —— SFU 能力插件未运行（RTC 由插件提供，不在开源栈内）"
+                "sfu join: 跳过 —— {}s 内无应答，按 SFU 能力插件未运行处理",
+                RTC_PROBE_TIMEOUT.as_secs()
             );
         }
-        Err(e) => return Err(e.into()),
     }
     Ok(())
 }
