@@ -2,6 +2,22 @@
 
 English · **[中文](README.zh-CN.md)**
 
+> ## ⚠ Clone this next to its sibling repos
+
+This crate depends on `flare-core`, `flare-proto` and `flare-grpc-proto` by **path**
+(`../flare-core`, …). Cloning this repository on its own does not build — the failure
+happens in `cargo metadata`, before it ever reaches your code, so the error names an
+internal workspace member and says nothing about the real cause.
+
+```bash
+mkdir flare && cd flare
+git clone https://github.com/flare-im/flare-core.git
+git clone https://github.com/flare-im/flare-proto.git
+git clone https://github.com/flare-im/flare-grpc-proto.git
+git clone https://github.com/flare-im/flare-im-core-sdk.git
+cd flare-im-core-sdk && cargo check
+```
+
 > ## ℹ This is communication infrastructure, not a turnkey IM product
 >
 > Up front, so you don't discover it only after cloning and failing to log in:
