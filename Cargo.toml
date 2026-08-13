@@ -50,7 +50,14 @@ edition = "2024"
 rust-version = "1.94.0"
 authors = ["Flare Team"]
 license = "Apache-2.0"
-description = "Flare IM Client SDK - Event-stream driven cross-platform IM client library"
+description = "Flare IM Client SDK — event-driven cross-platform IM client core: connection, conversations, messages, sync and offline recovery, shared by web / mobile / desktop bindings."
+# crates.io 上没有关键词几乎等于搜不到；上限 5 个，按别人真正会搜的词选。
+keywords = ["instant-messaging", "im", "websocket", "client-sdk", "realtime"]
+categories = ["network-programming", "asynchronous", "api-bindings"]
+repository = "https://github.com/flare-im/flare-im-core-sdk"
+homepage = "https://github.com/flare-im/flare-im-core-sdk"
+documentation = "https://docs.rs/flare-im-core-sdk"
+readme = "README.md"
 
 [lib]
 name = "flare_im_core_sdk"
