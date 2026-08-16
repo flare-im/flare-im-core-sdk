@@ -125,7 +125,21 @@ impl IMClient {
 
     // ========== 消息（单条 / 批量 / 发送态 / 撤回 / 输入中）==========
 
-    /// 收到**一条新消息**（推送或同步落库后）；单聊/群聊共用，内容为 [`IMMessage`]。
+    /// 收到**一条新消息**，内容为 [`IMMessage`]。
+    ///
+    /// ⚠️ **聊天消息不走这个回调，请用 [`Self::on_message_batch`]。**
+    ///
+    /// 入站聊天消息（推送与同步都一样）统一经 `NotificationInboundPipeline::finish_batch`
+    /// 发布 `ReceivedBatch`——批量是入站的**规范路径**，且刻意不重放逐条回调
+    /// （见 `finish_batch_publishes_batch_without_single_message_replay`）。
+    /// 所以订阅本回调渲染聊天气泡会**一条都收不到**。
+    ///
+    /// 本回调实际只在「被提升为消息的通知」那条路径上触发
+    /// （`should_publish_notification_as_message`）。
+    ///
+    /// 这里写清楚是因为它坑过人：文档原先写着「单聊/群聊共用」，
+    /// 全仓消费方于是都订了它、都收不到消息，而各自的接收断言又都靠同步兜底，
+    /// 测试全绿——直到有人真去数事件才发现。
     pub fn on_message<F>(&self, f: F) -> Result<Subscription>
     where
         F: Fn(&IMMessage) + Send + Sync + 'static,
