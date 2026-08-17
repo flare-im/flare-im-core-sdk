@@ -25,7 +25,6 @@ pub fn find_error_code(name: &str) -> Option<&'static ErrorCode> {
 #[cfg(test)]
 mod dispatch_contract_tests {
     use super::*;
-    use crate::generated::direct_invoke::is_direct_invoke_route;
 
     /// `API_OPERATIONS` 是**多绑定**注册表：同一个 op 在不同宿主走不同路径
     /// （C FFI 走 `c_symbol` 或 `c_dispatch_op`，tauri 走 `tauri` 命令，
