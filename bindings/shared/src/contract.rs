@@ -65,7 +65,10 @@ mod dispatch_contract_tests {
             .map(|op| op.id)
             .collect();
 
-        assert!(dangling.is_empty(), "以下 op 没有声明核心实现方法：{dangling:?}");
+        assert!(
+            dangling.is_empty(),
+            "以下 op 没有声明核心实现方法：{dangling:?}"
+        );
     }
 
     /// 声明了 `c_dispatch_op` 的，那个**子操作名**必须真的能被对应模块分发。
