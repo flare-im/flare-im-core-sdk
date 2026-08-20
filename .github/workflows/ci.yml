@@ -275,5 +275,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 
+      # 样例依赖链上的 flare-grpc-proto 的 build.rs 要 protoc。第一次接这道门禁时
+      # 忘了装，CI 报的是「样例编不过」——那是环境缺前置，不是样例真的坏，
+      # 判据形同虚设。脚本现在会把这两种情况分开报，但环境该装还是要装。
+      - name: 安装 protoc
+        run: sudo apt-get update -qq && sudo apt-get install -y protobuf-compiler
+
       - name: 校验 README 样例与版本号
         run: python3 scripts/check_readme_sample.py

@@ -77,6 +77,15 @@ flare-im-core-sdk = { version = "1.2", features = ["lifecycle-sqlite"] }
 tokio = { version = "1", features = ["full"] }
 ```
 
+构建前置：`protoc`。依赖链上的 crate 在构建期要编译 `.proto`。
+
+```bash
+# Debian / Ubuntu
+sudo apt-get install -y protobuf-compiler
+# macOS
+brew install protobuf
+```
+
 ## 快速开始
 
 ```rust

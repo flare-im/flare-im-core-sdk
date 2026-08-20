@@ -205,6 +205,20 @@ def main() -> int:
             print(f"  · 跳过 {name}（拉不到 registry：网络不可用）")
             continue
 
+        # 缺构建前置（protoc 之类）同样不是「样例坏了」。这条照样判红——环境没配好
+        # 就等于没验，不能放过——但**必须报对原因**：第一次接这道门禁时 CI 少装了
+        # protoc，输出却是「样例编不过、去改 README」，把人指向完全错误的方向。
+        if re.search(r"Could not find `protoc`|failed to run custom build command", out):
+            missing = "protoc" if "protoc" in out else "构建前置"
+            print(f"✗ {name}：环境缺 {missing}，本次判据没跑成", file=sys.stderr)
+            print(
+                f"  这不是样例的问题——是跑门禁的机器没装齐前置。装上 {missing} 再跑。\n"
+                f"  （顺带：外部读者也需要它，README 的安装说明里该写清楚。）",
+                file=sys.stderr,
+            )
+            failed += 1
+            continue
+
         print(f"✗ {name}：样例编不过", file=sys.stderr)
         print("\n".join(f"  {line}" for line in out.splitlines()[-25:]), file=sys.stderr)
         failed += 1

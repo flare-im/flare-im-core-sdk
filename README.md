@@ -89,6 +89,15 @@ flare-im-core-sdk = { version = "1.2", features = ["lifecycle-sqlite"] }
 tokio = { version = "1", features = ["full"] }
 ```
 
+Build prerequisite: `protoc`. The dependency chain compiles `.proto` files at build time.
+
+```bash
+# Debian / Ubuntu
+sudo apt-get install -y protobuf-compiler
+# macOS
+brew install protobuf
+```
+
 ## Quick start
 
 ```rust
