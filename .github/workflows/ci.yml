@@ -116,3 +116,56 @@ jobs:
 
       - name: cargo deny（许可 / 来源 / 重复依赖）
         run: cargo deny check
+
+  # 包体预算：WASM 产物有没有悄悄变胖。
+  #
+  # 体积是用户直接付钱的性能指标（首屏要下多少字节、浏览器要编译多少字节），
+  # 但它**没有任何运行时信号**——加一个胖依赖、开一个本该关掉的 feature，
+  # 测试全绿、CI 全绿，只有真实用户的首屏变慢。
+  # release profile 里的 `wasm-opt -Oz` 拦不住「优化开着、输入却涨了一倍」。
+  #
+  # 与耗时门禁的关键区别:体积是确定的,没有 runner 噪声,所以阈值可以设紧
+  # （余量 +10%）,不必像 flare-core 的性能门禁那样留 50~100 倍。
+  wasm-size:
+    name: WASM 包体预算
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 拉取同级仓库
+        run: |
+          BR="${GITHUB_REF_NAME:-main}"
+          clone() {
+            git clone --depth 1 -b "$BR" "$1" "$2" 2>/dev/null \
+              || git clone --depth 1 "$1" "$2"
+          }
+          clone https://github.com/flare-im/flare-core.git "../flare-core"
+          clone https://github.com/flare-im/flare-proto.git "../flare-proto"
+          clone https://github.com/flare-im/flare-grpc-proto.git "../flare-grpc-proto"
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      # 用本仓 package.json 里已经钉住的 wasm-pack（package-lock 锁着版本），
+      # 不引第三方 action:一来少一个供应链来源,二来 CI 与本地跑的是同一个版本,
+      # 免得「本地 4.5MB / CI 4.9MB」这种由工具链差异造成的假回归。
+      - name: 安装 wasm-pack（走本仓锁定版本）
+        working-directory: bindings/wasm
+        run: npm ci
+
+      # 必须真构建再量：产物不入库，量仓里的文件等于量了个寂寞。
+      # 脚本在产物缺失时判红而不是跳过——「没量到」和「量了没超」必须是两种结果。
+      - name: 构建 WASM
+        working-directory: bindings/wasm
+        run: npm run build
+
+      - name: 判包体预算
+        working-directory: bindings/wasm
+        run: python3 scripts/check_wasm_budget.py
