@@ -70,8 +70,25 @@ pub(crate) fn verify_e2ee_contract_gate(root: &Path) -> Result<()> {
         &[
             "const E2EE_PLACEHOLDER_REASON",
             "message_has_e2ee_placeholder",
-            "ContentVisibility::Hidden",
             "e2ee_message_ignores_plain_offline_push_info",
+        ],
+    );
+    // 这一条原先和上面挤在 getui_push.rs 里，只查 `ContentVisibility::Hidden`。
+    // 可见性判定后来被抽到 push_display.rs，getui 那边就再也搜不到那个字符串，
+    // 门禁一直报红——但**实现是对的**，不是隐私缺陷：
+    // message_requires_generic_push_display 同时覆盖 Hidden / Redacted / Purged
+    // 以及 E2EE 占位符。所以这里跟着搬家，并且把三个状态**都**点名——
+    // 原来只查 Hidden，漏掉任何一个都发现不了。
+    require_contains_all(
+        &mut errors,
+        &server_root.join("flare-push/worker/src/infrastructure/push_display.rs"),
+        "push content visibility",
+        &[
+            "fn message_requires_generic_push_display",
+            "ContentVisibility::Hidden",
+            "ContentVisibility::Redacted",
+            "ContentVisibility::Purged",
+            "message_has_e2ee_placeholder(message)",
         ],
     );
 

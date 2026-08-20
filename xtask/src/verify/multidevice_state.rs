@@ -60,8 +60,11 @@ pub(crate) fn verify_multidevice_state_gate(root: &Path) -> Result<()> {
     );
     require_contains_all(
         &mut errors,
+        // 这份一致性清单测试已从 web app 下沉进 TS SDK 包（web 桥下沉 adapters/web
+        // 那轮改造的一部分）。门禁的路径没跟着改，于是一直报「文件缺失」——
+        // 而整个 xtask verify 从来没进过 CI，所以没人看见。
         &root.join(
-            "examples/flare-core-web-app/src/shared/testing/multideviceConformanceManifest.test.ts",
+            "packages/flare-core-typescript-sdk/test/multidevice_conformance_manifest.test.ts",
         ),
         "web multi-device conformance manifest test",
         &[
@@ -462,7 +465,9 @@ pub(crate) fn verify_multidevice_state_gate(root: &Path) -> Result<()> {
     );
     require_contains_all(
         &mut errors,
-        &monorepo_root.join("flare-core/src/server/connection/manager.rs"),
+        // manager.rs 早已拆成 manager/ 目录（mod / ops / lifecycle / trait_impl / tests）。
+        // 扇出这几个标记落在 trait_impl.rs 里。
+        &monorepo_root.join("flare-core/src/server/connection/manager/trait_impl.rs"),
         "transport active multi-device fanout",
         &[
             "async fn send_to_user",

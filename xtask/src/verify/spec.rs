@@ -50,6 +50,13 @@ pub(crate) fn verify_spec(root: &Path) -> Result<()> {
         "Int64",
         "UInt32",
         "UInt64",
+        // Float / Double 是后补的：所有代码生成器（typescript_contract /
+        // typescript_adapter / platform_contract / platform_adapter）一直都成对处理
+        // 这两个类型，只有这份白名单落在后面——`message_builder` 的经纬度字段用了
+        // Double，于是 verify-spec 一直是红的。没人发现是因为**整个 xtask verify
+        // 从来没进过 CI**，只在有人手动跑时才执行。
+        "Float",
+        "Double",
         "JsonObject",
         "StringMap",
         "BinaryMap",
