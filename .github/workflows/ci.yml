@@ -283,3 +283,51 @@ jobs:
 
       - name: 校验 README 样例与版本号
         run: python3 scripts/check_readme_sample.py
+
+  # 性能基线：benches/perf_baseline.rs 一直存在，但**在此之前没有任何 CI 跑过它**。
+  # 基线建了没人看就是慢慢腐坏——编不过、跑 panic、某个 case 被悄悄删掉，
+  # 都不会有任何信号。
+  #
+  # 它测的全是本地路径（内存 store、事件总线、编解码），不需要后端，所以能进 CI。
+  # MX-PERF-01 里「sync 千条」这一项就落在
+  # sync_messages/event_bus_publish_and_drain_1000 上。
+  #
+  # 判据刻意不按绝对耗时设紧阈值:共享 runner 上同一段代码能差好几倍
+  # （flare-core 那道门禁实测 CI 比本机慢 2~3.2 倍）。实际判的是齐全性 +
+  # 规模比值（复杂度，不是速度）+ 留 50 倍以上余量的天花板，细节见脚本头部。
+  perf:
+    name: 性能基线
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 拉取同级仓库
+        run: |
+          BR="${GITHUB_REF_NAME:-main}"
+          clone() {
+            git clone --depth 1 -b "$BR" "$1" "$2" 2>/dev/null \
+              || git clone --depth 1 "$1" "$2"
+          }
+          clone https://github.com/flare-im/flare-core.git "../flare-core"
+          clone https://github.com/flare-im/flare-proto.git "../flare-proto"
+          clone https://github.com/flare-im/flare-grpc-proto.git "../flare-grpc-proto"
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: 安装 protoc
+        run: sudo apt-get update -qq && sudo apt-get install -y protobuf-compiler
+
+      # `shell: bash` 不能省：默认 shell 只带 -e 不带 pipefail，管道给了 tee
+      # 之后退出码取的是 tee 的——门禁判红会被吞成绿。
+      - name: 跑基线并判回归
+        shell: bash
+        run: python3 scripts/check_perf_baseline.py | tee perf-baseline.txt
+
+      # 数字要能被外部复现和引用——「公开性能基准」这半件事靠这个产物落地。
+      - name: 上传本轮数字
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: perf-baseline-sdk
+          path: perf-baseline.txt
