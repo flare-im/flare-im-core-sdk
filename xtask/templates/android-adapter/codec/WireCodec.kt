@@ -222,6 +222,45 @@ fun syncConversationSummariesResponseToMap(request: SyncConversationSummariesRes
     }
 }
 
+fun startupHomeSyncRequestToMap(request: StartupHomeSyncRequest): Map<String, Any?> = mapOf(
+    "backfillVisibleHistories" to request.backfillVisibleHistories,
+    "conversationLimit" to request.conversationLimit,
+    "historyBackfillLimit" to request.historyBackfillLimit,
+    "historyBackfillMaxConversations" to request.historyBackfillMaxConversations,
+    "historyBackfillMaxPagesPerConversation" to request.historyBackfillMaxPagesPerConversation,
+    "startBackgroundConvergence" to request.startBackgroundConvergence,
+)
+
+fun startupHomeSyncResponseFromJson(value: Any?): StartupHomeSyncResponse {
+    val json = mapValue(value)
+    val degradedReason = field(json, "degradedReason") as? String
+    return StartupHomeSyncResponse(
+        backgroundConvergenceStarted = field(json, "backgroundConvergenceStarted") as? Boolean ?: false,
+        coldSyncPerformed = field(json, "coldSyncPerformed") as? Boolean ?: false,
+        degradedReason = degradedReason?.takeIf { it.isNotEmpty() },
+        servedFromLocal = field(json, "servedFromLocal") as? Boolean ?: false,
+        snapshot = homeTimelineSnapshotFromJson(field(json, "snapshot")),
+    )
+}
+
+fun conversationHistoryBackfillRequestToMap(request: ConversationHistoryBackfillRequest): Map<String, Any?> = buildMap {
+    put("conversationId", request.conversationId)
+    request.limit?.let { put("limit", it) }
+    request.maxPages?.let { put("maxPages", it) }
+}
+
+fun conversationHistoryBackfillResponseFromJson(value: Any?): ConversationHistoryBackfillResponse {
+    val json = mapValue(value)
+    return ConversationHistoryBackfillResponse(
+        conversationId = requiredStringField(json, "conversationId", "ConversationHistoryBackfillResponse"),
+        pagesLoaded = requiredLongField(json, "pagesLoaded", "ConversationHistoryBackfillResponse").toInt(),
+        oldestSeqBefore = requiredLongField(json, "oldestSeqBefore", "ConversationHistoryBackfillResponse"),
+        oldestSeqAfter = requiredLongField(json, "oldestSeqAfter", "ConversationHistoryBackfillResponse"),
+        hasMore = requiredBooleanField(json, "hasMore", "ConversationHistoryBackfillResponse"),
+        completed = requiredBooleanField(json, "completed", "ConversationHistoryBackfillResponse"),
+    )
+}
+
 fun reactionEntryToMap(request: ReactionEntry): Map<String, Any?> = buildMap {
     put("emoji", request.emoji)
     if (request.userIds.isNotEmpty()) { put("userIds", request.userIds) }

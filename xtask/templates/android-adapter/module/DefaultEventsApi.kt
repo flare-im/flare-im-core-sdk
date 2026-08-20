@@ -326,7 +326,8 @@ class DefaultEventsApi(
                 SyncEventName.PROGRESS -> listener.onSyncProgress(progressEventFromSync(event))
                 SyncEventName.STATE_CHANGED,
                 SyncEventName.TASK_COMPLETED,
-                SyncEventName.RESYNC_NEEDED -> Unit
+                SyncEventName.RESYNC_NEEDED,
+                SyncEventName.READINESS -> Unit
             }
             is ProgressEvent -> when (event.name) {
                 ProgressEventName.SYNC_PROGRESS -> listener.onSyncProgress(event)

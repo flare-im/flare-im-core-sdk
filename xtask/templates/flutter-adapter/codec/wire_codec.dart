@@ -374,6 +374,66 @@ HomeTimelineSnapshot homeTimelineSnapshotFromJson(Object? value) {
   );
 }
 
+Map<String, Object?> startupHomeSyncRequestToMap(
+  StartupHomeSyncRequest request,
+) {
+  return {
+    'backfillVisibleHistories': request.backfillVisibleHistories,
+    'conversationLimit': request.conversationLimit,
+    'historyBackfillLimit': request.historyBackfillLimit,
+    'historyBackfillMaxConversations': request.historyBackfillMaxConversations,
+    'historyBackfillMaxPagesPerConversation':
+        request.historyBackfillMaxPagesPerConversation,
+    'startBackgroundConvergence': request.startBackgroundConvergence,
+  };
+}
+
+StartupHomeSyncResponse startupHomeSyncResponseFromJson(Object? value) {
+  final json = value is Map ? value : const <String, Object?>{};
+  final degradedReason = json['degradedReason'];
+  return StartupHomeSyncResponse(
+    backgroundConvergenceStarted: json['backgroundConvergenceStarted'] is bool
+        ? json['backgroundConvergenceStarted'] as bool
+        : false,
+    coldSyncPerformed: json['coldSyncPerformed'] is bool
+        ? json['coldSyncPerformed'] as bool
+        : false,
+    degradedReason: degradedReason is String && degradedReason.isNotEmpty
+        ? degradedReason
+        : null,
+    servedFromLocal: json['servedFromLocal'] is bool
+        ? json['servedFromLocal'] as bool
+        : false,
+    snapshot: homeTimelineSnapshotFromJson(json['snapshot']),
+  );
+}
+
+Map<String, Object?> conversationHistoryBackfillRequestToMap(
+  ConversationHistoryBackfillRequest request,
+) {
+  return {
+    'conversationId': request.conversationId,
+    if (request.limit != null) 'limit': request.limit,
+    if (request.maxPages != null) 'maxPages': request.maxPages,
+  };
+}
+
+ConversationHistoryBackfillResponse conversationHistoryBackfillResponseFromJson(
+  Object? value,
+) {
+  final json = value is Map ? value : const <String, Object?>{};
+  return ConversationHistoryBackfillResponse(
+    conversationId: json['conversationId'] is String
+        ? json['conversationId'] as String
+        : '',
+    pagesLoaded: intValue(json['pagesLoaded']),
+    oldestSeqBefore: intValue(json['oldestSeqBefore']),
+    oldestSeqAfter: intValue(json['oldestSeqAfter']),
+    hasMore: json['hasMore'] is bool ? json['hasMore'] as bool : false,
+    completed: json['completed'] is bool ? json['completed'] as bool : false,
+  );
+}
+
 ConversationTimelineSnapshot conversationTimelineSnapshotFromJson(
   Object? value,
 ) {
@@ -980,5 +1040,4 @@ Object? wireEncodeRequest(Object? value) {
 Object? wireDecodeResponse(Object? value) {
   return value;
 }
-
 // RUST-OWNED WIRE BOUNDARY: END

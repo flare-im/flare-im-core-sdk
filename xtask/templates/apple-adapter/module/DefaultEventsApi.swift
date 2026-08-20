@@ -694,7 +694,7 @@ private func dispatchToListener(_ listener: any FlareImEventListener, event: Any
                     total: 100
                 )
             )
-        case .stateChanged, .taskCompleted, .resyncNeeded:
+        case .stateChanged, .taskCompleted, .resyncNeeded, .readiness:
             break
         }
         return

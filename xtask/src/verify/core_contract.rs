@@ -367,12 +367,23 @@ fn verify_core_abi_coverage(
             );
         }
     }
+    // 这里原先是「每个非 dispatch 的符号都必须出现在 sdk-spec 里」，与上面那段
+    // 按 api_id 取**任一备选**的语义直接打架：`apis.json` 允许一个 op 声明多条 C 绑定
+    // （`message.send` / `message.recall` / `message.delete` 都是两条），sdk-spec 只会
+    // 选其中一条对外暴露。send 选了 dispatch 那条，于是这条逐符号的检查一直报
+    // 「core API symbol missing from sdk-spec: message.send -> flare_message_send」——
+    // 而按备选语义它本来就该算覆盖到了。recall / delete 没红，只是因为两边碰巧都选了
+    // typed 那条。这道门禁从没进过 CI，所以这个自相矛盾一直没人撞上。
+    //
+    // 逐符号那条删掉，换成一条它原本没做、也确实该做的检查：**apis.json 里声明的
+    // 每个符号，都得真的被导出**。上面第三段只验了反方向（sdk-spec 写的 cApi 必须
+    // 存在），声明侧一直没人管——apis.json 写错一个符号名，除了这里没有别的信号。
     for ref_item in &refs {
-        if ref_item.dispatch_op.is_none() && !client_symbols.contains(ref_item.symbol.as_str()) {
+        if !exported_symbols.contains(&ref_item.symbol) {
             fail(
                 errors,
                 format!(
-                    "core API symbol missing from sdk-spec: {} -> {}",
+                    "apis.json declares a C symbol that is not exported: {} -> {}",
                     ref_item.api_id, ref_item.symbol
                 ),
             );

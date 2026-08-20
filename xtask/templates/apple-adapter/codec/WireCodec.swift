@@ -352,6 +352,47 @@ func syncConversationSummariesResponseToMap(_ request: SyncConversationSummaries
         "changedConversations": AnySendable(request.changedConversations.map { conversationVersionToMap($0).mapValues { $0.value } }),
     ]
 }
+func startupHomeSyncRequestToMap(_ request: StartupHomeSyncRequest) -> [String: AnySendable] {
+    [
+        "backfillVisibleHistories": AnySendable(request.backfillVisibleHistories),
+        "conversationLimit": AnySendable(request.conversationLimit),
+        "historyBackfillLimit": AnySendable(request.historyBackfillLimit),
+        "historyBackfillMaxConversations": AnySendable(request.historyBackfillMaxConversations),
+        "historyBackfillMaxPagesPerConversation": AnySendable(request.historyBackfillMaxPagesPerConversation),
+        "startBackgroundConvergence": AnySendable(request.startBackgroundConvergence),
+    ]
+}
+
+func startupHomeSyncResponseFromJson(_ value: [String: AnySendable]) throws -> StartupHomeSyncResponse {
+    let json = plainMap(value)
+    return StartupHomeSyncResponse(
+        backgroundConvergenceStarted: (json["backgroundConvergenceStarted"] as? Bool) ?? false,
+        coldSyncPerformed: (json["coldSyncPerformed"] as? Bool) ?? false,
+        degradedReason: json["degradedReason"] as? String,
+        servedFromLocal: (json["servedFromLocal"] as? Bool) ?? false,
+        snapshot: try homeTimelineSnapshotFromJson(jsonObjectMap(json["snapshot"]))
+    )
+}
+
+func conversationHistoryBackfillRequestToMap(_ request: ConversationHistoryBackfillRequest) -> [String: AnySendable] {
+    var out: [String: AnySendable] = ["conversationId": AnySendable(request.conversationId)]
+    if let limit = request.limit { out["limit"] = AnySendable(limit) }
+    if let maxPages = request.maxPages { out["maxPages"] = AnySendable(maxPages) }
+    return out
+}
+
+func conversationHistoryBackfillResponseFromJson(_ value: [String: AnySendable]) throws -> ConversationHistoryBackfillResponse {
+    let json = plainMap(value)
+    return ConversationHistoryBackfillResponse(
+        conversationId: try stringValue(json["conversationId"]),
+        pagesLoaded: UInt32(try intValue(json["pagesLoaded"])),
+        oldestSeqBefore: try intValue(json["oldestSeqBefore"]),
+        oldestSeqAfter: try intValue(json["oldestSeqAfter"]),
+        hasMore: try boolValue(json["hasMore"]),
+        completed: try boolValue(json["completed"])
+    )
+}
+
 func reactionEntryToMap(_ request: ReactionEntry) -> [String: AnySendable] {
     [
         "emoji": wrapSendable(request.emoji),

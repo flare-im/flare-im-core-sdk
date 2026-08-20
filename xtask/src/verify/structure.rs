@@ -699,6 +699,20 @@ fn is_allowed_l2_platform_capability(root: &Path, path: &Path) -> bool {
             == "packages/flare-core-android-sdk/src/main/kotlin/com/flare/im/adapter/codec/nativeinvoke.kt"
         || rel == "packages/flare-core-flutter-sdk/lib/src/adapter/default_flare_im_client.dart"
         || rel == "packages/flare-core-flutter-sdk/lib/src/adapter/events/default_events_api.dart"
+        // 以下三条是 2026-08-20 补的。它们**不是** codegen 漏生成，而是本来就该手写的
+        // 平台能力，只是白名单成文早于它们：
+        //
+        // - `_shared/transportProfile.ts`：各 runtime 物理上能提供什么传输与存储的
+        //   唯一权威声明（能力包络）。它是 web / react-native / uni-app / tauri 这几个
+        //   已在名单里的目录的同级兄弟，只是放在 runtime 中立的 `_shared/` 下。
+        // - 两端的 `DefaultUserApi`：身份缓存门面（业务把名字/头像喂进来，读取侧批量
+        //   join 出当前身份）。全仓没有它的模板——对照 `DefaultEventsApi` 是有模板的，
+        //   而 flutter 的 `default_events_api.dart` 同样以手写身份列在上面。
+        || rel.starts_with("packages/flare-core-typescript-sdk/src/adapters/_shared/")
+        || rel
+            == "packages/flare-core-android-sdk/src/main/kotlin/com/flare/im/adapter/module/defaultuserapi.kt"
+        || rel
+            == "packages/flare-core-apple-sdk/sources/flarecoreapplesdk/adapter/module/defaultuserapi.swift"
 }
 
 fn should_skip_scan_file(path: &Path) -> bool {

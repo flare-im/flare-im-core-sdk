@@ -331,3 +331,66 @@ jobs:
         with:
           name: perf-baseline-sdk
           path: perf-baseline.txt
+
+  # 架构与契约门禁：xtask/src/verify 下 13 道判据（约 130KB），
+  # 在 2026-08-20 之前**CI 里一条 xtask 命令都没有**——只在有人手动敲
+  # `cargo xtask verify` 时才跑。跑一次就知道后果：4 道红的，而且 verify 顺序执行、
+  # 遇错即停，第一道红之后的 14 步从来没被执行过。四道全部修好了（三道是判据
+  # 自己过时，一道是判据自相矛盾），这个 job 就是为了不再让它们烂掉。
+  #
+  # **不用 `cargo xtask verify` 总入口**：它里面有三步需要私有仓 flare-sdk-plugin
+  # （plugin-marketplace / rtc-capability / plugin-verify），公开仓的 CI 拿不到。
+  # 所以逐条列出能跑的 11 道，并把跑不了的 3 道**明写在日志里**——
+  # 「少验了什么」必须看得见，不能靠沉默。
+  xtask-verify:
+    name: 架构与契约门禁
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 拉取同级仓库
+        run: |
+          BR="${GITHUB_REF_NAME:-main}"
+          clone() {
+            git clone --depth 1 -b "$BR" "$1" "$2" 2>/dev/null \
+              || git clone --depth 1 "$1" "$2"
+          }
+          clone https://github.com/flare-im/flare-core.git "../flare-core"
+          clone https://github.com/flare-im/flare-proto.git "../flare-proto"
+          clone https://github.com/flare-im/flare-grpc-proto.git "../flare-grpc-proto"
+          # 判据要读客户端 SDK 的 packages / sdk-spec / examples；xtask 解析根目录时
+          # 找不到它会直接 bail，不是跳过。
+          clone https://github.com/flare-im/flare-im-core-client-sdk.git "../flare-im-core-client-sdk"
+          # e2ee / 多端状态两道要读服务端源码（推送可见性、扇出实现）。
+          clone https://github.com/flare-im/flare-im-core-server.git "../flare-im-core"
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: 安装 protoc
+        run: sudo apt-get update -qq && sudo apt-get install -y protobuf-compiler
+
+      - name: 跑门禁
+        shell: bash
+        run: |
+          set -euo pipefail
+          GATES="spec core-contract multidevice-state network-reconnect observability
+                 performance e2ee-contract enterprise-compliance channel-capability
+                 media-processing structure"
+          EXPECTED=11
+          echo "跳过 3 道（需要私有仓 flare-sdk-plugin，公开 CI 拿不到）："
+          echo "  · plugin-marketplace   · rtc-capability   · plugin-verify"
+          echo ""
+          ran=0
+          for g in $GATES; do
+            echo "--- cargo xtask $g"
+            cargo xtask "$g"
+            ran=$((ran + 1))
+          done
+          # 数量对不上就判红：清单被人删短了而没改这个数字，等于门禁悄悄缩水。
+          if [ "$ran" -ne "$EXPECTED" ]; then
+            echo "✗ 只跑了 $ran 道，期望 $EXPECTED 道——清单被改短了？"
+            exit 1
+          fi
+          echo ""
+          echo "  ✓ $ran 道架构与契约门禁全部通过"
