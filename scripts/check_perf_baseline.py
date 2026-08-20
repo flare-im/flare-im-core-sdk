@@ -37,9 +37,19 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 
-# criterion 的 --output-format bencher 每行长这样：
+# criterion 的 --output-format bencher 正常长这样，一行一条：
 #   test group/case ... bench:        1307 ns/iter (+/- 30)
-LINE = re.compile(r"^test\s+(\S+)\s+\.\.\.\s+bench:\s+([\d,]+)\s+ns/iter")
+#
+# 但**不能按「一行一条」去解析**。全新 checkout 上（CI 就是）criterion 0.5 找不到
+# 上一轮的 target/criterion/<case>/base/sample.json，会把一段 ERROR 插在同一行中间，
+# 把它劈成两行：
+#   test group/case ... Criterion.rs ERROR: ... No such file or directory (os error 2)
+#   bench:        1075 ns/iter (+/- 4)
+# 那段 ERROR 是「首次运行没有历史基线」的正常噪声，不是失败——cargo 退出码仍是 0。
+# 第一版按整行匹配，于是在 CI 上一条都解析不出来，而本机因为有 criterion 历史
+# 永远复现不了。所以改成两段分开认、按出现顺序配对。
+NAME_LINE = re.compile(r"^test\s+(\S+)\s+\.\.\.")
+VALUE_LINE = re.compile(r"bench:\s+([\d,]+)\s+ns/iter")
 
 # 点名清单。bench 里加了新项不必登记，但**这些少一个就判红**。
 REQUIRED = [
@@ -126,11 +136,23 @@ def run_bench() -> str:
 
 
 def parse(text: str) -> dict:
+    """按出现顺序把「test <名字> ...」与其后的「bench: N ns/iter」配对。
+
+    两者同行（本机）或被 criterion 的 ERROR 噪声劈成两行（全新 checkout）
+    都能认。名字出现后若又出现下一个名字而中间没有数值，前一个丢弃——
+    宁可少认一条让齐全性判据报缺，也不要错配到别人的数字上。
+    """
     out = {}
+    pending = None
     for line in text.splitlines():
-        m = LINE.match(line.strip())
-        if m:
-            out[m.group(1)] = float(m.group(2).replace(",", ""))
+        stripped = line.strip()
+        name = NAME_LINE.match(stripped)
+        if name:
+            pending = name.group(1)
+        value = VALUE_LINE.search(stripped)
+        if value and pending:
+            out[pending] = float(value.group(1).replace(",", ""))
+            pending = None
     return out
 
 
