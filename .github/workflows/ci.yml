@@ -401,3 +401,27 @@ jobs:
           fi
           echo ""
           echo "  ✓ $ran 道架构与契约门禁全部通过"
+
+          # 生成物漂移检查：产物与「当前生成器 + 当前契约」对不对得上。
+          # 它们同样从没进过 CI，实测六道全红——根因是一条 required 判定规则的改动
+          # （详见 xtask/src/spec_model.rs 里 core_schema_field_required 的注释），
+          # 外加 FFI 头少一个事件码、文档写着旧的发送路径。
+          # 这类漂移零信号：编译、测试、clippy 全绿，只有真去比对才看得见。
+          echo ""
+          echo "生成物漂移检查："
+          DRIFT="typescript-contract-check platform-contract-check typescript-adapter-check
+                 platform-api-check bridge-check docs-check platform-adapter-check
+                 wire-boundary-check schema-check"
+          DRIFT_EXPECTED=9
+          dran=0
+          for c in $DRIFT; do
+            echo "--- cargo xtask $c"
+            cargo xtask "$c"
+            dran=$((dran + 1))
+          done
+          if [ "$dran" -ne "$DRIFT_EXPECTED" ]; then
+            echo "✗ 只跑了 $dran 道漂移检查，期望 $DRIFT_EXPECTED 道——清单被改短了？"
+            exit 1
+          fi
+          echo ""
+          echo "  ✓ $dran 道生成物漂移检查全部通过"

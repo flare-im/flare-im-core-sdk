@@ -62,10 +62,18 @@ fn doc_targets(root: &Path, spec: &Value) -> Vec<GeneratedTextTarget> {
             path: root.join("packages/flare-core-harmony-cangjie-sdk/README.md"),
             body: emit_package_readme("Flare Core HarmonyOS Cangjie SDK", spec, "cangjie"),
         },
-        GeneratedTextTarget {
-            path: root.join("packages/flare-core-typescript-sdk/README.md"),
-            body: emit_package_readme("Flare Core SDK TypeScript Client", spec, "typescript"),
-        },
+        // TypeScript 包的 README **刻意不生成**。
+        //
+        // 其余五个平台包的 README 都是这里产出的 9 行 stub，唯独 `@flare-im/sdk` 这个
+        // 是真正发到 npm 的包（package.json 的 `files` 里就带着 README.md），它的
+        // README 就是 npm 上的门面页。那份已经被写成 85 行的正式文档（安装、
+        // 「本包发的是 TS 源码不是编译产物」的告警、按 runtime 选入口的表、
+        // peer dependency 说明），还配了 README.zh-CN.md——符合本项目「英文主 + zh 伴随」
+        // 的文档标准。
+        //
+        // 生成器一跑就会把这 85 行换成那 9 行 stub。此前 docs-check 一直报它漂移，
+        // 而这道检查既不在 xtask verify 里也不在 CI 里，所以没人撞上；一旦有人照提示
+        // 跑 `xtask docs`，npm 页面就被降级成一句话。
     ]
 }
 

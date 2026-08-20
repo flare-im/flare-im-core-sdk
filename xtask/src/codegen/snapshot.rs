@@ -64,7 +64,7 @@ const GENERATED_OUTPUT_PATHS: &[&str] = &[
     "sdk-spec/GENERATED.md",
     "sdk-spec/generated/client_spec.json",
     "native/abi",
-    "packages/flare-core-typescript-sdk/README.md",
+    // TS 包的 README 是手写的 npm 门面页，不归生成器管（见 docs.rs 里的说明）。
     "packages/flare-core-typescript-sdk/src",
     "packages/flare-core-android-sdk/README.md",
     "packages/flare-core-android-sdk/src",

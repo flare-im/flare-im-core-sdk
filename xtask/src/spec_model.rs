@@ -589,12 +589,29 @@ fn core_schema_field_required(name: &str, property: &Value, required: &BTreeSet<
     if name == "localState" && property.get("default").is_some() {
         return false;
     }
-    // 依据 schema 的 required 列表判定。
+    // **刻意不看 schema 的 required 列表**，判据只有 nullability。
     //
-    // 此处原为 `required.contains(name) || true` —— `|| true` 让前半段成为死代码，
-    // 函数恒返回 true，即所有非 nullable 字段都被生成为必填，required 列表完全失效。
-    // 经确认是笔误，已修正为按 required 判定。
-    required.contains(name)
+    // 这里有过一次来回，结论记下来免得再翻烧饼：
+    //
+    // 原本写的是 `required.contains(name) || true`，`|| true` 让前半段成为死代码。
+    // 看着像笔误，于是被改成 `required.contains(name)`。但那一改会把 87 个生成文件、
+    // 六个平台 SDK 的公开类型整体改掉（约 590 个字段从必填变可选），因为：
+    //
+    //   schemars 的 `required` 列表反映的是**反序列化时能不能缺省**，不是**值会不会缺失**。
+    //   `#[serde(default)]` 一加，schemars 就整个省掉 required 列表——实测 25 份 schema 里
+    //   有 19 个对象根本没有 required 列表，另有 39 个对象的列表漏掉了带字段级
+    //   `#[serde(default)]` 的项。
+    //
+    // 而这些 DTO 描述的是**核心交出去的值**：Rust 侧字段不是 `Option<T>` 就一定有值。
+    // 把它们生成成可选，Kotlin / Swift 侧会变成 nullable，消费方要对永远不为空的字段
+    // 做空判断——那是实打实的退化。
+    //
+    // 所以规则是：`Option<T>`（schema 允许 null）→ 可选；其余一律必填。
+    // 代价是**请求类**模型里字段级 `#[serde(default)]` 的「调用方可省略」表达不出来，
+    // 那需要按「请求 / 响应」方向分别定 optionality，是一次独立的契约设计，
+    // 已记在 open-items 里，不在这里用一条粗规则糊过去。
+    let _ = required;
+    true
 }
 
 fn sdk_type_from_schema(schema: &Value) -> Result<String> {
