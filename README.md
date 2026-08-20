@@ -80,6 +80,15 @@ is no longer the production contract.
 | `platform/` | Media, transport, and host-capability ports |
 | `extension/` | Capability registry, middleware, RTC/SFU capability-id helpers |
 
+## Installation
+
+```toml
+[dependencies]
+# `LoginDbKind::Sqlite` 由 lifecycle-sqlite 提供；不开这个 feature，下面的样例编不过。
+flare-im-core-sdk = { version = "1.2", features = ["lifecycle-sqlite"] }
+tokio = { version = "1", features = ["full"] }
+```
+
 ## Quick start
 
 ```rust
@@ -108,7 +117,7 @@ async fn main() -> Result<()> {
         .await?;
     let message = apis
         .message_build_api
-        .create_text(&conversation.conversation_id, "hello", false)
+        .create_text(&conversation.conversation_id, "hello", false, &[])
         .await?;
     let ack = apis.message_api.send_no_oss(message).await?;
     println!("sent: {:?}", ack);

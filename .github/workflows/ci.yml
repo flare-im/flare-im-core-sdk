@@ -169,3 +169,111 @@ jobs:
       - name: 判包体预算
         working-directory: bindings/wasm
         run: python3 scripts/check_wasm_budget.py
+
+  # 许可证口径：README 是 crates.io 页面渲染的内容，它写的许可证与 Cargo.toml
+  # 声明的不一致是法务问题，不是排版问题——而且没有任何测试会碰到它。
+  #
+  # 已经真的发生过（2026-08-20 全仓核查）：flare-grpc-proto 的中英文 README 都写着
+  # 「MIT（见 Cargo.toml）」，而 Cargo.toml 写的是 Apache-2.0，自己打自己的脸；
+  # flare-proto 的中文 README 写 MIT、英文写 Apache-2.0，同仓中英文互相矛盾。
+  # flare-core 早前修过同类问题，但当时只修了自己那一个仓，没往外扫。
+  #
+  # 另一条：声明了 license 却没把 LICENSE 正文打进包里，等于发了一个不满足
+  # 自己所声明许可证（Apache-2.0 §4(a) 要求随件附带许可证副本）的包。
+  readme-claims:
+    name: 门面文档口径
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: README 许可证声明与 Cargo.toml 一致
+        shell: bash
+        run: |
+          declared=$(grep -m1 '^license' Cargo.toml | sed 's/.*"\(.*\)".*/\1/')
+          [ -n "$declared" ] || { echo "✗ Cargo.toml 没有 license 字段"; exit 1; }
+          key=$(echo "${declared%%-*}" | tr 'A-Z' 'a-z')
+          fail=0
+          for f in README.md README.zh-CN.md; do
+            [ -f "$f" ] || continue
+            # 只看 License / 许可 小节：正文里提到别的协议（依赖清单之类）不该误判
+            section=$(awk '/^#+ *(License|许可)/{f=1;next} /^#+ /{f=0} f' "$f")
+            [ -n "$section" ] || { echo "✗ $f 找不到 License / 许可 小节"; fail=1; continue; }
+            echo "$section" | grep -qi "$key" \
+              || { echo "✗ $f 许可证小节没提 $declared"; fail=1; }
+            for other in MIT GPL BSD MPL ISC; do
+              o=$(echo "$other" | tr 'A-Z' 'a-z'); [ "$o" = "$key" ] && continue
+              echo "$section" | grep -qiE "\b$other\b" \
+                && { echo "✗ $f 许可证小节写着 $other，而 Cargo.toml 声明 $declared"; fail=1; }
+            done
+          done
+          [ $fail -eq 0 ] && echo "  ✓ README 许可证声明与 Cargo.toml（$declared）一致"
+          exit $fail
+
+      # 这里只查文件在不在——「真的进了包」是更强的判据，由 publishable job 里的
+      # cargo package --list 负责（那个 job 才有同级仓与 protoc 这些前置条件）。
+      - name: crate 目录里有 LICENSE 正文
+        shell: bash
+        run: |
+          ls LICENSE* >/dev/null 2>&1 \
+            || { echo "✗ 没有 LICENSE 文件。声明了许可证却不随件附带正文，发出去的包不满足它自己声明的协议。"; exit 1; }
+          echo "  ✓ $(ls LICENSE*) 在 crate 目录里"
+
+      # README 里的版本号：编译判据对它是瞎的（cargo 的 ^ 语义会把旧 pin 解析到
+      # 新版本，新旧都编得过），但那个数字是给人读、给人照抄的。
+      # 已发生过：flare-proto 写 2.0.1（实际 2.1.0）、flare-core 写 1.0.1（实际 1.1.1）。
+      #
+      # 「一个 pin 都没有」同样判红：已发布的 crate，它的 crates.io 页面上总得写清楚
+      # 怎么装。flare-im-core-sdk 与 flare-plugin-host 此前就是一行安装说明都没有。
+      - name: README 里的版本号还是当前发布版
+        shell: bash
+        run: |
+          name=$(grep -m1 '^name' Cargo.toml | sed 's/.*"\(.*\)".*/\1/')
+          latest=$(curl -sf --max-time 25 -H "User-Agent: flare-readme-gate" \
+            "https://crates.io/api/v1/crates/$name" \
+            | python3 -c 'import sys,json;print(json.load(sys.stdin)["crate"]["max_version"])' 2>/dev/null) || latest=""
+          # registry 抖动不该阻断一个无关的 PR：查不到就跳过并说明，不静默通过。
+          if [ -z "$latest" ]; then echo "  · 跳过版本新鲜度（查不到 registry）"; exit 0; fi
+          fail=0
+          for f in README.md README.zh-CN.md; do
+            [ -f "$f" ] || continue
+            # 两种写法都要认，只认字符串式会在依赖块改成表式那天悄悄失效：
+            #   flare-x = "1.2"                              ← 字符串式
+            #   flare-x = { version = "1.2", features = [] }  ← 表式
+            # 这不是假设：flare-im-core-sdk 的安装块为了标注 feature 就是表式的，
+            # 第一版正则当场把 pins 读成空，于是「一个 pin 都没有」那条误判成红。
+            # 取依赖那一行里第一个以数字开头的带引号串，两种写法都覆盖得到。
+            pins=$(grep -E "^[[:space:]]*$name[[:space:]]*=" "$f" \
+                     | grep -oE '"[0-9][^"]*"' | tr -d '"' | sort -u)
+            if [ -z "$pins" ]; then
+              echo "✗ $f 里没有任何 $name 的依赖示例"
+              echo "  这是个已发布的 crate，README 就是它的 crates.io 页面——上面得写清楚怎么装。"
+              fail=1; continue
+            fi
+            for p in $pins; do
+              case "$latest" in "$p"|"$p".*) ;; *) echo "✗ $f 写着 $name $p，当前发布版是 $latest"; fail=1;; esac
+            done
+          done
+          [ $fail -eq 0 ] && echo "  ✓ README 里的 $name 版本号与 registry（$latest）一致"
+          exit $fail
+
+  # README 是 crates.io 页面渲染的内容。官网文档站在私有仓、没有部署路径，
+  # 所以外部使用者实际拿得到的文档就是它——它坏了没有任何别的信号
+  # （cargo test / clippy 都不碰 README）。
+  #
+  # 刻意**不**拉同级仓库：这道门禁验的就是「外部读者只有 registry」这个前提。
+  # 同级目录一摆上，path 依赖会顶上去，样例永远编得过，门禁就废了。
+  #
+  # 本仓用脚本按 registry 编，而不是 flare-proto / flare-grpc-proto 那种
+  # `#[cfg(doctest)] #[doc = include_str!]`：那条路按本地源码编，而这里的样例需要
+  # lifecycle-sqlite 与 tokio，跟 cargo test 的默认 feature 对不上；按 registry 编
+  # 还多验一件事——已经发出去的那个版本是不是真的能这么用。
+  readme:
+    name: README 样例能否编过
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: 校验 README 样例与版本号
+        run: python3 scripts/check_readme_sample.py

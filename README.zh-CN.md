@@ -68,6 +68,15 @@ cd flare-im-core-sdk && cargo check
 | `platform/` | media、transport、宿主能力端口 |
 | `extension/` | capability registry、middleware、RTC/SFU capability id helpers |
 
+## 安装
+
+```toml
+[dependencies]
+# `LoginDbKind::Sqlite` 由 lifecycle-sqlite 提供；不开这个 feature，下面的样例编不过。
+flare-im-core-sdk = { version = "1.2", features = ["lifecycle-sqlite"] }
+tokio = { version = "1", features = ["full"] }
+```
+
 ## 快速开始
 
 ```rust
@@ -96,7 +105,7 @@ async fn main() -> Result<()> {
         .await?;
     let message = apis
         .message_build_api
-        .create_text(&conversation.conversation_id, "hello", false)
+        .create_text(&conversation.conversation_id, "hello", false, &[])
         .await?;
     let ack = apis.message_api.send_no_oss(message).await?;
     println!("sent: {:?}", ack);
