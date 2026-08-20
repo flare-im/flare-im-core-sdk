@@ -123,14 +123,19 @@ const REQUIRED_PATHS: &[&str] = &[
     "packages/flare-core-apple-sdk/Sources/FlareCoreAppleSDK/Listener/ConversationListener.swift",
     "packages/flare-core-apple-sdk/Sources/FlareCoreAppleSDK/Listener/MessageListener.swift",
     "packages/flare-core-apple-sdk/Sources/FlareCoreAppleSDK/Listener/MediaListener.swift",
-    "packages/flare-core-apple-sdk/Sources/FlareCoreAppleSDK/Model/Entity/Conversation.swift",
-    "packages/flare-core-apple-sdk/Sources/FlareCoreAppleSDK/Model/Entity/Message.swift",
-    "packages/flare-core-apple-sdk/Sources/FlareCoreAppleSDK/Model/Event/SdkEventEnvelope.swift",
-    "packages/flare-core-apple-sdk/Sources/FlareCoreAppleSDK/Model/Event/Lifecycle/LifecycleEvent.swift",
-    "packages/flare-core-apple-sdk/Sources/FlareCoreAppleSDK/Model/Event/Progress/ProgressEvent.swift",
-    "packages/flare-core-apple-sdk/Sources/FlareCoreAppleSDK/Model/Common/Enums/ConversationType.swift",
-    "packages/flare-core-apple-sdk/Sources/FlareCoreAppleSDK/Model/Common/Enums/MessageContentType.swift",
-    "packages/flare-core-apple-sdk/Sources/FlareCoreAppleSDK/Model/Event/Lifecycle/LifecycleEventName.swift",
+    // ⚠️ 这一段的大小写必须与 git 里的真实路径逐字一致。Apple 侧 Model 的子目录
+    // 是小写（entity / event / common / lifecycle / progress），而文件名是 PascalCase
+    // ——这是生成器产出的形态。此前这里写成了 Model/Entity/... ，macOS 的大小写不敏感
+    // 文件系统照样能找到，所以本机永远绿；直到这道门禁第一次跑上 Linux runner 才
+    // 一次报出 8 个「missing required path」。本机测不出来的差异，只有 CI 能替你测。
+    "packages/flare-core-apple-sdk/Sources/FlareCoreAppleSDK/Model/entity/Conversation.swift",
+    "packages/flare-core-apple-sdk/Sources/FlareCoreAppleSDK/Model/entity/Message.swift",
+    "packages/flare-core-apple-sdk/Sources/FlareCoreAppleSDK/Model/event/SdkEventEnvelope.swift",
+    "packages/flare-core-apple-sdk/Sources/FlareCoreAppleSDK/Model/event/lifecycle/LifecycleEvent.swift",
+    "packages/flare-core-apple-sdk/Sources/FlareCoreAppleSDK/Model/event/progress/ProgressEvent.swift",
+    "packages/flare-core-apple-sdk/Sources/FlareCoreAppleSDK/Model/common/enums/ConversationType.swift",
+    "packages/flare-core-apple-sdk/Sources/FlareCoreAppleSDK/Model/common/enums/MessageContentType.swift",
+    "packages/flare-core-apple-sdk/Sources/FlareCoreAppleSDK/Model/event/lifecycle/LifecycleEventName.swift",
     "packages/flare-core-apple-sdk/Sources/FlareCoreAppleSDK/Lifecycle/HeartbeatLifecycleBridge.swift",
     "packages/flare-core-harmony-arkts-sdk/src/main/ets/contract/SdkContract.ets",
     "packages/flare-core-harmony-arkts-sdk/src/main/ets/Index.ets",
