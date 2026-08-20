@@ -94,7 +94,14 @@ CEILINGS = {
 }
 
 
+# cargo 把编译进度写 stderr、bench 结果写 stdout。出问题时两边都要看：
+# 第一版只在「returncode != 0」时打印它们，结果 CI 上遇到「exit 0 但 stdout 为空」
+# 就只剩一句「criterion 的输出格式变了？」——那是猜测，不是诊断，把人往错方向带。
+_LAST_STDERR = ""
+
+
 def run_bench() -> str:
+    global _LAST_STDERR
     proc = subprocess.run(
         [
             "cargo",
@@ -109,6 +116,7 @@ def run_bench() -> str:
         capture_output=True,
         text=True,
     )
+    _LAST_STDERR = proc.stderr
     if proc.returncode != 0:
         print("✗ bench 没跑起来（这本身就是回归：基线不可执行）", file=sys.stderr)
         print(proc.stdout[-3000:], file=sys.stderr)
@@ -132,7 +140,17 @@ def main() -> int:
 
     if not got:
         print("✗ 一条 bencher 格式的结果都没解析出来", file=sys.stderr)
-        print("  criterion 的输出格式变了？这道门禁靠 `--output-format bencher` 抓取。", file=sys.stderr)
+        print(
+            "  cargo 退出码是 0，所以不是编译失败。可能是 bench 压根没被执行\n"
+            "  （目标被 required-features 之类过滤掉，cargo 只 Finished 不 Running），\n"
+            "  也可能是 criterion 的输出格式变了。下面是 cargo 自己说的话——"
+            "别再靠猜：",
+            file=sys.stderr,
+        )
+        print("  --- cargo stdout（原样，前 1500 字）---", file=sys.stderr)
+        print(raw[:1500] or "  (空)", file=sys.stderr)
+        print("  --- cargo stderr（尾 2500 字）---", file=sys.stderr)
+        print(_LAST_STDERR[-2500:] or "  (空)", file=sys.stderr)
         return 1
 
     # 先把数字打出来：判红时 stdout/stderr 交错，表格放后面会被冲散。
