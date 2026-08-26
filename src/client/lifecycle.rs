@@ -71,6 +71,24 @@ pub fn default_ws_url(overlay: Option<&SdkConfigOverlay>) -> String {
         .unwrap_or_else(|| "ws://localhost:60051".to_string())
 }
 
+/// 解析登录时子客户端要用的 WebSocket 地址。
+///
+/// 优先级：**overlay > 构建期配置 > 兜底默认值**。
+///
+/// 中间那一档是 2026-08-26 补的。此前登录时 `prepare` 只看 overlay，
+/// 父客户端 `IMClientBuilder::config` 里配好的 ws 地址在重建子客户端那一刻被丢掉，
+/// 直接落到 `ws://localhost:60051`。
+///
+/// 这个缺陷**只在非本机部署上显形**：本机开发时兜底地址恰好是对的，所以配置传递
+/// 断了也看不出来。线上实测撞到过——web 客户端业务接口全通、页面正常，
+/// 唯独 IM 长连接去连访问者自己的电脑，控制台一句 `ERR_CONNECTION_REFUSED`。
+pub fn resolve_ws_url(overlay: Option<&SdkConfigOverlay>, configured: Option<&str>) -> String {
+    overlay
+        .and_then(|c| c.ws_url.clone())
+        .or_else(|| configured.map(String::from))
+        .unwrap_or_else(|| default_ws_url(overlay))
+}
+
 /// 将上层 overlay 合并进基础 [`SdkConfig`]。
 ///
 /// 仅覆盖 `Some(...)` 字段，未提供的字段保持默认值。
@@ -255,6 +273,49 @@ impl LoginDbKind {
 
 #[cfg(test)]
 mod tests {
+
+    /// ws 地址的优先级必须是 overlay > 构建期配置 > 兜底默认值。
+    ///
+    /// 中间那一档曾经不存在，导致 `IMClientBuilder::config` 配好的地址在登录时被丢掉。
+    /// 本机开发发现不了——兜底的 `ws://localhost:60051` 在本机恰好是对的。
+    #[test]
+    fn ws_url_priority_overlay_then_configured_then_default() {
+        let overlay = SdkConfigOverlay {
+            ws_url: Some("wss://from-overlay/im".into()),
+            ..Default::default()
+        };
+
+        // overlay 最高
+        assert_eq!(
+            resolve_ws_url(Some(&overlay), Some("wss://from-builder/im")),
+            "wss://from-overlay/im"
+        );
+
+        // 没有 overlay 时用构建期配置 —— 这一档就是修复的核心
+        assert_eq!(
+            resolve_ws_url(None, Some("wss://from-builder/im")),
+            "wss://from-builder/im",
+            "构建期配置必须能传到登录时重建的子客户端，否则远程部署连不上 IM"
+        );
+
+        // overlay 存在但没给 ws_url，同样该回落到构建期配置
+        let empty_overlay = SdkConfigOverlay::default();
+        assert_eq!(
+            resolve_ws_url(Some(&empty_overlay), Some("wss://from-builder/im")),
+            "wss://from-builder/im"
+        );
+    }
+
+    /// 两者都没有时才用兜底 —— 保持本机开发的既有行为不变。
+    #[test]
+    fn ws_url_falls_back_to_default_when_nothing_configured() {
+        // 环境变量可能被别的测试设过，这里只断言「非空且是个 ws 地址」
+        let got = resolve_ws_url(None, None);
+        assert!(
+            got.starts_with("ws://") || got.starts_with("wss://"),
+            "兜底值必须仍是可用的 ws 地址，实际：{got}"
+        );
+    }
     use super::*;
 
     #[test]

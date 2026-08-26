@@ -93,6 +93,16 @@ where
 pub(crate) struct IMClientInner {
     pub environment: Option<String>,
     pub sdk_config: Option<SdkConfigOverlay>,
+    /// 构建期传入的 WebSocket 地址（`IMClientBuilder::config` 里那个）。
+    ///
+    /// 登录时 `prepare` 会按快照重建一个子客户端，而快照只带 `sdk_config` 这个
+    /// **overlay**——构建期的基础配置不在其中。少了这个字段，父客户端配好的
+    /// ws 地址在登录那一刻就丢了，`default_ws_url` 兜底到 `ws://localhost:60051`。
+    ///
+    /// 后果只在**非本机部署**上显形：本机开发时那个兜底地址恰好是对的，
+    /// 所以配置传递断了也看不出来。线上实测过一次——web 客户端业务接口全通，
+    /// 唯独 IM 长连接去连访问者自己的电脑。
+    pub configured_ws_url: Option<String>,
     pub data_root: Option<PathBuf>,
     pub current_user_id: Option<String>,
     pub connect_token: Option<String>,

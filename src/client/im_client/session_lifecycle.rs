@@ -7,7 +7,7 @@ use crate::FlareError;
 use crate::client::builder::IMClientBuilder;
 use crate::client::connected_apis::ConnectedApis;
 use crate::client::lifecycle::{
-    LoginDbKind, default_ws_url, merge_sdk_config, resolve_connect_token, resolve_sdk_data_root,
+    LoginDbKind, merge_sdk_config, resolve_connect_token, resolve_sdk_data_root,
 };
 use crate::kernel::SdkState;
 use crate::shared::error::{ErrorCode, Result};
@@ -310,6 +310,7 @@ impl IMClient {
                 g.data_root.clone(),
                 g.http_request_context.clone(),
                 g.extension_components.clone(),
+                g.configured_ws_url.clone(),
             )
         };
         self.logout_for_login().await?;
@@ -361,7 +362,9 @@ impl IMClient {
         };
         #[cfg(not(feature = "lifecycle-sqlite"))]
         let LoginDbKind::IndexedDb(stores) = db;
-        let ws_url = default_ws_url(snap.1.as_ref());
+        // 优先级 overlay > 构建期配置 > 兜底，判据抽在 lifecycle::resolve_ws_url，
+        // 那里有完整来龙去脉与回归测试。
+        let ws_url = crate::client::lifecycle::resolve_ws_url(snap.1.as_ref(), snap.5.as_deref());
         let config = merge_sdk_config(&ws_url, snap.1.as_ref());
         let mut child_builder = IMClientBuilder::new().config(config).stores(stores);
         if let Some(ctx) = snap.3.clone() {
