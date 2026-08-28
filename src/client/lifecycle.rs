@@ -64,11 +64,21 @@ pub struct SdkConfigOverlay {
 /// 2. 环境变量 `FLARE_IM_SERVER_URL`
 /// 3. 内置默认 `ws://localhost:60051`
 pub fn default_ws_url(overlay: Option<&SdkConfigOverlay>) -> String {
-    overlay
-        .and_then(|c| c.ws_url.as_deref())
-        .map(String::from)
-        .or_else(|| std::env::var("FLARE_IM_SERVER_URL").ok())
-        .unwrap_or_else(|| "ws://localhost:60051".to_string())
+    let from_overlay = overlay.and_then(|c| c.ws_url.as_deref()).map(String::from);
+    let from_env = std::env::var("FLARE_IM_SERVER_URL").ok();
+    let url = from_overlay
+        .clone()
+        .or_else(|| from_env.clone())
+        .unwrap_or_else(|| "ws://localhost:60051".to_string());
+    // 生效地址必须可见：连不上时第一个要确认的就是"到底连的哪里"，
+    // 而这条链路有三档来源（overlay / 环境变量 / 内置默认），靠猜代价很高。
+    tracing::info!(
+        ws_url = %url,
+        from_overlay = from_overlay.is_some(),
+        from_env = from_env.is_some(),
+        "IM WebSocket 地址已确定"
+    );
+    url
 }
 
 /// 解析登录时子客户端要用的 WebSocket 地址。
