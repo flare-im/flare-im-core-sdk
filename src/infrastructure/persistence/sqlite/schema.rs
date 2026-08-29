@@ -176,6 +176,11 @@ async fn ensure_current_conversation_columns(pool: &SqlitePool) -> Result<()> {
         ("mention_me", "mention_me INTEGER NOT NULL DEFAULT 0"),
         ("badge", "badge TEXT"),
         ("role", "role TEXT"),
+        // 随会话摘要下发的成员预览（JSON 数组）。必须持久化：单聊的
+        // channel_id / display_name 装不下各自的对端，端上认出「对端是谁」
+        // 只能靠它。不存的话，冷启时内存里有、标题正确，但任何一次从本地库
+        // 重读（收到新消息刷新列表等）都会退化成「会话」。
+        ("member_preview", "member_preview TEXT"),
     ] {
         ensure_column(pool, "conversations", column, definition).await?;
     }
@@ -400,7 +405,8 @@ pub async fn init_schema(pool: &SqlitePool) -> Result<()> {
             mention_count INTEGER NOT NULL DEFAULT 0,
             mention_me INTEGER NOT NULL DEFAULT 0,
             badge TEXT,
-            role TEXT
+            role TEXT,
+            member_preview TEXT
         );"#,
     )
     .execute(pool)

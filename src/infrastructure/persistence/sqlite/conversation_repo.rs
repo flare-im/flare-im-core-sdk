@@ -479,7 +479,12 @@ impl SqliteConversationRepo {
             updated_at_ts: updated_at_ts.map(|t| t as u64),
             ext,
             participant_version: 0,
-            member_preview: Vec::new(),
+            member_preview: row
+                .try_get::<Option<String>, _>("member_preview")
+                .ok()
+                .flatten()
+                .and_then(|raw| serde_json::from_str(&raw).ok())
+                .unwrap_or_default(),
             draft,
             mention_count: mention_count.max(0) as u32,
             mention_me: mention_me != 0,
@@ -690,6 +695,12 @@ impl ConversationWriter for SqliteConversationRepo {
             .await
             .map_err(|e| FlareError::localized(ErrorCode::DatabaseError, e.to_string()))?;
 
+            // 在 existing 被 move 进下面的 if let 之前先取出来
+            let prev_member_preview: Option<String> = existing
+                .as_ref()
+                .and_then(|row| row.try_get::<Option<String>, _>("member_preview").ok())
+                .flatten();
+
             let mut merged = c.clone();
             if let Some(row) = existing {
                 let prev_max_seq = row.try_get::<i64, _>("max_seq").unwrap_or(0).max(0) as u64;
@@ -852,6 +863,15 @@ impl ConversationWriter for SqliteConversationRepo {
                 .min(ReadPosition::from_conversation(&merged).unread_upper_bound());
 
             let ext_json = serde_json::to_string(&merged.ext).unwrap_or_default();
+            // 成员预览：来源不带就沿用库里已有的，绝不清空。
+            // 并非每条会话更新都携带 member_preview（未读变化、草稿、置顶等
+            // 局部更新就不带），若照写就会把它抹掉——端上单聊标题会随机
+            // 退化成「会话」，且只在特定操作后复现，极难定位。
+            let member_preview_json: Option<String> = if merged.member_preview.is_empty() {
+                prev_member_preview
+            } else {
+                serde_json::to_string(&merged.member_preview).ok()
+            };
             sqlx::query(
                 r#"INSERT OR REPLACE INTO conversations (
                    conversation_id, conversation_type, business_type, channel_id, members_count,
@@ -859,8 +879,8 @@ impl ConversationWriter for SqliteConversationRepo {
                    last_message_at, last_message_preview, last_sender_nickname, last_sender_avatar_url,
                    unread_count, last_read_seq, max_seq, visible_after_seq, is_pinned, is_muted, is_archived,
                    version, updated_at, created_at, updated_at_ts, ext, draft,
-                   mention_count, mention_me, badge, role)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"#,
+                   mention_count, mention_me, badge, role, member_preview)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"#,
             )
             .bind(&merged.conversation_id)
             .bind(conversation_type_to_i32(&merged.conversation_type))
@@ -894,6 +914,7 @@ impl ConversationWriter for SqliteConversationRepo {
             .bind(if merged.mention_me { 1i32 } else { 0 })
             .bind(&merged.badge)
             .bind(&merged.role)
+            .bind(&member_preview_json)
             .execute(&mut *tx)
             .await
             .map_err(|e| FlareError::localized(ErrorCode::DatabaseError, e.to_string()))?;
