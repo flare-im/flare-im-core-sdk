@@ -123,6 +123,11 @@ impl ConversationIdentityService {
         if !conversation.conversation_type.is_single_chat_conversation() {
             return None;
         }
+        // 同 canonicalize_single_chat_message：会话 ID 的类型前缀比 conversation_type
+        // 字段更可信，后者会被下发链路上的任何一环填错。
+        if conversation_id::is_group_chat_conversation(&conversation.conversation_id) {
+            return None;
+        }
         let me = current_user_id.trim();
         if me.is_empty() {
             return None;
@@ -153,6 +158,14 @@ impl ConversationIdentityService {
     ) -> Option<ConversationIdRewrite> {
         let conversation_type = ConversationType::from_proto_int(message.conversation_type);
         if !conversation_type.is_single_chat_conversation() {
+            return None;
+        }
+        // 会话 ID 自带类型前缀（2A…=群聊），它比消息上的 conversation_type 更可信：
+        // 后者是每条消息各带一份的冗余副本，缺省或填错时会被服务端按默认值补成单聊。
+        // 只信它的话，一条群消息就会被判成单聊，进而把**整个群会话**合并进某个
+        // 单聊会话（实测群会话连同消息一起从列表里消失，moved=1）。
+        // ID 是会话身份本身，不会因为某条消息填错而改变——用它兜住这类误判。
+        if conversation_id::is_group_chat_conversation(&message.conversation_id) {
             return None;
         }
         let me = current_user_id.trim();
@@ -312,6 +325,36 @@ mod tests {
 
         assert!(!conversation_id.trim().is_empty());
         assert!(conversation_id::validate_conversation_id(&conversation_id).is_ok());
+    }
+
+    /// 群会话绝不能被"规范化"成单聊——哪怕 conversation_type 字段说它是单聊。
+    ///
+    /// conversation_type 是每条消息/摘要各带一份的冗余副本，下发链路上任何一环
+    /// 填错或缺省（服务端按默认值补成 Single）都会让它说谎。而会话 ID 的
+    /// 类型前缀（2A…=群）是会话身份本身，不会因为某条消息而改变。
+    ///
+    /// 实测后果：一条 conversation_type 缺省的群消息，让客户端把整个群会话
+    /// 合并进了某个单聊会话（moved=1），群会话连同消息一起从列表里消失。
+    #[test]
+    fn never_canonicalizes_group_conversation_even_if_type_says_single() {
+        let group_id = "2AQHH78DMQDHFY4N74".to_string();
+        let mut conversation = Conversation::from_conversation_id(group_id.clone());
+        // 故意把类型标错成单聊——模拟下发链路把它填错的情形
+        conversation.conversation_type = ConversationType::Single;
+        conversation.channel_id = "peer-1".to_string();
+
+        assert!(
+            ConversationIdentityService::canonicalize_single_chat_conversation(
+                &mut conversation,
+                "me-1",
+            )
+            .is_none(),
+            "群会话被当成单聊改写了 ID，会导致整个会话被合并掉"
+        );
+        assert_eq!(
+            conversation.conversation_id, group_id,
+            "群会话的 ID 不该被改动"
+        );
     }
 
     #[test]
