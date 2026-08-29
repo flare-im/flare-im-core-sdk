@@ -347,7 +347,7 @@ impl SqliteConversationRepo {
                       c.unread_count, c.last_read_seq, c.max_seq, c.visible_after_seq,
                       c.is_pinned, c.is_muted, c.is_archived, c.version, c.updated_at,
                       c.created_at, c.updated_at_ts, c.ext, c.draft,
-                      c.mention_count, c.mention_me, c.badge, c.role
+                      c.mention_count, c.mention_me, c.badge, c.role, c.member_preview
                FROM conversations c
                LEFT JOIN (
                    SELECT rowid, server_id, client_msg_id, sender_id, conversation_seq,
@@ -686,7 +686,7 @@ impl ConversationWriter for SqliteConversationRepo {
                 r#"SELECT last_read_seq, max_seq, unread_count,
                           last_message_id, last_sender_id, last_message_at, last_message_preview,
                           is_pinned, is_muted, is_archived, visible_after_seq, ext, draft,
-                          remark, channel_id, conversation_type
+                          remark, channel_id, conversation_type, member_preview
                    FROM conversations
                    WHERE conversation_id = ?"#,
             )
@@ -872,6 +872,7 @@ impl ConversationWriter for SqliteConversationRepo {
             } else {
                 serde_json::to_string(&merged.member_preview).ok()
             };
+
             sqlx::query(
                 r#"INSERT OR REPLACE INTO conversations (
                    conversation_id, conversation_type, business_type, channel_id, members_count,
@@ -1637,6 +1638,57 @@ mod tests {
         assert_eq!(
             loaded.last_message_preview.as_deref(),
             Some("local-preview")
+        );
+    }
+
+    /// member_preview 必须落库、且不被后续不带它的局部更新抹掉。
+    ///
+    /// 单聊的 channel_id / display_name 在服务端恒为空（同一行被会话两端共用，
+    /// 装不下各自的对端），member_preview 是端上认出「对端是谁」的唯一通道。
+    ///
+    /// 这条判据同时守两个坑，两个都会静默失效：
+    /// 1. 不落库 → 冷启内存里有、标题正确，但任何一次从库重读就退化成「会话」；
+    /// 2. 落了库但读旧值的 SELECT 忘记带上这一列 → 沿用逻辑永远读到 None，
+    ///    于是第一条不带 preview 的局部更新就把它清空。实测就是栽在第 2 点上。
+    #[tokio::test]
+    async fn save_batch_persists_member_preview_and_keeps_it_on_partial_update() {
+        let repo = repo().await;
+
+        let mut first = conversation("conv-1", 10, "hello");
+        first.member_preview = vec![
+            crate::model::ConversationParticipant {
+                user_id: "me".to_string(),
+                ..Default::default()
+            },
+            crate::model::ConversationParticipant {
+                user_id: "peer".to_string(),
+                ..Default::default()
+            },
+        ];
+        repo.save_one(&first).await.unwrap();
+
+        let loaded = repo.get("conv-1").await.unwrap().unwrap();
+        assert_eq!(
+            loaded.member_preview.len(),
+            2,
+            "member_preview 没有落库，端上刷新一次就认不出对端了"
+        );
+
+        // 局部更新（未读/新消息等）不带 member_preview——绝不能把它清空
+        let partial = conversation("conv-1", 11, "world");
+        assert!(partial.member_preview.is_empty());
+        repo.save_one(&partial).await.unwrap();
+
+        let after = repo.get("conv-1").await.unwrap().unwrap();
+        assert_eq!(after.max_seq, 11, "局部更新本身应当生效");
+        assert_eq!(
+            after
+                .member_preview
+                .iter()
+                .map(|p| p.user_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["me", "peer"],
+            "不带 member_preview 的局部更新把已有成员预览抹掉了"
         );
     }
 
