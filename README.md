@@ -42,7 +42,7 @@ cd flare-im-core-sdk && cargo check
 > Twilio Conversations, except Flare can be self-hosted and its protocol and
 > core are auditable.
 >
-> For the exact boundary, see [GOVERNANCE.md](GOVERNANCE.md).
+> For the exact boundary, see [GOVERNANCE.md](.github/GOVERNANCE.md).
 
 
 [![Rust](https://img.shields.io/badge/rust-1.94+-orange.svg)](https://www.rust-lang.org/)
@@ -227,7 +227,7 @@ its repository.
 | Wire in your own user system | Implement `TokenValidator` (`CoreJwtTokenValidator` for local verification / `HttpHookTokenValidator` to call your endpoint) |
 | Add your own business rules | The 9 `flare-im-hooks` extension points: PreSend / PostSend / Delivery / Recall / MessageRead / MessageReaction / ConversationLifecycle / ConversationMember / GetConversationParticipants |
 | Build a UI | [`@flare-im/vue-ui`](https://www.npmjs.com/package/@flare-im/vue-ui) — 107 components, one contract consistent across four platforms |
-| Report a security issue | [SECURITY.md](SECURITY.md) — **please do not open a public issue** |
+| Report a security issue | [SECURITY.md](.github/SECURITY.md) — **please do not open a public issue** |
 
 ## When you need an account system and social features
 
