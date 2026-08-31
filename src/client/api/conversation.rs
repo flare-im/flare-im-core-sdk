@@ -170,13 +170,31 @@ impl ConversationApi {
             .await?;
         messages.sort_by(crate::model::IMMessage::compare_for_timeline_asc);
         let conversation = self.view_assembler.get(conversation_id).await?;
-        let has_more = messages.len() >= limit as usize;
+        // has_more 不能只看"本地这一页装满没有"。
+        //
+        // list() 读的是本地库，新设备/清过缓存的客户端本地可能只有几十条，
+        // 于是 len() < limit 就报 has_more=false，UI 直接显示"没有更多消息了"，
+        // 用户再也翻不到历史——而服务端可能有上百万条。load_older 本身有
+        // request_message_backfill_before_seq 的回填能力，只是永远没机会被调到。
+        //
+        // 真正的判据是"最旧的那条是不是已经到了会话起点"：没到就说明更早的
+        // 还在服务端。宁可多放行一次（回填拉回空页后 has_more 自然转 false），
+        // 也不能把用户永久挡在历史之外。
+        let reached_start = messages
+            .first()
+            .map(|first| first.conversation_seq <= Self::TIMELINE_FIRST_SEQ)
+            .unwrap_or(true);
+        let has_more = messages.len() >= limit as usize || !reached_start;
         Ok(ConversationTimelineSnapshot {
             conversation,
             messages,
             has_more,
         })
     }
+
+    /// 会话内第一条消息的 seq。服务端从 1 开始分配，因此本地最旧一条的 seq
+    /// 若大于它，就说明更早的历史还没同步下来。
+    const TIMELINE_FIRST_SEQ: u64 = 1;
 
     pub(crate) async fn hydrate_timeline_messages(
         &self,
@@ -292,5 +310,53 @@ impl ConversationApi {
             .publish(SdkEvent::Conversation(ConversationEvent::Updated {
                 conversation_id: conversation_id.to_string(),
             }));
+    }
+}
+
+#[cfg(test)]
+mod timeline_has_more_tests {
+    use super::*;
+
+    /// 复刻 open_timeline 里的判据。直接调 open_timeline 需要活的会话与本地库，
+    /// 而这里要锁的是"怎么算 has_more"这条规则本身。
+    fn has_more(loaded: usize, limit: usize, oldest_seq: Option<u64>) -> bool {
+        let reached_start = oldest_seq
+            .map(|seq| seq <= ConversationApi::TIMELINE_FIRST_SEQ)
+            .unwrap_or(true);
+        loaded >= limit || !reached_start
+    }
+
+    /// 本地只同步了一小段时，绝不能报"没有更多"。
+    ///
+    /// 这是修复前的真实故障：服务端 100 万条，新设备本地只有 36 条，
+    /// len() < limit 就判 has_more=false，UI 显示"没有更多消息了"，
+    /// 用户永远翻不到历史——而 load_older 的服务端回填能力一次都没被调用。
+    #[test]
+    fn partial_local_window_still_reports_more_history() {
+        assert!(
+            has_more(36, 40, Some(999_965)),
+            "本地最旧一条 seq=999965 远未到会话起点，必须放行回填"
+        );
+    }
+
+    /// 真到起点了才收口，否则用户会看到永远转不完的"加载更多"。
+    #[test]
+    fn reaching_first_seq_stops_paging() {
+        assert!(
+            !has_more(36, 40, Some(1)),
+            "最旧一条已是 seq=1，确实没有更早的了"
+        );
+    }
+
+    /// 空会话不该声称还有历史。
+    #[test]
+    fn empty_timeline_has_no_more() {
+        assert!(!has_more(0, 40, None));
+    }
+
+    /// 页装满时无条件放行——这是修复前唯一生效的分支，不能回归。
+    #[test]
+    fn full_page_still_reports_more() {
+        assert!(has_more(40, 40, Some(1)), "整页装满说明本地还有更多可翻");
     }
 }
