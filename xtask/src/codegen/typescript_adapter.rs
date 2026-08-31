@@ -397,6 +397,13 @@ fn ts_api_type(name: &str, spec: &Value) -> String {
         "Unit" | "DisposeRequest" => "void".to_string(),
         "BooleanResponse" => "boolean".to_string(),
         "ConnectionStateResponse" => "ConnectionState".to_string(),
+        // JsonValue 就是"任意 JSON"，含 null。落到下面的兜底会被当成对象，
+        // 生成 invokeMap，而 invokeMap 的 recordFromNative 只收 object——
+        // 于是 message.dispatch 这类通用出口一旦转发到返回 unit 的 dispatchOp
+        // （mark / unmark / mark_with_color 等），操作在服务端已经成功，客户端
+        // 却抛 "native response must be an object"，UI 完全不反映这次变更。
+        // typescript_contract.rs 早就把 JsonValue 映射成 unknown，这里对齐它。
+        "JsonValue" => "unknown".to_string(),
         _ if is_known_ts_model_type(name, spec) => name.to_string(),
         _ => "Record<string, unknown>".to_string(),
     }
@@ -2019,4 +2026,37 @@ fn emit_typescript_wire_codec(spec: &Value) -> Result<String> {
         typescript_wire_codec_footer()?.to_string(),
     ]
     .join("\n\n"))
+}
+
+#[cfg(test)]
+mod json_value_response_tests {
+    use super::*;
+    use serde_json::json;
+
+    /// JsonValue 必须映射成 unknown，不能落到 Record<string, unknown> 兜底。
+    ///
+    /// 落到兜底会让 ts_response_body 走 invokeMap 分支，而 invokeMap 的
+    /// recordFromNative 只接受 object。message.dispatch 是通用出口，底下的
+    /// dispatchOp 有返回对象的、也有返回 unit 的（mark / unmark /
+    /// mark_with_color 等）。一旦转发到 unit 那类，操作在服务端已经成功，
+    /// 客户端却抛 "native response must be an object"——UI 不反映这次变更，
+    /// 用户看到的是"点了没反应"。
+    #[test]
+    fn json_value_maps_to_unknown_not_a_record() {
+        let spec = json!({});
+        assert_eq!(ts_api_type("JsonValue", &spec), "unknown");
+        assert_ne!(ts_api_type("JsonValue", &spec), "Record<string, unknown>");
+    }
+
+    /// 映射成 unknown 之后，响应体不能再做对象强制。
+    #[test]
+    fn unknown_responses_are_not_coerced_to_objects() {
+        let spec = json!({});
+        // 兜底类型仍应走 invokeMap——这条是对照，确保上一条不是因为
+        // ts_api_type 整体失效才通过的。
+        assert_eq!(
+            ts_api_type("SomeUnknownType", &spec),
+            "Record<string, unknown>"
+        );
+    }
 }
