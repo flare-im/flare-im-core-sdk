@@ -128,6 +128,25 @@ async fn invoke_normalized(
             let api = session.message_build_api().await?;
             message_build::dispatch_message_build(&api, request).await
         }
+        // 构建 + 发送合并为一次调用。
+        //
+        // 分开调用时，媒体消息的大载荷要跨绑定边界**三次**：
+        // 宿主→build（带 `data:` 的 base64）、build→宿主（构建好的消息含同一份内容）、
+        // 宿主→send（再交回来）。合并后只跨一次。
+        //
+        // 更要紧的是**乐观物化的时机**：`send_with_media` 一进来就把消息以
+        // sending/uploading 落库并发总线（气泡立刻出现）。分开调用时这一步要等
+        // build 那一次往返之后才发生；合并后提前到调用最开始。
+        //
+        // 参数与 `message.build` 完全一致（`op` + 各构建参数），
+        // 因此宿主侧不需要为每种消息类型再写一遍发送逻辑。
+        "message.build_and_send" => {
+            let build_api = session.message_build_api().await?;
+            let built = message_build::dispatch_message_build(&build_api, request).await?;
+            let message = crate::dispatch_support::message_from_params(&built.payload)?;
+            let api = session.message_api().await?;
+            crate::dispatch_support::json_send_ack(api.send(message).await?)
+        }
         name if name.starts_with("message.") => {
             let op = name.strip_prefix("message.").unwrap_or(name);
             let api = session.message_api().await?;
@@ -433,6 +452,23 @@ mod tests {
             err.to_string()
                 .contains("message.dispatch params is required")
         );
+    }
+
+    /// `message.build_and_send` 必须**先**走构建 API，而不是落到通用 `message.*`
+    /// 分支去要 message api——后者意味着路由没生效，参数会被当成一条已构建好的
+    /// 消息去解析，报的是"缺少 message"这类完全误导的错。
+    ///
+    /// 两个 mock API 都会 panic，用 panic 信息区分走了哪条路。
+    #[tokio::test]
+    #[should_panic(expected = "message build api")]
+    async fn build_and_send_routes_to_the_builder_first() {
+        let session = DirectOnlySession::new();
+        let _ = invoke_normalized(
+            &session,
+            "message.build_and_send",
+            serde_json::json!({ "op": "create_text", "conversationId": "c1", "text": "hi" }),
+        )
+        .await;
     }
 
     #[tokio::test]
