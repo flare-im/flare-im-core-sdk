@@ -146,6 +146,8 @@ impl MessageMutationUseCase {
 
     pub async fn recall(&self, message_id: &str) -> Result<()> {
         let resolved = self.resolve_message(message_id).await?;
+        let conversation_id = resolved.conversation_id().to_string();
+        let server_msg_id = resolved.server_id().to_string();
         let plan = self.mutation_service.plan_recall(&resolved);
         self.dispatch_transport_action(&plan.transport_action)
             .await?;
@@ -155,6 +157,21 @@ impl MessageMutationUseCase {
                 flare_proto::common::MessageStatus::Recalled as i32,
             )
             .await?;
+        // 只改存储是不够的：可观测视图靠总线事件刷新。
+        //
+        // 线上实测——发起撤回的那一端会**一直显示原文**（20s 后仍在），
+        // 而对端与全新客户端都正确不显示；重新登录后才好。原因就是这里
+        // 少了 recompute + publish：`edit` / `delete_for_self` 都有，唯独 recall 没有。
+        self.recompute_conversation_latest(&conversation_id).await?;
+        if let Some(bus) = &self.bus {
+            bus.publish(SdkEvent::Message(MessageEvent::Recalled {
+                conversation_id,
+                event: flare_proto::common::MessageRecallEvent {
+                    server_msg_id,
+                    ..Default::default()
+                },
+            }));
+        }
         Ok(())
     }
 
@@ -717,6 +734,34 @@ mod tests {
             .expect_err("mismatched conversation must be rejected");
 
         assert_eq!(err.code(), Some(ErrorCode::InvalidParameter));
+    }
+
+    /// 撤回必须像 edit / delete_for_self 一样，**通知本地视图**。
+    ///
+    /// 线上实测：只改存储不发总线时，发起撤回的那一端会一直显示原文（20s 后仍在），
+    /// 而对端与全新客户端都正确不显示——只有自己看不到撤回效果，重新登录才好。
+    #[test]
+    fn recall_must_notify_local_views_not_only_the_store() {
+        let source = include_str!("mutation.rs");
+        let body = source
+            .split("pub async fn recall(")
+            .nth(1)
+            .expect("recall 存在")
+            .split("pub async fn edit(")
+            .next()
+            .expect("下一个函数存在");
+        assert!(
+            body.contains("MessageEvent::Recalled"),
+            "recall 必须发布 Recalled 事件，否则发起端的视图不会刷新"
+        );
+        assert!(
+            body.contains("recompute_conversation_latest"),
+            "recall 必须重算会话最新消息，否则会话列表仍显示被撤回的预览"
+        );
+        assert!(
+            body.contains("update_status"),
+            "recall 仍须落库状态（这条原本就有，别在补事件时丢掉）"
+        );
     }
 
     #[tokio::test]
