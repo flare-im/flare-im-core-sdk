@@ -4,6 +4,8 @@
 //! Production builds use the real `IMClient`; smoke builds can opt into the
 //! in-memory runtime with `--features local-smoke-runtime`.
 
+mod console_tracing;
+
 use wasm_bindgen::prelude::*;
 
 pub mod generated;
@@ -39,6 +41,7 @@ pub use smoke::{FlareImWasmRuntime, create_wasm_runtime};
 #[wasm_bindgen(start)]
 pub fn wasm_start() {
     console_error_panic_hook::set_once();
+    console_tracing::install();
     tokio_runtime::ensure_initialized();
 }
 

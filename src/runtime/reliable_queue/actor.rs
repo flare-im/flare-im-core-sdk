@@ -180,6 +180,9 @@ impl ReliableSendQueue {
             max_in_flight,
             metrics,
         } = config;
+        static QUEUE_SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let queue_id = QUEUE_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        debug!(queue_id, "reliable queue instance created");
         let (tx, mut rx) = mpsc::channel::<QueueCommand>(256);
         let timeout_duration =
             Duration::from_secs(timeout_secs.unwrap_or(RELIABLE_QUEUE_TIMEOUT_SECS));
@@ -220,6 +223,7 @@ impl ReliableSendQueue {
             loop {
                 tokio::select! {
                     Some(cmd) = rx.recv() => {
+                        debug!(queue_id, "reliable queue received command");
                         if let Err(e) = handle_command(&mut state, cmd).await {
                             warn!(%e, "reliable queue command error");
                         }
@@ -360,6 +364,21 @@ async fn handle_command(st: &mut QueueState, cmd: QueueCommand) -> Result<()> {
             if let Err(e) = pending_writer.push(entry).await {
                 let _ = resp.send(Err(e));
                 return Ok(());
+            }
+            // 写入后立刻用**队列自己的 reader** 数一遍：若这里是 0，
+            // 说明 reader 与 writer 不是同一份数据（实例分裂），
+            // 而不是排除/限流逻辑的问题。
+            {
+                let visible = st
+                    .pending_reader
+                    .list_oldest_excluding(&[], 100)
+                    .await
+                    .map(|v| v.len())
+                    .unwrap_or(usize::MAX);
+                debug!(
+                    visible_to_reader = visible,
+                    "reliable queue pending visible right after push"
+                );
             }
             if let Err(e) = update_conversation_last_message(st, &optimistic).await {
                 warn!(%e, conversation_id = %optimistic.conversation_id, "update optimistic conversation projection failed");
@@ -518,8 +537,15 @@ fn dispatch_send_attempt(st: &mut QueueState, entry: PendingSendVo, retries: u32
 
     let sender = st.sender.clone();
     let command_tx = st.command_tx.clone();
+    let dispatch_id = entry.client_msg_id.clone();
+    debug!(client_msg_id = %dispatch_id, retries, "reliable queue dispatching send attempt");
     let _ = spawn_background_task(async move {
         let result = do_send_one(&sender, &entry).await;
+        debug!(
+            client_msg_id = %entry.client_msg_id,
+            ok = result.is_ok(),
+            "reliable queue send attempt finished"
+        );
         let _ = command_tx
             .send(QueueCommand::SendAttemptFinished {
                 entry: Box::new(entry),
@@ -955,6 +981,12 @@ async fn try_send_next(st: &mut QueueState) -> Result<()> {
         let current_limit = st.adaptive_window.current();
         let available = current_limit.saturating_sub(st.in_flight.len());
         if available == 0 {
+            debug!(
+                window = current_limit,
+                in_flight = st.in_flight.len(),
+                awaiting_durable = st.awaiting_durable.len(),
+                "reliable queue window full; nothing dispatched"
+            );
             return Ok(());
         }
         let mut excluded = st.in_flight.keys().cloned().collect::<Vec<_>>();
@@ -964,8 +996,21 @@ async fn try_send_next(st: &mut QueueState) -> Result<()> {
             .list_oldest_excluding(&excluded, available)
             .await?;
         if entries.is_empty() {
+            debug!(
+                window = current_limit,
+                in_flight = st.in_flight.len(),
+                awaiting_durable = st.awaiting_durable.len(),
+                available,
+                "reliable queue found no dispatchable pending entry"
+            );
             return Ok(());
         }
+        debug!(
+            window = current_limit,
+            in_flight = st.in_flight.len(),
+            picked = entries.len(),
+            "reliable queue picked pending entries"
+        );
 
         let connected_user_id = st.current_user_id.read().await.clone();
         let entry_ids = entries
