@@ -1311,7 +1311,79 @@ mod tests {
         assert_eq!(group_content.images[1].url, "/tmp/two.png");
     }
 
+    /// 上传进度必须写回 message store（进而经总线下发给各端渲染），
+    /// 并且同时透传给调用方传入的外部回调。
+    ///
+    /// 这条链路此前没有任何测试：`upload_progress_callback` 在后台任务里更新消息，
+    /// 一旦它断了，UI 只会看到一个不动的「上传中」，而没有任何报错。
     #[tokio::test]
+    async fn upload_progress_is_written_back_to_the_stored_message() {
+        let uploaded = UploadedMedia {
+            file_id: "remote-file-2".to_string(),
+            file_name: "remote-demo.png".to_string(),
+            mime_type: "image/png".to_string(),
+            size: 100,
+            url: Some("https://origin.example/demo.png".to_string()),
+            cdn_url: Some("https://cdn.example/demo.png".to_string()),
+        };
+        let harness = TestHarness::new(MediaResult::Uploaded(uploaded));
+        let message = local_file_message("/tmp/demo.png");
+        let client_msg_id = message.client_msg_id.clone();
+
+        // 外部回调：验证调用方也能拿到进度（原生端据此做自定义 UI）
+        let seen: Arc<std::sync::Mutex<Vec<u64>>> = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen_for_cb = seen.clone();
+        let external: crate::application::UploadProgressCallback =
+            Arc::new(move |progress: crate::application::UploadProgress| {
+                seen_for_cb.lock().expect("lock").push(progress.uploaded_bytes);
+            });
+
+        let send_task = harness
+            .usecase
+            .send_with_media(message, Some(external));
+        tokio::pin!(send_task);
+        tokio::select! {
+            _ = harness.media.wait_until_upload_started() => {}
+            result = &mut send_task => panic!("upload 尚未开始 send 就返回了: {result:?}"),
+        }
+
+        // 进度写回发生在后台任务里，轮询等待而不是硬 sleep
+        let mut mid_progress = 0;
+        for _ in 0..200 {
+            if let Ok(Some(stored)) = harness.messages.get_by_client_msg_id(&client_msg_id).await
+                && stored.local_state.upload_progress > 0
+            {
+                mid_progress = stored.local_state.upload_progress;
+                assert!(stored.local_state.uploading, "上传中期间 uploading 必须为真");
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        assert!(
+            (1..=99).contains(&mid_progress),
+            "上传中期的进度应落在 1..=99（实际 {mid_progress}）：未完成前不能显示 100%"
+        );
+
+        harness.media.finish_upload().await;
+        send_task.await.expect("send");
+
+        let stored = harness
+            .messages
+            .get_by_client_msg_id(&client_msg_id)
+            .await
+            .expect("store read")
+            .expect("message");
+        assert!(!stored.local_state.uploading, "上传结束后 uploading 必须归假");
+        assert_eq!(stored.local_state.upload_progress, 100);
+        assert!(stored.local_state.sending, "上传完成后进入发送中，直到 ack 才落定");
+
+        let observed = seen.lock().expect("lock").clone();
+        assert!(
+            observed.contains(&50),
+            "外部进度回调没有收到中间进度（实际 {observed:?}）"
+        );
+    }
+
     async fn send_with_media_persists_uploading_message_before_upload_finishes() {
         let uploaded = UploadedMedia {
             file_id: "remote-file-1".to_string(),
