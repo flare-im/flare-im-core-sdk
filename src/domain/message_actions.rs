@@ -27,7 +27,8 @@ pub struct MessageActionContext {
 }
 
 /// 一条消息此刻可用的动作。
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct MessageActionAvailability {
     pub can_reply: bool,
     pub can_forward: bool,

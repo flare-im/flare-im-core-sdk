@@ -439,6 +439,37 @@
             ]
           ],
           "result": "unit"
+        },
+        {
+          "op": "action_availability",
+          "method": "action_availability",
+          "args": [
+            [
+              "message_id",
+              "str_ref"
+            ],
+            [
+              "multi_select_mode",
+              "bool"
+            ],
+            [
+              "is_pending",
+              "bool"
+            ],
+            [
+              "is_failed",
+              "bool"
+            ],
+            [
+              "is_pinned",
+              "bool"
+            ],
+            [
+              "is_connected",
+              "bool"
+            ]
+          ],
+          "result": "json"
         }
       ]
     },

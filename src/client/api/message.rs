@@ -330,6 +330,37 @@ impl MessageApi {
     }
 
     /// 按 message_id（client_msg_id）查询单条消息。
+    /// 一条消息此刻可用的动作（能不能撤回/编辑/复制/置顶……）。
+    ///
+    /// 规则在核心（`domain::message_actions`），各端只消费结果——
+    /// 同一条消息在任何端都必须给出同一个答案。situational 的入参
+    /// （多选模式、待发/失败、是否已置顶、是否在线）由调用方给，
+    /// 因为那是此刻的 UI 状态，核心看不到。
+    pub async fn action_availability(
+        &self,
+        message_id: &str,
+        multi_select_mode: bool,
+        is_pending: bool,
+        is_failed: bool,
+        is_pinned: bool,
+        is_connected: bool,
+    ) -> Result<serde_json::Value> {
+        let Some(message) = self.get(message_id).await? else {
+            return Ok(serde_json::json!({}));
+        };
+        let ctx = crate::domain::message_actions::MessageActionContext {
+            current_user_id: self.current_user_id().await.unwrap_or_default(),
+            is_connected,
+            multi_select_mode,
+            is_pending,
+            is_failed,
+            is_pinned,
+        };
+        let availability =
+            crate::domain::message_actions::message_action_availability(&message, &ctx);
+        Ok(serde_json::to_value(availability).unwrap_or_else(|_| serde_json::json!({})))
+    }
+
     pub async fn get(&self, message_id: &str) -> Result<Option<IMMessage>> {
         self.ensure_session_active().await?;
         self.view_assembler.get(message_id).await

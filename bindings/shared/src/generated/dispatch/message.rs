@@ -39,6 +39,7 @@ pub const MESSAGE_DISPATCH_OPERATIONS: &[&str] = &[
     "unmark",
     "mark_by_message_id",
     "unmark_by_message_id",
+    "action_availability",
 ];
 
 pub fn is_message_operation(operation: &str) -> bool {
@@ -211,6 +212,25 @@ pub async fn dispatch_message(
             let mark_type_v = parse_mark_type(json_i32(&params, "markType")?);
             api.unmark_by_message_id(&message_id_s, mark_type_v).await?;
             Ok(BindingResponse::unit())
+        }
+        "action_availability" => {
+            let message_id_s = json_string(&params, "messageId")?;
+            let multi_select_mode_v = json_bool(&params, "multiSelectMode")?;
+            let is_pending_v = json_bool(&params, "isPending")?;
+            let is_failed_v = json_bool(&params, "isFailed")?;
+            let is_pinned_v = json_bool(&params, "isPinned")?;
+            let is_connected_v = json_bool(&params, "isConnected")?;
+            json(
+                api.action_availability(
+                    &message_id_s,
+                    multi_select_mode_v,
+                    is_pending_v,
+                    is_failed_v,
+                    is_pinned_v,
+                    is_connected_v,
+                )
+                .await?,
+            )
         }
         _ => Err(binding_operation_not_supported(operation)),
     }
