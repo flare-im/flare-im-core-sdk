@@ -43,8 +43,28 @@ fn parse_store_config_json(
         .map_err(|_| crate::error_convert::FLARE_ERR_JSON_PARSE)
 }
 
+/// 进程内只装一次 rustls 的默认 CryptoProvider。
+///
+/// 依赖树里同时存在两个 provider：flare-core 开了 rustls/ring，而 reqwest 的
+/// rustls-tls 会带进 aws-lc-rs。rustls 0.23 在"不是恰好一个"的情况下拒绝自动
+/// 选择，直接 panic：
+///   Could not automatically determine the process-level CryptoProvider ...
+///
+/// 后果是**所有 FFI 客户端（iOS / Android / Flutter / 桌面）连 wss:// 必崩**，
+/// 而现有测试全用 ws://127.0.0.1，所以一直没暴露。
+///
+/// 装在 flare_sdk_create 里：它是每个客户端的必经入口，且早于任何连接建立。
+/// install_default 返回 Err 只说明别人已经装过，忽略即可。
+fn ensure_rustls_crypto_provider() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+    });
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn flare_sdk_create() -> FlareHandle {
+    ensure_rustls_crypto_provider();
     abi::catch_ffi_handle(|| {
         let client = IMClient::new();
         let runtime = match crate::ffi_runtime::sdk_runtime_handle() {
@@ -517,4 +537,25 @@ pub extern "C" fn flare_sdk_generate_core_token(
             }
         }
     })
+}
+
+#[cfg(test)]
+mod crypto_provider_tests {
+    /// 进程里必须装好 rustls 的默认 CryptoProvider，否则连 wss:// 会直接 panic。
+    ///
+    /// 依赖树里同时存在两个 provider：flare-core 开了 rustls/ring，reqwest 的
+    /// rustls-tls 带进 aws-lc-rs。rustls 0.23 在"不是恰好一个"时拒绝自动选择：
+    ///   Could not automatically determine the process-level CryptoProvider ...
+    ///
+    /// 后果是**所有 FFI 客户端（iOS / Android / Flutter / 桌面）连 TLS 必崩**。
+    /// 现有测试全用 ws://127.0.0.1，所以一直没暴露 —— 直到拿真实 wss:// 跑
+    /// Flutter 端到端才炸出来。
+    #[test]
+    fn crypto_provider_is_installed_by_sdk_create() {
+        super::ensure_rustls_crypto_provider();
+        assert!(
+            rustls::crypto::CryptoProvider::get_default().is_some(),
+            "没有默认 CryptoProvider：任何 wss:// 连接都会 panic"
+        );
+    }
 }

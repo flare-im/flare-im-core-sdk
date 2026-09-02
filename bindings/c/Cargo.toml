@@ -22,6 +22,10 @@ prost = "0.14"
 dashmap = "5.5"
 lazy_static = "1.4"
 tracing = "0.1"
+# 只为在进程启动时显式安装 rustls 的默认 CryptoProvider。
+# 依赖树里同时存在 ring（flare-core）与 aws-lc-rs（reqwest 的 rustls-tls）两个
+# provider，rustls 0.23 在这种情况下无法自动选择，一连 wss:// 就 panic。
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
 
 [features]
 default = []
