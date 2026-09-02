@@ -184,15 +184,68 @@ impl MessageBuildApi {
         mention_user_ids: &[String],
     ) -> Result<IMMessage> {
         let sender_id = self.current_sender_id().await?;
+        // 提及从**正文**解析（`@全员` / `@某人`）：同一段文字在任何端都必须产出
+        // 同一条消息，所以规则只有核心这一份。入参是「显式追加」——
+        // 比如 UI 的 @全员 开关或选人器已经确定的人，与解析结果取并集。
+        let parsed = self
+            .parse_text_mentions(conversation_id, text, &sender_id)
+            .await;
+        let mut merged: Vec<String> = mention_user_ids.to_vec();
+        for id in parsed.user_ids {
+            if !merged.iter().any(|existing| existing == &id) {
+                merged.push(id);
+            }
+        }
         let msg = MessageBuilderService::build_text(
             conversation_id,
             &sender_id,
             text,
             None,
-            mention_all,
-            mention_user_ids,
+            mention_all || parsed.mention_all,
+            &merged,
         )?;
         self.apply_conversation_routing(conversation_id, msg).await
+    }
+
+    /// 按会话成员名册解析正文里的提及。取不到会话时只解析 `@全员`
+    /// （它不依赖名册），不因为名册缺失而整体失效。
+    async fn parse_text_mentions(
+        &self,
+        conversation_id: &str,
+        text: &str,
+        sender_id: &str,
+    ) -> crate::content::ParsedMentions {
+        let mut candidates: Vec<crate::content::MentionCandidate> = Vec::new();
+        if let Ok(Some(conv)) = self.conversations.get(conversation_id).await {
+            // participants 与 member_preview 同型，合并成一份名册；
+            // 大群里 participants 可能被截断，member_preview 常是补充来源。
+            for p in conv.participants.iter().chain(conv.member_preview.iter()) {
+                let id = p.user_id.trim();
+                // 自己不算被提及。
+                if id.is_empty() || id == sender_id {
+                    continue;
+                }
+                let nickname = p.nickname.trim();
+                match candidates.iter_mut().find(|c| c.user_id == id) {
+                    Some(existing) => {
+                        if !nickname.is_empty()
+                            && !existing.display_names.iter().any(|n| n == nickname)
+                        {
+                            existing.display_names.push(nickname.to_string());
+                        }
+                    }
+                    None => candidates.push(crate::content::MentionCandidate {
+                        user_id: id.to_string(),
+                        display_names: if nickname.is_empty() {
+                            Vec::new()
+                        } else {
+                            vec![nickname.to_string()]
+                        },
+                    }),
+                }
+            }
+        }
+        crate::content::parse_mentions(text, &candidates)
     }
 
     pub async fn create_quote(
