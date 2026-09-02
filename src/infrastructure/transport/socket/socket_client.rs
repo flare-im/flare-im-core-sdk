@@ -215,9 +215,11 @@ impl SocketTransport {
     pub async fn is_connected(&self) -> bool {
         match self.client.lock().await.as_ref() {
             None => false,
-            #[cfg(not(target_arch = "wasm32"))]
-            Some(client) => client.is_connected(),
-            #[cfg(target_arch = "wasm32")]
+            // 全平台走 async 版本。这里曾经在 native 分支调同步版 `is_connected()`，
+            // 而那个同步版内部是 `block_in_place` + `block_on` ——
+            // 在**已经是 async 的函数里**再阻塞一次：current-thread runtime 上直接
+            // panic，多线程上则要为读一个布尔交接整个 worker 的任务队列。
+            // 我们本来就在 async 上下文里，`.await` 是唯一没有代价的写法。
             Some(client) => client.is_connected_async().await,
         }
     }
@@ -226,6 +228,29 @@ impl SocketTransport {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 连接状态查询绝不能在 async 上下文里再阻塞一次。
+    ///
+    /// 这条钉的是**源码形态**而不是运行时行为：真正的失败要连上网关、跑在
+    /// current-thread runtime 上、等一个心跳周期才会暴露（表现为任务被 panic 打死、
+    /// 心跳记账停更、连接自我判超时），单测里复现代价过高。
+    /// 而形态判据是确定的：这个函数已经是 async，就必须用 `_async` 版本。
+    #[test]
+    fn is_connected_never_blocks_inside_async() {
+        let source = include_str!("socket_client.rs");
+        let start = source
+            .find("pub async fn is_connected(")
+            .expect("is_connected 必须存在");
+        let body = &source[start..start + 700];
+        assert!(
+            body.contains("is_connected_async().await"),
+            "async 上下文里必须 await 异步版本"
+        );
+        assert!(
+            !body.contains("client.is_connected(),"),
+            "同步版内部是 block_in_place + block_on，在 async 里调用会 panic 或占住 worker"
+        );
+    }
 
     #[test]
     fn sdk_device_info_requests_platform_exclusive_sessions() {
