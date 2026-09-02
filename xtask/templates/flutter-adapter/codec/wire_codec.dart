@@ -939,13 +939,22 @@ int intValue(Object? value) {
   );
 }
 
+/// 「必填」= 字段**存在且是字符串**，空串是合法值。
+///
+/// 曾经额外要求非空，于是同一条服务端数据在 web/iOS 上正常、在 Flutter/Android
+/// 上直接抛异常：真实事件里 clientMsgId 常常是空串（别人发来的消息没有我方的
+/// 客户端去重 id），protobuf3 又会把未设置的字符串序列化成 ""。
+/// 结果一收到实时消息批就整批解码失败，等于收不到消息。
+///
+/// TypeScript 与 Swift 一直是「存在即可」，四端必须一致，
+/// 否则同一份 wire 数据在不同端有不同结果。
 String requiredStringField(
   Map<String, Object?> json,
   String key,
   String context,
 ) {
   final value = json[key];
-  if (value is! String || value.trim().isEmpty) {
+  if (value is! String) {
     throw ArgumentError.value(json, context, '$context.$key is required');
   }
   return value;

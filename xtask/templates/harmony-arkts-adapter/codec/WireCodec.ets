@@ -512,7 +512,7 @@ export function buildForwardMessageRequestToMap(request: BuildForwardMessageRequ
   conversationId: request.conversationId,
   merge: request.merge,
   title: request.title,
-  ...(request.sourceMessages.length > 0 ? { sourceMessages: request.sourceMessages.map((item) => forwardSourceMessageToMap(item)) } : {}),
+  ...(request.sourceMessages.length > 0 ? { sourceMessages: request.sourceMessages.map((item) => messageToMap(item)) } : {}),
   };
 }
 
