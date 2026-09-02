@@ -1200,7 +1200,7 @@ async fn clamped_cursor_save_proves_only_window_above_prior_cursor() {
     }
 
     sync_apply
-        .save_cursor_with_remote("u1", "conv-w", 8, |_, _, _| async { Ok(()) })
+        .save_cursor_with_remote("u1", "conv-w", 8, &[], |_, _, _| async { Ok(()) })
         .await
         .unwrap();
 
@@ -1212,6 +1212,137 @@ async fn clamped_cursor_save_proves_only_window_above_prior_cursor() {
     assert_eq!(
         saved.last_seq, 8,
         "window (5,8] is contiguous locally; missing 1..=4 below the proven floor must not block"
+    );
+}
+
+#[tokio::test]
+async fn cursor_advances_past_seqs_the_server_proved_have_no_message() {
+    // 服务端对「已提交但没有消息行」的 seq 会下发 tombstone/skip 占位，页面据此把它们
+    // 计入已覆盖位点。存游标时若只按本地消息行重算连续性，这些 seq 永远补不齐 ——
+    // 游标卡在缺口前，每轮同步拉回同一页，实时消息也就永远物化不了。
+    let bus = EventBus::new();
+    let deduper = EventDeduper::new(Some(64));
+    let message_deduper = MessageDeduper::new(Some(64));
+    let cursor_store = Arc::new(crate::infrastructure::persistence::MemorySyncCursorStore::new());
+    let message_store = Arc::new(MemoryMessageStore::new());
+    let stores = StoreProvider {
+        messages: message_store.clone(),
+        conversations: Arc::new(NoopConversationStore),
+        conversation_participants: None,
+        cursors: cursor_store.clone(),
+        pending_send_reader: None,
+        pending_send_writer: None,
+        upload_manifest_store: None,
+        media_cache_store: None,
+        media_cache_admin: None,
+        user_file_download_store: None,
+        user_profiles_reader: None,
+        user_profiles_writer: None,
+    };
+    let notification_pipeline =
+        test_notification_pipeline_with_deduper(bus.clone(), message_deduper.clone());
+    let sync_apply = SyncApplyUseCase::new(stores, bus.clone(), deduper, notification_pipeline);
+
+    cursor_store
+        .save_conversation_cursor(&SyncCursorVo {
+            user_id: "u1".to_string(),
+            conversation_id: "conv-gap".to_string(),
+            last_seq: 12,
+            synced_at: 1,
+        })
+        .await
+        .unwrap();
+    // 真实现场：seq 13..=21 全被非消息事件吃掉，只有 22 是消息。
+    let mut message = IMMessage::new(flare_proto::common::Message {
+        server_id: "m-22".to_string(),
+        client_msg_id: "c-22".to_string(),
+        conversation_id: "conv-gap".to_string(),
+        sender_id: "u2".to_string(),
+        conversation_seq: 22,
+        ..Default::default()
+    });
+    message.conversation_seq = 22;
+    message_store.save_batch(&[message]).await.unwrap();
+
+    let proven_absent: Vec<u64> = (13..=21).collect();
+    sync_apply
+        .save_cursor_with_remote("u1", "conv-gap", 22, &proven_absent, |_, _, _| async {
+            Ok(())
+        })
+        .await
+        .unwrap();
+
+    let saved = cursor_store
+        .get_conversation_cursor("u1", "conv-gap")
+        .await
+        .unwrap()
+        .expect("cursor must exist");
+    assert_eq!(
+        saved.last_seq, 22,
+        "服务端已证明 13..=21 没有消息，游标必须越过它们，否则同步永远原地打转"
+    );
+}
+
+#[tokio::test]
+async fn cursor_still_stops_at_messages_that_failed_to_persist() {
+    // 反向锁死 I1：没有服务端证明的缺口（消息该落库却没落）仍然必须挡住游标。
+    let bus = EventBus::new();
+    let deduper = EventDeduper::new(Some(64));
+    let message_deduper = MessageDeduper::new(Some(64));
+    let cursor_store = Arc::new(crate::infrastructure::persistence::MemorySyncCursorStore::new());
+    let message_store = Arc::new(MemoryMessageStore::new());
+    let stores = StoreProvider {
+        messages: message_store.clone(),
+        conversations: Arc::new(NoopConversationStore),
+        conversation_participants: None,
+        cursors: cursor_store.clone(),
+        pending_send_reader: None,
+        pending_send_writer: None,
+        upload_manifest_store: None,
+        media_cache_store: None,
+        media_cache_admin: None,
+        user_file_download_store: None,
+        user_profiles_reader: None,
+        user_profiles_writer: None,
+    };
+    let notification_pipeline =
+        test_notification_pipeline_with_deduper(bus.clone(), message_deduper.clone());
+    let sync_apply = SyncApplyUseCase::new(stores, bus.clone(), deduper, notification_pipeline);
+
+    cursor_store
+        .save_conversation_cursor(&SyncCursorVo {
+            user_id: "u1".to_string(),
+            conversation_id: "conv-hole".to_string(),
+            last_seq: 12,
+            synced_at: 1,
+        })
+        .await
+        .unwrap();
+    let mut message = IMMessage::new(flare_proto::common::Message {
+        server_id: "m-15".to_string(),
+        client_msg_id: "c-15".to_string(),
+        conversation_id: "conv-hole".to_string(),
+        sender_id: "u2".to_string(),
+        conversation_seq: 15,
+        ..Default::default()
+    });
+    message.conversation_seq = 15;
+    message_store.save_batch(&[message]).await.unwrap();
+
+    // 只证明了 13，14 仍是未知缺口。
+    sync_apply
+        .save_cursor_with_remote("u1", "conv-hole", 15, &[13], |_, _, _| async { Ok(()) })
+        .await
+        .unwrap();
+
+    let saved = cursor_store
+        .get_conversation_cursor("u1", "conv-hole")
+        .await
+        .unwrap()
+        .expect("cursor must exist");
+    assert_eq!(
+        saved.last_seq, 13,
+        "14 既没有消息行也没有服务端证明，游标不能越过去"
     );
 }
 
@@ -1243,7 +1374,7 @@ async fn watermark_cursor_save_persists_pseudo_keys_that_clamped_save_skips() {
 
     // 钳制保存：伪 key 无消息行 → 连续位点 0 → 静默跳过（这是它的既定语义）。
     sync_apply
-        .save_cursor_with_remote("u1", "critical_event:c1", 7, |_, _, _| async { Ok(()) })
+        .save_cursor_with_remote("u1", "critical_event:c1", 7, &[], |_, _, _| async { Ok(()) })
         .await
         .unwrap();
     assert!(

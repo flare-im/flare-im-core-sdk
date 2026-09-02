@@ -146,6 +146,7 @@ impl SyncApplyUseCase {
             has_more: response.has_more || has_seq_gap,
             next_cursor: response.next_cursor.clone(),
             has_seq_gap,
+            absent_seqs: decoded.absent_item_seqs,
         })
     }
 
@@ -405,6 +406,7 @@ impl SyncApplyUseCase {
         user_id: &str,
         conversation_id: &str,
         last_seq: u64,
+        proven_absent_seqs: &[u64],
         update_remote: F,
     ) -> Result<()>
     where
@@ -436,7 +438,12 @@ impl SyncApplyUseCase {
         }
 
         let safe_last_seq = self
-            .local_materialized_contiguous_seq(conversation_id, last_seq, floor_seq)
+            .local_materialized_contiguous_seq(
+                conversation_id,
+                last_seq,
+                floor_seq,
+                proven_absent_seqs,
+            )
             .await?;
         if safe_last_seq < last_seq {
             tracing::warn!(
@@ -538,11 +545,15 @@ impl SyncApplyUseCase {
 
     /// 本地物化连续位点：从 `target_seq` 向下扫描到 `floor_seq`（floor 之下的连续性由
     /// 上一次保存/清空语义保证，无需重证）。返回从 floor 起算的最大连续位点。
+    /// `proven_absent_seqs`：服务端以 skip/tombstone 证明其上没有消息行的位点。
+    /// 本地永远不会有对应消息，因此它们与真实消息一样能构成连续性 —— 不算进来，
+    /// 游标会永远停在第一个这类 seq 前面。
     async fn local_materialized_contiguous_seq(
         &self,
         conversation_id: &str,
         target_seq: u64,
         floor_seq: u64,
+        proven_absent_seqs: &[u64],
     ) -> Result<u64> {
         if target_seq == 0 {
             return Ok(0);
@@ -572,6 +583,13 @@ impl SyncApplyUseCase {
             }
             before_seq = min_seq;
         }
+
+        seqs.extend(
+            proven_absent_seqs
+                .iter()
+                .copied()
+                .filter(|seq| *seq > floor_seq && *seq <= target_seq),
+        );
 
         Ok(max_contiguous_seq(floor_seq, &seqs).min(target_seq))
     }

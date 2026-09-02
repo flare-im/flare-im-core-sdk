@@ -13,6 +13,7 @@ pub(crate) fn decode_single_conversation_items(
     let mut event_item_seqs = Vec::new();
     let mut messages = Vec::new();
     let mut covered_item_seqs = Vec::new();
+    let mut absent_item_seqs = Vec::new();
     let mut has_decoded_items = false;
 
     for item in &response.items {
@@ -20,6 +21,8 @@ pub(crate) fn decode_single_conversation_items(
             Some(SyncSliceItemPayload::Skip(_)) | Some(SyncSliceItemPayload::Tombstone(_)) => {
                 if item.conversation_seq > known_seq {
                     covered_item_seqs.push(item.conversation_seq);
+                    // 服务端已证明这个 seq 上没有消息行，本地永远不会有对应记录。
+                    absent_item_seqs.push(item.conversation_seq);
                     has_decoded_items = true;
                 }
             }
@@ -64,6 +67,7 @@ pub(crate) fn decode_single_conversation_items(
         events,
         event_item_seqs,
         covered_item_seqs,
+        absent_item_seqs,
         has_decoded_items,
     }
 }

@@ -6,6 +6,9 @@ pub(crate) struct AppliedSingleConversationPage {
     pub has_more: bool,
     pub next_cursor: String,
     pub has_seq_gap: bool,
+    /// 服务端以 skip/tombstone 证明「此 seq 没有消息」的位点：本地不会有对应消息行，
+    /// 存游标时必须当作已物化，否则游标永远越不过去。
+    pub absent_seqs: Vec<u64>,
 }
 
 #[derive(Debug, Clone)]
@@ -29,5 +32,7 @@ pub(crate) struct DecodedSingleConversationItems {
     pub event_item_seqs: Vec<u64>,
     /// 落库可保证持久的 item seq（消息/skip/tombstone）：save_batch 失败会让整页出错、游标不动。
     pub covered_item_seqs: Vec<u64>,
+    /// `covered_item_seqs` 的子集：skip/tombstone —— 服务端证明其上没有消息行。
+    pub absent_item_seqs: Vec<u64>,
     pub has_decoded_items: bool,
 }

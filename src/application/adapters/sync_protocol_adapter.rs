@@ -258,12 +258,14 @@ impl SyncProtocolAdapter {
         user_id: &str,
         conversation_id: &str,
         last_seq: u64,
+        proven_absent_seqs: &[u64],
     ) -> Result<()> {
         self.sync_apply_use_case
             .save_cursor_with_remote(
                 user_id,
                 conversation_id,
                 last_seq,
+                proven_absent_seqs,
                 |_, conversation_id, last_seq| async move {
                     self.queue_remote_cursor(&conversation_id, last_seq).await
                 },
@@ -662,6 +664,7 @@ impl SyncProtocolAdapter {
         conversation_id: &str,
         resp: &SyncRes,
         requested_after_seq: u64,
+        requested_cursor: &str,
     ) -> Result<(u64, bool, String)> {
         let sc = match &resp.payload {
             Some(SyncResPayload::SingleConversation(s)) => s,
@@ -730,6 +733,29 @@ impl SyncProtocolAdapter {
         if applied.has_decoded_items {
             self.transition_sync(run, SyncTransition::DataReceived);
         }
+        // 冷启 tail 页是快照语义（最新一段 + 服务端水位，旧史按需回溯）：
+        // 按增量页要求「从 0 连续」永远不成立，游标会卡死在 0，实时消息也进不了时间线。
+        if is_cold_start_tail_snapshot(
+            requested_after_seq,
+            requested_cursor,
+            applied.has_decoded_items,
+            applied.max_seq,
+            applied.remote_max_seq,
+        ) {
+            tracing::info!(
+                conversation_id = %conversation_id,
+                remote_max_seq = applied.remote_max_seq,
+                item_count = sc.items.len(),
+                "冷启 tail 页按快照采信：游标推到服务端水位，旧史留给按需回溯"
+            );
+            if !user_id.is_empty() {
+                self.save_watermark_cursor(&user_id, conversation_id, applied.remote_max_seq)
+                    .await?;
+            }
+            self.transition_sync(run, SyncTransition::SyncDone);
+            return Ok((applied.remote_max_seq, false, String::new()));
+        }
+
         if applied.has_seq_gap {
             tracing::warn!(
                 conversation_id = %conversation_id,
@@ -742,8 +768,13 @@ impl SyncProtocolAdapter {
             );
         }
         if applied.max_seq > cursor_seq && !user_id.is_empty() {
-            self.save_cursor_with_remote(&user_id, conversation_id, applied.max_seq)
-                .await?;
+            self.save_cursor_with_remote(
+                &user_id,
+                conversation_id,
+                applied.max_seq,
+                &applied.absent_seqs,
+            )
+            .await?;
         }
         if applied.has_more {
             self.transition_sync(run, SyncTransition::BatchDone);
@@ -777,7 +808,7 @@ impl SyncProtocolAdapter {
             {
                 Ok(resp) => {
                     return self
-                        .apply_sync_res_single(run, conversation_id, &resp, last_seq)
+                        .apply_sync_res_single(run, conversation_id, &resp, last_seq, &cursor)
                         .await;
                 }
                 Err(e) => {
@@ -1575,6 +1606,9 @@ impl SyncProtocolAdapter {
                         &conversation_id,
                         &single_resp,
                         requested_after_seq,
+                        // 批量切片走服务端 contiguous 构造（缺口补 tombstone），
+                        // 不会是 tail 快照；空游标即可。
+                        "",
                     )
                     .await
                 {
@@ -1930,11 +1964,32 @@ fn should_repair_operation_only_gap(start_seq: u64, from_seq: u64, next_seq: u64
     start_seq > 0 && from_seq >= start_seq && next_seq <= from_seq
 }
 
+/// 冷启 tail 页识别：`after_seq=0 且无游标` 时服务端回的是**快照**语义 ——
+/// 只有最新一段消息 + 服务端水位，旧史留给按需回溯。这种页从 0 起算连续性恒为 0，
+/// 当增量页处理会让游标永远推不动：每轮同步拉回同一页，实时消息也进不了时间线。
+///
+/// 判据必须同时成立，才不会把「真的从 seq 1 开始、只是本地还没落库」的增量页误判成快照：
+/// 页里确实解出了东西（不是空页），但连续位点仍是 0（说明服务端跳过了头部），
+/// 且服务端给出了非零水位。
+fn is_cold_start_tail_snapshot(
+    requested_after_seq: u64,
+    cursor: &str,
+    has_decoded_items: bool,
+    safe_max_seq: u64,
+    remote_max_seq: u64,
+) -> bool {
+    requested_after_seq == 0
+        && cursor.trim().is_empty()
+        && has_decoded_items
+        && safe_max_seq == 0
+        && remote_max_seq > 0
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        build_read_ack, max_applied_event_prefix_seq, should_repair_operation_only_gap,
-        single_response_from_multi_slice,
+        build_read_ack, is_cold_start_tail_snapshot, max_applied_event_prefix_seq,
+        should_repair_operation_only_gap, single_response_from_multi_slice,
     };
     use flare_proto::common::ack::Payload as AckPayload;
     use flare_proto::common::{ConversationSyncSlice, SyncSliceItem};
@@ -1964,6 +2019,27 @@ mod tests {
     fn event_prefix_keeps_known_seq_when_no_events() {
         let safe = max_applied_event_prefix_seq(77, &[], &[]);
         assert_eq!(safe, 77);
+    }
+
+    #[test]
+    fn cold_start_tail_page_is_recognised_as_snapshot() {
+        // 线上现场：本地库空、远端游标 42，于是从 0 拉；服务端回 tail（首条 seq=3）。
+        // 从 0 起算连续位点必然是 0 —— 必须认成快照，否则游标永远停在 0。
+        assert!(is_cold_start_tail_snapshot(0, "", true, 0, 42));
+    }
+
+    #[test]
+    fn ordinary_incremental_pages_are_not_mistaken_for_snapshots() {
+        // 有游标 → 是续拉，不是冷启。
+        assert!(!is_cold_start_tail_snapshot(0, "seq:42", true, 0, 42));
+        // 从非 0 位点续拉。
+        assert!(!is_cold_start_tail_snapshot(12, "", true, 0, 42));
+        // 空页：没东西可采信，不能据此把游标抬到水位。
+        assert!(!is_cold_start_tail_snapshot(0, "", false, 0, 42));
+        // 页面真的从 seq 1 开始且连续 → 走正常增量路径。
+        assert!(!is_cold_start_tail_snapshot(0, "", true, 6, 42));
+        // 服务端没有水位可采信。
+        assert!(!is_cold_start_tail_snapshot(0, "", true, 0, 0));
     }
 
     #[test]
