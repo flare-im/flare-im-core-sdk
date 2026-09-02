@@ -2256,6 +2256,66 @@ async fn applied_operation_event_seq_does_not_trigger_message_sync() {
     );
 }
 
+/// 线上时序复现：事件占掉的 seq 由**信封**送达时，也必须计入连续窗口。
+///
+/// 生产实测每条实时消息都会触发一次补拉，即"每条消息每个在线端多一次读 RPC"。
+/// 现场数字（会话 2AFZSMA4FJ4VPCVEC7）：游标 116 → 收到 seq 117 的已读回执信封
+/// → 1.6 秒后收到 seq 118 的消息，随即
+/// `实时消息 seq 出现缺口 cursor_seq=116`。库里 117 确实是一条 event_type=5，
+/// 服务端也确实先 allocate_seq 再推——所以 117 是带着 seq 到客户端的。
+#[tokio::test]
+async fn event_seq_delivered_via_envelope_counts_toward_continuity() {
+    let (message_store, cursor_store, stores) = waterline_fixture();
+    seed_waterline_conversation(&message_store, &cursor_store, "conv-env", 116).await;
+    let sync = Arc::new(RecordingSessionSyncRunner::new());
+    let dispatcher = waterline_dispatcher(stores, sync.clone());
+
+    // ① 已读回执占掉 117，走信封下来（线上就是这么送的）。
+    dispatcher
+        .dispatch(DownlinkPayload::EventEnvelope(EventEnvelope {
+            conversation_id: "conv-env".to_string(),
+            max_conversation_seq: 117,
+            events: vec![Event {
+                conversation_id: "conv-env".to_string(),
+                conversation_seq: 117,
+                payload: Some(EventPayload::Read(flare_proto::common::ReadReceiptEvent {
+                    conversation_id: "conv-env".to_string(),
+                    ..Default::default()
+                })),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }))
+        .await
+        .unwrap();
+
+    // ② 下一条消息落在 118：116→117(事件)→118(消息) 是连续的，不该判成缺口。
+    dispatcher
+        .dispatch(DownlinkPayload::MessagePush(
+            flare_proto::common::MessagePush {
+                messages: vec![flare_proto::common::Message {
+                    server_id: "m-118".to_string(),
+                    client_msg_id: "c-118".to_string(),
+                    conversation_id: "conv-env".to_string(),
+                    sender_id: "u2".to_string(),
+                    conversation_seq: 118,
+                    message_type: flare_proto::common::MessageType::Text as i32,
+                    ..Default::default()
+                }],
+                notifications: Vec::new(),
+            },
+        ))
+        .await
+        .unwrap();
+
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    assert!(
+        sync.message_sync_calls().await.is_empty(),
+        "事件占掉的 seq 已由信封送达并应用，不能再判成缺口——\
+         否则每条实时消息都要多一次读 RPC，在线人数越多放大越狠"
+    );
+}
+
 /// 反向保证：真缺口（seq 跳跃，中间既无消息行也无已应用事件）仍必须触发同步补拉。
 #[tokio::test]
 async fn genuine_seq_gap_still_triggers_message_sync() {
@@ -2704,6 +2764,25 @@ fn seq_repair_gap_falls_back_to_prefix_gap_without_recent_gap() {
     let seqs = [421, 422, 423];
 
     assert_eq!(seq_repair_gap_after(419, 423, &seqs), Some(419));
+}
+
+/// 游标之下是**已经证明过**的连续区间，缺口判定不能再回头翻它。
+///
+/// 现场数字（会话 2AFZSMA4FJ4VPCVEC7，探针实测）：
+/// 已读回执占掉 136/137，游标已推进到 137，本地最后一条消息行是 135，
+/// 新消息落在 138 —— 137→138 本来就是连续的，却因为"最近缺口"从
+/// local_before_seq=135 起算而报出 first_gap_after=135。
+/// 后果是每条实时消息都触发一次补拉：每条消息每个在线端多一次读 RPC，
+/// 在线人数越多放大越狠。
+#[test]
+fn seq_repair_ignores_holes_below_the_proven_cursor() {
+    assert_eq!(seq_repair_gap_after(137, 135, &[135, 138]), None);
+}
+
+/// 反向：游标**之上**的真缺口仍必须报出来，否则漏消息。
+#[test]
+fn seq_repair_still_reports_gaps_above_the_cursor() {
+    assert_eq!(seq_repair_gap_after(137, 135, &[135, 138, 140]), Some(138));
 }
 
 #[test]

@@ -355,9 +355,20 @@ fn first_internal_gap_after_from(base_seq: u64, seqs: &[u64]) -> Option<u64> {
 
 fn seq_repair_gap_after(cursor_seq: u64, local_before_seq: u64, seqs: &[u64]) -> Option<u64> {
     let prefix_gap = first_gap_after(cursor_seq, seqs);
-    let recent_internal_gap = first_internal_gap_after(seqs);
-    let recent_tail_gap = if local_before_seq > 0 {
-        first_gap_after(local_before_seq, seqs)
+
+    // 「最近缺口」的下界必须抬到游标：游标只会越过**已经证明连续**的位点
+    // （见 `save_cursor_with_remote` 的钳制，以及服务端用 tombstone 证明为空的 seq），
+    // 所以它之下没有需要重新发现的洞。
+    //
+    // 原来这里从 `local_before_seq`（本地最后一条**消息行**）起算，而操作事件
+    // （已读回执等）与消息共享会话 seq 分配器 —— 它们占掉的 seq 在消息行里天然是洞，
+    // 于是每条实时消息都被判成缺口，触发一次补拉。现场实测：游标 137、
+    // 本地消息 135、新消息 138，136/137 是已读回执，却报出 first_gap_after=135。
+    // 代价是每条消息每个在线端多一次读 RPC，在线人数越多放大越狠。
+    let recent_floor = cursor_seq.max(local_before_seq);
+    let recent_internal_gap = first_internal_gap_after_from(recent_floor, seqs);
+    let recent_tail_gap = if recent_floor > 0 {
+        first_gap_after(recent_floor, seqs)
     } else {
         None
     };

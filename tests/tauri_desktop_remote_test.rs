@@ -41,6 +41,16 @@ async fn desktop_stack_logs_in_and_receives_realtime_push() {
         return;
     };
 
+    // 装上 subscriber，否则核心的 tracing 一行都不会输出——
+    // 我曾据此误判"事件根本没到"。
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+        )
+        .with_test_writer()
+        .try_init();
+
     let data_root = std::env::temp_dir().join(format!(
         "flare-tauri-e2e-{}",
         std::time::SystemTime::now()
