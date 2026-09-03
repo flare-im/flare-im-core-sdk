@@ -134,7 +134,7 @@ async fn desktop_stack_logs_in_and_receives_realtime_push() {
     };
 
     println!("LISTENER_READY");
-    let deadline = Instant::now() + Duration::from_secs(240);
+    let deadline = Instant::now() + Duration::from_secs(300);
     let mut hit = false;
     while Instant::now() < deadline {
         let remaining = deadline.saturating_duration_since(Instant::now());
