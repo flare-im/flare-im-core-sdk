@@ -118,6 +118,8 @@ pub fn action_availability_vectors() -> serde_json::Value {
         ("发送失败且断线",       "me",    TYPE_TEXT,      STATUS_FAILED,   true, false, false, false, false, true),
         ("发送中(pending)",      "me",    TYPE_TEXT,      0,    true,  true,  false, true,  false, false),
         ("已置顶",               "me",    TYPE_TEXT,      0,    true,  false, true,  true,  false, false),
+        ("对方已读",             "me",    TYPE_TEXT,      0,    true,  false, false, true,  false, false),
+        ("别人发的",             "other", TYPE_TEXT,      0,    true,  false, false, true,  false, false),
         ("多选模式",             "me",    TYPE_TEXT,      0,    true,  false, false, true,  true,  false),
     ] {
         let mut m = IMMessage::new(flare_proto::common::Message {
@@ -131,6 +133,8 @@ pub fn action_availability_vectors() -> serde_json::Value {
         m.status = status;
         m.sender_id = sender.to_string();
         // 复制的判据是「有没有可复制的正文」，所以正文必须走真实内容而不是补个字段。
+        // 已读维度：label 带「已读」的用例把 is_read 打开，用来钉双勾。
+        m.is_read = label.contains("已读");
         m.content = if has_text {
             Some(crate::model::Elem::Text(crate::content::message_elem::TextElem {
                 text: "正文".to_string(),
@@ -148,10 +152,12 @@ pub fn action_availability_vectors() -> serde_json::Value {
             multi_select_mode: multi,
         };
         let a = message_action_availability(&m, &ctx);
+        let delivery = message_delivery_state(&m, &ctx);
         cases.push(json!({
             "label": label,
             "input": {
-                "isSelf": sender == "me", "messageType": mtype, "status": status,
+                "isSelf": sender == "me", "isRead": m.is_read,
+                "messageType": mtype, "status": status,
                 "hasText": has_text, "isPending": pending, "isPinned": pinned,
                 "isConnected": connected, "multiSelectMode": multi, "isFailed": failed,
             },
@@ -160,7 +166,8 @@ pub fn action_availability_vectors() -> serde_json::Value {
                 "canEdit": a.can_edit, "canDelete": a.can_delete, "canRecall": a.can_recall,
                 "canPin": a.can_pin, "canUnpin": a.can_unpin, "canReact": a.can_react,
                 "canMultiSelect": a.can_multi_select, "canSave": a.can_save, "canResend": a.can_resend,
-            }
+            },
+            "deliveryState": delivery.as_str()
         }));
     }
     json!({ "note": "由 flare-im-core-sdk domain::message_actions 生成，勿手改", "cases": cases })
@@ -300,4 +307,58 @@ mod tests {
             );
         }
     }
+}
+/// 一条**自己发出的**消息该显示什么送达状态。
+///
+/// 与动作可用性同理：这是产品中立的展示规则，四端必须一致，
+/// 所以真源在核心，各端按 `sdk-spec/message-action-vectors.json` 对齐。
+///
+/// 视觉约定（与 iOS `DeliveryStatusGlyph`、kit `messageStateToNumber` 一致）：
+/// - `sending` 转圈；`failed` 叹号；`delivered` 单勾；`read` 双勾；`none` 不显示。
+/// - proto 的 SENT(2) 与 PERSISTED(3) **都是单勾**：对用户而言"服务端收下了"
+///   和"已落库"没有区别，不值得用两个符号去区分。
+/// - 撤回/删除是终态，由占位气泡接管展示，不再显示送达状态。
+/// - 对方发来的消息不显示任何送达状态（那是发送方才关心的事）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MessageDeliveryState {
+    None,
+    Sending,
+    Failed,
+    Delivered,
+    Read,
+}
+
+impl MessageDeliveryState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Sending => "sending",
+            Self::Failed => "failed",
+            Self::Delivered => "delivered",
+            Self::Read => "read",
+        }
+    }
+}
+
+pub fn message_delivery_state(
+    message: &IMMessage,
+    ctx: &MessageActionContext,
+) -> MessageDeliveryState {
+    let self_sent = !ctx.current_user_id.is_empty() && message.sender_id == ctx.current_user_id;
+    if !self_sent {
+        return MessageDeliveryState::None;
+    }
+    if message.status == STATUS_RECALLED || message.status == STATUS_DELETED {
+        return MessageDeliveryState::None;
+    }
+    if ctx.is_failed || message.status == STATUS_FAILED {
+        return MessageDeliveryState::Failed;
+    }
+    if ctx.is_pending {
+        return MessageDeliveryState::Sending;
+    }
+    if message.is_read {
+        return MessageDeliveryState::Read;
+    }
+    MessageDeliveryState::Delivered
 }
