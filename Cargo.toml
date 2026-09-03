@@ -164,6 +164,8 @@ web-sys = { version = "0.3", features = [
 ] }
 
 [dev-dependencies]
+# 仅测试：用与服务端 TokenService 同规则的校验器验证客户端签发的 token
+jsonwebtoken = "9"
 tokio-test = "0.4"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 async-trait = "0.1"
