@@ -149,10 +149,18 @@ impl SocketTransport {
             .build_with_race()
             .await
             .map_err(|e| {
-                FlareError::connection_failed(format!(
+                let detail = format!(
                     "connect failed primary={primary_url} ws={ws_url} policy={policy:?} default_transport={:?}: {e}",
                     self.config.default_transport
-                ))
+                );
+                // 网关拒掉 CONNECT 里的 token（密钥/签发者不一致、过期）时，传输层已经判成
+                // AUTHENTICATION_FAILED；这里不能再一律降级成 CONNECTION_FAILED，
+                // 否则应用层只能把「密钥填错」显示成「连不上服务器」。
+                if e.code() == Some(ErrorCode::AuthenticationFailed) {
+                    FlareError::authentication_failed(detail)
+                } else {
+                    FlareError::connection_failed(detail)
+                }
             })?;
 
         *self.client.lock().await = Some(flare_client);
