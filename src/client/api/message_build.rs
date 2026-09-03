@@ -215,6 +215,15 @@ impl MessageBuildApi {
         text: &str,
         sender_id: &str,
     ) -> crate::content::ParsedMentions {
+        // 正文里没有 '@' 就什么都不用做 —— 绝大多数消息都是这样。
+        //
+        // 这里原本无条件读一次会话存储再组名册：在 web 上那是一次 IndexedDB 读，
+        // 还要排进 WASM 的单槽 invoke 队列，实测把「点击→上屏」从 92ms 推到 601ms，
+        // 而发送→上屏的预算是 **16ms**（下一帧）。热路径上不能有这种无条件 I/O。
+        if !text.contains('@') {
+            return crate::content::ParsedMentions::default();
+        }
+
         let mut candidates: Vec<crate::content::MentionCandidate> = Vec::new();
         if let Ok(Some(conv)) = self.conversations.get(conversation_id).await {
             // participants 与 member_preview 同型，合并成一份名册；
