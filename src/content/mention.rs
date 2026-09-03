@@ -134,6 +134,42 @@ pub fn parse_mentions(text: &str, candidates: &[MentionCandidate]) -> ParsedMent
     result
 }
 
+/// 从**已解码的内容**还原提及状态。
+///
+/// wire 上提及走 `TextContent.mentions`，`Message.mention_all` / `mention_users`
+/// 是本地派生字段。发送侧写进 content，接收侧却从来没有读回来 ——
+/// 于是对端收到的消息 `mentionAll` 恒为 false：任何端都高亮不了收到的 @，
+/// 「只接收@我」也无从判断。跨端判据必须看**对端收到的那条**，
+/// 只断言本地构建结果会漏掉这一整段。
+pub fn mentions_from_content(content: &flare_proto::common::MessageContent) -> ParsedMentions {
+    use flare_proto::common::{MentionType, message_content::Content};
+    let Some(Content::Text(text)) = content.content.as_ref() else {
+        return ParsedMentions::default();
+    };
+    let mut parsed = ParsedMentions::default();
+    for mention in &text.mentions {
+        match MentionType::try_from(mention.r#type) {
+            Ok(MentionType::All) => parsed.mention_all = true,
+            Ok(MentionType::User) => {
+                let id = mention.user_id.trim();
+                if !id.is_empty() && !parsed.user_ids.iter().any(|x| x == id) {
+                    parsed.user_ids.push(id.to_string());
+                }
+            }
+            Ok(MentionType::Multi) => {
+                for id in &mention.user_ids {
+                    let id = id.trim();
+                    if !id.is_empty() && !parsed.user_ids.iter().any(|x| x == id) {
+                        parsed.user_ids.push(id.to_string());
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    parsed
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -201,6 +237,48 @@ mod tests {
     #[test]
     fn non_member_mention_is_ignored() {
         assert!(parse_mentions("@nobody 在吗", &candidates()).user_ids.is_empty());
+    }
+
+    fn text_content_with(mentions: Vec<flare_proto::common::Mention>) -> flare_proto::common::MessageContent {
+        flare_proto::common::MessageContent {
+            content: Some(flare_proto::common::message_content::Content::Text(
+                flare_proto::common::TextContent {
+                    text: "hi".to_string(),
+                    mentions,
+                },
+            )),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn mention_all_survives_the_round_trip() {
+        // 这条钉的是跨端那一段：发送侧把 @全员 写进 content，接收侧必须读回来。
+        // 曾经只写不读，对端收到的 mentionAll 恒为 false。
+        let content = text_content_with(vec![flare_proto::common::Mention {
+            r#type: flare_proto::common::MentionType::All as i32,
+            ..Default::default()
+        }]);
+        assert!(mentions_from_content(&content).mention_all);
+    }
+
+    #[test]
+    fn user_mentions_survive_the_round_trip() {
+        let content = text_content_with(vec![
+            flare_proto::common::Mention {
+                r#type: flare_proto::common::MentionType::User as i32,
+                user_id: "u1".to_string(),
+                ..Default::default()
+            },
+            flare_proto::common::Mention {
+                r#type: flare_proto::common::MentionType::Multi as i32,
+                user_ids: vec!["u2".to_string(), "u1".to_string()],
+                ..Default::default()
+            },
+        ]);
+        let parsed = mentions_from_content(&content);
+        assert!(!parsed.mention_all);
+        assert_eq!(parsed.user_ids, vec!["u1".to_string(), "u2".to_string()]);
     }
 
     #[test]

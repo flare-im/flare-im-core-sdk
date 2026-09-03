@@ -12,7 +12,7 @@ pub mod url_safety;
 pub use content_builder::{BuiltContent, ContentBuilder, DEFAULT_STICKER_DISPLAY_SIDE};
 pub use decoder::{DecodedContent, decode_content, decode_content_bytes};
 pub use message_builder::MessageBuilder;
-pub use mention::{MentionCandidate, ParsedMentions, parse_mentions};
+pub use mention::{MentionCandidate, ParsedMentions, mentions_from_content, parse_mentions};
 pub use message_elem::{Elem, MessagePreviewElem, decoded_content_to_elem};
 pub use preview_storage::PreviewStoragePayload;
 pub use rich_doc_v2::{

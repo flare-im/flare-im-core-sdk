@@ -306,6 +306,14 @@ impl IMMessage {
             .map(|content| content.encode_to_vec())
             .unwrap_or_default();
         let decoded_opt = decode_content_bytes(&encoded_content).ok();
+        // 提及在 wire 上走 content 里的 mentions；`mention_all` / `mention_users`
+        // 是本地派生字段。发送侧一直写进 content，接收侧却从来没读回来——
+        // 于是对端收到的消息 mentionAll 恒为 false（跨端 @ 高亮与「只接收@我」都因此失效）。
+        let decoded_mentions = message
+            .content
+            .as_ref()
+            .map(crate::content::mentions_from_content)
+            .unwrap_or_default();
         let content = decoded_opt.as_ref().and_then(decoded_content_to_elem);
         let text_preview = decoded_opt
             .as_ref()
@@ -371,8 +379,8 @@ impl IMMessage {
             is_edited,
             retention_policy: message.retention_policy,
             retention_state: message.retention_state,
-            mention_users: Vec::new(),
-            mention_all: false,
+            mention_users: decoded_mentions.user_ids,
+            mention_all: decoded_mentions.mention_all,
             offline_push_info: message.offline_push_info,
             attributes,
             extensions: message.extensions,

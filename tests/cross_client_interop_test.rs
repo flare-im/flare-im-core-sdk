@@ -359,5 +359,47 @@ async fn cross_client_actions_reach_the_other_side() {
     .await;
     passed.push("8 对所有人删除");
 
+    // ---- 9. @全员：中文记号必须真的产出 mentionAll ----
+    //
+    // 这条曾经在五端都不成立：判定规则只有 Vue kit 里的 `/(^|\s)@all(\s|$)/i`，
+    // 中文打 `@全员` 不生效，其余四端根本不解析。现在规则在核心，
+    // 判据是**对端收到的那条消息**上的 mentionAll，不是本地构建时的入参。
+    let tag_all = format!("{tag}-atall");
+    let draft_all = actor
+        .client
+        .message_build()
+        .expect("builder")
+        .create_text(&cid, &format!("@全员 {tag_all}"), false, &[])
+        .await
+        .expect("构建 @全员 消息");
+    assert!(
+        draft_all.mention_all,
+        "核心必须从正文解析出 @全员 —— 入参给的是 false"
+    );
+    actor
+        .client
+        .message_async()
+        .await
+        .expect("message api")
+        .send(draft_all)
+        .await
+        .expect("发送 @全员");
+    let mut received_mention_all = false;
+    wait_for(&mut events, "@全员 消息", |event| {
+        if let SdkEvent::Message(MessageEvent::ReceivedBatch { messages }) = event {
+            if let Some(hit) = messages.iter().find(|m| text_of(m).contains(&tag_all)) {
+                received_mention_all = hit.mention_all;
+                return true;
+            }
+        }
+        false
+    })
+    .await;
+    assert!(
+        received_mention_all,
+        "对端收到的消息必须带 mentionAll —— 否则 @全员 在跨端这一段丢了"
+    );
+    passed.push("9 @全员(中文)");
+
     println!("INTEROP_PASSED={}", passed.join(" | "));
 }
