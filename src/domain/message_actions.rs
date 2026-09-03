@@ -96,6 +96,76 @@ pub fn message_action_availability(
     }
 }
 
+/// 导出跨端一致性向量：把这条规则在代表性输入下的结果写成 JSON，
+/// 各端用例据此断言自己的实现与核心逐位一致。
+///
+/// 为什么不是"各端直接调核心"：kit 的组件是纯展示的（不碰 SDK），
+/// 把异步核心调用塞进展示组件会破坏分层。所以这里退一步——
+/// 允许多份实现，但用生成的向量把它们钉在一起，漂移即红。
+#[cfg(any(test, feature = "integration-tests"))]
+pub fn action_availability_vectors() -> serde_json::Value {
+    use serde_json::json;
+    let mut cases = Vec::new();
+    // 覆盖：自己/别人 × 文本/图片/富文本 × 正常/撤回/删除/失败 × pending/pinned/断线/多选
+    for (label, sender, mtype, status, has_text, pending, pinned, connected, multi, failed) in [
+        ("自己的文本",           "me",    TYPE_TEXT,      0i32, true,  false, false, true,  false, false),
+        ("别人的文本",           "other", TYPE_TEXT,      0,    true,  false, false, true,  false, false),
+        ("自己的图片(无正文)",   "me",    MEDIA_TYPES[0],  0,    false, false, false, true,  false, false),
+        ("自己的富文本",         "me",    TYPE_RICH_TEXT, 0,    true,  false, false, true,  false, false),
+        ("已撤回",               "me",    TYPE_TEXT,      STATUS_RECALLED, true, false, false, true, false, false),
+        ("已删除",               "me",    TYPE_TEXT,      STATUS_DELETED,  true, false, false, true, false, false),
+        ("发送失败",             "me",    TYPE_TEXT,      STATUS_FAILED,   true, false, false, true, false, true),
+        ("发送失败且断线",       "me",    TYPE_TEXT,      STATUS_FAILED,   true, false, false, false, false, true),
+        ("发送中(pending)",      "me",    TYPE_TEXT,      0,    true,  true,  false, true,  false, false),
+        ("已置顶",               "me",    TYPE_TEXT,      0,    true,  false, true,  true,  false, false),
+        ("多选模式",             "me",    TYPE_TEXT,      0,    true,  false, false, true,  true,  false),
+    ] {
+        let mut m = IMMessage::new(flare_proto::common::Message {
+            server_id: "m1".to_string(),
+            sender_id: sender.to_string(),
+            message_type: mtype,
+            status,
+            ..Default::default()
+        });
+        m.message_type = mtype;
+        m.status = status;
+        m.sender_id = sender.to_string();
+        // 复制的判据是「有没有可复制的正文」，所以正文必须走真实内容而不是补个字段。
+        m.content = if has_text {
+            Some(crate::model::Elem::Text(crate::content::message_elem::TextElem {
+                text: "正文".to_string(),
+                mentions: Vec::new(),
+            }))
+        } else {
+            None
+        };
+        let ctx = MessageActionContext {
+            current_user_id: "me".to_string(),
+            is_connected: connected,
+            is_pending: pending,
+            is_pinned: pinned,
+            is_failed: failed,
+            multi_select_mode: multi,
+        };
+        let a = message_action_availability(&m, &ctx);
+        cases.push(json!({
+            "label": label,
+            "input": {
+                "isSelf": sender == "me", "messageType": mtype, "status": status,
+                "hasText": has_text, "isPending": pending, "isPinned": pinned,
+                "isConnected": connected, "multiSelectMode": multi, "isFailed": failed,
+            },
+            "expected": {
+                "canReply": a.can_reply, "canForward": a.can_forward, "canCopy": a.can_copy,
+                "canEdit": a.can_edit, "canDelete": a.can_delete, "canRecall": a.can_recall,
+                "canPin": a.can_pin, "canUnpin": a.can_unpin, "canReact": a.can_react,
+                "canMultiSelect": a.can_multi_select, "canSave": a.can_save, "canResend": a.can_resend,
+            }
+        }));
+    }
+    json!({ "note": "由 flare-im-core-sdk domain::message_actions 生成，勿手改", "cases": cases })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -208,5 +278,26 @@ mod tests {
         let a = message_action_availability(&message("me", TYPE_TEXT, 3), &multi);
         assert!(!a.can_reply && !a.can_edit && !a.can_recall);
         assert!(a.can_forward, "多选下转发仍然成立（批量转发）");
+    }
+
+    /// 把向量写到仓库，供各端一致性用例消费。
+    ///
+    /// 判据是生成物与已提交内容一致：规则改了而没重新生成，这条就红，
+    /// 提醒你去看各端是否也要跟着改。
+    #[test]
+    fn action_availability_vectors_are_committed_and_current() {
+        let generated = serde_json::to_string_pretty(&super::action_availability_vectors())
+            .expect("序列化向量");
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../flare-im-core-client-sdk/sdk-spec/message-action-vectors.json");
+        let existing = std::fs::read_to_string(&path).unwrap_or_default();
+        if existing.trim() != generated.trim() {
+            std::fs::create_dir_all(path.parent().expect("父目录")).ok();
+            std::fs::write(&path, format!("{generated}\n")).expect("写入向量");
+            panic!(
+                "跨端动作可用性向量已更新（{}）——请一并检查各端实现是否需要跟着改，然后重跑",
+                path.display()
+            );
+        }
     }
 }
