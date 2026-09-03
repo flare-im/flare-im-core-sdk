@@ -98,7 +98,135 @@ pub fn decode_content_bytes(bytes: &[u8]) -> Result<DecodedContent> {
         ))
     })?;
     Ok(match mc.content {
-        Some(c) => DecodedContent::Content(Box::new(c)),
+        Some(c) => DecodedContent::Content(Box::new(sanitize_inbound_content(c))),
         None => DecodedContent::Unknown,
     })
+}
+
+/// 入站内容的边界校验。
+///
+/// 消息正文全部来自**其他用户**，必须按敌意输入对待。此前只有出站路径校验
+/// （`validate_outbound_message` 只在 send 上调用），入站一路无人拦：
+/// 服务端也只按类型取个预览，从不看 `doc_json`。而 Android / iOS / Flutter
+/// 的富文本渲染器都是**没有深度上界的递归**——一份深嵌套 doc_json 就能让
+/// 收到它的客户端栈溢出，而且消息已落库，每次打开都会再崩一次。
+///
+/// 这里不丢弃消息（丢弃等于让攻击者能让别人的消息凭空消失），
+/// 而是把不合规的富文本降级成纯文本占位：渲染器永远见不到那棵树。
+fn sanitize_inbound_content(
+    content: flare_proto::common::message_content::Content,
+) -> flare_proto::common::message_content::Content {
+    use flare_proto::common::message_content::Content;
+    let Content::RichText(ref rich) = content else {
+        return content;
+    };
+    if rich.content_schema != crate::content::rich_doc_v2::pipeline::CONTENT_SCHEMA_RICH_DOC {
+        return content;
+    }
+    match crate::content::rich_doc_v2::validate_doc_json(&rich.doc_json) {
+        Ok(()) => content,
+        Err(error) => {
+            tracing::warn!(
+                error = %error,
+                doc_json_bytes = rich.doc_json.len(),
+                "入站富文本未通过校验，降级为纯文本占位"
+            );
+            Content::Text(flare_proto::common::TextContent {
+                text: rich.plain_text.clone(),
+                mentions: Vec::new(),
+            })
+        }
+    }
+}
+
+#[cfg(test)]
+mod inbound_hardening_tests {
+    use super::*;
+    use prost::Message as _;
+    use flare_proto::common::{MessageContent, RichTextContent, message_content::Content};
+
+    fn encoded(content: Content) -> Vec<u8> {
+        MessageContent {
+            content: Some(content),
+            ..Default::default()
+        }
+        .encode_to_vec()
+    }
+
+    fn nested_doc(depth: usize) -> String {
+        // {"type":"doc","version":2,"children":[{...嵌套...}]}
+        let mut s = String::from(r#"{"type":"doc","version":2,"children":["#);
+        for _ in 0..depth {
+            s.push_str(r#"{"type":"paragraph","version":2,"children":["#);
+        }
+        for _ in 0..depth {
+            s.push_str("]}");
+        }
+        s.push_str("]}");
+        s
+    }
+
+    /// 敌意对端发一份深嵌套富文本：客户端**不能**把它交给渲染器。
+    ///
+    /// 三端（Android / iOS / Flutter）的富文本渲染都是没有深度上界的递归，
+    /// 这棵树递归下去就是栈溢出；而消息已落库，每次打开还会再崩一次。
+    #[test]
+    fn deeply_nested_inbound_rich_doc_is_downgraded_not_rendered() {
+        let hostile = encoded(Content::RichText(RichTextContent {
+            doc_json: nested_doc(5_000),
+            content_schema: "rich_doc".to_string(),
+            plain_text: "看起来人畜无害".to_string(),
+            ..Default::default()
+        }));
+
+        let decoded = decode_content_bytes(&hostile).expect("解码本身不该失败");
+        let DecodedContent::Content(content) = decoded else {
+            panic!("应当解出内容");
+        };
+        match *content {
+            Content::Text(text) => {
+                assert_eq!(
+                    text.text, "看起来人畜无害",
+                    "降级后应保留 plain_text，用户仍看得到这条消息说了什么"
+                );
+            }
+            other => panic!("不合规的富文本必须降级成纯文本，实际是 {other:?}"),
+        }
+    }
+
+    /// 合规的富文本不受影响 —— 别把正常消息也降级了。
+    #[test]
+    fn well_formed_inbound_rich_doc_passes_through() {
+        let ok = encoded(Content::RichText(RichTextContent {
+            doc_json: r#"{"type":"doc","version":2,"children":[]}"#.to_string(),
+            content_schema: "rich_doc".to_string(),
+            plain_text: "hi".to_string(),
+            ..Default::default()
+        }));
+        let decoded = decode_content_bytes(&ok).expect("解码");
+        let DecodedContent::Content(content) = decoded else {
+            panic!("应当解出内容");
+        };
+        assert!(
+            matches!(*content, Content::RichText(_)),
+            "合规富文本必须原样通过"
+        );
+    }
+
+    /// 非富文本内容不走这条路，零额外开销。
+    #[test]
+    fn plain_text_content_is_untouched() {
+        let ok = encoded(Content::Text(flare_proto::common::TextContent {
+            text: "hello".to_string(),
+            mentions: Vec::new(),
+        }));
+        let decoded = decode_content_bytes(&ok).expect("解码");
+        let DecodedContent::Content(content) = decoded else {
+            panic!("应当解出内容");
+        };
+        match *content {
+            Content::Text(t) => assert_eq!(t.text, "hello"),
+            other => panic!("纯文本不该被改动，实际是 {other:?}"),
+        }
+    }
 }
