@@ -244,14 +244,19 @@ async fn cross_client_actions_reach_the_other_side() {
     passed.push("4 撤回");
 
     // ---- 5. 正在输入 ----
-    actor
-        .client
-        .message_async()
-        .await
-        .expect("message api")
-        .typing(&cid, true)
-        .await
-        .expect("设置输入中");
+    //
+    // 输入中按设计是**可折叠、带 TTL 的尽力而为信号**：客户端侧 3s 节流，
+    // 网关侧按会话 1s 合并窗口 + 6s TTL。真实客户端是按心跳重复发的，
+    // 所以判据也必须按心跳来 —— 断言"单次 typing 必须被看到"是过度规定，
+    // 实测约每 5 轮会假失败一次。
+    let typing_actor = actor.client.message_async().await.expect("message api");
+    let typing_cid = cid.clone();
+    let typing_pulse = tokio::spawn(async move {
+        for _ in 0..8 {
+            let _ = typing_actor.typing(&typing_cid, true).await;
+            tokio::time::sleep(Duration::from_millis(1_200)).await;
+        }
+    });
     wait_for(&mut events, "正在输入", |event| {
         matches!(
             event,
@@ -260,6 +265,7 @@ async fn cross_client_actions_reach_the_other_side() {
         )
     })
     .await;
+    typing_pulse.abort();
     passed.push("5 正在输入");
 
     // 后面几项需要一条**没被撤回**的消息，重新发一条。
