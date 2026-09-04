@@ -100,6 +100,8 @@ brew install protobuf
 
 ## Quick start
 
+> Client apps must not mint tokens: set `SdkConfig::auth.token_endpoint` (builder `auth_token_endpoint`) so the SDK issues and refreshes via the gateway's `/api/v1/auth/tokens`, or pass a token issued by your backend. `generate_core_token` stays only for server-side tooling and tests (see flare-im-core/docs/AUTH-TOKEN-ISSUANCE.md).
+
 ```rust
 use flare_im_core_sdk::prelude::*;
 

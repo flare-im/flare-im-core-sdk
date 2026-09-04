@@ -88,6 +88,8 @@ brew install protobuf
 
 ## 快速开始
 
+> 客户端 App 不要本地签发：配置 `SdkConfig::auth.token_endpoint`（builder `auth_token_endpoint`）让 SDK 向网关 `/api/v1/auth/tokens` 签发并自动刷新，或传入业务后端签好的 token。`generate_core_token` 只保留给服务端工具与测试（见 flare-im-core/docs/AUTH-TOKEN-ISSUANCE.zh-CN.md）。
+
 ```rust
 use flare_im_core_sdk::prelude::*;
 

@@ -68,7 +68,6 @@ bool flare_sdk_is_connected(FlareHandle handle);
 int32_t flare_sdk_current_user_id(FlareHandle handle, void* context, FlareResultCallback callback);
 
 // dev JWT (synchronous, handle-independent; `secret`/`issuer` may be NULL or empty for the built-in defaults; `tenant_id` may be NULL; `ttl_secs==0` means 3600; must flare_string_free)
-FlareString flare_sdk_generate_core_token(const char* secret, const char* issuer, const char* user_id, const char* device_id, const char* tenant_id, uint64_t ttl_secs);
 ```
 
 ### Memory management

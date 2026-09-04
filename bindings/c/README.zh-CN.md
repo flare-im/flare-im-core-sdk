@@ -67,7 +67,6 @@ bool flare_sdk_is_connected(FlareHandle handle);
 int32_t flare_sdk_current_user_id(FlareHandle handle, void* context, FlareResultCallback callback);
 
 // 开发用 JWT（同步，不依赖 handle；`secret`/`issuer` 可为 NULL 或空串用内置默认；`tenant_id` 可为 NULL；`ttl_secs==0` 表示 3600；须 flare_string_free）
-FlareString flare_sdk_generate_core_token(const char* secret, const char* issuer, const char* user_id, const char* device_id, const char* tenant_id, uint64_t ttl_secs);
 ```
 
 ### 内存管理
