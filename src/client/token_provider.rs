@@ -20,6 +20,11 @@ pub struct IssuedAccessToken {
     pub tenant_id: Option<String>,
     #[serde(default)]
     pub device_id: Option<String>,
+    /// 长效刷新令牌：接入令牌过期后凭它换新，无需重登（7x24）。旧网关不下发时为 `None`。
+    #[serde(default)]
+    pub refresh_token: Option<String>,
+    #[serde(default)]
+    pub refresh_expires_at: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -149,6 +154,21 @@ pub fn jwt_exp_secs(token: &str) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn issued_token_parses_refresh_token_camelcase() {
+        let raw = r#"{"token":"a.b.c","expiresAt":123,"userId":"u","refreshToken":"r.r.r","refreshExpiresAt":456}"#;
+        let issued: IssuedAccessToken = serde_json::from_str(raw).unwrap();
+        assert_eq!(issued.refresh_token.as_deref(), Some("r.r.r"));
+        assert_eq!(issued.refresh_expires_at, Some(456));
+    }
+
+    #[test]
+    fn issued_token_without_refresh_is_backward_compatible() {
+        let raw = r#"{"token":"a.b.c","expiresAt":123,"userId":"u"}"#;
+        let issued: IssuedAccessToken = serde_json::from_str(raw).unwrap();
+        assert_eq!(issued.refresh_token, None);
+    }
 
     #[test]
     fn urls_are_built_from_the_base_without_double_slashes() {

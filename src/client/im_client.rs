@@ -106,6 +106,8 @@ pub(crate) struct IMClientInner {
     pub data_root: Option<PathBuf>,
     pub current_user_id: Option<String>,
     pub connect_token: Option<String>,
+    /// 长效刷新令牌（SDK 托管形态由网关下发）。接入令牌过期后凭它换新，支撑 7x24。
+    pub refresh_token: Option<String>,
     pub engine: Option<SdkEngine>,
     pub message_api: Option<MessageApi>,
     pub media_api: Option<Arc<MediaApi>>,

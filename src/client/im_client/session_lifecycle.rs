@@ -442,6 +442,7 @@ impl IMClient {
         install_watcher: bool,
     ) -> Result<()> {
         // token 三档来源：显式传入 > SDK 托管（向网关签发）> 环境变量（联调）。没有本地签发。
+        let mut issued_refresh_token: Option<String> = None;
         let token = match explicit_token.map(str::trim).filter(|t| !t.is_empty()) {
             Some(token) => token.to_string(),
             None => match self.gateway_token_provider().await {
@@ -450,8 +451,11 @@ impl IMClient {
                     tracing::info!(
                         user_id,
                         expires_at = issued.expires_at,
+                        has_refresh = issued.refresh_token.is_some(),
                         "access token issued by gateway"
                     );
+                    // 长效刷新令牌：接入令牌过期后凭它换新，支撑 7x24 免重登。
+                    issued_refresh_token = issued.refresh_token.clone();
                     issued.token
                 }
                 None => resolve_connect_token(user_id, None)?,
@@ -480,6 +484,7 @@ impl IMClient {
         g.engine = Some(e);
         g.current_user_id = Some(user_id.to_string());
         g.connect_token = Some(token.clone());
+        g.refresh_token = issued_refresh_token.clone();
         g.session_generation = g.session_generation.wrapping_add(1);
         self.store_session_generation_snapshot(g.session_generation);
         let current_generation = g.session_generation;

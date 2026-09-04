@@ -271,16 +271,13 @@ impl IMClient {
         drop(g);
         // 重连前 token 已到期/临期，或上一次重连被网关按鉴权拒绝（force_refresh）：先换新，
         // 否则带着旧 token 重连必被网关拒。force_refresh 绕过本机时钟判定，防时钟偏移死循环。
+        // 走刷新令牌换新（接入令牌早过期也能换），是 7x24 的关键。
         if let Some(provider) = provider
             && (force_refresh || token_needs_refresh(&token, 30))
         {
-            match provider.refresh(&token).await {
+            match self.refresh_tokens_via_gateway(generation, &provider).await {
                 Ok(issued) => {
-                    let mut g = self.inner.write().await;
-                    if g.session_generation == generation {
-                        g.connect_token = Some(issued.token.clone());
-                        token = issued.token;
-                    }
+                    token = issued.token;
                 }
                 Err(err) => {
                     tracing::warn!(%err, "token refresh before reconnect failed; reconnecting with the current token");
@@ -313,38 +310,64 @@ impl IMClient {
     }
 
     /// 用网关换新 token 并重连当前引擎；成功返回 true。
+    /// 走网关换新一对令牌：优先拿**刷新令牌**作 Bearer（接入令牌早过期也能换），
+    /// 旧网关不下发刷新令牌时回退用接入令牌（服务端两者都认）。成功后回写 access + 轮换后的 refresh。
+    pub(super) async fn refresh_tokens_via_gateway(
+        &self,
+        generation: u64,
+        provider: &GatewayTokenProvider,
+    ) -> Result<crate::client::token_provider::IssuedAccessToken> {
+        let (bearer, tenant_id) = {
+            let g = self.inner.read().await;
+            if g.session_generation != generation {
+                return Err(FlareError::localized(ErrorCode::NotConnected, "session generation changed"));
+            }
+            // 刷新令牌优先；没有再退回接入令牌（兼容旧网关/旧会话）。
+            let bearer = g
+                .refresh_token
+                .clone()
+                .or_else(|| g.connect_token.clone())
+                .ok_or_else(|| FlareError::localized(ErrorCode::NotConnected, "no token to refresh"))?;
+            (bearer, Self::resolve_tenant_id(&g))
+        };
+        let issued = provider.refresh(&bearer).await?;
+        {
+            let mut g = self.inner.write().await;
+            if g.session_generation == generation {
+                g.connect_token = Some(issued.token.clone());
+                // 轮换后的新刷新令牌；网关没下发则保留原来的（别把已有的清成 None）。
+                if issued.refresh_token.is_some() {
+                    g.refresh_token = issued.refresh_token.clone();
+                }
+            }
+        }
+        // 同步 HTTP 侧 bearer（媒体等）。
+        let _ = self.sync_gateway_http_context(Some(&tenant_id)).await;
+        Ok(issued)
+    }
+
     pub(super) async fn refresh_token_and_reconnect(
         &self,
         generation: u64,
         provider: &GatewayTokenProvider,
     ) -> bool {
-        let (user_id, token, tenant_id) = {
+        let user_id = {
             let g = self.inner.read().await;
             if g.session_generation != generation {
                 return false;
             }
-            let Some(user_id) = g.current_user_id.clone() else {
-                return false;
-            };
-            let Some(token) = g.connect_token.clone() else {
-                return false;
-            };
-            (user_id, token, Self::resolve_tenant_id(&g))
+            match g.current_user_id.clone() {
+                Some(uid) => uid,
+                None => return false,
+            }
         };
-        let issued = match provider.refresh(&token).await {
+        let issued = match self.refresh_tokens_via_gateway(generation, provider).await {
             Ok(issued) => issued,
             Err(err) => {
                 tracing::warn!(%err, "token refresh via gateway failed");
                 return false;
             }
         };
-        if let Err(err) = self
-            .update_access_token(issued.token.clone(), Some(&tenant_id))
-            .await
-        {
-            tracing::warn!(%err, "applying refreshed token failed");
-            return false;
-        }
         self.reconnect_current_engine(generation, &user_id, &issued.token)
             .await
             .is_ok()
@@ -360,7 +383,7 @@ impl IMClient {
                 if !c.is_generation_current(generation).await {
                     break;
                 }
-                let (provider, token, lead_secs, tenant_id) = {
+                let (provider, token, lead_secs, _tenant_id) = {
                     let g = c.inner.read().await;
                     let provider = Self::gateway_token_provider_from_inner(&g);
                     let lead = g
@@ -390,18 +413,13 @@ impl IMClient {
                 if !c.is_generation_current(generation).await {
                     break;
                 }
-                match provider.refresh(&token).await {
+                match c.refresh_tokens_via_gateway(generation, &provider).await {
                     Ok(issued) => {
-                        if let Err(err) =
-                            c.update_access_token(issued.token, Some(&tenant_id)).await
-                        {
-                            tracing::warn!(%err, "applying refreshed token failed");
-                        } else {
-                            tracing::info!(
-                                expires_at = issued.expires_at,
-                                "access token refreshed via gateway"
-                            );
-                        }
+                        tracing::info!(
+                            expires_at = issued.expires_at,
+                            rotated_refresh = issued.refresh_token.is_some(),
+                            "access token refreshed via gateway (refresh-token grant)"
+                        );
                     }
                     Err(err) => {
                         // 网关暂时不可达：一分钟后再试；真正过期时 TOKEN_EXPIRED 路径还会兜底。
