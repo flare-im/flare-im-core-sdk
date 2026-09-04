@@ -91,7 +91,7 @@ impl IMClient {
         }
 
         let generation = self.load_session_generation_snapshot();
-        let Some((user_id, token, _, _)) = self.reconnect_snapshot(generation).await else {
+        let Some((user_id, token, _, _)) = self.reconnect_snapshot(generation, false).await else {
             return Ok(false);
         };
         if !self.try_begin_network_reconnect() {
@@ -447,7 +447,11 @@ impl IMClient {
             None => match self.gateway_token_provider().await {
                 Some(provider) => {
                     let issued = provider.issue(user_id).await?;
-                    tracing::info!(user_id, expires_at = issued.expires_at, "access token issued by gateway");
+                    tracing::info!(
+                        user_id,
+                        expires_at = issued.expires_at,
+                        "access token issued by gateway"
+                    );
                     issued.token
                 }
                 None => resolve_connect_token(user_id, None)?,

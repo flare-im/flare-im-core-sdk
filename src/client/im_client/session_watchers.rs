@@ -1,10 +1,10 @@
 use std::time::Duration;
 
 use crate::FlareError;
+use crate::client::token_provider::{GatewayTokenProvider, jwt_exp_secs};
 use crate::kernel::event::{ConnectionEvent, EventBus, SdkEvent, SdkEventKind};
 use crate::kernel::{SdkState, SyncRunContext};
 use crate::shared::error::{ErrorCode, Result};
-use crate::client::token_provider::{GatewayTokenProvider, jwt_exp_secs};
 use crate::shared::util::{delay, now_unix_secs};
 
 use super::{
@@ -75,9 +75,14 @@ impl IMClient {
                 // SDK 托管 token：过期不是终局，先刷新再重连；刷新失败才按终局处理。
                 if reason.starts_with("token_expired:")
                     && let Some(provider) = client.gateway_token_provider().await
-                    && client.refresh_token_and_reconnect(generation, &provider).await
+                    && client
+                        .refresh_token_and_reconnect(generation, &provider)
+                        .await
                 {
-                    tracing::info!(session_generation = generation, "token expired: refreshed via gateway and reconnected");
+                    tracing::info!(
+                        session_generation = generation,
+                        "token expired: refreshed via gateway and reconnected"
+                    );
                     continue;
                 }
                 let applied = client.terminate_session_if_generation(generation).await;
@@ -111,13 +116,17 @@ impl IMClient {
                     break;
                 };
                 let (user_id, mut token, interval_secs, max_attempts) =
-                    match snapshot_client.reconnect_snapshot(generation).await {
+                    match snapshot_client.reconnect_snapshot(generation, false).await {
                         Some(snapshot) => snapshot,
                         None => break,
                     };
                 drop(snapshot_client);
 
                 let mut attempt = 0u32;
+                // 上一次重连被网关按鉴权拒绝时置位：下一次取快照强制走网关换新 token，
+                // 不再受本机时钟（token_needs_refresh）左右——否则时钟偏慢会拿着"服务端已过期、
+                // 本机以为没过期"的 token 死循环重连。
+                let mut force_token_refresh = false;
                 loop {
                     let Some(attempt_client) = client.upgrade() else {
                         break;
@@ -178,11 +187,13 @@ impl IMClient {
                     // 每次尝试前重取 token：默认无限重试下，一次性快照的 token 过期后
                     // 会永远失败。取不到（如世代切换）时沿用上一枚，保持原有重试节奏，
                     // 由世代校验与 TokenExpired 终态路径负责收尾。
-                    if let Some((_, fresh_token, _, _)) =
-                        reconnect_client.reconnect_snapshot(generation).await
+                    if let Some((_, fresh_token, _, _)) = reconnect_client
+                        .reconnect_snapshot(generation, force_token_refresh)
+                        .await
                     {
                         token = fresh_token;
                     }
+                    force_token_refresh = false;
 
                     match reconnect_client
                         .reconnect_current_engine(generation, &user_id, &token)
@@ -197,10 +208,15 @@ impl IMClient {
                             break;
                         }
                         Err(err) => {
+                            // 鉴权类失败（token 过期/无效）时，下一次强制换新 token 再重连。
+                            if is_auth_reconnect_failure(&err) {
+                                force_token_refresh = true;
+                            }
                             tracing::warn!(
                                 session_generation = generation,
                                 attempt,
                                 error = %err,
+                                force_token_refresh,
                                 "SDK reconnect failed"
                             );
                         }
@@ -229,6 +245,7 @@ impl IMClient {
     pub(super) async fn reconnect_snapshot(
         &self,
         generation: u64,
+        force_refresh: bool,
     ) -> Option<(String, String, u64, Option<u32>)> {
         let g = self.inner.read().await;
         if g.session_generation != generation {
@@ -252,9 +269,10 @@ impl IMClient {
             .and_then(|c| c.max_reconnect_attempts)
             .map(|attempts| attempts.max(1));
         drop(g);
-        // 重连前 token 已到期/临期：先换新，否则带着旧 token 重连必被网关拒。
+        // 重连前 token 已到期/临期，或上一次重连被网关按鉴权拒绝（force_refresh）：先换新，
+        // 否则带着旧 token 重连必被网关拒。force_refresh 绕过本机时钟判定，防时钟偏移死循环。
         if let Some(provider) = provider
-            && token_needs_refresh(&token, 30)
+            && (force_refresh || token_needs_refresh(&token, 30))
         {
             match provider.refresh(&token).await {
                 Ok(issued) => {
@@ -278,7 +296,9 @@ impl IMClient {
         Self::gateway_token_provider_from_inner(&g)
     }
 
-    pub(super) fn gateway_token_provider_from_inner(g: &super::IMClientInner) -> Option<GatewayTokenProvider> {
+    pub(super) fn gateway_token_provider_from_inner(
+        g: &super::IMClientInner,
+    ) -> Option<GatewayTokenProvider> {
         let overlay = g.sdk_config.as_ref()?;
         let auth = overlay.auth.as_ref()?;
         if !auth.sdk_managed() {
@@ -293,14 +313,22 @@ impl IMClient {
     }
 
     /// 用网关换新 token 并重连当前引擎；成功返回 true。
-    pub(super) async fn refresh_token_and_reconnect(&self, generation: u64, provider: &GatewayTokenProvider) -> bool {
+    pub(super) async fn refresh_token_and_reconnect(
+        &self,
+        generation: u64,
+        provider: &GatewayTokenProvider,
+    ) -> bool {
         let (user_id, token, tenant_id) = {
             let g = self.inner.read().await;
             if g.session_generation != generation {
                 return false;
             }
-            let Some(user_id) = g.current_user_id.clone() else { return false };
-            let Some(token) = g.connect_token.clone() else { return false };
+            let Some(user_id) = g.current_user_id.clone() else {
+                return false;
+            };
+            let Some(token) = g.connect_token.clone() else {
+                return false;
+            };
             (user_id, token, Self::resolve_tenant_id(&g))
         };
         let issued = match provider.refresh(&token).await {
@@ -310,7 +338,10 @@ impl IMClient {
                 return false;
             }
         };
-        if let Err(err) = self.update_access_token(issued.token.clone(), Some(&tenant_id)).await {
+        if let Err(err) = self
+            .update_access_token(issued.token.clone(), Some(&tenant_id))
+            .await
+        {
             tracing::warn!(%err, "applying refreshed token failed");
             return false;
         }
@@ -338,9 +369,16 @@ impl IMClient {
                         .and_then(|o| o.auth.as_ref())
                         .map(|a| a.refresh_lead().as_secs())
                         .unwrap_or(crate::client::config::SdkAuthConfig::DEFAULT_REFRESH_LEAD_SECS);
-                    (provider, g.connect_token.clone(), lead, Self::resolve_tenant_id(&g))
+                    (
+                        provider,
+                        g.connect_token.clone(),
+                        lead,
+                        Self::resolve_tenant_id(&g),
+                    )
                 };
-                let (Some(provider), Some(token)) = (provider, token) else { break };
+                let (Some(provider), Some(token)) = (provider, token) else {
+                    break;
+                };
                 let wait_secs = match (jwt_exp_secs(&token), now_unix_secs()) {
                     (Some(exp), Ok(now)) => exp.saturating_sub(lead_secs).saturating_sub(now),
                     // 读不出 exp 的 token 没法安排，10 分钟后再看一眼（token 可能被应用换掉了）。
@@ -354,10 +392,15 @@ impl IMClient {
                 }
                 match provider.refresh(&token).await {
                     Ok(issued) => {
-                        if let Err(err) = c.update_access_token(issued.token, Some(&tenant_id)).await {
+                        if let Err(err) =
+                            c.update_access_token(issued.token, Some(&tenant_id)).await
+                        {
                             tracing::warn!(%err, "applying refreshed token failed");
                         } else {
-                            tracing::info!(expires_at = issued.expires_at, "access token refreshed via gateway");
+                            tracing::info!(
+                                expires_at = issued.expires_at,
+                                "access token refreshed via gateway"
+                            );
                         }
                     }
                     Err(err) => {
@@ -479,6 +522,23 @@ impl IMClient {
 }
 
 /// token 在 `lead_secs` 内到期（或已过期、或读不出 exp）就该刷新。
+/// 重连失败是否属于鉴权类（token 过期/无效/未授权）——据此决定是否强制换新 token。
+pub(super) fn is_auth_reconnect_failure(err: &crate::shared::error::FlareError) -> bool {
+    use crate::shared::error::ErrorCode;
+    if matches!(
+        err.code(),
+        Some(ErrorCode::AuthenticationFailed) | Some(ErrorCode::TokenExpired)
+    ) {
+        return true;
+    }
+    let lower = err.to_string().to_lowercase();
+    lower.contains("authentication_failed")
+        || lower.contains("token_expired")
+        || lower.contains("token expired")
+        || lower.contains("unauthorized")
+        || lower.contains("401")
+}
+
 pub(super) fn token_needs_refresh(token: &str, lead_secs: u64) -> bool {
     match (jwt_exp_secs(token), now_unix_secs()) {
         (Some(exp), Ok(now)) => exp <= now + lead_secs,
@@ -489,7 +549,30 @@ pub(super) fn token_needs_refresh(token: &str, lead_secs: u64) -> bool {
 #[cfg(test)]
 mod token_refresh_tests {
     use super::*;
+    use crate::shared::error::{ErrorCode, FlareError};
     use crate::shared::util::{CoreTokenConfig, generate_core_token};
+
+    #[test]
+    fn auth_failures_are_classified_for_forced_refresh() {
+        assert!(is_auth_reconnect_failure(&FlareError::localized(
+            ErrorCode::AuthenticationFailed,
+            "gateway rejected",
+        )));
+        assert!(is_auth_reconnect_failure(&FlareError::localized(
+            ErrorCode::TokenExpired,
+            "expired",
+        )));
+        // 纯网络类失败不该触发强制换 token。
+        assert!(!is_auth_reconnect_failure(&FlareError::localized(
+            ErrorCode::NotConnected,
+            "socket closed",
+        )));
+        // 文案兜底：错误码不精确时看消息里的鉴权标记。
+        assert!(is_auth_reconnect_failure(&FlareError::localized(
+            ErrorCode::ConnectionFailed,
+            "AUTHENTICATION_FAILED: token 无效或已过期",
+        )));
+    }
 
     fn token(ttl_secs: u64) -> String {
         generate_core_token(&CoreTokenConfig {
@@ -508,6 +591,9 @@ mod token_refresh_tests {
         // generate_core_token 把 ttl 抬到至少 60s：60s 内到期 + 30s 提前量 = 不该刷；提前量 120s 就该刷。
         assert!(!token_needs_refresh(&token(60), 30));
         assert!(token_needs_refresh(&token(60), 120));
-        assert!(!token_needs_refresh("garbage", 120), "读不出 exp 不能误判成要刷");
+        assert!(
+            !token_needs_refresh("garbage", 120),
+            "读不出 exp 不能误判成要刷"
+        );
     }
 }
