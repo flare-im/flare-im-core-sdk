@@ -7,6 +7,7 @@ pub mod paths;
 pub mod sqlite_store;
 pub mod time;
 pub mod token;
+pub(crate) use token::now_unix_secs;
 
 pub const DEFAULT_TENANT_ID: &str = "0";
 

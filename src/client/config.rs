@@ -147,6 +147,42 @@ impl SdkResourceProfile {
 ///     .connect_timeout_secs(15)
 ///     .build();
 /// ```
+/// 接入 token 的来源（core-only 形态：SDK 托管，向网关签发/刷新）。
+///
+/// 客户端不再本地签发 token：`token_endpoint` 配了就是 SDK 托管——`login(user_id)` 不传 token 时
+/// SDK 去 `{token_endpoint}/api/v1/auth/tokens` 签发，到期前 `refresh_lead_secs` 秒用
+/// `/api/v1/auth/tokens/refresh` 换新并 `update_access_token`。没配则必须显式传 token
+/// （flare-social / 自建业务由应用自己拿 token、自己刷新）。
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SdkAuthConfig {
+    /// 网关基址（不含 `/api/v1/auth/...`），如 `http://host/api`。缺省不托管。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token_endpoint: Option<String>,
+    /// 到期前多少秒刷新，默认 300。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refresh_lead_secs: Option<u64>,
+}
+
+impl SdkAuthConfig {
+    pub const DEFAULT_REFRESH_LEAD_SECS: u64 = 300;
+
+    pub fn sdk_managed(&self) -> bool {
+        self.token_endpoint
+            .as_deref()
+            .map(str::trim)
+            .is_some_and(|value| !value.is_empty())
+    }
+
+    pub fn refresh_lead(&self) -> std::time::Duration {
+        std::time::Duration::from_secs(
+            self.refresh_lead_secs
+                .unwrap_or(Self::DEFAULT_REFRESH_LEAD_SECS)
+                .max(5),
+        )
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SdkConfig {
     pub ws_url: Option<String>,
@@ -192,6 +228,14 @@ pub struct SdkConfig {
     #[serde(default)]
     pub tls_certificate_sha256_pins: Vec<String>,
     pub enable_metrics: bool,
+    #[serde(default, skip_serializing_if = "SdkAuthConfig::is_default")]
+    pub auth: SdkAuthConfig,
+}
+
+impl SdkAuthConfig {
+    fn is_default(value: &Self) -> bool {
+        *value == Self::default()
+    }
 }
 
 impl SdkConfig {
@@ -446,6 +490,7 @@ impl Default for SdkConfig {
             tls_spki_sha256_pins: Vec::new(),
             tls_certificate_sha256_pins: Vec::new(),
             enable_metrics: false,
+            auth: SdkAuthConfig::default(),
         }
     }
 }
@@ -573,6 +618,12 @@ impl SdkConfigBuilder {
         self
     }
     /// 是否开启 SDK 指标采集。
+    /// SDK 托管 token：登录不传 token 时向该网关签发，到期前自动刷新。
+    pub fn auth_token_endpoint(mut self, endpoint: impl Into<String>) -> Self {
+        self.config.auth.token_endpoint = Some(endpoint.into());
+        self
+    }
+
     pub fn enable_metrics(mut self, b: bool) -> Self {
         self.config.enable_metrics = b;
         self

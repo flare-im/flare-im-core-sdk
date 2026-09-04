@@ -63,7 +63,7 @@ fn generate_jti() -> String {
     }
 }
 
-fn now_unix_secs() -> Result<u64> {
+pub(crate) fn now_unix_secs() -> Result<u64> {
     #[cfg(target_arch = "wasm32")]
     {
         Ok((js_sys::Date::now() / 1000.0) as u64)

@@ -6,6 +6,9 @@
 
 /// Example SdkConfigOverlay JSON (transport + protocol race).
 pub const FLARE_SDK_CONFIG_EXAMPLE_JSON: &str = r#"{
+  "auth": {
+    "tokenEndpoint": "http://localhost:50050"
+  },
   "connectTimeoutSecs": 30,
   "defaultTransport": "websocket",
   "httpUrl": "http://localhost:50050",

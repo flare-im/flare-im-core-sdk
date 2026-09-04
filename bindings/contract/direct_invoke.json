@@ -98,13 +98,6 @@
       "json_expr": "serde_json::json!({ \"userId\": user_id })"
     },
     {
-      "route": "sdk.generate_core_token",
-      "result": "json",
-      "skip_client": true,
-      "body": "\n            let secret = dispatch_support::json_string(request, \"secret\")?;\n            let issuer = dispatch_support::json_string(request, \"issuer\")?;\n            let user_id = dispatch_support::json_string(request, \"userId\")?;\n            let ttl_secs = dispatch_support::json_u64(request, \"ttlSecs\")?;\n            let device_id = dispatch_support::optional_string(request, \"deviceId\");\n            let tenant_id = dispatch_support::optional_string(request, \"tenantId\");\n            let token = flare_im_core_sdk::client::IMClient::generate_core_token(\n                flare_im_core_sdk::client::CoreTokenConfig {\n                    secret,\n                    issuer,\n                    user_id,\n                    ttl_secs,\n                    device_id,\n                    tenant_id,\n                },\n            )?;\n        ",
-      "json_expr": "serde_json::json!({ \"token\": token })"
-    },
-    {
       "route": "sdk.update_access_token",
       "result": "unit",
       "body": "\n            let access_token = dispatch_support::json_string(request, \"accessToken\")?;\n            let tenant_id = dispatch_support::optional_string(request, \"tenantId\");\n            client\n                .update_access_token(access_token, tenant_id.as_deref())\n                .await?;\n        "

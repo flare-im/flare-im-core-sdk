@@ -27,7 +27,6 @@ pub const DIRECT_INVOKE_ROUTES: &[&str] = &[
     "sdk.is_connected",
     "sdk.session_active",
     "sdk.current_user_id",
-    "sdk.generate_core_token",
     "sdk.update_access_token",
     "sdk.set_heartbeat_app_state",
     "sdk.set_heartbeat_nat_timeout",
@@ -67,7 +66,6 @@ pub fn is_direct_invoke_route(route: &str) -> bool {
         "sdk.is_connected" => true,
         "sdk.session_active" => true,
         "sdk.current_user_id" => true,
-        "sdk.generate_core_token" => true,
         "sdk.update_access_token" => true,
         "sdk.set_heartbeat_app_state" => true,
         "sdk.set_heartbeat_nat_timeout" => true,
@@ -231,25 +229,6 @@ pub async fn dispatch_direct(
             let client = session.client();
             let user_id = client.current_user_id().await;
             dispatch_support::json(serde_json::json!({ "userId": user_id }))
-        }
-        "sdk.generate_core_token" => {
-            let secret = dispatch_support::json_string(request, "secret")?;
-            let issuer = dispatch_support::json_string(request, "issuer")?;
-            let user_id = dispatch_support::json_string(request, "userId")?;
-            let ttl_secs = dispatch_support::json_u64(request, "ttlSecs")?;
-            let device_id = dispatch_support::optional_string(request, "deviceId");
-            let tenant_id = dispatch_support::optional_string(request, "tenantId");
-            let token = flare_im_core_sdk::client::IMClient::generate_core_token(
-                flare_im_core_sdk::client::CoreTokenConfig {
-                    secret,
-                    issuer,
-                    user_id,
-                    ttl_secs,
-                    device_id,
-                    tenant_id,
-                },
-            )?;
-            dispatch_support::json(serde_json::json!({ "token": token }))
         }
         "sdk.update_access_token" => {
             let client = session.client();

@@ -441,7 +441,18 @@ impl IMClient {
         explicit_token: Option<&str>,
         install_watcher: bool,
     ) -> Result<()> {
-        let token = resolve_connect_token(user_id, explicit_token)?;
+        // token 三档来源：显式传入 > SDK 托管（向网关签发）> 环境变量（联调）。没有本地签发。
+        let token = match explicit_token.map(str::trim).filter(|t| !t.is_empty()) {
+            Some(token) => token.to_string(),
+            None => match self.gateway_token_provider().await {
+                Some(provider) => {
+                    let issued = provider.issue(user_id).await?;
+                    tracing::info!(user_id, expires_at = issued.expires_at, "access token issued by gateway");
+                    issued.token
+                }
+                None => resolve_connect_token(user_id, None)?,
+            },
+        };
         self.clear_session_snapshot();
         let (engine, http_request_context) = {
             let mut g = self.inner.write().await;
@@ -486,6 +497,7 @@ impl IMClient {
             self.spawn_state_snapshot_watcher(current_generation, bus.clone());
             self.spawn_terminal_session_watcher(current_generation, bus.clone());
             self.spawn_reconnect_session_watcher(current_generation, bus);
+            self.spawn_token_refresh_watcher(current_generation);
         }
         Ok(())
     }

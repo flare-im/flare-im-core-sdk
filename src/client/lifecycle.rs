@@ -12,7 +12,6 @@ use crate::client::{SdkConfig, SdkResourceProfile, TransportKind, TransportPolic
 #[cfg(feature = "lifecycle-sqlite")]
 use crate::platform::ports::storage::SecureKeyStore;
 use crate::shared::error::Result;
-#[cfg(not(feature = "dev-test-token"))]
 use crate::shared::error::{ErrorCode, FlareError};
 #[cfg(feature = "lifecycle-sqlite")]
 use std::sync::Arc;
@@ -55,6 +54,8 @@ pub struct SdkConfigOverlay {
     pub tls_spki_sha256_pins: Option<Vec<String>>,
     pub tls_certificate_sha256_pins: Option<Vec<String>>,
     pub enable_metrics: Option<bool>,
+    /// 接入 token 来源（见 [`SdkAuthConfig`]）。
+    pub auth: Option<crate::client::config::SdkAuthConfig>,
 }
 
 /// 解析默认 WebSocket 地址。
@@ -171,6 +172,9 @@ pub fn merge_sdk_config(ws_url: &str, overlay: Option<&SdkConfigOverlay>) -> Sdk
         if o.ack_timeout_secs.is_some() {
             config.ack_timeout_secs = o.ack_timeout_secs;
         }
+        if let Some(auth) = &o.auth {
+            config.auth = auth.clone();
+        }
         if o.ack_max_retries.is_some() {
             config.ack_max_retries = o.ack_max_retries;
         }
@@ -219,26 +223,13 @@ pub fn resolve_connect_token(user_id: &str, explicit_token: Option<&str>) -> Res
             return Ok(t.to_string());
         }
     }
-    #[cfg(feature = "dev-test-token")]
-    {
-        return crate::shared::util::generate_core_token(&crate::shared::util::CoreTokenConfig {
-            secret: "insecure-secret".to_string(),
-            issuer: "flare-im-core".to_string(),
-            user_id: user_id.to_string(),
-            ttl_secs: 3600,
-            device_id: None,
-            tenant_id: None,
-        });
-    }
-
-    #[cfg(not(feature = "dev-test-token"))]
-    {
-        let _ = user_id;
-        Err(FlareError::localized(
-            ErrorCode::ConfigurationError,
-            "connect token required; automatic development token generation is disabled",
-        ))
-    }
+    let _ = user_id;
+    // 不再有本地签发回退：token 要么显式传入，要么由 SDK 按 `auth.token_endpoint` 向网关签发，
+    // 要么应用自己拿。客户端本地签发意味着签名密钥进客户端。
+    Err(FlareError::localized(
+        ErrorCode::ConfigurationError,
+        "connect token required: pass an explicit token, or set sdk_config.auth.token_endpoint so the SDK issues one from the gateway",
+    ))
 }
 
 /// 登录时存储选型，配合 [`super::IMClient::login`]。
@@ -389,5 +380,41 @@ mod tests {
         assert!(json.get("tlsSpkiSha256Pins").is_some());
         assert!(json.get("tls_spki_sha256_pins").is_none());
         assert!(json.get("tlsCertificateSha256Pins").is_some());
+    }
+}
+
+#[cfg(test)]
+mod auth_overlay_tests {
+    use super::*;
+
+    /// 五端只传 JSON overlay；`auth.tokenEndpoint` 必须按 camelCase 进来并落到 SdkConfig.auth。
+    #[test]
+    fn auth_overlay_round_trips_and_merges() {
+        let overlay: SdkConfigOverlay = serde_json::from_str(
+            r#"{"wsUrl":"ws://h/ws","auth":{"tokenEndpoint":"http://h/api","refreshLeadSecs":120}}"#,
+        )
+        .unwrap();
+        let auth = overlay.auth.as_ref().unwrap();
+        assert!(auth.sdk_managed());
+        assert_eq!(auth.refresh_lead().as_secs(), 120);
+        let merged = merge_sdk_config("ws://x", Some(&overlay));
+        assert_eq!(merged.auth.token_endpoint.as_deref(), Some("http://h/api"));
+
+        let none: SdkConfigOverlay = serde_json::from_str(r#"{"wsUrl":"ws://h/ws"}"#).unwrap();
+        assert!(none.auth.is_none());
+        assert!(!merge_sdk_config("ws://x", Some(&none)).auth.sdk_managed());
+    }
+
+    /// 没有显式 token、没配网关、没有环境变量：明确报配置错误，绝不本地签发。
+    #[test]
+    fn no_token_source_is_a_configuration_error_not_a_local_mint() {
+        // SAFETY: 测试内清理可能影响结果的环境变量（进程内）。
+        unsafe {
+            std::env::remove_var("FLARE_IM_TOKEN");
+            std::env::remove_var("TOKEN");
+        }
+        let err = resolve_connect_token("u", None).unwrap_err();
+        assert_eq!(err.code(), Some(ErrorCode::ConfigurationError));
+        assert!(err.to_string().contains("auth.token_endpoint"), "{err}");
     }
 }

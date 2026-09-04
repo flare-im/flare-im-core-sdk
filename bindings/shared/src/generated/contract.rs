@@ -230,15 +230,6 @@ pub const API_OPERATIONS: &[ApiOperation] = &[
         dev_only: false,
     },
     ApiOperation {
-        id: "sdk.generate_core_token",
-        module: "session",
-        core: Some("IMClient::generate_core_token"),
-        c_symbol: Some("flare_sdk_invoke_json"),
-        c_dispatch_op: None,
-        tauri: None,
-        dev_only: false,
-    },
-    ApiOperation {
         id: "connection.get_state",
         module: "session",
         core: Some("IMClient::state"),

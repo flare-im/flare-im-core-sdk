@@ -22,4 +22,3 @@ tokio = { version = "1", default-features = false, features = ["macros", "rt", "
 
 [features]
 default = []
-dev-test-token = ["flare-im-core-sdk/dev-test-token"]

@@ -120,12 +120,6 @@ impl FlareImWasmRuntime {
                 Ok(json!({ "userId": self.current_user_id.clone().unwrap_or_default() }))
             }
             "sdk.is_connected" | "sdk.session_active" => Ok(json!(self.connected)),
-            #[cfg(feature = "dev-test-token")]
-            "sdk.generate_core_token" => {
-                let user_id =
-                    string_field(&request, "userId").unwrap_or_else(|| "web-user".to_string());
-                Ok(json!({ "token": format!("wasm-core-token-{user_id}") }))
-            }
             "sdk.update_access_token" => Ok(Value::Null),
             "connection.get_state" => Ok(json!(if self.connected {
                 "ready"

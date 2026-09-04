@@ -3,8 +3,6 @@
 use std::sync::Arc;
 
 use flare_im_core_sdk::client::lifecycle::LoginDbKind;
-#[cfg(feature = "dev-test-token")]
-use flare_im_core_sdk::client::{CoreTokenConfig, IMClient};
 use flare_im_core_sdk::event::SharedEventReceiver;
 use flare_im_core_sdk_bindings_runtime::{
     SessionTaskSlot, binding_response_to_value, invoke_api_id_json,
@@ -287,44 +285,6 @@ async fn invoke_impl(
         }
         "event.subscribe" => Ok(json!({ "id": 1 })),
         "event.unsubscribe" | "event.unsubscribe_all" => Ok(Value::Null),
-        #[cfg(feature = "dev-test-token")]
-        "sdk.generate_core_token" => {
-            let request = parse_request(request_json)?;
-            let user_id = request
-                .get("userId")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| js_error("invalidParameter", operation, "userId is required"))?;
-            let secret = request
-                .get("secret")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| js_error("invalidParameter", operation, "secret is required"))?;
-            let issuer = request
-                .get("issuer")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| js_error("invalidParameter", operation, "issuer is required"))?;
-            let ttl_secs = request
-                .get("ttlSecs")
-                .and_then(|v| v.as_u64())
-                .ok_or_else(|| js_error("invalidParameter", operation, "ttlSecs is required"))?;
-            let device_id = request
-                .get("deviceId")
-                .and_then(|v| v.as_str())
-                .map(ToString::to_string);
-            let tenant_id = request
-                .get("tenantId")
-                .and_then(|v| v.as_str())
-                .map(ToString::to_string);
-            let token = IMClient::generate_core_token(CoreTokenConfig {
-                secret: secret.to_string(),
-                issuer: issuer.to_string(),
-                user_id: user_id.to_string(),
-                ttl_secs,
-                device_id,
-                tenant_id,
-            })
-            .map_err(|e| map_sdk_err(operation, e))?;
-            Ok(json!({ "token": token }))
-        }
         operation => invoke_api_id_json(&*state, operation, request_json)
             .await
             .map(binding_response_to_value)

@@ -30,11 +30,6 @@ rustls = { version = "0.23", default-features = false, features = ["ring"] }
 [features]
 default = []
 quic = ["flare-im-core-sdk/quic"]
-dev-test-token = [
-    "flare-im-core-sdk/dev-test-token",
-    "flare-im-core-sdk-bindings-runtime/dev-test-token",
-]
-
 [build-dependencies]
 # 精确钉版：cbindgen 会把自己的版本号写进生成的头文件
 # （`/* Generated with cbindgen:0.29.4 */`），而本仓的 Cargo.lock 不入库，

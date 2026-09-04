@@ -4,7 +4,8 @@ use crate::FlareError;
 use crate::kernel::event::{ConnectionEvent, EventBus, SdkEvent, SdkEventKind};
 use crate::kernel::{SdkState, SyncRunContext};
 use crate::shared::error::{ErrorCode, Result};
-use crate::shared::util::delay;
+use crate::client::token_provider::{GatewayTokenProvider, jwt_exp_secs};
+use crate::shared::util::{delay, now_unix_secs};
 
 use super::{
     IMClient, reconnect_delay_secs, should_skip_reconnect_for_disconnect_reason,
@@ -71,6 +72,14 @@ impl IMClient {
                 let Some(client) = client.upgrade() else {
                     break;
                 };
+                // SDK 托管 token：过期不是终局，先刷新再重连；刷新失败才按终局处理。
+                if reason.starts_with("token_expired:")
+                    && let Some(provider) = client.gateway_token_provider().await
+                    && client.refresh_token_and_reconnect(generation, &provider).await
+                {
+                    tracing::info!(session_generation = generation, "token expired: refreshed via gateway and reconnected");
+                    continue;
+                }
                 let applied = client.terminate_session_if_generation(generation).await;
                 if applied {
                     tracing::warn!(session_generation = generation, reason = %reason, "session terminated by terminal connection event");
@@ -226,10 +235,11 @@ impl IMClient {
             return None;
         }
         let user_id = g.current_user_id.clone()?;
-        let token = g
+        let mut token = g
             .connect_token
             .clone()
             .or_else(|| crate::client::lifecycle::resolve_connect_token(&user_id, None).ok())?;
+        let provider = Self::gateway_token_provider_from_inner(&g);
         let interval_secs = g
             .sdk_config
             .as_ref()
@@ -241,7 +251,123 @@ impl IMClient {
             .as_ref()
             .and_then(|c| c.max_reconnect_attempts)
             .map(|attempts| attempts.max(1));
+        drop(g);
+        // 重连前 token 已到期/临期：先换新，否则带着旧 token 重连必被网关拒。
+        if let Some(provider) = provider
+            && token_needs_refresh(&token, 30)
+        {
+            match provider.refresh(&token).await {
+                Ok(issued) => {
+                    let mut g = self.inner.write().await;
+                    if g.session_generation == generation {
+                        g.connect_token = Some(issued.token.clone());
+                        token = issued.token;
+                    }
+                }
+                Err(err) => {
+                    tracing::warn!(%err, "token refresh before reconnect failed; reconnecting with the current token");
+                }
+            }
+        }
         Some((user_id, token, interval_secs, max_attempts))
+    }
+
+    /// SDK 托管形态下的网关签发器；应用托管（显式 token）时为 `None`。
+    pub(super) async fn gateway_token_provider(&self) -> Option<GatewayTokenProvider> {
+        let g = self.inner.read().await;
+        Self::gateway_token_provider_from_inner(&g)
+    }
+
+    pub(super) fn gateway_token_provider_from_inner(g: &super::IMClientInner) -> Option<GatewayTokenProvider> {
+        let overlay = g.sdk_config.as_ref()?;
+        let auth = overlay.auth.as_ref()?;
+        if !auth.sdk_managed() {
+            return None;
+        }
+        let endpoint = auth.token_endpoint.clone()?;
+        Some(GatewayTokenProvider::new(
+            endpoint,
+            Some(Self::resolve_tenant_id(g)),
+            overlay.device_id.clone(),
+        ))
+    }
+
+    /// 用网关换新 token 并重连当前引擎；成功返回 true。
+    pub(super) async fn refresh_token_and_reconnect(&self, generation: u64, provider: &GatewayTokenProvider) -> bool {
+        let (user_id, token, tenant_id) = {
+            let g = self.inner.read().await;
+            if g.session_generation != generation {
+                return false;
+            }
+            let Some(user_id) = g.current_user_id.clone() else { return false };
+            let Some(token) = g.connect_token.clone() else { return false };
+            (user_id, token, Self::resolve_tenant_id(&g))
+        };
+        let issued = match provider.refresh(&token).await {
+            Ok(issued) => issued,
+            Err(err) => {
+                tracing::warn!(%err, "token refresh via gateway failed");
+                return false;
+            }
+        };
+        if let Err(err) = self.update_access_token(issued.token.clone(), Some(&tenant_id)).await {
+            tracing::warn!(%err, "applying refreshed token failed");
+            return false;
+        }
+        self.reconnect_current_engine(generation, &user_id, &issued.token)
+            .await
+            .is_ok()
+    }
+
+    /// SDK 托管 token：到期前 `refresh_lead_secs` 秒换新并 `update_access_token`。
+    /// 应用托管形态（没配 token_endpoint）什么都不做——刷新是应用的事，核心只抛 TOKEN_EXPIRED。
+    pub(super) fn spawn_token_refresh_watcher(&self, generation: u64) {
+        let client = self.downgrade();
+        spawn_im_background(async move {
+            loop {
+                let Some(c) = client.upgrade() else { break };
+                if !c.is_generation_current(generation).await {
+                    break;
+                }
+                let (provider, token, lead_secs, tenant_id) = {
+                    let g = c.inner.read().await;
+                    let provider = Self::gateway_token_provider_from_inner(&g);
+                    let lead = g
+                        .sdk_config
+                        .as_ref()
+                        .and_then(|o| o.auth.as_ref())
+                        .map(|a| a.refresh_lead().as_secs())
+                        .unwrap_or(crate::client::config::SdkAuthConfig::DEFAULT_REFRESH_LEAD_SECS);
+                    (provider, g.connect_token.clone(), lead, Self::resolve_tenant_id(&g))
+                };
+                let (Some(provider), Some(token)) = (provider, token) else { break };
+                let wait_secs = match (jwt_exp_secs(&token), now_unix_secs()) {
+                    (Some(exp), Ok(now)) => exp.saturating_sub(lead_secs).saturating_sub(now),
+                    // 读不出 exp 的 token 没法安排，10 分钟后再看一眼（token 可能被应用换掉了）。
+                    _ => 600u64,
+                };
+                drop(c);
+                delay(Duration::from_secs(wait_secs.max(5))).await;
+                let Some(c) = client.upgrade() else { break };
+                if !c.is_generation_current(generation).await {
+                    break;
+                }
+                match provider.refresh(&token).await {
+                    Ok(issued) => {
+                        if let Err(err) = c.update_access_token(issued.token, Some(&tenant_id)).await {
+                            tracing::warn!(%err, "applying refreshed token failed");
+                        } else {
+                            tracing::info!(expires_at = issued.expires_at, "access token refreshed via gateway");
+                        }
+                    }
+                    Err(err) => {
+                        // 网关暂时不可达：一分钟后再试；真正过期时 TOKEN_EXPIRED 路径还会兜底。
+                        tracing::warn!(%err, "scheduled token refresh failed; retrying in 60s");
+                        delay(Duration::from_secs(60)).await;
+                    }
+                }
+            }
+        });
     }
 
     pub(super) async fn is_generation_current(&self, generation: u64) -> bool {
@@ -349,5 +475,39 @@ impl IMClient {
             tracing::warn!(%err, "disconnect after terminal event failed");
         }
         true
+    }
+}
+
+/// token 在 `lead_secs` 内到期（或已过期、或读不出 exp）就该刷新。
+pub(super) fn token_needs_refresh(token: &str, lead_secs: u64) -> bool {
+    match (jwt_exp_secs(token), now_unix_secs()) {
+        (Some(exp), Ok(now)) => exp <= now + lead_secs,
+        _ => false,
+    }
+}
+
+#[cfg(test)]
+mod token_refresh_tests {
+    use super::*;
+    use crate::shared::util::{CoreTokenConfig, generate_core_token};
+
+    fn token(ttl_secs: u64) -> String {
+        generate_core_token(&CoreTokenConfig {
+            secret: "a-strong-shared-secret-with-more-than-32-bytes!".into(),
+            issuer: "flare-im-core".into(),
+            user_id: "u".into(),
+            ttl_secs,
+            device_id: None,
+            tenant_id: None,
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn needs_refresh_only_inside_the_lead_window() {
+        // generate_core_token 把 ttl 抬到至少 60s：60s 内到期 + 30s 提前量 = 不该刷；提前量 120s 就该刷。
+        assert!(!token_needs_refresh(&token(60), 30));
+        assert!(token_needs_refresh(&token(60), 120));
+        assert!(!token_needs_refresh("garbage", 120), "读不出 exp 不能误判成要刷");
     }
 }

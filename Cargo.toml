@@ -78,9 +78,6 @@ opt-level = "z"
 # 默认仅启用 IM 基础能力；通话/RTC 通过 DATA capability 接入。
 default = []
 integration-tests = []
-# Development-only helper for local gateway auth. Production builds must not
-# expose token minting surfaces.
-dev-test-token = []
 # SQLite 持久化实现（Message/Conversation/PendingSend/UserProfile 仓储）
 storage-sqlite = ["dep:sqlx"]
 # 跨平台 SQLite 登录编排（依赖 storage/sqlite 连接池与 schema 注册）

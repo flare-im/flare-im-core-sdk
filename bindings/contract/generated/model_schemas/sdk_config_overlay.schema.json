@@ -1,5 +1,27 @@
 {
   "$defs": {
+    "SdkAuthConfig": {
+      "description": "SDK 配置\n\n```ignore\nlet config = SdkConfig::builder()\n    .endpoint(\"wss://im.example.com\")\n    .connect_timeout_secs(15)\n    .build();\n```\n接入 token 的来源（core-only 形态：SDK 托管，向网关签发/刷新）。\n\n客户端不再本地签发 token：`token_endpoint` 配了就是 SDK 托管——`login(user_id)` 不传 token 时\nSDK 去 `{token_endpoint}/api/v1/auth/tokens` 签发，到期前 `refresh_lead_secs` 秒用\n`/api/v1/auth/tokens/refresh` 换新并 `update_access_token`。没配则必须显式传 token\n（flare-social / 自建业务由应用自己拿 token、自己刷新）。",
+      "properties": {
+        "refreshLeadSecs": {
+          "description": "到期前多少秒刷新，默认 300。",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "tokenEndpoint": {
+          "description": "网关基址（不含 `/api/v1/auth/...`），如 `http://host/api`。缺省不托管。",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
     "SdkResourceProfile": {
       "description": "Runtime resource budget selected by the host app.\n\nThe profile only supplies defaults. Explicit numeric config fields still win,\nso production apps can tune one knob without forking the whole profile.",
       "oneOf": [
@@ -59,6 +81,17 @@
         "integer",
         "null"
       ]
+    },
+    "auth": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/SdkAuthConfig"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "接入 token 来源（见 [`SdkAuthConfig`]）。"
     },
     "capabilityUrl": {
       "type": [

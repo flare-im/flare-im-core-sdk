@@ -29,7 +29,6 @@ pub const WASM_CANONICAL_OPERATIONS: &[&str] = &[
     "sdk.is_connected",
     "sdk.session_active",
     "sdk.current_user_id",
-    "sdk.generate_core_token",
     "connection.get_state",
     "connection.disconnect",
     "sync.conversation",

@@ -13,10 +13,6 @@ crate-type = ["cdylib", "rlib"]
 
 [features]
 default = ["production-runtime"]
-dev-test-token = [
-    "flare-im-core-sdk/dev-test-token",
-    "flare-im-core-sdk-bindings-runtime/dev-test-token",
-]
 local-smoke-runtime = []
 production-runtime = []
 

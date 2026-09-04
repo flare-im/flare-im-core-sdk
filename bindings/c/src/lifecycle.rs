@@ -6,10 +6,6 @@ use std::ffi::{c_char, c_void};
 use std::sync::Arc;
 
 use flare_im_core_sdk::prelude::SdkConfigOverlay;
-#[cfg(feature = "dev-test-token")]
-use flare_im_core_sdk::prelude::{
-    CoreTokenConfig, generate_core_token as util_generate_core_token,
-};
 use flare_im_core_sdk::prelude::{IMClient, LoginDbKind};
 
 use crate::abi;
@@ -480,62 +476,6 @@ pub extern "C" fn flare_sdk_current_user_id(
         );
 
         0
-    })
-}
-
-#[cfg(feature = "dev-test-token")]
-#[unsafe(no_mangle)]
-pub extern "C" fn flare_sdk_generate_core_token(
-    secret: *const c_char,
-    issuer: *const c_char,
-    user_id: *const c_char,
-    device_id: *const c_char,
-    tenant_id: *const c_char,
-    ttl_secs: u64,
-) -> FlareString {
-    abi::catch_ffi_flare_string(|| {
-        let user_id = match c_str_to_string(user_id) {
-            Ok(s) if !s.is_empty() => s,
-            Ok(_) => {
-                tracing::warn!("flare_sdk_generate_core_token: empty user_id");
-                return FlareString::default();
-            }
-            Err(_) => return FlareString::default(),
-        };
-
-        let secret_s = match abi::read_c_str_opt(secret) {
-            Ok(o) => o.unwrap_or_default(),
-            Err(_) => return FlareString::default(),
-        };
-        let issuer_s = match abi::read_c_str_opt(issuer) {
-            Ok(o) => o.unwrap_or_default(),
-            Err(_) => return FlareString::default(),
-        };
-
-        let device = match abi::read_c_str_opt(device_id) {
-            Ok(o) => o.filter(|s| !s.is_empty()),
-            Err(_) => return FlareString::default(),
-        };
-
-        let tenant = match abi::read_c_str_opt(tenant_id) {
-            Ok(o) => o.filter(|s| !s.is_empty()),
-            Err(_) => return FlareString::default(),
-        };
-
-        match util_generate_core_token(&CoreTokenConfig {
-            secret: secret_s,
-            issuer: issuer_s,
-            user_id,
-            ttl_secs,
-            device_id: device,
-            tenant_id: tenant,
-        }) {
-            Ok(token) => string_to_flare(token),
-            Err(e) => {
-                tracing::warn!(error = %e, "flare_sdk_generate_core_token failed");
-                FlareString::default()
-            }
-        }
     })
 }
 

@@ -149,12 +149,6 @@
           "tauri": "sdk_current_user_id"
         },
         {
-          "id": "sdk.generate_core_token",
-          "core": "IMClient::generate_core_token",
-          "c": "flare_sdk_invoke_json",
-          "tauri": null
-        },
-        {
           "id": "connection.get_state",
           "core": "IMClient::state",
           "c": "flare_sdk_state",

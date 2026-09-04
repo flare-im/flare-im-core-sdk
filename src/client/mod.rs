@@ -9,6 +9,7 @@ pub mod connected_apis;
 pub mod events;
 pub mod im_client;
 pub mod lifecycle;
+pub mod token_provider;
 pub mod profile_center;
 
 pub use crate::extension::{

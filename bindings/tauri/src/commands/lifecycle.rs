@@ -6,8 +6,6 @@ use tracing::{info, warn};
 
 use crate::model::RtcIceConfigSnapshotPayload;
 use crate::state::SdkState;
-#[cfg(feature = "dev-test-token")]
-use flare_im_core_sdk::client::CoreTokenConfig;
 use flare_im_core_sdk::client::{LoginDbKind, SdkConfigOverlay};
 use flare_im_core_sdk::event::{SdkEvent, SharedEventReceiver};
 use flare_im_core_sdk_bindings_runtime::{SessionTaskSlot, platform_event_bridge_resync_marker};
@@ -327,27 +325,6 @@ pub async fn sdk_current_user_id(
     state: State<'_, SdkState>,
 ) -> std::result::Result<Option<String>, String> {
     Ok(state.client().current_user_id().await)
-}
-
-#[cfg(feature = "dev-test-token")]
-#[tauri::command(rename_all = "camelCase")]
-pub async fn sdk_generate_core_token(
-    secret: String,
-    issuer: String,
-    user_id: String,
-    ttl_secs: u64,
-    device_id: Option<String>,
-    tenant_id: Option<String>,
-) -> std::result::Result<String, String> {
-    flare_im_core_sdk::client::IMClient::generate_core_token(CoreTokenConfig {
-        secret,
-        issuer,
-        user_id,
-        ttl_secs,
-        device_id,
-        tenant_id,
-    })
-    .map_err(super::map_sdk_err)
 }
 
 #[tauri::command(rename_all = "camelCase")]
