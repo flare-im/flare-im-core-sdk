@@ -576,61 +576,6 @@ public func heartbeatEffectiveIntervalResponseFromObject(object: CjJsonObject): 
     )
 }
 
-public func coreTokenRequestToJson(request: CoreTokenRequest): String {
-    let json = CjJsonObject()
-    jsonPutString(json, "userId", request.userId)
-    jsonPutString(json, "secret", request.secret)
-    jsonPutString(json, "issuer", request.issuer)
-    jsonPutInt(json, "ttlSecs", Int64(request.ttlSecs))
-    match (request.deviceId) {
-        case Some(value) => jsonPutString(json, "deviceId", value)
-        case None => ()
-    }
-    match (request.tenantId) {
-        case Some(value) => jsonPutString(json, "tenantId", value)
-        case None => ()
-    }
-    return json.toJsonString()
-}
-
-public func coreTokenRequestFromJson(raw: String): CoreTokenRequest {
-    return coreTokenRequestFromObject(wireDecodeResponseObject(jsonObjectFromRaw(raw)))
-}
-
-public func coreTokenRequestFromObject(object: CjJsonObject): CoreTokenRequest {
-    let userId = jsonStringField(object, "userId", "")
-    let secret = jsonStringField(object, "secret", "")
-    let issuer = jsonStringField(object, "issuer", "")
-    let ttlSecs = UInt64(jsonIntField(object, "ttlSecs", 0))
-    let deviceId: ?String = jsonOptionalStringField(object, "deviceId")
-    let tenantId: ?String = jsonOptionalStringField(object, "tenantId")
-    return CoreTokenRequest(
-        userId: userId,
-        secret: secret,
-        issuer: issuer,
-        ttlSecs: ttlSecs,
-        deviceId: deviceId,
-        tenantId: tenantId
-    )
-}
-
-public func coreTokenResponseToJson(request: CoreTokenResponse): String {
-    let json = CjJsonObject()
-    jsonPutString(json, "token", request.token)
-    return json.toJsonString()
-}
-
-public func coreTokenResponseFromJson(raw: String): CoreTokenResponse {
-    return coreTokenResponseFromObject(wireDecodeResponseObject(jsonObjectFromRaw(raw)))
-}
-
-public func coreTokenResponseFromObject(object: CjJsonObject): CoreTokenResponse {
-    let token = jsonStringField(object, "token", "")
-    return CoreTokenResponse(
-        token: token
-    )
-}
-
 public func conversationParticipantToJson(request: ConversationParticipant): String {
     let json = CjJsonObject()
     jsonPutString(json, "userId", request.userId)

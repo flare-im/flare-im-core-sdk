@@ -63,19 +63,6 @@ fun heartbeatEffectiveIntervalResponseToMap(request: HeartbeatEffectiveIntervalR
     request.intervalSecs?.let { put("intervalSecs", it) }
 }
 
-fun coreTokenRequestToMap(request: CoreTokenRequest): Map<String, Any?> = buildMap {
-    put("userId", request.userId)
-    put("secret", request.secret)
-    put("issuer", request.issuer)
-    put("ttlSecs", request.ttlSecs)
-    request.deviceId?.let { put("deviceId", it) }
-    request.tenantId?.let { put("tenantId", it) }
-}
-
-fun coreTokenResponseToMap(request: CoreTokenResponse): Map<String, Any?> = buildMap {
-    put("token", request.token)
-}
-
 fun conversationParticipantToMap(request: ConversationParticipant): Map<String, Any?> = buildMap {
     put("userId", request.userId)
     if (request.roles.isNotEmpty()) { put("roles", request.roles) }
@@ -1040,13 +1027,6 @@ fun heartbeatEffectiveIntervalResponseFromJson(value: Any?): HeartbeatEffectiveI
         connected = requiredBooleanField(json, "connected", "HeartbeatEffectiveIntervalResponse"),
         intervalMs = field(json, "intervalMs")?.let(::intValue),
         intervalSecs = field(json, "intervalSecs")?.let(::intValue),
-    )
-}
-
-fun coreTokenResponseFromJson(value: Any?): CoreTokenResponse {
-    val json = mapValue(value)
-    return CoreTokenResponse(
-        token = requiredStringField(json, "token", "CoreTokenResponse"),
     )
 }
 

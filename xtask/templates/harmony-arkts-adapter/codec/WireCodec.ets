@@ -99,23 +99,6 @@ export function heartbeatEffectiveIntervalResponseToMap(request: HeartbeatEffect
   };
 }
 
-export function coreTokenRequestToMap(request: CoreTokenRequest): Record<string, Object> {
-  return {
-  userId: request.userId,
-  secret: request.secret,
-  issuer: request.issuer,
-  ttlSecs: request.ttlSecs,
-  ...(request.deviceId !== undefined ? { deviceId: request.deviceId } : {}),
-  ...(request.tenantId !== undefined ? { tenantId: request.tenantId } : {}),
-  };
-}
-
-export function coreTokenResponseToMap(request: CoreTokenResponse): Record<string, Object> {
-  return {
-  token: request.token,
-  };
-}
-
 export function conversationParticipantToMap(request: ConversationParticipant): Record<string, Object> {
   return {
   userId: request.userId,

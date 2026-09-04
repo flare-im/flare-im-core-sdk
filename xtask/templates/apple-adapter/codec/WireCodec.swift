@@ -120,21 +120,6 @@ func heartbeatEffectiveIntervalResponseToMap(_ request: HeartbeatEffectiveInterv
         "intervalSecs": wrapSendable(request.intervalSecs),
     ]
 }
-func coreTokenRequestToMap(_ request: CoreTokenRequest) -> [String: AnySendable] {
-    [
-        "userId": wrapSendable(request.userId),
-        "secret": wrapSendable(request.secret),
-        "issuer": wrapSendable(request.issuer),
-        "ttlSecs": wrapSendable(request.ttlSecs),
-        "deviceId": wrapSendable(request.deviceId),
-        "tenantId": wrapSendable(request.tenantId),
-    ]
-}
-func coreTokenResponseToMap(_ request: CoreTokenResponse) -> [String: AnySendable] {
-    [
-        "token": wrapSendable(request.token),
-    ]
-}
 func runtimeHealthResponseToMap(_ request: RuntimeHealthResponse) -> [String: AnySendable] {
     [
         "metricsEnabled": wrapSendable(request.metricsEnabled),
@@ -1258,11 +1243,6 @@ func heartbeatEffectiveIntervalResponseFromJson(_ value: [String: AnySendable]) 
 func networkChangeResponseFromJson(_ value: [String: AnySendable]) throws -> NetworkChangeResponse {
     let json = plainMap(value)
     return NetworkChangeResponse(reconnected: try boolValue(json["reconnected"]))
-}
-
-func coreTokenResponseFromJson(_ value: [String: AnySendable]) throws -> CoreTokenResponse {
-    let json = plainMap(value)
-    return CoreTokenResponse(token: try stringValue(json["token"]))
 }
 
 func runtimeHealthResponseFromJson(_ value: [String: AnySendable]) throws -> RuntimeHealthResponse {

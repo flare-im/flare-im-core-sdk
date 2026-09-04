@@ -41,8 +41,6 @@ import {
   ConversationTimelineSnapshot,
   ConversationType,
   ConversationVersion,
-  CoreTokenRequest,
-  CoreTokenResponse,
   CreateTextMessageRequest,
   EmojiContentPayload,
   FileContentPayload,
@@ -153,23 +151,6 @@ export function heartbeatEffectiveIntervalResponseToMap(request: HeartbeatEffect
   connected: request.connected,
   ...(request.intervalMs !== undefined ? { intervalMs: request.intervalMs } : {}),
   ...(request.intervalSecs !== undefined ? { intervalSecs: request.intervalSecs } : {}),
-  };
-}
-
-export function coreTokenRequestToMap(request: CoreTokenRequest): Record<string, unknown> {
-  return {
-  userId: request.userId,
-  secret: request.secret,
-  issuer: request.issuer,
-  ttlSecs: request.ttlSecs,
-  ...(request.deviceId !== undefined ? { deviceId: request.deviceId } : {}),
-  ...(request.tenantId !== undefined ? { tenantId: request.tenantId } : {}),
-  };
-}
-
-export function coreTokenResponseToMap(request: CoreTokenResponse): Record<string, unknown> {
-  return {
-  token: request.token,
   };
 }
 
