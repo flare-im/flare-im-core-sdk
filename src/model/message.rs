@@ -51,7 +51,8 @@ const REACTIONS_JSON_KEY: &str = "reactionsJson";
 #[serde(rename_all = "camelCase")]
 pub struct ReactionEntry {
     pub emoji: String,
-    #[serde(default)]
+    // 容错读旧服务端的 snake_case key（曾因 server 发 user_ids/客户端要 userIds 导致同步后对端反应丢失）。
+    #[serde(default, alias = "user_ids")]
     pub user_ids: Vec<String>,
     pub count: u32,
 }
@@ -658,6 +659,23 @@ mod tests {
     use crate::content::message_elem::{Elem, LinkCardElem, TextElem};
     use flare_proto::common::Message as ProtoMessage;
     use std::collections::HashMap;
+
+    #[test]
+    fn reaction_entry_parses_both_userids_and_user_ids() {
+        // 契约为 camelCase userIds；同时容错旧服务端的 snake_case user_ids，
+        // 否则同步后对端反应会因 user 列表解析为空而被清空（历史缺陷）。
+        let camel = r#"[{"emoji":"👽","userIds":["u1","u2"],"count":2}]"#;
+        let snake = r#"[{"emoji":"👽","user_ids":["u1","u2"],"count":2}]"#;
+        for raw in [camel, snake] {
+            let mut attrs = std::collections::HashMap::new();
+            attrs.insert(super::REACTIONS_JSON_KEY.to_string(), raw.to_string());
+            let r = super::parse_reactions_from_attributes(&attrs);
+            assert_eq!(r.len(), 1, "raw={raw}");
+            assert_eq!(r[0].emoji, "👽");
+            assert_eq!(r[0].user_ids, vec!["u1".to_string(), "u2".to_string()], "user list must parse for raw={raw}");
+            assert_eq!(r[0].count, 2);
+        }
+    }
 
     fn message(client_msg_id: &str, server_id: &str, seq: u64, created_at: u64) -> IMMessage {
         IMMessage::new(ProtoMessage {
