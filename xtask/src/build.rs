@@ -293,6 +293,8 @@ fn build_host_ffi(layout: &ArtifactLayout) -> Result<()> {
             path_str(&layout.core_manifest)?,
             "-p",
             FFI_PACKAGE,
+            "--features",
+            "quic",
         ],
     )?;
 
@@ -335,6 +337,8 @@ fn build_macos_universal_ffi(layout: &ArtifactLayout) -> Result<()> {
                 path_str(&layout.core_manifest)?,
                 "-p",
                 FFI_PACKAGE,
+                "--features",
+                "quic",
             ],
         )?;
     }
@@ -489,6 +493,8 @@ fn build_ios_staticlib(layout: &ArtifactLayout, target: IosTarget) -> Result<()>
             path_str(&layout.core_manifest)?,
             "-p",
             FFI_PACKAGE,
+            "--features",
+            "quic",
         ],
     )?;
     let source = ios_staticlib_artifact(layout, target);
@@ -573,6 +579,8 @@ fn build_android_jni(layout: &ArtifactLayout) -> Result<bool> {
                 path_str(&layout.core_manifest)?,
                 "-p",
                 FFI_PACKAGE,
+                "--features",
+                "quic",
             ],
             &envs,
         )?;
