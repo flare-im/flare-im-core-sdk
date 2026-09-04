@@ -650,7 +650,19 @@ pub(crate) fn inline_ca_cert_der(value: &str) -> crate::shared::error::Result<Ve
     use base64::Engine as _;
     let trimmed = value.trim();
     if trimmed.starts_with("-----BEGIN") {
-        return flare_core::common::cert::cert_bytes_to_der(trimmed.as_bytes().to_vec());
+        // PEM→DER 依赖 flare-core 的 cert 模块，它按 target 只在非 wasm 编译
+        // （浏览器走自身信任链、且 wasm 端不用 QUIC，本就不需要内联 CA）。
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            return flare_core::common::cert::cert_bytes_to_der(trimmed.as_bytes().to_vec());
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            return Err(crate::shared::error::FlareError::localized(
+                crate::shared::error::ErrorCode::ConfigurationError,
+                "PEM CA 证书在 wasm 端不支持内联转换；浏览器使用自身信任库，请勿在 web 端配置 tls_ca_cert",
+            ));
+        }
     }
     let compact: String = trimmed.chars().filter(|c| !c.is_whitespace()).collect();
     base64::engine::general_purpose::STANDARD
