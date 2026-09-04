@@ -53,6 +53,8 @@ pub struct SdkConfigOverlay {
     pub tls_ca_cert_path: Option<String>,
     pub tls_spki_sha256_pins: Option<Vec<String>>,
     pub tls_certificate_sha256_pins: Option<Vec<String>>,
+    /// 内联信任 CA（PEM 或 base64 DER），见 [`crate::client::config::SdkConfig::tls_ca_cert`]。
+    pub tls_ca_cert: Option<String>,
     pub enable_metrics: Option<bool>,
     /// 接入 token 来源（见 [`SdkAuthConfig`]）。
     pub auth: Option<crate::client::config::SdkAuthConfig>,
@@ -189,6 +191,9 @@ pub fn merge_sdk_config(ws_url: &str, overlay: Option<&SdkConfigOverlay>) -> Sdk
         }
         if let Some(pins) = &o.tls_certificate_sha256_pins {
             config.tls_certificate_sha256_pins = pins.clone();
+        }
+        if o.tls_ca_cert.is_some() {
+            config.tls_ca_cert = o.tls_ca_cert.clone();
         }
         if let Some(b) = o.enable_metrics {
             config.enable_metrics = b;

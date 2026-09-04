@@ -185,7 +185,7 @@ fn emit_typescript_api_types(spec: &Value) -> String {
         "}".to_string(),
         "export interface CreateClientRequest { config: SdkConfig; }".to_string(),
         "export interface CreateClientResponse { handle: bigint | number; }".to_string(),
-        "export interface LoginRequest { userId: string; token: string; storeConfigJson?: string; }"
+        "export interface LoginRequest { userId: string; token?: string; storeConfigJson?: string; }"
             .to_string(),
         "export interface MessageDispatchRequest { op: string; params: Record<string, unknown>; }"
             .to_string(),

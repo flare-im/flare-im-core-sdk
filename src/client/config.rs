@@ -227,6 +227,10 @@ pub struct SdkConfig {
     pub tls_spki_sha256_pins: Vec<String>,
     #[serde(default)]
     pub tls_certificate_sha256_pins: Vec<String>,
+    /// 内联的信任 CA 证书（PEM 文本或 base64 DER）。移动端没有可靠的文件路径可给 `tls_ca_cert_path`，
+    /// 用它把自建 CA 直接塞进配置；与 `tls_ca_cert_path` 同时给时以本项为准。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tls_ca_cert: Option<String>,
     pub enable_metrics: bool,
     #[serde(default, skip_serializing_if = "SdkAuthConfig::is_default")]
     pub auth: SdkAuthConfig,
@@ -342,6 +346,12 @@ impl SdkConfig {
             .filter(|path| !path.is_empty())
         {
             tls = tls.with_ca_cert(PathBuf::from(path));
+        }
+        if let Some(inline) = self.tls_ca_cert.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
+            match inline_ca_cert_der(inline) {
+                Ok(der) => tls.ca_cert_data = Some(der),
+                Err(err) => tracing::warn!(%err, "ignoring unparseable tls_ca_cert"),
+            }
         }
         tls
     }
@@ -489,6 +499,7 @@ impl Default for SdkConfig {
             tls_ca_cert_path: None,
             tls_spki_sha256_pins: Vec::new(),
             tls_certificate_sha256_pins: Vec::new(),
+            tls_ca_cert: None,
             enable_metrics: false,
             auth: SdkAuthConfig::default(),
         }
@@ -631,5 +642,43 @@ impl SdkConfigBuilder {
     /// 产出最终配置对象。
     pub fn build(self) -> SdkConfig {
         self.config
+    }
+}
+
+/// 内联 CA：PEM 文本原样交给 flare-core 转 DER；否则按 base64 DER 解码。
+pub(crate) fn inline_ca_cert_der(value: &str) -> crate::shared::error::Result<Vec<u8>> {
+    use base64::Engine as _;
+    let trimmed = value.trim();
+    if trimmed.starts_with("-----BEGIN") {
+        return flare_core::common::cert::cert_bytes_to_der(trimmed.as_bytes().to_vec());
+    }
+    let compact: String = trimmed.chars().filter(|c| !c.is_whitespace()).collect();
+    base64::engine::general_purpose::STANDARD
+        .decode(compact.as_bytes())
+        .map_err(|e| {
+            crate::shared::error::FlareError::localized(
+                crate::shared::error::ErrorCode::ConfigurationError,
+                format!("tls_ca_cert is neither PEM nor base64 DER: {e}"),
+            )
+        })
+}
+
+#[cfg(test)]
+mod inline_ca_tests {
+    use super::*;
+
+    #[test]
+    fn inline_ca_accepts_pem_and_base64_der() {
+        use base64::Engine as _;
+        let cert = rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).unwrap();
+        let der = cert.cert.der().to_vec();
+        assert_eq!(inline_ca_cert_der(&cert.cert.pem()).unwrap(), der);
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&der);
+        assert_eq!(inline_ca_cert_der(&b64).unwrap(), der);
+        assert!(inline_ca_cert_der("!!! not a cert !!!").is_err());
+
+        let mut config = SdkConfig::new("ws://h/ws");
+        config.tls_ca_cert = Some(b64);
+        assert_eq!(config.core_tls_config().ca_cert_data.as_deref(), Some(der.as_slice()));
     }
 }

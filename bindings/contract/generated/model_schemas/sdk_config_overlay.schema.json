@@ -254,6 +254,13 @@
         "null"
       ]
     },
+    "tlsCaCert": {
+      "description": "内联信任 CA（PEM 或 base64 DER），见 [`crate::client::config::SdkConfig::tls_ca_cert`]。",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "tlsCaCertPath": {
       "type": [
         "string",
