@@ -152,24 +152,14 @@ impl MessageStore for SqliteMessageRepo {
         if conversation_id.trim().is_empty() || sender_user_id.trim().is_empty() {
             return Ok(());
         }
+        // 读态单调:对端已读回执只前进（peer_read_seq 单调增），一旦某条被对方读过就恒为已读。
+        // 早先这里会对 seq>peer_read_seq 的消息 is_read=0 回退——冷启/陈旧同步下发的偏低
+        // （甚至 0，此时上面 mark 被跳过而 un-read 仍会抹掉全部已读）peer_read_seq 会把已读消息
+        // 退回未读，表现为「双勾过一下变单勾」。只前进不回退，不再 un-read。
         if peer_read_seq > 0 {
             self.mark_outgoing_read_upto_seq(conversation_id, sender_user_id, peer_read_seq)
                 .await?;
         }
-        sqlx::query(
-            r#"UPDATE messages
-               SET is_read = 0
-               WHERE conversation_id = ?
-                 AND sender_id = ?
-                 AND conversation_seq > ?
-                 AND is_read = 1"#,
-        )
-        .bind(conversation_id)
-        .bind(sender_user_id)
-        .bind(peer_read_seq as i64)
-        .execute(&self.pool)
-        .await
-        .map_err(sqlx_err)?;
         Ok(())
     }
 

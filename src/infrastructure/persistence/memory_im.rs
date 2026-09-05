@@ -362,20 +362,13 @@ impl MessageStore for MemoryMessageStore {
         if conversation_id.is_empty() || sender_user_id.is_empty() {
             return Ok(());
         }
+        // 读态单调:对端已读回执只前进（peer_read_seq 单调增），一旦某条被对方读过就恒为已读。
+        // 早先这里会对 seq>peer_read_seq 的消息 is_read=false 回退——冷启/陈旧同步下发的偏低
+        // （甚至 0）peer_read_seq 会把已读消息退回未读，表现为「双勾过一下变单勾」。
+        // 只前进不回退：由 mark_outgoing_read_upto_seq 推进已读，不再 un-read。
         if peer_read_seq > 0 {
             self.mark_outgoing_read_upto_seq(conversation_id, sender_user_id, peer_read_seq)
                 .await?;
-        }
-
-        let mut data = self.data.write().await;
-        for message in data.values_mut() {
-            if message.conversation_id == conversation_id
-                && message.sender_id == sender_user_id
-                && message.conversation_seq > peer_read_seq
-                && message.is_read
-            {
-                message.is_read = false;
-            }
         }
         Ok(())
     }
@@ -938,7 +931,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn reconcile_outgoing_read_by_peer_seq_downgrades_polluted_tail() {
+    async fn reconcile_outgoing_read_by_peer_seq_never_downgrades_read() {
+        // 读态单调:即便同步下发偏低/陈旧的 peer_read_seq(冷启摘要可能为 0 或落后),
+        // 已被对方读过的消息也不回退为未读——否则「双勾过一下变单勾」。
         let store = MemoryMessageStore::new();
         let mut first = local_message("server-memory-peer-read-1", "client-memory-peer-read-1");
         first.conversation_id = "conv-memory-peer-read".to_string();
@@ -952,6 +947,7 @@ mod tests {
         tail.is_read = true;
 
         store.save_batch(&[first, tail]).await.unwrap();
+        // 用偏低的 peer_read_seq=1 reconcile：seq=2 的 tail 曾被读,不得因此回退。
         store
             .reconcile_outgoing_read_by_peer_seq("conv-memory-peer-read", "u1", 1)
             .await
@@ -968,7 +964,7 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(first.is_read);
-        assert!(!tail.is_read);
+        assert!(tail.is_read);
     }
 
     #[tokio::test]

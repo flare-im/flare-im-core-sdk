@@ -821,7 +821,9 @@ async fn latest_window_uses_seq_over_skewed_sort_ts_after_ack() {
 }
 
 #[tokio::test]
-async fn reconcile_outgoing_read_by_peer_seq_downgrades_polluted_tail() {
+async fn reconcile_outgoing_read_by_peer_seq_never_downgrades_read() {
+    // 读态单调:偏低/陈旧的 peer_read_seq(冷启摘要可能为 0 或落后)不得把已读消息退回未读,
+    // 否则「双勾过一下变单勾」。
     let repo = make_repo().await;
     let mut first = IMMessage::new(flare_proto::common::Message::default());
     first.server_id = "server-read-1".to_string();
@@ -832,10 +834,10 @@ async fn reconcile_outgoing_read_by_peer_seq_downgrades_polluted_tail() {
     first.status = MessageStatus::Sent as i32;
     first.is_read = true;
 
-    let mut polluted_tail = first.clone();
-    polluted_tail.server_id = "server-read-2".to_string();
-    polluted_tail.client_msg_id = "client-read-2".to_string();
-    polluted_tail.conversation_seq = 2;
+    let mut tail = first.clone();
+    tail.server_id = "server-read-2".to_string();
+    tail.client_msg_id = "client-read-2".to_string();
+    tail.conversation_seq = 2;
 
     let mut other_sender = first.clone();
     other_sender.server_id = "server-read-other".to_string();
@@ -843,10 +845,11 @@ async fn reconcile_outgoing_read_by_peer_seq_downgrades_polluted_tail() {
     other_sender.sender_id = "u2".to_string();
     other_sender.conversation_seq = 3;
 
-    repo.save_batch(&[first, polluted_tail, other_sender])
+    repo.save_batch(&[first, tail, other_sender])
         .await
         .unwrap();
 
+    // 用偏低的 peer_read_seq=1 reconcile:seq=2 的 tail 曾被读,不得因此回退。
     repo.reconcile_outgoing_read_by_peer_seq("conv-read", "u1", 1)
         .await
         .unwrap();
@@ -857,7 +860,7 @@ async fn reconcile_outgoing_read_by_peer_seq_downgrades_polluted_tail() {
     assert_eq!(first.status, MessageStatus::Sent as i32);
     assert!(first.is_read);
     assert_eq!(tail.status, MessageStatus::Sent as i32);
-    assert!(!tail.is_read);
+    assert!(tail.is_read);
     assert_eq!(other.status, MessageStatus::Sent as i32);
     assert!(other.is_read);
 }
