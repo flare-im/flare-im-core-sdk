@@ -144,7 +144,7 @@ pub async fn sdk_login(
     state: State<'_, SdkState>,
     app: tauri::AppHandle,
     user_id: String,
-    token: String,
+    token: Option<String>,
 ) -> std::result::Result<(), String> {
     let client = state.client();
     let event_bridge = state.event_bridge();
@@ -153,7 +153,7 @@ pub async fn sdk_login(
     let login_result = client
         .login(
             &user_id,
-            Some(&token),
+            token.as_deref(),
             LoginDbKind::Sqlite,
             move |bus, _msg_store| {
                 let rx = bus.subscribe_shared_raw();
@@ -204,11 +204,11 @@ pub async fn sdk_prepare(
 pub async fn sdk_connect(
     state: State<'_, SdkState>,
     user_id: String,
-    token: String,
+    token: Option<String>,
 ) -> std::result::Result<(), String> {
     let client = state.client();
     let apis = client
-        .connect(&user_id, Some(&token))
+        .connect(&user_id, token.as_deref())
         .await
         .map_err(super::map_sdk_err)?;
     state.install_session(apis).await;
