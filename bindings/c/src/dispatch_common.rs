@@ -109,6 +109,7 @@ pub(crate) fn json_dispatch_entry(
         let ctx = CallbackContext::new(context, callback);
         execute_async(
             instance.clone(),
+            &operation.clone(),
             ctx,
             async move { run(instance, operation, params_json).await },
             binding_response_to_json,
@@ -144,6 +145,7 @@ pub(crate) fn message_build_dispatch_entry(
         let ctx = CallbackContext::new(context, callback);
         execute_async(
             instance.clone(),
+            "message_builder.dispatch",
             ctx,
             async move {
                 let api = instance.message_build_api().await?;
@@ -183,6 +185,7 @@ pub(crate) fn typed_invoke_json(
     let api_id = api_id.to_string();
     execute_async(
         instance,
+        &api_id.clone(),
         ctx,
         async move { invoke_api_id_json(inst.as_ref(), &api_id, &params_json).await },
         binding_response_to_json,
@@ -234,6 +237,7 @@ pub(crate) fn invoke_entry(
         let ctx = CallbackContext::new(context, callback);
         execute_async(
             instance.clone(),
+            &api_id.clone(),
             ctx,
             async move { invoke_api_id_json(instance.as_ref(), &api_id, &params_json).await },
             binding_response_to_json,

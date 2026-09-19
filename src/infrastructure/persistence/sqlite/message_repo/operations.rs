@@ -635,13 +635,16 @@ impl MessageStore for SqliteMessageRepo {
         let mut out: HashMap<String, Vec<ReactionEntry>> = HashMap::new();
         for (msg_id, emoji_map) in grouped {
             let mut reactions = Vec::with_capacity(emoji_map.len());
-            for (emoji, user_ids) in emoji_map {
+            for (emoji, mut user_ids) in emoji_map {
+                user_ids.sort();
+                user_ids.dedup();
                 reactions.push(ReactionEntry {
                     emoji,
                     count: user_ids.len() as u32,
                     user_ids,
                 });
             }
+            reactions.sort_by(|a, b| a.emoji.cmp(&b.emoji));
             out.insert(msg_id, reactions);
         }
         Ok(out)

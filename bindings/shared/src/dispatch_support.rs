@@ -107,14 +107,10 @@ pub fn json_send_ack(ack: SendAck) -> Result<BindingResponse> {
                 error.code,
                 error.message.clone(),
             ),
-            None => (
-                String::new(),
-                0,
-                0,
-                false,
-                0,
-                "missing send ack result".to_string(),
-            ),
+            // Reliable queue sends resolve once the message is accepted into the local
+            // queue; the durable SendAck arrives later through EventBus. Treat the empty
+            // result as an accepted enqueue, not as a send failure.
+            None => (String::new(), 0, 0, true, 0, String::new()),
         };
     Ok(BindingResponse::json(serde_json::json!({
         "clientMsgId": ack.client_msg_id,
@@ -707,6 +703,80 @@ mod tests {
 
         assert_eq!(response.payload["ackId"], "client-1");
         assert_ne!(response.payload["ackId"], serde_json::Value::Null);
+    }
+
+    #[test]
+    fn send_ack_response_treats_empty_result_as_queued_success() {
+        let response = json_send_ack(SendAck {
+            client_msg_id: "client-1".to_string(),
+            conversation_id: "conversation-1".to_string(),
+            ack_id: None,
+            result: None,
+        })
+        .expect("queued send ack JSON should serialize");
+
+        assert_eq!(response.payload["serverId"], "");
+        assert_eq!(response.payload["seq"], 0);
+        assert_eq!(response.payload["timestamp"], 0);
+        assert_eq!(response.payload["success"], true);
+        assert_eq!(response.payload["errorCode"], 0);
+        assert_eq!(response.payload["errorMessage"], "");
+    }
+
+    #[test]
+    fn send_ack_response_serializes_accepted_result() {
+        let mut accepted = match send_ack::Result::Accepted(Default::default()) {
+            send_ack::Result::Accepted(accepted) => accepted,
+            send_ack::Result::Error(_) => unreachable!(),
+        };
+        accepted.server_msg_id = "server-1".to_string();
+        accepted.conversation_seq = 42;
+        accepted.server_time = 123_456;
+
+        let response = json_send_ack(SendAck {
+            client_msg_id: "client-1".to_string(),
+            conversation_id: "conversation-1".to_string(),
+            ack_id: Some("ack-1".to_string()),
+            result: Some(send_ack::Result::Accepted(accepted)),
+        })
+        .expect("accepted send ack JSON should serialize");
+
+        assert_eq!(response.payload["serverId"], "server-1");
+        assert_eq!(response.payload["seq"], 42);
+        assert_eq!(response.payload["timestamp"], 123_456);
+        assert_eq!(response.payload["ackId"], "ack-1");
+        assert_eq!(response.payload["success"], true);
+        assert_eq!(response.payload["errorCode"], 0);
+        assert_eq!(response.payload["errorMessage"], "");
+    }
+
+    #[test]
+    fn send_ack_response_serializes_error_result() {
+        let mut error = match send_ack::Result::Error(Default::default()) {
+            send_ack::Result::Accepted(_) => unreachable!(),
+            send_ack::Result::Error(error) => error,
+        };
+        error.code = 13;
+        error.message = "pre_send rejected: SOCIAL_BLOCKED".to_string();
+
+        let response = json_send_ack(SendAck {
+            client_msg_id: "client-1".to_string(),
+            conversation_id: "conversation-1".to_string(),
+            ack_id: Some("ack-1".to_string()),
+            result: Some(send_ack::Result::Error(error)),
+        })
+        .expect("error send ack JSON should serialize");
+
+        assert_eq!(response.payload["serverId"], "");
+        assert_eq!(response.payload["seq"], 0);
+        assert_eq!(response.payload["timestamp"], 0);
+        assert_eq!(response.payload["ackId"], "ack-1");
+        assert_eq!(response.payload["success"], false);
+        assert_eq!(response.payload["errorCode"], 13);
+        assert_eq!(
+            response.payload["errorMessage"],
+            "pre_send rejected: SOCIAL_BLOCKED"
+        );
     }
 
     #[test]

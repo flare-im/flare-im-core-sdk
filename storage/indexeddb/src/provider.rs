@@ -364,6 +364,13 @@ impl MessageReader for PersistingMessageStore {
             .await
     }
 
+    async fn search_by_query(
+        &self,
+        query: &flare_im_core_sdk::model::MessageSearchQuery,
+    ) -> Result<Vec<IMMessage>> {
+        self.inner.search_by_query(query).await
+    }
+
     async fn search(&self, keyword: &str, limit: u32) -> Result<Vec<IMMessage>> {
         self.inner.search(keyword, limit).await
     }

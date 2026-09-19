@@ -845,9 +845,7 @@ async fn reconcile_outgoing_read_by_peer_seq_never_downgrades_read() {
     other_sender.sender_id = "u2".to_string();
     other_sender.conversation_seq = 3;
 
-    repo.save_batch(&[first, tail, other_sender])
-        .await
-        .unwrap();
+    repo.save_batch(&[first, tail, other_sender]).await.unwrap();
 
     // 用偏低的 peer_read_seq=1 reconcile:seq=2 的 tail 曾被读,不得因此回退。
     repo.reconcile_outgoing_read_by_peer_seq("conv-read", "u1", 1)

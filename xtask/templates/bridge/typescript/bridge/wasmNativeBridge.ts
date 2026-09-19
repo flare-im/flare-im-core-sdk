@@ -9,6 +9,8 @@ export interface FlareWasmRuntime {
   invoke(operation: string, requestJson: string): Promise<unknown> | unknown;
   flareBindingContractVersion(): string;
   dispose?(): Promise<void> | void;
+  /** Cancel local operations without replacing the authenticated runtime. */
+  cancelPendingInvocations?(): boolean;
 }
 
 export type WasmBridgeOptions = {
@@ -41,6 +43,7 @@ function withContractVersion(runtime: RuntimeShape, fromModule?: () => string): 
   return {
     invoke: runtime.invoke.bind(runtime),
     ...(runtime.dispose ? { dispose: runtime.dispose.bind(runtime) } : {}),
+    ...(runtime.cancelPendingInvocations ? { cancelPendingInvocations: runtime.cancelPendingInvocations.bind(runtime) } : {}),
     flareBindingContractVersion: () => {
       if (!contractVersion) {
         return '';

@@ -941,11 +941,15 @@ impl ConversationWriter for SqliteConversationRepo {
                SET
                  last_read_seq = MAX(0, ?),
                  max_seq = MAX(COALESCE(max_seq, 0), ?),
-                 unread_count = MAX(0, ?)
+                 unread_count = MAX(0, ?),
+                 mention_count = CASE WHEN ? <= 0 THEN 0 ELSE mention_count END,
+                 mention_me = CASE WHEN ? <= 0 THEN 0 ELSE mention_me END
                WHERE conversation_id = ?"#,
         )
         .bind(last_read_seq as i64)
         .bind(last_read_seq as i64)
+        .bind(unread_count as i64)
+        .bind(unread_count as i64)
         .bind(unread_count as i64)
         .bind(conversation_id)
         .execute(&self.pool)
@@ -1743,6 +1747,32 @@ mod tests {
 
         assert_eq!(filtered.len(), 1);
         assert_eq!(filtered[0].conversation_id, "conv-single");
+    }
+
+    #[tokio::test]
+    async fn update_unread_to_zero_clears_mention_badge() {
+        let repo = repo().await;
+        let mut conversation = conversation("conv-mention", 10, "mention");
+        conversation.unread_count = 2;
+        conversation.mention_count = 1;
+        conversation.mention_me = true;
+        repo.save_one(&conversation).await.unwrap();
+
+        repo.update_unread("conv-mention", 0, 10).await.unwrap();
+
+        let loaded = repo.get("conv-mention").await.unwrap().unwrap();
+        assert_eq!(loaded.unread_count, 0);
+        assert_eq!(loaded.mention_count, 0);
+        assert!(!loaded.mention_me);
+
+        let filtered = repo
+            .list_by_query(&ConversationListQuery {
+                mention_me_only: true,
+                ..ConversationListQuery::default()
+            })
+            .await
+            .unwrap();
+        assert!(filtered.is_empty());
     }
 
     #[tokio::test]

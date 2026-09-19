@@ -56,7 +56,11 @@ pub struct GatewayTokenProvider {
 }
 
 impl GatewayTokenProvider {
-    pub fn new(base_url: impl Into<String>, tenant_id: Option<String>, device_id: Option<String>) -> Self {
+    pub fn new(
+        base_url: impl Into<String>,
+        tenant_id: Option<String>,
+        device_id: Option<String>,
+    ) -> Self {
         Self {
             base_url: base_url.into().trim().trim_end_matches('/').to_string(),
             tenant_id,
@@ -75,7 +79,10 @@ impl GatewayTokenProvider {
     pub async fn issue(&self, user_id: &str) -> Result<IssuedAccessToken> {
         let user_id = user_id.trim();
         if user_id.is_empty() {
-            return Err(FlareError::localized(ErrorCode::InvalidParameter, "user_id is required"));
+            return Err(FlareError::localized(
+                ErrorCode::InvalidParameter,
+                "user_id is required",
+            ));
         }
         let client = HttpClient::new(self.base_url.clone());
         let body = IssueBody {
@@ -93,9 +100,16 @@ impl GatewayTokenProvider {
     pub async fn refresh(&self, current_token: &str) -> Result<IssuedAccessToken> {
         let client = HttpClient::new(self.base_url.clone());
         let mut headers = HashMap::new();
-        headers.insert("Authorization".to_string(), format!("Bearer {}", current_token.trim()));
+        headers.insert(
+            "Authorization".to_string(),
+            format!("Bearer {}", current_token.trim()),
+        );
         let envelope: Envelope<IssuedAccessToken> = client
-            .post_with_headers("/api/v1/auth/tokens/refresh", &serde_json::json!({}), &headers)
+            .post_with_headers(
+                "/api/v1/auth/tokens/refresh",
+                &serde_json::json!({}),
+                &headers,
+            )
             .await
             .map_err(|err| token_endpoint_error("refresh", &self.refresh_url(), err))?;
         unwrap_envelope("refresh", envelope)
@@ -113,10 +127,16 @@ fn token_endpoint_error(action: &str, url: &str, err: FlareError) -> FlareError 
     } else {
         ErrorCode::ServiceUnavailable
     };
-    FlareError::localized(code, format!("token {action} via gateway failed ({url}): {err}"))
+    FlareError::localized(
+        code,
+        format!("token {action} via gateway failed ({url}): {err}"),
+    )
 }
 
-fn unwrap_envelope(action: &str, envelope: Envelope<IssuedAccessToken>) -> Result<IssuedAccessToken> {
+fn unwrap_envelope(
+    action: &str,
+    envelope: Envelope<IssuedAccessToken>,
+) -> Result<IssuedAccessToken> {
     if envelope.code != 0 {
         return Err(FlareError::localized(
             ErrorCode::AuthenticationFailed,
@@ -128,7 +148,10 @@ fn unwrap_envelope(action: &str, envelope: Envelope<IssuedAccessToken>) -> Resul
         ));
     }
     let issued = envelope.data.ok_or_else(|| {
-        FlareError::localized(ErrorCode::ServiceUnavailable, format!("token {action}: gateway returned no data"))
+        FlareError::localized(
+            ErrorCode::ServiceUnavailable,
+            format!("token {action}: gateway returned no data"),
+        )
     })?;
     if issued.token.trim().is_empty() {
         return Err(FlareError::localized(
@@ -174,22 +197,29 @@ mod tests {
     fn urls_are_built_from_the_base_without_double_slashes() {
         let p = GatewayTokenProvider::new("http://host/api/", None, None);
         assert_eq!(p.issue_url(), "http://host/api/api/v1/auth/tokens");
-        assert_eq!(p.refresh_url(), "http://host/api/api/v1/auth/tokens/refresh");
+        assert_eq!(
+            p.refresh_url(),
+            "http://host/api/api/v1/auth/tokens/refresh"
+        );
     }
 
     #[test]
     fn jwt_exp_is_read_from_payload() {
-        let token = crate::shared::util::generate_core_token(&crate::shared::util::CoreTokenConfig {
-            secret: "a-strong-shared-secret-with-more-than-32-bytes!".into(),
-            issuer: "flare-im-core".into(),
-            user_id: "u".into(),
-            ttl_secs: 3600,
-            device_id: None,
-            tenant_id: None,
-        })
-        .unwrap();
+        let token =
+            crate::shared::util::generate_core_token(&crate::shared::util::CoreTokenConfig {
+                secret: "a-strong-shared-secret-with-more-than-32-bytes!".into(),
+                issuer: "flare-im-core".into(),
+                user_id: "u".into(),
+                ttl_secs: 3600,
+                device_id: None,
+                tenant_id: None,
+            })
+            .unwrap();
         let exp = jwt_exp_secs(&token).unwrap();
-        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
         assert!(exp >= now + 3500 && exp <= now + 3600);
         assert_eq!(jwt_exp_secs("not-a-jwt"), None);
     }
@@ -198,7 +228,12 @@ mod tests {
     fn envelope_errors_map_to_authentication_failed() {
         let err = unwrap_envelope(
             "issue",
-            Envelope { code: 401, data: None, reason: Some("UNAUTHORIZED".into()), message: None },
+            Envelope {
+                code: 401,
+                data: None,
+                reason: Some("UNAUTHORIZED".into()),
+                message: None,
+            },
         )
         .unwrap_err();
         assert_eq!(err.code(), Some(ErrorCode::AuthenticationFailed));

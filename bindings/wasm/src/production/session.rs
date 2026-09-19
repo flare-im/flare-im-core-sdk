@@ -1,6 +1,10 @@
 //! Production wasm session — mirrors Tauri `SdkState`.
 
+use flare_im_core_sdk_bindings_runtime::invocation::InvocationRegistry;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+
+static NEXT_RUNTIME_ID: AtomicU64 = AtomicU64::new(1);
 
 use flare_im_core_sdk::Result;
 use flare_im_core_sdk::client::api::{
@@ -10,6 +14,9 @@ use flare_im_core_sdk::client::{ConnectedApis, IMClient, SdkConfigOverlay};
 use flare_im_core_sdk_bindings_runtime::{InvokeSession, SessionSlot, SessionTaskSlot};
 
 pub struct WasmSdkState {
+    pub runtime_id: u64,
+    pub disposed: AtomicBool,
+    pub invocations: InvocationRegistry,
     client: IMClient,
     session: SessionSlot,
     event_bridge: SessionTaskSlot,
@@ -18,6 +25,9 @@ pub struct WasmSdkState {
 impl WasmSdkState {
     pub fn new() -> Self {
         Self {
+            runtime_id: NEXT_RUNTIME_ID.fetch_add(1, Ordering::Relaxed),
+            disposed: AtomicBool::new(false),
+            invocations: InvocationRegistry::default(),
             client: IMClient::new(),
             session: SessionSlot::default(),
             event_bridge: SessionTaskSlot::default(),

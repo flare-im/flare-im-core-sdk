@@ -9,8 +9,8 @@ pub mod connected_apis;
 pub mod events;
 pub mod im_client;
 pub mod lifecycle;
-pub mod token_provider;
 pub mod profile_center;
+pub mod token_provider;
 
 pub use crate::extension::{
     ExtensionLifecycle, ExtensionLifecycleContext, ExtensionRegistry, SdkExtension,

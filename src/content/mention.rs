@@ -127,7 +127,11 @@ pub fn parse_mentions(text: &str, candidates: &[MentionCandidate]) -> ParsedMent
             break;
         }
 
-        i = if matched_len > 0 { i + 1 + matched_len } else { end.max(i + 1) };
+        i = if matched_len > 0 {
+            i + 1 + matched_len
+        } else {
+            end.max(i + 1)
+        };
     }
 
     result.user_ids = seen;
@@ -236,10 +240,16 @@ mod tests {
 
     #[test]
     fn non_member_mention_is_ignored() {
-        assert!(parse_mentions("@nobody 在吗", &candidates()).user_ids.is_empty());
+        assert!(
+            parse_mentions("@nobody 在吗", &candidates())
+                .user_ids
+                .is_empty()
+        );
     }
 
-    fn text_content_with(mentions: Vec<flare_proto::common::Mention>) -> flare_proto::common::MessageContent {
+    fn text_content_with(
+        mentions: Vec<flare_proto::common::Mention>,
+    ) -> flare_proto::common::MessageContent {
         flare_proto::common::MessageContent {
             content: Some(flare_proto::common::message_content::Content::Text(
                 flare_proto::common::TextContent {
@@ -284,6 +294,9 @@ mod tests {
     #[test]
     fn duplicate_mentions_are_deduped_in_order() {
         let parsed = parse_mentions("@张三 @u2 @webtest2", &candidates());
-        assert_eq!(parsed.user_ids, vec!["webtest2".to_string(), "u2".to_string()]);
+        assert_eq!(
+            parsed.user_ids,
+            vec!["webtest2".to_string(), "u2".to_string()]
+        );
     }
 }

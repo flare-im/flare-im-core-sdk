@@ -11,6 +11,7 @@ pub mod dispatch_support;
 pub mod error;
 pub mod event;
 pub mod generated;
+pub mod invocation;
 pub mod invoke;
 pub mod operation;
 pub mod request;

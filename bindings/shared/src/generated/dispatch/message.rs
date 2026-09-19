@@ -61,9 +61,8 @@ pub async fn dispatch_message(
             json(api.get_raw(&message_id_s).await?)
         }
         "search" => {
-            let keyword_s = json_string(&params, "keyword")?;
-            let limit_v = optional_i32(&params, "limit")?.unwrap_or(50).max(1) as u32;
-            let messages = api.search(&keyword_s, limit_v).await?;
+            let bound_value: MessageSearchQuery = from_value(params.clone(), "MessageSearchQuery")?;
+            let messages = api.search_by_query(bound_value).await?;
             json(serde_json::json!({ "messages": messages }))
         }
         "search_by_query" => {
@@ -72,12 +71,8 @@ pub async fn dispatch_message(
             json(serde_json::json!({ "messages": messages }))
         }
         "search_in_conversation" => {
-            let conversation_id_s = json_string(&params, "conversationId")?;
-            let keyword_s = json_string(&params, "keyword")?;
-            let limit_v = optional_i32(&params, "limit")?.unwrap_or(50).max(1) as u32;
-            let messages = api
-                .search_in_conversation(&conversation_id_s, &keyword_s, limit_v)
-                .await?;
+            let bound_value: MessageSearchQuery = from_value(params.clone(), "MessageSearchQuery")?;
+            let messages = api.search_by_query(bound_value).await?;
             json(serde_json::json!({ "messages": messages }))
         }
         "list" => {
@@ -242,7 +237,17 @@ pub async fn dispatch_message_json(
     params_json: &str,
 ) -> Result<BindingResponse> {
     match operation {
+        "search" => {
+            let bound_value: MessageSearchQuery = from_json_str(params_json, "MessageSearchQuery")?;
+            let messages = api.search_by_query(bound_value).await?;
+            json(serde_json::json!({ "messages": messages }))
+        }
         "search_by_query" => {
+            let bound_value: MessageSearchQuery = from_json_str(params_json, "MessageSearchQuery")?;
+            let messages = api.search_by_query(bound_value).await?;
+            json(serde_json::json!({ "messages": messages }))
+        }
+        "search_in_conversation" => {
             let bound_value: MessageSearchQuery = from_json_str(params_json, "MessageSearchQuery")?;
             let messages = api.search_by_query(bound_value).await?;
             json(serde_json::json!({ "messages": messages }))

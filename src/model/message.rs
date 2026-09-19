@@ -442,6 +442,7 @@ impl IMMessage {
                 if r.user_ids.is_empty() {
                     self.reactions.remove(i);
                 } else {
+                    r.user_ids.sort();
                     r.count = r.user_ids.len() as u32;
                 }
             }
@@ -455,6 +456,7 @@ impl IMMessage {
                 }
             }
         }
+        self.reactions.sort_by(|a, b| a.emoji.cmp(&b.emoji));
         write_reactions_to_attributes(&mut self.attributes, &self.reactions);
     }
 
@@ -672,9 +674,37 @@ mod tests {
             let r = super::parse_reactions_from_attributes(&attrs);
             assert_eq!(r.len(), 1, "raw={raw}");
             assert_eq!(r[0].emoji, "👽");
-            assert_eq!(r[0].user_ids, vec!["u1".to_string(), "u2".to_string()], "user list must parse for raw={raw}");
+            assert_eq!(
+                r[0].user_ids,
+                vec!["u1".to_string(), "u2".to_string()],
+                "user list must parse for raw={raw}"
+            );
             assert_eq!(r[0].count, 2);
         }
+    }
+
+    #[test]
+    fn reaction_change_keeps_projection_order_stable() {
+        let mut message = IMMessage::new(ProtoMessage::default());
+        message.apply_reaction_change("u2", "👍", super::ReactionAction::Add as i32);
+        message.apply_reaction_change("u1", "👍", super::ReactionAction::Add as i32);
+        message.apply_reaction_change("u3", "🎉", super::ReactionAction::Add as i32);
+
+        assert_eq!(
+            message
+                .reactions
+                .iter()
+                .map(|reaction| reaction.emoji.as_str())
+                .collect::<Vec<_>>(),
+            vec!["🎉", "👍"]
+        );
+        let thumbs = message
+            .reactions
+            .iter()
+            .find(|reaction| reaction.emoji == "👍")
+            .expect("thumbs reaction");
+        assert_eq!(thumbs.user_ids, vec!["u1".to_string(), "u2".to_string()]);
+        assert_eq!(thumbs.count, 2);
     }
 
     fn message(client_msg_id: &str, server_id: &str, seq: u64, created_at: u64) -> IMMessage {

@@ -5,7 +5,7 @@
 use dashmap::DashMap;
 use flare_im_core_sdk::client::IMClient;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use crate::error_convert::FLARE_ERR_INVALID_HANDLE;
 use crate::session::ImSessionSlot;
@@ -16,6 +16,8 @@ pub struct SdkInstance {
     pub client: IMClient,
     pub runtime: tokio::runtime::Handle,
     pub im_session: ImSessionSlot,
+    pub invocations: flare_im_core_sdk_bindings_runtime::invocation::InvocationRegistry,
+    pub callbacks_enabled: Arc<AtomicBool>,
 }
 
 impl SdkInstance {
@@ -89,7 +91,13 @@ pub fn require_instance(handle: FlareHandle) -> Result<Arc<SdkInstance>, i32> {
 /// 释放实例 (减少引用计数)
 #[inline]
 pub fn release_instance(handle: FlareHandle) {
-    HANDLE_REGISTRY.remove(&handle);
+    if let Some((_, instance)) = HANDLE_REGISTRY.remove(&handle) {
+        instance.invocations.cancel_pending();
+        let client = instance.client.clone();
+        instance.runtime.spawn(async move {
+            let _ = client.logout().await;
+        });
+    }
 }
 
 /// 释放所有实例（主要用于宿主热重启后的兜底重置）。
@@ -97,6 +105,10 @@ pub fn release_instance(handle: FlareHandle) {
 pub fn release_all_instances() {
     let handles: Vec<FlareHandle> = HANDLE_REGISTRY.iter().map(|e| *e.key()).collect();
     for h in handles {
-        HANDLE_REGISTRY.remove(&h);
+        if let Some(instance) = retain_instance(h) {
+            // Hot restart invalidates host callback addresses before Rust tasks finish.
+            instance.callbacks_enabled.store(false, Ordering::Release);
+        }
+        release_instance(h);
     }
 }

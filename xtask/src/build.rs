@@ -10,6 +10,9 @@ use std::{
 const FFI_PACKAGE: &str = "flare-im-core-sdk-ffi";
 const FFI_LIB: &str = "flare_im_core_sdk_ffi";
 const WASM_PACKAGE: &str = "flare-im-core-sdk-wasm";
+// Keep distributed Rust/C objects compatible with FlareCoreAppleSDK's iOS 15
+// minimum. Without this, cc/openssl can inherit the installed SDK's version.
+const IOS_DEPLOYMENT_TARGET: &str = "15.0";
 const ANDROID_TARGETS: &[AndroidTarget] = &[
     AndroidTarget {
         triple: "aarch64-linux-android",
@@ -481,7 +484,7 @@ impl IosTarget {
 fn build_ios_staticlib(layout: &ArtifactLayout, target: IosTarget) -> Result<()> {
     ensure_macos("iOS staticlib builds")?;
     ensure_rust_target(target.triple())?;
-    run_command(
+    run_command_env(
         &layout.core_root,
         "cargo",
         &[
@@ -496,8 +499,13 @@ fn build_ios_staticlib(layout: &ArtifactLayout, target: IosTarget) -> Result<()>
             "--features",
             "quic",
         ],
+        &[(
+            "IPHONEOS_DEPLOYMENT_TARGET".into(),
+            IOS_DEPLOYMENT_TARGET.into(),
+        )],
     )?;
     let source = ios_staticlib_artifact(layout, target);
+    verify_ios_deployment_target(&source)?;
     copy_file(
         &source,
         &layout
@@ -513,6 +521,72 @@ fn build_ios_staticlib(layout: &ArtifactLayout, target: IosTarget) -> Result<()>
     }
     println!("[build] iOS {} -> {}", target.triple(), source.display());
     Ok(())
+}
+
+fn verify_ios_deployment_target(path: &Path) -> Result<()> {
+    let output = Command::new("otool")
+        .arg("-l")
+        .arg(path)
+        .output()
+        .with_context(|| format!("failed to inspect deployment target: {}", path.display()))?;
+    if !output.status.success() {
+        bail!(
+            "otool failed while checking deployment target: {}",
+            path.display()
+        );
+    }
+    if !ios_otool_deployment_is_compatible(&String::from_utf8_lossy(&output.stdout)) {
+        bail!(
+            "iOS staticlib contains objects requiring newer than iOS {IOS_DEPLOYMENT_TARGET} or no deployment metadata: {}; rebuild through cargo xtask build",
+            path.display()
+        );
+    }
+    Ok(())
+}
+
+fn ios_otool_deployment_is_compatible(output: &str) -> bool {
+    let limit: Vec<u32> = IOS_DEPLOYMENT_TARGET
+        .split('.')
+        .map(|part| part.parse().expect("valid deployment target constant"))
+        .collect();
+    let limit = (
+        limit[0],
+        *limit.get(1).unwrap_or(&0),
+        *limit.get(2).unwrap_or(&0),
+    );
+    let mut deployment_command = false;
+    let mut found = false;
+    for line in output.lines() {
+        let fields: Vec<_> = line.split_whitespace().collect();
+        if fields.first() == Some(&"cmd") {
+            deployment_command = matches!(
+                fields.get(1),
+                Some(&"LC_BUILD_VERSION" | &"LC_VERSION_MIN_IPHONEOS")
+            );
+        }
+        if deployment_command && matches!(fields.first(), Some(&"minos" | &"version")) {
+            let Some(raw) = fields.get(1) else {
+                return false;
+            };
+            let version: Option<Vec<u32>> = raw.split('.').map(|part| part.parse().ok()).collect();
+            let Some(version) = version else {
+                return false;
+            };
+            if version.is_empty() || version.len() > 3 {
+                return false;
+            }
+            let value = (
+                version[0],
+                *version.get(1).unwrap_or(&0),
+                *version.get(2).unwrap_or(&0),
+            );
+            if value > limit {
+                return false;
+            }
+            found = true;
+        }
+    }
+    found
 }
 
 fn ios_staticlib_artifact(layout: &ArtifactLayout, target: IosTarget) -> PathBuf {
@@ -1296,6 +1370,19 @@ fn static_lib_name() -> String {
 mod tests {
     use super::*;
     use std::path::Path;
+
+    #[test]
+    fn ios_deployment_gate_rejects_newer_objects_in_mixed_archive() {
+        let compatible = "cmd LC_BUILD_VERSION\n platform 7\n minos 15.0\n sdk 26.4\ncmd LC_VERSION_MIN_IPHONEOS\n version 14.0\n sdk 26.4\n";
+        assert!(ios_otool_deployment_is_compatible(compatible));
+        assert!(!ios_otool_deployment_is_compatible(&format!(
+            "{compatible}cmd LC_BUILD_VERSION\n minos 26.4\n"
+        )));
+        assert!(!ios_otool_deployment_is_compatible(
+            "cmd LC_BUILD_VERSION\n minos invalid\n"
+        ));
+        assert!(!ios_otool_deployment_is_compatible(""));
+    }
 
     #[test]
     fn default_plan_builds_host_and_wasm_without_mobile_targets() {

@@ -52,3 +52,6 @@ temp-data/
 .taurignore
 
 *.zip
+
+# 代码索引工具的本机缓存（随每次索引变动，不进仓）
+/.codegraph/

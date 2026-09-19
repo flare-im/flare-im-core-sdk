@@ -161,6 +161,21 @@ impl ConversationProjectionApplier {
                         ));
                     }
                 }
+                let mention_delta = Self::mention_delta_for_conversation(
+                    messages,
+                    &conversation_id,
+                    current_user_id,
+                    previous_read,
+                    unread_mode,
+                );
+                if mention_delta > 0
+                    && let Ok(Some(mut updated)) =
+                        self.stores.conversations.get(&conversation_id).await
+                {
+                    updated.mention_me = true;
+                    updated.mention_count = updated.mention_count.saturating_add(mention_delta);
+                    self.stores.conversations.save_one(&updated).await?;
+                }
             } else {
                 let is_new_message = latest.conversation_seq > previous_max_seq;
                 let is_self_message = latest.sender_id() == current_user_id;
@@ -204,6 +219,36 @@ impl ConversationProjectionApplier {
             .filter(|message| Self::should_count_unread(message, previous_read, unread_mode))
             .count()
             .min(u32::MAX as usize) as u32
+    }
+
+    fn mention_delta_for_conversation(
+        messages: &[IMMessage],
+        conversation_id: &str,
+        current_user_id: &str,
+        previous_read: ReadPosition,
+        unread_mode: UnreadApplyMode,
+    ) -> u32 {
+        messages
+            .iter()
+            .filter(|message| message.conversation_id == conversation_id)
+            .filter(|message| message.sender_id() != current_user_id)
+            .filter(|message| !message.is_recalled)
+            .filter(|message| Self::should_count_unread(message, previous_read, unread_mode))
+            .filter(|message| Self::mentions_current_user(message, current_user_id))
+            .count()
+            .min(u32::MAX as usize) as u32
+    }
+
+    fn mentions_current_user(message: &IMMessage, current_user_id: &str) -> bool {
+        let current_user_id = current_user_id.trim();
+        if current_user_id.is_empty() {
+            return false;
+        }
+        message.mention_all
+            || message
+                .mention_users
+                .iter()
+                .any(|user_id| user_id.trim() == current_user_id)
     }
 
     fn should_count_unread(
@@ -368,7 +413,7 @@ mod tests {
     use crate::infrastructure::persistence::StoreProvider;
     use crate::kernel::event::{ConversationEvent, EventBus, SdkEvent};
     use crate::model::message::MessageLocalState;
-    use crate::model::{Conversation, IMMessage};
+    use crate::model::{Conversation, ConversationListQuery, IMMessage};
     use crate::shared::error::Result;
     use async_trait::async_trait;
     use std::collections::HashMap;
@@ -425,6 +470,10 @@ mod tests {
             if let Some(conversation) = data.get_mut(conversation_id) {
                 conversation.unread_count = unread_count;
                 conversation.last_read_seq = last_read_seq;
+                if unread_count == 0 {
+                    conversation.mention_count = 0;
+                    conversation.mention_me = false;
+                }
             }
             Ok(())
         }
@@ -748,6 +797,51 @@ mod tests {
 
         let second = timeout(Duration::from_millis(80), receiver.recv()).await;
         assert!(second.is_err(), "should publish unread change only once");
+    }
+
+    #[tokio::test]
+    async fn remote_mention_updates_conversation_projection() {
+        let (conversations, stores) = stores();
+        let bus = EventBus::new();
+        let applier = ConversationProjectionApplier::new(stores, bus);
+
+        let mut message = IMMessage::new(flare_proto::common::Message::default());
+        message.server_id = "server-mention".to_string();
+        message.conversation_id = "conv-1".to_string();
+        message.sender_id = "u2".to_string();
+        message.conversation_seq = 5;
+        message.mention_users = vec!["u1".to_string()];
+
+        applier.apply_messages(&[message], "u1").await.unwrap();
+
+        let updated = conversations.get("conv-1").await.unwrap().unwrap();
+        assert_eq!(updated.unread_count, 1);
+        assert_eq!(updated.mention_count, 1);
+        assert!(updated.mention_me);
+
+        let mentioned = conversations
+            .list_by_query(&ConversationListQuery {
+                mention_me_only: true,
+                ..ConversationListQuery::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(mentioned.len(), 1);
+        assert_eq!(mentioned[0].conversation_id, "conv-1");
+
+        conversations.update_unread("conv-1", 0, 5).await.unwrap();
+        let cleared = conversations.get("conv-1").await.unwrap().unwrap();
+        assert_eq!(cleared.unread_count, 0);
+        assert_eq!(cleared.mention_count, 0);
+        assert!(!cleared.mention_me);
+        let mentioned = conversations
+            .list_by_query(&ConversationListQuery {
+                mention_me_only: true,
+                ..ConversationListQuery::default()
+            })
+            .await
+            .unwrap();
+        assert!(mentioned.is_empty());
     }
 
     #[tokio::test]

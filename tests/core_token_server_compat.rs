@@ -5,8 +5,8 @@
 //! 这里照同一套规则解码 SDK 产出的 token。生产上「只输 user id + 签名密钥就能登录」
 //! 的链路，除了密钥值本身，其余环节（算法/头/声明布局/签发者）全靠这条测试守住。
 
-use flare_im_core_sdk::prelude::{generate_core_token, CoreTokenConfig};
-use jsonwebtoken::{decode, Algorithm, DecodingKey, Validation};
+use flare_im_core_sdk::prelude::{CoreTokenConfig, generate_core_token};
+use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode};
 use serde::Deserialize;
 
 /// 与服务端 `TokenClaims` 字段一一对应（服务端按名字反序列化，多一个少一个都算不一致）。
@@ -27,7 +27,13 @@ fn server_validation(issuer: &str) -> Validation {
     validation
 }
 
-fn mint(secret: &str, issuer: &str, user: &str, tenant: Option<&str>, device: Option<&str>) -> String {
+fn mint(
+    secret: &str,
+    issuer: &str,
+    user: &str,
+    tenant: Option<&str>,
+    device: Option<&str>,
+) -> String {
     generate_core_token(&CoreTokenConfig {
         secret: secret.to_string(),
         issuer: issuer.to_string(),
@@ -77,14 +83,26 @@ fn device_id_survives_round_trip() {
 
 #[test]
 fn wrong_secret_is_rejected_like_the_gateway_does() {
-    let token = mint("the-right-secret-the-server-holds-32-bytes!!", "flare-im-core", "123", Some("0"), None);
+    let token = mint(
+        "the-right-secret-the-server-holds-32-bytes!!",
+        "flare-im-core",
+        "123",
+        Some("0"),
+        None,
+    );
     let err = decode::<ServerClaims>(
         &token,
         &DecodingKey::from_secret(b"definitely-wrong-secret-for-path-test"),
         &server_validation("flare-im-core"),
     )
     .expect_err("密钥不一致必须被拒——这就是生产上「Token 验证失败」那条日志");
-    assert!(matches!(err.kind(), jsonwebtoken::errors::ErrorKind::InvalidSignature), "{err:?}");
+    assert!(
+        matches!(
+            err.kind(),
+            jsonwebtoken::errors::ErrorKind::InvalidSignature
+        ),
+        "{err:?}"
+    );
 }
 
 #[test]
@@ -97,5 +115,8 @@ fn wrong_issuer_is_rejected() {
         &server_validation("flare-im-core"),
     )
     .expect_err("签发者对不上必须被拒");
-    assert!(matches!(err.kind(), jsonwebtoken::errors::ErrorKind::InvalidIssuer), "{err:?}");
+    assert!(
+        matches!(err.kind(), jsonwebtoken::errors::ErrorKind::InvalidIssuer),
+        "{err:?}"
+    );
 }

@@ -209,3 +209,11 @@ required-features = ["lifecycle-sqlite"]
 [[example]]
 name = "e2e_unread_regression"
 required-features = ["lifecycle-sqlite"]
+
+[[test]]
+name = "cross_client_interop_test"
+required-features = ["lifecycle-sqlite"]
+
+[[test]]
+name = "tauri_desktop_remote_test"
+required-features = ["lifecycle-sqlite"]

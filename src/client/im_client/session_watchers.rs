@@ -320,14 +320,19 @@ impl IMClient {
         let (bearer, tenant_id) = {
             let g = self.inner.read().await;
             if g.session_generation != generation {
-                return Err(FlareError::localized(ErrorCode::NotConnected, "session generation changed"));
+                return Err(FlareError::localized(
+                    ErrorCode::NotConnected,
+                    "session generation changed",
+                ));
             }
             // 刷新令牌优先；没有再退回接入令牌（兼容旧网关/旧会话）。
             let bearer = g
                 .refresh_token
                 .clone()
                 .or_else(|| g.connect_token.clone())
-                .ok_or_else(|| FlareError::localized(ErrorCode::NotConnected, "no token to refresh"))?;
+                .ok_or_else(|| {
+                    FlareError::localized(ErrorCode::NotConnected, "no token to refresh")
+                })?;
             (bearer, Self::resolve_tenant_id(&g))
         };
         let issued = provider.refresh(&bearer).await?;
@@ -469,7 +474,7 @@ impl IMClient {
         if g.session_generation == generation {
             g.engine = Some(engine);
             self.store_state_snapshot(state);
-            if Self::is_active_session_state(state) {
+            if self.inner_session_active(&g) {
                 match Self::connected_apis_from_inner(&g) {
                     Ok(apis) => self.store_connected_apis_snapshot(apis),
                     Err(err) => {
@@ -480,6 +485,10 @@ impl IMClient {
             } else {
                 self.clear_session_snapshot();
             }
+        } else {
+            drop(g);
+            engine.deactivate_local_session().await;
+            let _ = engine.disconnect().await;
         }
         result
     }
@@ -496,7 +505,6 @@ impl IMClient {
             return;
         };
         engine.mark_transport_disconnected().await;
-        self.clear_session_snapshot();
         self.store_state_snapshot(SdkState::Disconnected);
 
         let mut g = self.inner.write().await;

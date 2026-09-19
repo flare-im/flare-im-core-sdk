@@ -74,6 +74,8 @@ pub extern "C" fn flare_sdk_create() -> FlareHandle {
             client,
             runtime,
             im_session: crate::session::ImSessionSlot::default(),
+            invocations: Default::default(),
+            callbacks_enabled: Arc::new(std::sync::atomic::AtomicBool::new(true)),
         });
         register_instance(instance)
     })
@@ -419,6 +421,7 @@ pub extern "C" fn flare_sdk_data_root(
 
         execute_async(
             instance,
+            "sdk.local_query",
             ctx,
             async move {
                 Ok(client
@@ -467,6 +470,7 @@ pub extern "C" fn flare_sdk_current_user_id(
 
         execute_async(
             instance,
+            "sdk.local_query",
             ctx,
             async move {
                 let user_id = client.current_user_id().await;

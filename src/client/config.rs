@@ -152,7 +152,7 @@ impl SdkResourceProfile {
 /// 客户端不再本地签发 token：`token_endpoint` 配了就是 SDK 托管——`login(user_id)` 不传 token 时
 /// SDK 去 `{token_endpoint}/api/v1/auth/tokens` 签发，到期前 `refresh_lead_secs` 秒用
 /// `/api/v1/auth/tokens/refresh` 换新并 `update_access_token`。没配则必须显式传 token
-/// （flare-social / 自建业务由应用自己拿 token、自己刷新）。
+/// （业务应用由宿主自己拿 token、自己刷新）。
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct SdkAuthConfig {
@@ -347,7 +347,12 @@ impl SdkConfig {
         {
             tls = tls.with_ca_cert(PathBuf::from(path));
         }
-        if let Some(inline) = self.tls_ca_cert.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
+        if let Some(inline) = self
+            .tls_ca_cert
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+        {
             match inline_ca_cert_der(inline) {
                 Ok(der) => tls.ca_cert_data = Some(der),
                 Err(err) => tracing::warn!(%err, "ignoring unparseable tls_ca_cert"),
@@ -691,6 +696,9 @@ mod inline_ca_tests {
 
         let mut config = SdkConfig::new("ws://h/ws");
         config.tls_ca_cert = Some(b64);
-        assert_eq!(config.core_tls_config().ca_cert_data.as_deref(), Some(der.as_slice()));
+        assert_eq!(
+            config.core_tls_config().ca_cert_data.as_deref(),
+            Some(der.as_slice())
+        );
     }
 }

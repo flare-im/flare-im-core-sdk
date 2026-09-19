@@ -385,9 +385,16 @@ impl IMClient {
         if let Some(engine) = inner.engine.as_ref() {
             engine.adopt_local_session_identity(user_id).await;
         }
-        let session_generation = inner.session_generation;
-        *self.inner.write().await = inner;
-        self.store_session_generation_snapshot(session_generation);
+        {
+            let mut current = self.inner.write().await;
+            // Never recycle the child builder's generation (normally zero): binding
+            // caches and old watchers must not match a newly prepared user.
+            inner.session_generation = current.session_generation.wrapping_add(1);
+            *current = inner;
+            self.store_session_generation_snapshot(current.session_generation);
+            self.store_state_snapshot(SdkState::Disconnected);
+            self.store_connected_apis_snapshot(Self::connected_apis_from_inner(&current)?);
+        }
         self.repair_local_conversation_identities_on_login(user_id)
             .await?;
         tokio::task::yield_now().await;
@@ -441,6 +448,7 @@ impl IMClient {
         explicit_token: Option<&str>,
         install_watcher: bool,
     ) -> Result<()> {
+        let generation = self.session_generation_snapshot();
         // token 三档来源：显式传入 > SDK 托管（向网关签发）> 环境变量（联调）。没有本地签发。
         let mut issued_refresh_token: Option<String> = None;
         let token = match explicit_token.map(str::trim).filter(|t| !t.is_empty()) {
@@ -461,26 +469,31 @@ impl IMClient {
                 None => resolve_connect_token(user_id, None)?,
             },
         };
-        self.clear_session_snapshot();
         let (engine, http_request_context) = {
             let mut g = self.inner.write().await;
+            if g.session_generation != generation {
+                return Err(Self::not_connected());
+            }
             (g.engine.take(), g.http_request_context.clone())
         };
         let mut e = engine.ok_or_else(|| {
             FlareError::localized(ErrorCode::NotConnected, "no engine; use builder or login")
         })?;
         self.store_state_snapshot(SdkState::Connecting);
-        if let Err(error) = e.connect(user_id, &token).await {
-            self.store_state_snapshot(e.state());
-            let mut g = self.inner.write().await;
-            if g.engine.is_none() {
-                g.engine = Some(e);
-            }
-            return Err(error);
+        let connect_result = e.connect(user_id, &token).await;
+        let mut g = self.inner.write().await;
+        if g.session_generation != generation {
+            drop(g);
+            e.deactivate_local_session().await;
+            let _ = e.disconnect().await;
+            return Err(Self::not_connected());
         }
         self.store_state_snapshot(e.state());
         let bus = e.bus().clone();
-        let mut g = self.inner.write().await;
+        if let Err(error) = connect_result {
+            g.engine = Some(e);
+            return Err(error);
+        }
         g.engine = Some(e);
         g.current_user_id = Some(user_id.to_string());
         g.connect_token = Some(token.clone());
@@ -490,8 +503,8 @@ impl IMClient {
         let current_generation = g.session_generation;
         let tenant_id = Self::resolve_tenant_id(&g);
         let apis = Self::connected_apis_from_inner(&g)?;
-        drop(g);
         self.store_connected_apis_snapshot(apis);
+        drop(g);
         if let Some(context) = http_request_context.as_ref() {
             // Avoid reusing a stale Social Gateway token after a fresh IM login.
             // Media access resolution can use the IM token fallback until a new

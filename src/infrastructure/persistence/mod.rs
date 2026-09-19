@@ -36,3 +36,5 @@ pub use sqlite::{
     SqliteMessageRepo, SqlitePendingSendRepo, SqliteSyncCursorRepo, SqliteUploadManifestRepo,
     SqliteUserFileDownloadRepo, SqliteUserProfileRepo, init_schema as sqlite_init_schema,
 };
+
+pub(crate) mod search;

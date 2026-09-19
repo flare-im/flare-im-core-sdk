@@ -76,8 +76,7 @@ impl Visit for MessageVisitor {
             if !self.fields.is_empty() {
                 self.fields.push(' ');
             }
-            self.fields
-                .push_str(&format!("{}={value:?}", field.name()));
+            self.fields.push_str(&format!("{}={value:?}", field.name()));
         }
     }
 }

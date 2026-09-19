@@ -35,19 +35,11 @@
         },
         {
           "op": "search",
-          "method": "search",
+          "method": "search_by_query",
           "args": [
             [
-              "keyword",
-              "str_ref"
-            ],
-            [
-              "limit",
-              "i32_u32",
-              {
-                "default": 50,
-                "min": 1
-              }
+              "@value",
+              "deserialize:MessageSearchQuery"
             ]
           ],
           "result": "json_object",
@@ -71,23 +63,11 @@
         },
         {
           "op": "search_in_conversation",
-          "method": "search_in_conversation",
+          "method": "search_by_query",
           "args": [
             [
-              "conversation_id",
-              "str_ref"
-            ],
-            [
-              "keyword",
-              "str_ref"
-            ],
-            [
-              "limit",
-              "i32_u32",
-              {
-                "default": 50,
-                "min": 1
-              }
+              "@value",
+              "deserialize:MessageSearchQuery"
             ]
           ],
           "result": "json_object",

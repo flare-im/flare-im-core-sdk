@@ -1374,7 +1374,9 @@ async fn watermark_cursor_save_persists_pseudo_keys_that_clamped_save_skips() {
 
     // 钳制保存：伪 key 无消息行 → 连续位点 0 → 静默跳过（这是它的既定语义）。
     sync_apply
-        .save_cursor_with_remote("u1", "critical_event:c1", 7, &[], |_, _, _| async { Ok(()) })
+        .save_cursor_with_remote("u1", "critical_event:c1", 7, &[], |_, _, _| async {
+            Ok(())
+        })
         .await
         .unwrap();
     assert!(

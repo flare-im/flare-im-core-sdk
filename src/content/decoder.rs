@@ -142,8 +142,8 @@ fn sanitize_inbound_content(
 #[cfg(test)]
 mod inbound_hardening_tests {
     use super::*;
-    use prost::Message as _;
     use flare_proto::common::{MessageContent, RichTextContent, message_content::Content};
+    use prost::Message as _;
 
     fn encoded(content: Content) -> Vec<u8> {
         MessageContent {

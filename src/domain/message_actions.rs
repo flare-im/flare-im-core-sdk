@@ -108,19 +108,162 @@ pub fn action_availability_vectors() -> serde_json::Value {
     let mut cases = Vec::new();
     // 覆盖：自己/别人 × 文本/图片/富文本 × 正常/撤回/删除/失败 × pending/pinned/断线/多选
     for (label, sender, mtype, status, has_text, pending, pinned, connected, multi, failed) in [
-        ("自己的文本",           "me",    TYPE_TEXT,      0i32, true,  false, false, true,  false, false),
-        ("别人的文本",           "other", TYPE_TEXT,      0,    true,  false, false, true,  false, false),
-        ("自己的图片(无正文)",   "me",    MEDIA_TYPES[0],  0,    false, false, false, true,  false, false),
-        ("自己的富文本",         "me",    TYPE_RICH_TEXT, 0,    true,  false, false, true,  false, false),
-        ("已撤回",               "me",    TYPE_TEXT,      STATUS_RECALLED, true, false, false, true, false, false),
-        ("已删除",               "me",    TYPE_TEXT,      STATUS_DELETED,  true, false, false, true, false, false),
-        ("发送失败",             "me",    TYPE_TEXT,      STATUS_FAILED,   true, false, false, true, false, true),
-        ("发送失败且断线",       "me",    TYPE_TEXT,      STATUS_FAILED,   true, false, false, false, false, true),
-        ("发送中(pending)",      "me",    TYPE_TEXT,      0,    true,  true,  false, true,  false, false),
-        ("已置顶",               "me",    TYPE_TEXT,      0,    true,  false, true,  true,  false, false),
-        ("对方已读",             "me",    TYPE_TEXT,      0,    true,  false, false, true,  false, false),
-        ("别人发的",             "other", TYPE_TEXT,      0,    true,  false, false, true,  false, false),
-        ("多选模式",             "me",    TYPE_TEXT,      0,    true,  false, false, true,  true,  false),
+        (
+            "自己的文本",
+            "me",
+            TYPE_TEXT,
+            0i32,
+            true,
+            false,
+            false,
+            true,
+            false,
+            false,
+        ),
+        (
+            "别人的文本",
+            "other",
+            TYPE_TEXT,
+            0,
+            true,
+            false,
+            false,
+            true,
+            false,
+            false,
+        ),
+        (
+            "自己的图片(无正文)",
+            "me",
+            MEDIA_TYPES[0],
+            0,
+            false,
+            false,
+            false,
+            true,
+            false,
+            false,
+        ),
+        (
+            "自己的富文本",
+            "me",
+            TYPE_RICH_TEXT,
+            0,
+            true,
+            false,
+            false,
+            true,
+            false,
+            false,
+        ),
+        (
+            "已撤回",
+            "me",
+            TYPE_TEXT,
+            STATUS_RECALLED,
+            true,
+            false,
+            false,
+            true,
+            false,
+            false,
+        ),
+        (
+            "已删除",
+            "me",
+            TYPE_TEXT,
+            STATUS_DELETED,
+            true,
+            false,
+            false,
+            true,
+            false,
+            false,
+        ),
+        (
+            "发送失败",
+            "me",
+            TYPE_TEXT,
+            STATUS_FAILED,
+            true,
+            false,
+            false,
+            true,
+            false,
+            true,
+        ),
+        (
+            "发送失败且断线",
+            "me",
+            TYPE_TEXT,
+            STATUS_FAILED,
+            true,
+            false,
+            false,
+            false,
+            false,
+            true,
+        ),
+        (
+            "发送中(pending)",
+            "me",
+            TYPE_TEXT,
+            0,
+            true,
+            true,
+            false,
+            true,
+            false,
+            false,
+        ),
+        (
+            "已置顶",
+            "me",
+            TYPE_TEXT,
+            0,
+            true,
+            false,
+            true,
+            true,
+            false,
+            false,
+        ),
+        (
+            "对方已读",
+            "me",
+            TYPE_TEXT,
+            0,
+            true,
+            false,
+            false,
+            true,
+            false,
+            false,
+        ),
+        (
+            "别人发的",
+            "other",
+            TYPE_TEXT,
+            0,
+            true,
+            false,
+            false,
+            true,
+            false,
+            false,
+        ),
+        (
+            "多选模式",
+            "me",
+            TYPE_TEXT,
+            0,
+            true,
+            false,
+            false,
+            true,
+            true,
+            false,
+        ),
     ] {
         let mut m = IMMessage::new(flare_proto::common::Message {
             server_id: "m1".to_string(),
@@ -136,10 +279,12 @@ pub fn action_availability_vectors() -> serde_json::Value {
         // 已读维度：label 带「已读」的用例把 is_read 打开，用来钉双勾。
         m.is_read = label.contains("已读");
         m.content = if has_text {
-            Some(crate::model::Elem::Text(crate::content::message_elem::TextElem {
-                text: "正文".to_string(),
-                mentions: Vec::new(),
-            }))
+            Some(crate::model::Elem::Text(
+                crate::content::message_elem::TextElem {
+                    text: "正文".to_string(),
+                    mentions: Vec::new(),
+                },
+            ))
         } else {
             None
         };
@@ -206,7 +351,10 @@ mod tests {
         let unpinned = message_action_availability(&m, &ctx());
         assert!(unpinned.can_pin && !unpinned.can_unpin);
 
-        let pinned_ctx = MessageActionContext { is_pinned: true, ..ctx() };
+        let pinned_ctx = MessageActionContext {
+            is_pinned: true,
+            ..ctx()
+        };
         let pinned = message_action_availability(&m, &pinned_ctx);
         assert!(!pinned.can_pin && pinned.can_unpin);
     }
@@ -259,7 +407,10 @@ mod tests {
         let failed = message("me", TYPE_TEXT, STATUS_FAILED);
         assert!(message_action_availability(&failed, &ctx()).can_resend);
 
-        let offline = MessageActionContext { is_connected: false, ..ctx() };
+        let offline = MessageActionContext {
+            is_connected: false,
+            ..ctx()
+        };
         assert!(
             !message_action_availability(&failed, &offline).can_resend,
             "断线时重发只会再失败一次"
@@ -273,7 +424,10 @@ mod tests {
 
     #[test]
     fn pending_message_blocks_actions_that_need_a_server_id() {
-        let pending = MessageActionContext { is_pending: true, ..ctx() };
+        let pending = MessageActionContext {
+            is_pending: true,
+            ..ctx()
+        };
         let a = message_action_availability(&message("me", TYPE_TEXT, 1), &pending);
         assert!(!a.can_react && !a.can_pin && !a.can_forward && !a.can_edit);
         assert!(a.can_delete, "本地待发的消息仍应可以删掉");
@@ -281,7 +435,10 @@ mod tests {
 
     #[test]
     fn multi_select_mode_hides_single_message_actions() {
-        let multi = MessageActionContext { multi_select_mode: true, ..ctx() };
+        let multi = MessageActionContext {
+            multi_select_mode: true,
+            ..ctx()
+        };
         let a = message_action_availability(&message("me", TYPE_TEXT, 3), &multi);
         assert!(!a.can_reply && !a.can_edit && !a.can_recall);
         assert!(a.can_forward, "多选下转发仍然成立（批量转发）");

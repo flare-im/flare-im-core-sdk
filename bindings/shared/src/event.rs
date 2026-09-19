@@ -46,15 +46,10 @@ fn send_ack_json(ack: &flare_im_core_sdk::model::SendAck) -> Value {
                     "track": error.track,
                 }),
             ),
-            None => (
-                String::new(),
-                0,
-                0,
-                false,
-                0,
-                "missing send ack result".to_string(),
-                Value::Null,
-            ),
+            // Reliable queue sends can emit an ack before the durable server result is
+            // available. Match the dispatch response contract: empty result means the
+            // message was accepted into the local send queue, not rejected.
+            None => (String::new(), 0, 0, true, 0, String::new(), Value::Null),
         };
     json!({
         "clientMsgId": ack.client_msg_id,
@@ -459,6 +454,8 @@ mod tests {
         assert_eq!(event, "message.send_ack");
         assert!(payload.get("ack").is_some_and(Value::is_object));
         assert_eq!(payload["ack"]["ackId"], "client-1");
+        assert_eq!(payload["ack"]["success"], true);
+        assert_eq!(payload["ack"]["errorMessage"], "");
         assert!(payload.get("ackId").is_none());
     }
 

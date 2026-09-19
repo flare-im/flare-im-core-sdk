@@ -18,6 +18,124 @@ struct SessionCache {
     apis: ConnectedApis,
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use flare_im_core_sdk::client::{LoginDbKind, SdkConfigOverlay};
+    use flare_im_core_sdk::prelude::in_memory_empty_im_provider;
+
+    #[tokio::test]
+    async fn all_search_dispatch_routes_preserve_query_filters() {
+        use flare_im_core_sdk::model::{IMMessage, MessageType};
+        use flare_im_core_sdk::prelude::in_memory_im_provider;
+        use flare_im_core_sdk::serde_json::{self, json};
+        let client = IMClient::new();
+        client
+            .init(
+                None,
+                Some(SdkConfigOverlay {
+                    data_url: Some("file:///tmp/flare-search-contract-test".into()),
+                    ..Default::default()
+                }),
+            )
+            .await
+            .unwrap();
+        let stores = in_memory_im_provider();
+        let mut rows = Vec::new();
+        for (id, kind, time, sender, recalled) in [
+            ("text", MessageType::Text, 900, "u1", false),
+            ("image", MessageType::Image, 800, "u1", false),
+            ("file", MessageType::File, 700, "u1", false),
+            ("other-sender", MessageType::File, 600, "u2", false),
+            ("recalled", MessageType::File, 650, "u1", true),
+            ("too-old", MessageType::File, 100, "u1", false),
+        ] {
+            let mut m = IMMessage::new(Default::default());
+            m.server_id = id.into();
+            m.client_msg_id = format!("client-{id}");
+            m.conversation_id = "c1".into();
+            m.sender_id = sender.into();
+            m.created_at = time;
+            m.conversation_seq = time;
+            m.message_type = kind as i32;
+            m.is_recalled = recalled;
+            m.content = Some(
+                serde_json::from_value(if kind == MessageType::File {
+                    json!({"contentType":"file", "fileId":id,"fileName":"report-11.pdf",
+                    "mimeType":"application/pdf","fileSize":10,"url":"","description":""})
+                } else {
+                    json!({"contentType":"text","text":"111","mentions":[]})
+                })
+                .unwrap(),
+            );
+            rows.push(m);
+        }
+        stores.messages.save_batch(&rows).await.unwrap();
+        client
+            .prepare("u1", LoginDbKind::IndexedDb(stores))
+            .await
+            .unwrap();
+        let api = client.message().unwrap();
+        let query = json!({"conversationId":"c1","keyword":"11","kinds":["file"],
+            "senderId":"u1","fromTime":500,"toTime":750,"includeRecalled":false,"limit":1});
+        for operation in ["search", "search_in_conversation", "search_by_query"] {
+            let response = crate::generated::dispatch::message::dispatch_message_json(
+                &api,
+                operation,
+                &query.to_string(),
+            )
+            .await
+            .unwrap();
+            let response = crate::binding_response_to_value(response);
+            assert_eq!(
+                response["messages"].as_array().unwrap().len(),
+                1,
+                "{operation}"
+            );
+            assert_eq!(response["messages"][0]["serverId"], "file", "{operation}");
+        }
+        client.logout().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn late_install_cannot_relabel_an_old_accounts_facades() {
+        let client = IMClient::new();
+        let root =
+            std::env::temp_dir().join(format!("flare-binding-session-{}", std::process::id()));
+        client
+            .init(
+                None,
+                Some(SdkConfigOverlay {
+                    data_url: Some(format!("file://{}", root.display())),
+                    ..Default::default()
+                }),
+            )
+            .await
+            .unwrap();
+        client
+            .prepare(
+                "alice",
+                LoginDbKind::IndexedDb(in_memory_empty_im_provider()),
+            )
+            .await
+            .unwrap();
+        let alice = client.connected_apis().await.unwrap();
+        let slot = SessionSlot::default();
+        slot.install(&client, alice.clone()).await;
+        client
+            .prepare("bob", LoginDbKind::IndexedDb(in_memory_empty_im_provider()))
+            .await
+            .unwrap();
+        // A delayed binding completion must not associate Alice's API with Bob's generation.
+        slot.install(&client, alice).await;
+        let bob = slot.message_api(&client).await.unwrap();
+        assert!(bob.search("hello", 10).await.unwrap().is_empty());
+        client.logout().await.unwrap();
+        assert!(slot.message_api(&client).await.is_err());
+        assert!(bob.search("hello", 10).await.is_err());
+    }
+}
+
 /// Per-binding-handle cache for the API facades of the active IM session.
 #[derive(Clone, Default)]
 pub struct SessionSlot {
@@ -41,8 +159,10 @@ impl SessionSlot {
 
     /// Install a freshly returned API snapshot after login.
     pub async fn install(&self, client: &IMClient, apis: ConnectedApis) {
-        let generation = client.session_generation_snapshot();
-        *self.write_cache() = Some(SessionCache { generation, apis });
+        let generation = apis.session_generation();
+        if generation == client.session_generation_snapshot() {
+            *self.write_cache() = Some(SessionCache { generation, apis });
+        }
     }
 
     /// Clear cached API facades after logout/disconnect/uninit.
@@ -62,7 +182,13 @@ impl SessionSlot {
         }
 
         let apis = client.connected_apis().await?;
-        let generation = client.session_generation_snapshot();
+        let generation = apis.session_generation();
+        if generation != client.session_generation_snapshot() {
+            return Err(flare_im_core_sdk::FlareError::localized(
+                flare_im_core_sdk::ErrorCode::NotConnected,
+                "Session changed during API acquisition",
+            ));
+        }
         *self.write_cache() = Some(SessionCache {
             generation,
             apis: apis.clone(),

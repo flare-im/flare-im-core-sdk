@@ -207,7 +207,10 @@ async fn cross_client_actions_reach_the_other_side() {
         .await
         .expect("加表情");
     wait_for(&mut events, "表情回应", |event| {
-        matches!(event, SdkEvent::Message(MessageEvent::ReactionChanged { .. }))
+        matches!(
+            event,
+            SdkEvent::Message(MessageEvent::ReactionChanged { .. })
+        )
     })
     .await;
     passed.push("2 表情回应");

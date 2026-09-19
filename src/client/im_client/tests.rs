@@ -194,7 +194,7 @@ async fn view_api_refresh_worker_does_not_keep_released_api_alive() {
 }
 
 #[tokio::test]
-async fn session_active_sync_requires_connected_api_snapshot_and_active_state() {
+async fn session_active_sync_is_independent_of_transport_state() {
     let client = IMClient::builder()
         .stores(in_memory_empty_im_provider())
         .build()
@@ -207,7 +207,7 @@ async fn session_active_sync_requires_connected_api_snapshot_and_active_state() 
         IMClient::connected_apis_from_inner(&inner).expect("connected apis")
     };
     client.store_connected_apis_snapshot(apis);
-    assert!(!client.session_active_sync());
+    assert!(client.session_active_sync());
 
     client.store_state_snapshot(SdkState::Ready);
     assert!(client.session_active_sync());
@@ -396,4 +396,54 @@ async fn bind_device_id_reads_value_configured_at_init() {
         client.bind_device_id(None).await,
         Some("device-from-init".to_string())
     );
+}
+
+#[tokio::test]
+async fn prepared_session_searches_offline_and_invalidates_old_user() {
+    use crate::client::lifecycle::LoginDbKind;
+    let client = IMClient::new();
+    let root = std::env::temp_dir().join(format!("flare-offline-session-{}", std::process::id()));
+    client
+        .init(
+            None,
+            Some(SdkConfigOverlay {
+                data_url: Some(format!("file://{}", root.display())),
+                ..Default::default()
+            }),
+        )
+        .await
+        .unwrap();
+    client
+        .prepare(
+            "alice",
+            LoginDbKind::IndexedDb(in_memory_empty_im_provider()),
+        )
+        .await
+        .unwrap();
+    let alice_generation = client.session_generation_snapshot();
+    assert_eq!(client.state(), SdkState::Disconnected);
+    assert!(client.session_active_sync());
+    let alice_api = client.message().unwrap();
+    assert!(
+        alice_api
+            .search_in_conversation("c1", "hello", 10)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    // A failed connection must not revoke local API access.
+    client.clear_session_snapshot();
+    assert!(client.connected_apis().await.is_ok());
+    client
+        .prepare("bob", LoginDbKind::IndexedDb(in_memory_empty_im_provider()))
+        .await
+        .unwrap();
+    assert!(client.session_generation_snapshot() > alice_generation);
+    assert_eq!(client.current_user_id().await.as_deref(), Some("bob"));
+    assert!(alice_api.search("hello", 10).await.is_err());
+    let bob_api = client.message().unwrap();
+    client.logout().await.unwrap();
+    assert!(!client.session_active_sync());
+    assert!(client.message().is_err());
+    assert!(bob_api.search("hello", 10).await.is_err());
 }

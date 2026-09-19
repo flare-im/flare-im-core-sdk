@@ -52,7 +52,12 @@ impl IMClient {
     /// 将 IM 会话 token 写入共享 HTTP 上下文（Social Gateway / 媒体 / 能力 API 的 Bearer）。
     pub async fn sync_gateway_http_context(&self, tenant_id: Option<&str>) -> Result<()> {
         let g = self.inner.read().await;
-        if !self.inner_session_active(&g) {
+        if !self.inner_session_active(&g)
+            || !matches!(
+                self.state(),
+                SdkState::Connected | SdkState::Ready | SdkState::Reconnecting
+            )
+        {
             return Err(Self::not_connected());
         }
         let user_id = g

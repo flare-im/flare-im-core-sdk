@@ -36,3 +36,6 @@ quic = ["flare-im-core-sdk/quic"]
 # 用 caret 的话每台机器解析到的补丁版都可能不同，生成的头文件就跟着变——
 # 于是 bridge 那道漂移检查会无缘无故翻红。工具版本泄漏进产物时，必须钉死。
 cbindgen = "=0.29.4"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["test-util"] }

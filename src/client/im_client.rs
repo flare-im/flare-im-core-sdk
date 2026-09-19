@@ -295,16 +295,15 @@ impl IMClient {
     }
 
     fn active_connected_apis_snapshot(&self) -> Option<ConnectedApis> {
-        if !Self::is_active_session_state(self.load_state_snapshot()) {
-            return None;
-        }
         self.session_snapshot
             .load_full()
+            .filter(|apis| apis.session_generation() == self.load_session_generation_snapshot())
             .map(|apis| (*apis).clone())
     }
 
     fn connected_apis_from_inner(g: &IMClientInner) -> Result<ConnectedApis> {
         Ok(ConnectedApis {
+            session_generation: g.session_generation,
             message_api: g.message_api.clone().ok_or_else(Self::not_connected)?,
             conversation_api: g
                 .conversation_api
@@ -333,29 +332,17 @@ impl IMClient {
 
         let g = self.read_active_inner()?;
         let apis = Self::connected_apis_from_inner(&g)?;
-        drop(g);
         self.store_connected_apis_snapshot(apis.clone());
+        drop(g);
         Ok(apis)
     }
 
-    fn is_active_session_state(state: SdkState) -> bool {
-        matches!(
-            state,
-            SdkState::Connected | SdkState::Ready | SdkState::Reconnecting
-        )
-    }
-
+    // Local APIs belong to the prepared user session, not to a socket state.
+    // Remote operations enforce their own transport requirements.
     fn inner_session_active(&self, g: &IMClientInner) -> bool {
-        let has_user = g.current_user_id.as_ref().is_some_and(|s| !s.is_empty());
-        if !has_user {
-            return false;
-        }
-        let state = g
-            .engine
+        g.current_user_id
             .as_ref()
-            .map(|engine| engine.state())
-            .unwrap_or_else(|| self.load_state_snapshot());
-        Self::is_active_session_state(state)
+            .is_some_and(|id| !id.trim().is_empty())
     }
 
     /// 同步 API 使用的读锁：在 Tokio worker 上 **禁止** `blocking_read`，必须用 `try_read`。
@@ -402,8 +389,8 @@ impl IMClient {
             return Err(Self::not_connected());
         }
         let apis = Self::connected_apis_from_inner(&g)?;
-        drop(g);
         self.store_connected_apis_snapshot(apis.clone());
+        drop(g);
         Ok(apis)
     }
 

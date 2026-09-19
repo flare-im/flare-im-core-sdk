@@ -154,15 +154,9 @@ impl MessageReader for MemoryMessageStore {
             .min())
     }
 
-    async fn search(&self, _keyword: &str, limit: u32) -> Result<Vec<IMMessage>> {
-        Ok(self
-            .data
-            .read()
+    async fn search(&self, keyword: &str, limit: u32) -> Result<Vec<IMMessage>> {
+        self.search_by_query(&crate::model::MessageSearchQuery::text(keyword, limit))
             .await
-            .values()
-            .take(limit as usize)
-            .cloned()
-            .collect())
     }
 
     async fn search_in_conversation(
@@ -171,27 +165,88 @@ impl MessageReader for MemoryMessageStore {
         keyword: &str,
         limit: u32,
     ) -> Result<Vec<IMMessage>> {
-        let kw = keyword.trim().to_lowercase();
-        let data = self.data.read().await;
-        let mut results: Vec<_> = data
+        self.search_by_query(&crate::model::MessageSearchQuery::in_conversation(
+            conversation_id,
+            keyword,
+            limit,
+        ))
+        .await
+    }
+
+    async fn search_by_query(
+        &self,
+        query: &crate::model::MessageSearchQuery,
+    ) -> Result<Vec<IMMessage>> {
+        use super::search::{
+            elem_search_text, message_type_values_for_search, search_text_for_content_bytes,
+        };
+        let keyword = query.normalized_keyword();
+        let types = message_type_values_for_search(&query.kinds);
+        let time = |m: &IMMessage| {
+            if m.created_at > 0 {
+                m.created_at
+            } else if m.client_created_at > 0 {
+                m.client_created_at
+            } else {
+                m.local_state.sort_ts
+            }
+        };
+        let mut results: Vec<_> = self
+            .data
+            .read()
+            .await
             .values()
             .filter(|m| {
-                if m.conversation_id != conversation_id {
+                if !query.include_recalled && m.is_recalled {
                     return false;
                 }
-                let from_extra = m
-                    .attributes
-                    .get("contentText")
-                    .is_some_and(|t| t.to_lowercase().contains(&kw));
-                let from_preview = m
-                    .text_for_storage()
-                    .is_some_and(|t| t.to_lowercase().contains(&kw));
-                from_extra || from_preview
+                if query
+                    .conversation_id
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .is_some_and(|id| m.conversation_id != id)
+                {
+                    return false;
+                }
+                if query
+                    .sender_id
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .is_some_and(|id| m.sender_id != id)
+                {
+                    return false;
+                }
+                if !types.is_empty() && !types.contains(&m.message_type) {
+                    return false;
+                }
+                if query.from_time.is_some_and(|t| time(m) < t)
+                    || query.to_time.is_some_and(|t| time(m) > t)
+                {
+                    return false;
+                }
+                keyword.as_ref().is_none_or(|kw| {
+                    m.content
+                        .as_ref()
+                        .and_then(elem_search_text)
+                        .or_else(|| search_text_for_content_bytes(&m.encoded_content))
+                        .or_else(|| m.text_for_storage())
+                        .is_some_and(|text| text.to_lowercase().contains(kw))
+                        || m.attributes
+                            .get("contentText")
+                            .is_some_and(|text| text.to_lowercase().contains(kw))
+                })
             })
             .cloned()
             .collect();
-        results.sort_by_key(|m| std::cmp::Reverse(m.conversation_seq));
-        results.truncate(limit as usize);
+        results.sort_by(|a, b| {
+            time(b)
+                .cmp(&time(a))
+                .then_with(|| b.conversation_seq.cmp(&a.conversation_seq))
+                .then_with(|| a.server_id.cmp(&b.server_id))
+        });
+        results.truncate(query.normalized_limit() as usize);
         Ok(results)
     }
 }
@@ -556,6 +611,10 @@ impl ConversationWriter for MemoryConversationStore {
             let mut updated = conv.clone();
             updated.unread_count = unread_count;
             updated.last_read_seq = last_read_seq;
+            if unread_count == 0 {
+                updated.mention_count = 0;
+                updated.mention_me = false;
+            }
             data.insert(conversation_id.to_string(), updated);
         }
         Ok(())
@@ -803,6 +862,83 @@ mod tests {
         message.local_state.sending = true;
         message.local_state.is_local = true;
         message
+    }
+
+    #[tokio::test]
+    async fn search_filters_types_before_limit_and_honors_global_keyword() {
+        use crate::model::{MessageSearchKind as Kind, MessageSearchQuery, MessageType};
+        let store = MemoryMessageStore::new();
+        let mut rows = Vec::new();
+        for (index, kind) in [
+            MessageType::Text,
+            MessageType::RichText,
+            MessageType::Quote,
+            MessageType::Image,
+            MessageType::ImageGroup,
+            MessageType::Video,
+            MessageType::Audio,
+            MessageType::File,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let mut m = local_message(&format!("m{index}"), &format!("c{index}"));
+            m.message_type = kind as i32;
+            m.created_at = 1000 - index as u64;
+            m.conversation_seq = 1000 - index as u64;
+            m.content = Some(crate::model::Elem::Text(
+                crate::content::message_elem::TextElem {
+                    text: "needle 11".into(),
+                    mentions: vec![],
+                },
+            ));
+            rows.push(m);
+        }
+        let mut foreign = rows[7].clone();
+        foreign.server_id = "foreign".into();
+        foreign.client_msg_id = "foreign-client".into();
+        foreign.conversation_id = "elsewhere".into();
+        rows.push(foreign);
+        store.save_batch(&rows).await.unwrap();
+        for (kind, expected) in [
+            (Kind::Text, vec![0, 1, 2]),
+            (Kind::Image, vec![3, 4]),
+            (Kind::Video, vec![5]),
+            (Kind::Audio, vec![6]),
+            (Kind::File, vec![7]),
+            (Kind::Media, vec![3, 4, 5, 6, 7]),
+            (Kind::Message, vec![0, 1, 2, 3, 4, 5, 6, 7]),
+        ] {
+            let results = store
+                .search_by_query(&MessageSearchQuery {
+                    conversation_id: Some("conv-memory-dupe".into()),
+                    keyword: Some("NEEDLE".into()),
+                    kinds: vec![kind],
+                    ..Default::default()
+                })
+                .await
+                .unwrap();
+            assert_eq!(
+                results
+                    .iter()
+                    .map(|m| m.server_id.clone())
+                    .collect::<Vec<_>>(),
+                expected.iter().map(|i| format!("m{i}")).collect::<Vec<_>>()
+            );
+        }
+        let result = store
+            .search_by_query(&MessageSearchQuery {
+                conversation_id: Some("conv-memory-dupe".into()),
+                keyword: None,
+                kinds: vec![Kind::File],
+                limit: 1,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(result[0].server_id, "m7");
+        assert!(store.search("absent", 50).await.unwrap().is_empty());
+        assert_eq!(store.search("NEEDLE", 50).await.unwrap().len(), 9);
     }
 
     #[tokio::test]

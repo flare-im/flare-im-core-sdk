@@ -10,6 +10,7 @@ use crate::extension::capability::SdkCapabilityRegistry;
 /// 已连接会话的 Facade 克隆集合（不持有 `IMClient` 全局写锁）。
 #[derive(Clone)]
 pub struct ConnectedApis {
+    pub(crate) session_generation: u64,
     pub message_api: MessageApi,
     pub conversation_api: ConversationApi,
     pub media_api: Arc<MediaApi>,
@@ -18,4 +19,11 @@ pub struct ConnectedApis {
     pub message_build_api: Arc<MessageBuildApi>,
     pub view_api: Arc<ViewApi>,
     pub capability_registry: Arc<SdkCapabilityRegistry>,
+}
+
+impl ConnectedApis {
+    /// Generation captured with the facades; never relabel an old snapshot on install.
+    pub fn session_generation(&self) -> u64 {
+        self.session_generation
+    }
 }

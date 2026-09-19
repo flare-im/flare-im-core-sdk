@@ -34,6 +34,13 @@ impl MessageReader for EmptyMessageStore {
         Ok(Vec::new())
     }
 
+    async fn search_by_query(
+        &self,
+        _query: &crate::model::MessageSearchQuery,
+    ) -> Result<Vec<IMMessage>> {
+        Ok(Vec::new())
+    }
+
     async fn search(&self, _keyword: &str, _limit: u32) -> Result<Vec<IMMessage>> {
         Ok(Vec::new())
     }

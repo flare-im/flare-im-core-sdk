@@ -159,26 +159,12 @@ pub trait MessageReader: Send + Sync {
             .min())
     }
     async fn search(&self, keyword: &str, limit: u32) -> Result<Vec<IMMessage>>;
-    async fn search_by_query(&self, query: &MessageSearchQuery) -> Result<Vec<IMMessage>> {
-        if let Some(conversation_id) = query
-            .conversation_id
-            .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-        {
-            return self
-                .search_in_conversation(
-                    conversation_id,
-                    query.keyword.as_deref().unwrap_or_default(),
-                    query.normalized_limit(),
-                )
-                .await;
-        }
-        self.search(
-            query.keyword.as_deref().unwrap_or_default(),
-            query.normalized_limit(),
-        )
-        .await
+    /// Stores must implement the complete query contract; never silently discard filters.
+    async fn search_by_query(&self, _query: &MessageSearchQuery) -> Result<Vec<IMMessage>> {
+        Err(crate::shared::error::FlareError::localized(
+            crate::shared::error::ErrorCode::OperationNotSupported,
+            "Message store does not implement full search queries",
+        ))
     }
     /// 在指定会话内按正文关键字搜索（本地 SQLite）。
     async fn search_in_conversation(

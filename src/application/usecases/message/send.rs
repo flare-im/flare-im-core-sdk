@@ -768,10 +768,11 @@ fn uploaded_media_to_audio_descriptor(uploaded: &UploadedMedia) -> Option<AudioI
 }
 
 fn uploaded_media_display_url(uploaded: &UploadedMedia) -> String {
-    uploaded
-        .cdn_url
-        .as_deref()
-        .or(uploaded.url.as_deref())
+    [uploaded.cdn_url.as_deref(), uploaded.url.as_deref()]
+        .into_iter()
+        .flatten()
+        .map(str::trim)
+        .find(|url| url.starts_with("https://") || url.starts_with("http://"))
         .unwrap_or_default()
         .to_string()
 }
@@ -917,7 +918,8 @@ fn default_file_name_for_mime(mime_type: &str) -> &'static str {
 mod tests {
     use super::{
         ImageFormat, MessageSendUseCase, attach_local_media_preview, extract_media_source,
-        processed_media_from_source, uploaded_media_to_image_descriptor,
+        processed_media_from_source, uploaded_media_display_url,
+        uploaded_media_to_image_descriptor,
     };
     use async_trait::async_trait;
     use flare_proto::common::ImageInfo;
@@ -1292,6 +1294,20 @@ mod tests {
     }
 
     #[test]
+    fn uploaded_media_display_url_ignores_local_upload_locator() {
+        let uploaded = UploadedMedia {
+            file_id: "file-1".to_string(),
+            file_name: "demo.txt".to_string(),
+            mime_type: "text/plain".to_string(),
+            size: 12,
+            url: Some("/tmp/demo.txt".to_string()),
+            cdn_url: None,
+        };
+
+        assert_eq!(uploaded_media_display_url(&uploaded), "");
+    }
+
+    #[test]
     fn attach_local_media_preview_keeps_optimistic_sources_renderable() {
         let mut file = local_file_message("/tmp/demo.png");
         attach_local_media_preview(&mut file);
@@ -1335,12 +1351,13 @@ mod tests {
         let seen_for_cb = seen.clone();
         let external: crate::application::UploadProgressCallback =
             Arc::new(move |progress: crate::application::UploadProgress| {
-                seen_for_cb.lock().expect("lock").push(progress.uploaded_bytes);
+                seen_for_cb
+                    .lock()
+                    .expect("lock")
+                    .push(progress.uploaded_bytes);
             });
 
-        let send_task = harness
-            .usecase
-            .send_with_media(message, Some(external));
+        let send_task = harness.usecase.send_with_media(message, Some(external));
         tokio::pin!(send_task);
         tokio::select! {
             _ = harness.media.wait_until_upload_started() => {}
@@ -1354,7 +1371,10 @@ mod tests {
                 && stored.local_state.upload_progress > 0
             {
                 mid_progress = stored.local_state.upload_progress;
-                assert!(stored.local_state.uploading, "上传中期间 uploading 必须为真");
+                assert!(
+                    stored.local_state.uploading,
+                    "上传中期间 uploading 必须为真"
+                );
                 break;
             }
             tokio::time::sleep(std::time::Duration::from_millis(5)).await;
@@ -1373,9 +1393,15 @@ mod tests {
             .await
             .expect("store read")
             .expect("message");
-        assert!(!stored.local_state.uploading, "上传结束后 uploading 必须归假");
+        assert!(
+            !stored.local_state.uploading,
+            "上传结束后 uploading 必须归假"
+        );
         assert_eq!(stored.local_state.upload_progress, 100);
-        assert!(stored.local_state.sending, "上传完成后进入发送中，直到 ack 才落定");
+        assert!(
+            stored.local_state.sending,
+            "上传完成后进入发送中，直到 ack 才落定"
+        );
 
         let observed = seen.lock().expect("lock").clone();
         assert!(

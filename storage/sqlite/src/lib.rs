@@ -13,16 +13,23 @@ mod schema_registry;
 
 use anyhow::Result as AnyhowResult;
 use log::LevelFilter;
+use once_cell::sync::Lazy;
 use sqlx::ConnectOptions;
 use sqlx::SqlitePool;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
+use std::collections::HashMap;
 use std::fmt;
 use std::path::Path;
 use std::str::FromStr;
+use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 
 pub use runtime::SqliteRuntime;
 pub use schema_registry::{SchemaInitializer, register_schema_init, register_schema_init_with};
+
+type PoolRegistry = Mutex<HashMap<String, SqlitePool>>;
+
+static POOL_REGISTRY: Lazy<PoolRegistry> = Lazy::new(|| Mutex::new(HashMap::new()));
 
 /// SQLite 安全配置。
 ///
@@ -100,6 +107,38 @@ fn pool_options() -> SqlitePoolOptions {
         .acquire_slow_threshold(Duration::from_secs(8))
 }
 
+fn pool_registry_guard() -> MutexGuard<'static, HashMap<String, SqlitePool>> {
+    match POOL_REGISTRY.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => {
+            log::error!("SQLite pool registry mutex poisoned; recovering pool registry");
+            poisoned.into_inner()
+        }
+    }
+}
+
+async fn shared_pool(database_url: &str) -> AnyhowResult<SqlitePool> {
+    if let Some(pool) = pool_registry_guard()
+        .get(database_url)
+        .filter(|pool| !pool.is_closed())
+        .cloned()
+    {
+        return Ok(pool);
+    }
+
+    let opened = create_pool(database_url).await?;
+    let mut registry = pool_registry_guard();
+    if let Some(pool) = registry
+        .get(database_url)
+        .filter(|pool| !pool.is_closed())
+        .cloned()
+    {
+        return Ok(pool);
+    }
+    registry.insert(database_url.to_string(), opened.clone());
+    Ok(opened)
+}
+
 /// 创建 SQLite 连接池（不建表）
 ///
 /// 默认 `max_connections = 1`：嵌入式客户端优先保证本地写入串行，避免同进程多连接互相抢
@@ -149,7 +188,9 @@ pub fn database_url_from_path(path: &Path) -> String {
 
 /// 创建连接池并执行所有已注册的 [register_schema_init] 初始化器。
 pub async fn open_pool(database_url: &str) -> AnyhowResult<SqlitePool> {
-    open_pool_with_security(database_url, SqliteSecurityConfig::default()).await
+    let pool = shared_pool(database_url).await?;
+    schema_registry::run_registered_schema_inits(&pool).await?;
+    Ok(pool)
 }
 
 /// 创建连接池、应用安全配置，并执行所有已注册的 [register_schema_init] 初始化器。
@@ -253,6 +294,25 @@ mod tests {
         } else {
             encrypted.expect_err("plain SQLite must reject encryption config");
         }
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn open_pool_reuses_default_pool_for_same_database_url() {
+        let root = std::env::temp_dir().join(format!(
+            "flare sqlite shared pool test {}",
+            std::process::id()
+        ));
+        let db = root.join("flare im sdk.db");
+        std::fs::create_dir_all(&root).expect("create temp sqlite dir");
+
+        let url = database_url_from_path(&db);
+        let first = open_pool(&url).await.expect("open first sqlite pool");
+        let second = open_pool(&url).await.expect("open second sqlite pool");
+
+        first.close().await;
+        assert!(second.is_closed(), "same URL should reuse one pool handle");
 
         let _ = std::fs::remove_dir_all(root);
     }

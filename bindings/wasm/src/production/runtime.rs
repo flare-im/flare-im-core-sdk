@@ -1,6 +1,7 @@
 //! Production browser runtime backed by real [`IMClient`] + WebSocket transport.
 
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
 use flare_im_core_sdk::client::lifecycle::LoginDbKind;
 use flare_im_core_sdk::event::SharedEventReceiver;
@@ -42,12 +43,12 @@ fn parse_request(request_json: &str) -> Result<Value, JsValue> {
     serde_json::from_str(request_json).map_err(|error| js_error("invalidParameter", "parse", error))
 }
 
-fn spawn_event_bridge(rx: SharedEventReceiver, bridge: SessionTaskSlot) {
+fn spawn_event_bridge(rx: SharedEventReceiver, bridge: SessionTaskSlot, runtime_id: u64) {
     let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
     bridge.replace(move || {
         let _ = cancel_tx.send(());
     });
-    tokio_runtime::spawn_detached(forward_event_rx_to_js(rx, cancel_rx));
+    tokio_runtime::spawn_detached(forward_event_rx_to_js(runtime_id, rx, cancel_rx));
 }
 
 #[wasm_bindgen]
@@ -71,8 +72,7 @@ impl FlareImWasmRuntime {
 
     #[wasm_bindgen(js_name = setEventCallback)]
     pub fn set_event_callback(&self, callback: Option<Function>) {
-        let _ = self;
-        set_event_callback(callback);
+        set_event_callback(self.state.runtime_id, callback);
     }
 
     /// Register JS IndexedDB persistence host callbacks before `sdk.login`.
@@ -119,16 +119,46 @@ impl FlareImWasmRuntime {
         let operation = operation.to_string();
         let request_json = request_json.to_string();
         let state = self.state.clone();
+        let mut invocation = state.invocations.begin(&operation);
         future_to_promise(async move {
-            tokio_runtime::run_sdk(
-                async move { invoke_impl(state, &operation, &request_json).await },
-            )
+            tokio_runtime::run_sdk(async move {
+                if state.disposed.load(Ordering::Acquire) {
+                    return Err(js_error("wasm.disposed", &operation, "runtime disposed"));
+                }
+                tokio::select! {
+                    biased;
+                    _ = invocation.cancelled() => Err(js_error(
+                        "wasm.operation_cancelled", &operation,
+                        "Local operation cancelled; remote writes may already have committed",
+                    )),
+                    result = invoke_impl(state, &operation, &request_json) => result,
+                }
+            })
             .await
         })
     }
 
-    pub fn dispose(&self) {
-        clear_event_callback();
+    #[wasm_bindgen(js_name = cancelPendingInvocations)]
+    pub fn cancel_pending_invocations(&self) -> bool {
+        self.state.invocations.cancel_pending()
+    }
+
+    pub fn dispose(&self) -> js_sys::Promise {
+        self.state.disposed.store(true, Ordering::Release);
+        clear_event_callback(self.state.runtime_id);
+        self.state.clear_event_bridge();
+        self.state.invocations.cancel_pending();
+        let state = self.state.clone();
+        future_to_promise(async move {
+            tokio_runtime::run_sdk(async move {
+                state
+                    .logout()
+                    .await
+                    .map_err(|e| map_sdk_err("sdk.dispose", e))?;
+                Ok(JsValue::UNDEFINED)
+            })
+            .await
+        })
     }
 }
 
@@ -185,6 +215,7 @@ async fn invoke_impl(
             let event_bridge = session_state.event_bridge();
             event_bridge.clear();
             let event_bridge_for_login = event_bridge.clone();
+            let runtime_id = state.runtime_id;
             let store_provider = build_web_store_provider(&user_id).await;
             let login_result = client
                 .login(
@@ -193,7 +224,7 @@ async fn invoke_impl(
                     LoginDbKind::IndexedDb(store_provider),
                     move |bus, _| {
                         let rx = bus.subscribe_shared_raw();
-                        spawn_event_bridge(rx, event_bridge_for_login.clone());
+                        spawn_event_bridge(rx, event_bridge_for_login.clone(), runtime_id);
                     },
                 )
                 .await;
@@ -227,7 +258,7 @@ async fn invoke_impl(
             // 预热后立即订阅事件总线 → 转发 JS（等价 login 闭包在 connect 前所做）。
             let bus = client.bus().await.map_err(|e| map_sdk_err(operation, e))?;
             let rx = bus.subscribe_shared_raw();
-            spawn_event_bridge(rx, event_bridge);
+            spawn_event_bridge(rx, event_bridge, state.runtime_id);
             Ok(Value::Null)
         }
         "sdk.connect" => {
@@ -263,7 +294,6 @@ async fn invoke_impl(
                 .logout()
                 .await
                 .map_err(|e| map_sdk_err(operation, e))?;
-            clear_event_callback();
             Ok(Value::Null)
         }
         "sdk.uninit" => {
@@ -277,7 +307,7 @@ async fn invoke_impl(
             Ok(Value::Null)
         }
         "sdk.dispose" | "sdk.hard_reset" => {
-            clear_event_callback();
+            clear_event_callback(state.runtime_id);
             state.clear_event_bridge();
             state.clear_session().await;
             let _ = state.client().logout().await;
