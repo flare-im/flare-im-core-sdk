@@ -82,7 +82,7 @@ pub fn parse_mentions(text: &str, candidates: &[MentionCandidate]) -> ParsedMent
         }
     }
     // 长记号优先，避免前缀吃掉更长的匹配。
-    tokens.sort_by(|a, b| b.0.chars().count().cmp(&a.0.chars().count()));
+    tokens.sort_by_key(|a| std::cmp::Reverse(a.0.chars().count()));
 
     let mut i = 0usize;
     while i < chars.len() {
