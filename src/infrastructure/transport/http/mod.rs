@@ -69,6 +69,29 @@ pub fn unwrap_api_response<T>(body: HttpApiResponse<T>, action: &str) -> Result<
         .ok_or_else(|| FlareError::general_error(format!("{action} response missing data")))
 }
 
+/// 解析“成功但业务对象可以不存在”的标准响应。
+///
+/// JSON 的 `"data": null` 会反序列化为 [`HttpApiResponse::data`] 的 `None`；
+/// 这对查询当前有效邀请链接一类接口是正常结果，不能误报为协议缺字段。
+pub fn unwrap_optional_api_response<T>(
+    body: HttpApiResponse<T>,
+    action: &str,
+) -> Result<Option<T>> {
+    if !body.is_success() {
+        return Err(FlareError::localized(
+            ErrorCode::GeneralError,
+            format!(
+                "{action} failed: {} {}",
+                body.reason.unwrap_or_default(),
+                body.message.unwrap_or_default()
+            )
+            .trim()
+            .to_string(),
+        ));
+    }
+    Ok(body.data)
+}
+
 /// 解析无业务 body 的成功响应（DELETE / logout 等）。
 ///
 /// Gateway 对 `()` 成功响应通常序列化为 `"data": null`，不能走 [`unwrap_api_response`]。
@@ -86,4 +109,31 @@ pub fn unwrap_void_api_response(body: HttpApiResponse<()>, action: &str) -> Resu
         ));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{HttpApiResponse, unwrap_optional_api_response};
+
+    #[test]
+    fn optional_response_accepts_successful_null_data() {
+        let response: HttpApiResponse<String> =
+            serde_json::from_str(r#"{"code":0,"data":null}"#).unwrap();
+
+        assert_eq!(
+            unwrap_optional_api_response(response, "get optional").unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn optional_response_preserves_present_data() {
+        let response: HttpApiResponse<String> =
+            serde_json::from_str(r#"{"code":0,"data":"present"}"#).unwrap();
+
+        assert_eq!(
+            unwrap_optional_api_response(response, "get optional").unwrap(),
+            Some("present".to_string())
+        );
+    }
 }

@@ -6,6 +6,7 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, RwLock};
 
+use super::presence_wire::BatchGetUserPresenceHttpRequest;
 use crate::client::api::session_guard::SessionGuard;
 use crate::infrastructure::transport::http::http_client::HttpRequestContext;
 use crate::infrastructure::transport::http::{
@@ -54,12 +55,6 @@ pub struct UserPresenceDto {
 #[serde(rename_all = "camelCase")]
 struct BatchGetUserPresenceHttpResponse {
     presences: HashMap<String, UserPresenceDto>,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct BatchGetUserPresenceHttpRequest {
-    user_ids: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -436,20 +431,6 @@ mod tests {
         assert!(!dto.is_online);
         assert_eq!(dto.status, "offline");
         assert!(dto.devices.is_empty());
-    }
-
-    #[test]
-    fn batch_request_serializes_camel_case_user_ids() {
-        let payload = BatchGetUserPresenceHttpRequest {
-            user_ids: vec!["alice".into(), "bob".into()],
-        };
-        let json = serde_json::to_value(payload).expect("serialize batch request");
-        assert_eq!(
-            json.get("userIds")
-                .and_then(|v| v.as_array())
-                .map(|a| a.len()),
-            Some(2)
-        );
     }
 
     #[test]

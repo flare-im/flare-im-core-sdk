@@ -49,7 +49,14 @@ impl ConnectionFsm {
             (S::Connecting, E::Disconnected) => S::Disconnected,
             (S::Connected, E::BootstrapDone) => S::Ready,
             (S::Connected, E::Disconnected) => S::Disconnected,
-            (S::Ready, E::DisconnectRequested) => S::Disconnected,
+            // `disconnect` is deliberately idempotent and may race a failed or
+            // still-in-flight connection attempt. Every live state therefore
+            // accepts the explicit teardown request, and an already-disconnected
+            // engine treats it as a no-op instead of emitting a spurious warning.
+            (
+                S::Disconnected | S::Connecting | S::Connected | S::Ready | S::Reconnecting,
+                E::DisconnectRequested,
+            ) => S::Disconnected,
             (S::Ready, E::Disconnected) => S::Disconnected,
             (S::Ready, E::ReconnectRequested) => S::Reconnecting,
             (S::Reconnecting, E::Connected) => S::Connected,
@@ -62,5 +69,27 @@ impl ConnectionFsm {
             }
         };
         Ok(next)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ConnectionEvent, ConnectionFsm, ConnectionState};
+
+    #[test]
+    fn disconnect_request_is_idempotent_from_every_connection_state() {
+        for state in [
+            ConnectionState::Disconnected,
+            ConnectionState::Connecting,
+            ConnectionState::Connected,
+            ConnectionState::Ready,
+            ConnectionState::Reconnecting,
+        ] {
+            assert_eq!(
+                ConnectionFsm::transition(state, &ConnectionEvent::DisconnectRequested).unwrap(),
+                ConnectionState::Disconnected,
+                "disconnect must be safe from {state:?}",
+            );
+        }
     }
 }

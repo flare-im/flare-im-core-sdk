@@ -199,6 +199,11 @@ impl MessageStore for SqliteMessageRepo {
                 action = action,
                 "apply_reaction remove"
             );
+            // `message.list` can start from the denormalized `reactionsJson` stored on the
+            // message row before the view assembler hydrates the normalized reaction table.
+            // Add already refreshes that snapshot below; remove must do the same or the deleted
+            // self reaction survives every reload until a later server event happens to repair it.
+            refresh_reactions_json_snapshot(&self.pool, message_server_id).await?;
             return Ok(());
         }
         sqlx::query(

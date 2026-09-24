@@ -158,6 +158,9 @@ async fn fetch_bytes_with_headers_local(
         .dyn_into()
         .map_err(|e| FlareError::system(format!("http response cast failed: {e:?}")))?;
     let status = resp.status();
+    // 浏览器里 Rust 侧的 HTTP 结果原本完全不可见（fetch 在 devtools 网络面板能看到状态，
+    // 但看不出核心把它当成了什么）。非 2xx 记 warn 带响应体 —— 网关的错误体只有
+    // code/reason/message，不含凭据；2xx 记 debug，方便对账「请求发了、也成功了」。
     if !(200..300).contains(&status) {
         let body = JsFuture::from(
             resp.text()
@@ -167,8 +170,16 @@ async fn fetch_bytes_with_headers_local(
         .ok()
         .and_then(|v| v.as_string())
         .unwrap_or_default();
+        tracing::warn!(
+            method = %method,
+            url = %url,
+            status,
+            body = %body,
+            "http request failed"
+        );
         return Err(http_error_from_response_status(status, &body));
     }
+    tracing::debug!(method = %method, url = %url, status, "http request ok");
     let response_headers = collect_response_headers(resp.headers())?;
     let buffer = JsFuture::from(
         resp.array_buffer()

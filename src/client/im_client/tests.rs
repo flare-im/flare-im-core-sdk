@@ -1,6 +1,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use super::session_watchers::recovered_connection_state;
 use super::{
     HeartbeatAppState, IMClient, NetworkChangeEvent, SdkConfigOverlay, SdkState,
     reconnect_delay_bounds_secs, reconnect_delay_secs, should_skip_reconnect_for_disconnect_reason,
@@ -26,6 +27,28 @@ fn reconnect_delay_uses_capped_exponential_backoff_with_jitter_window() {
             "attempt {attempt} delay {actual} outside {min}..={max}"
         );
     }
+}
+
+#[test]
+fn stale_reconnect_only_restores_a_stable_connected_engine_state() {
+    assert_eq!(
+        recovered_connection_state(SdkState::Ready, true),
+        Some(SdkState::Ready)
+    );
+    assert_eq!(
+        recovered_connection_state(SdkState::Connected, true),
+        Some(SdkState::Connected)
+    );
+    assert_eq!(
+        recovered_connection_state(SdkState::Reconnecting, true),
+        None,
+        "an in-flight reconnect must publish its own completion"
+    );
+    assert_eq!(
+        recovered_connection_state(SdkState::Ready, false),
+        None,
+        "an unavailable transport must never clear the reconnect notice"
+    );
 }
 
 #[tokio::test]

@@ -1141,6 +1141,42 @@ async fn apply_reaction_event_ignores_stale_seq_and_accepts_newer_seq() {
 }
 
 #[tokio::test]
+async fn apply_reaction_remove_clears_message_snapshot_immediately() {
+    let repo = make_repo().await;
+    let mut message = IMMessage::new(flare_proto::common::Message::default());
+    message.server_id = "server-local-reaction".to_string();
+    message.client_msg_id = "client-local-reaction".to_string();
+    message.conversation_id = "conv-1".to_string();
+    message.sender_id = "u1".to_string();
+    repo.save_batch(&[message]).await.unwrap();
+
+    repo.apply_reaction(
+        "conv-1",
+        "server-local-reaction",
+        "u1",
+        "👍",
+        ReactionAction::Add as i32,
+    )
+    .await
+    .unwrap();
+    let added = repo.get("server-local-reaction").await.unwrap().unwrap();
+    assert_eq!(added.reactions.len(), 1);
+
+    repo.apply_reaction(
+        "conv-1",
+        "server-local-reaction",
+        "u1",
+        "👍",
+        ReactionAction::Remove as i32,
+    )
+    .await
+    .unwrap();
+    let removed = repo.get("server-local-reaction").await.unwrap().unwrap();
+    assert!(removed.reactions.is_empty());
+    assert!(!removed.attributes.contains_key("reactionsJson"));
+}
+
+#[tokio::test]
 async fn save_batch_without_reaction_snapshot_keeps_existing_reactions() {
     let repo = make_repo().await;
     let mut message = IMMessage::new(flare_proto::common::Message::default());

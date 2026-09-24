@@ -171,15 +171,16 @@ impl IMClient {
                     let Some(reconnect_client) = client.upgrade() else {
                         break;
                     };
-                    if reconnect_client
-                        .is_current_transport_connected(generation)
+                    if let Some(restored_state) = reconnect_client
+                        .restore_state_after_stale_reconnect(generation)
                         .await
                     {
                         tracing::debug!(
                             session_generation = generation,
                             attempt,
                             reason = %reason,
-                            "skip stale reconnect event because transport is already connected"
+                            ?restored_state,
+                            "reconciled stale reconnect event because transport is already connected"
                         );
                         break;
                     }
@@ -440,15 +441,26 @@ impl IMClient {
         self.load_session_generation_snapshot() == generation
     }
 
-    async fn is_current_transport_connected(&self, generation: u64) -> bool {
+    /// A socket transport may recover on its own while the reconnect watcher is
+    /// sleeping. In that race the watcher has already published `Reconnecting`,
+    /// but the engine is still authoritatively `Connected`/`Ready`; simply
+    /// leaving the loop strands every UI on the stale reconnecting snapshot.
+    /// Republish the engine state before leaving so current and future
+    /// subscribers converge on the usable session.
+    async fn restore_state_after_stale_reconnect(&self, generation: u64) -> Option<SdkState> {
         let g = self.inner.read().await;
         if g.session_generation != generation {
-            return false;
+            return None;
         }
-        match g.engine.as_ref() {
-            Some(engine) => engine.transport_connected().await,
-            None => false,
-        }
+        let engine = g.engine.as_ref()?;
+        let state = recovered_connection_state(engine.state(), engine.transport_connected().await)?;
+        self.store_state_snapshot(state);
+        engine
+            .bus()
+            .publish(SdkEvent::Connection(ConnectionEvent::StateChanged {
+                state,
+            }));
+        Some(state)
     }
 
     #[tracing::instrument(skip(self, token), fields(session_generation = generation, user_id = %user_id))]
@@ -544,6 +556,19 @@ impl IMClient {
             tracing::warn!(%err, "disconnect after terminal event failed");
         }
         true
+    }
+}
+
+/// Only a stable engine state may clear a reconnect notice. Transport health by
+/// itself is not enough while another connect/reconnect transition is active.
+pub(super) fn recovered_connection_state(
+    state: SdkState,
+    transport_connected: bool,
+) -> Option<SdkState> {
+    if transport_connected && matches!(state, SdkState::Connected | SdkState::Ready) {
+        Some(state)
+    } else {
+        None
     }
 }
 

@@ -398,11 +398,16 @@ impl SdkEngine {
         self.transport.disconnect().await?;
         {
             let mut guard = self.connection_state.write().await;
-            *guard = ConnectionState::Disconnected;
-            self.store_state_snapshot(ConnectionState::Disconnected);
-            drop(guard);
+            // The FSM normally performed this transition before transport
+            // teardown. Keep the assignment as a defensive fallback, but do not
+            // publish the same disconnected state twice.
+            if *guard != ConnectionState::Disconnected {
+                *guard = ConnectionState::Disconnected;
+                self.store_state_snapshot(ConnectionState::Disconnected);
+                drop(guard);
+                self.publish_state(ConnectionState::Disconnected);
+            }
         }
-        self.publish_state(ConnectionState::Disconnected);
         Ok(())
     }
 

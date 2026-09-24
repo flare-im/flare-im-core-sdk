@@ -13,6 +13,9 @@ mod presence;
 #[cfg(not(target_arch = "wasm32"))]
 #[path = "presence/native.rs"]
 mod presence;
+#[cfg(any(target_arch = "wasm32", test))]
+#[path = "presence/wire.rs"]
+mod presence_wire;
 pub(crate) mod session_guard;
 mod view;
 

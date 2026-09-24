@@ -142,7 +142,7 @@ pub mod prelude {
     };
     pub use crate::infrastructure::transport::{
         HttpApiResponse, HttpClient, HttpRequestContext, unwrap_api_response,
-        unwrap_void_api_response,
+        unwrap_optional_api_response, unwrap_void_api_response,
     };
     pub use crate::kernel::event::{
         ConnectionEvent, ConnectionEventType, ConversationEvent, ConversationEventType,

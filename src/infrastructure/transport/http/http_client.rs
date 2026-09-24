@@ -42,6 +42,7 @@ pub struct HttpRequestContext {
     gateway_token: RwLock<String>,
     tenant_id: RwLock<String>,
     user_id: RwLock<String>,
+    session_id: RwLock<String>,
     trace_id: RwLock<String>,
     language: RwLock<String>,
 }
@@ -81,6 +82,14 @@ impl HttpRequestContext {
         *self.gateway_token.write().await = String::new();
         *self.tenant_id.write().await = String::new();
         *self.user_id.write().await = String::new();
+        *self.session_id.write().await = String::new();
+    }
+
+    /// Set the refresh-token session represented by the current Gateway bearer.
+    /// The Gateway forwards this as request context so device management can
+    /// distinguish this session from the account's other active sessions.
+    pub async fn set_gateway_session_id(&self, session_id: String) {
+        *self.session_id.write().await = session_id.trim().to_string();
     }
 
     pub async fn gateway_token_is_empty(&self) -> bool {
@@ -140,6 +149,7 @@ impl HttpRequestContext {
         }
         *self.tenant_id.write().await = tenant_id.clone();
         let trace_id = self.trace_id.read().await.clone();
+        let session_id = self.session_id.read().await.clone();
         let language = self.language.read().await.clone();
         let mut headers = HashMap::new();
         if !token.trim().is_empty() {
@@ -153,6 +163,9 @@ impl HttpRequestContext {
         }
         if !user_id.is_empty() {
             headers.insert("x-user-id".to_string(), user_id);
+        }
+        if !session_id.is_empty() {
+            headers.insert("x-session-id".to_string(), session_id);
         }
         if trace_id.is_empty() {
             headers.insert("x-trace-id".to_string(), Uuid::new_v4().to_string());
@@ -183,6 +196,9 @@ mod tests {
                 None,
             )
             .await;
+        context
+            .set_gateway_session_id("session-a".to_string())
+            .await;
 
         let headers = context.build_headers().await;
         assert_eq!(
@@ -194,6 +210,10 @@ mod tests {
             Some("tenant-a")
         );
         assert_eq!(headers.get("x-user-id").map(String::as_str), Some("alice"));
+        assert_eq!(
+            headers.get("x-session-id").map(String::as_str),
+            Some("session-a")
+        );
 
         context.clear_gateway_context().await;
 
@@ -204,6 +224,7 @@ mod tests {
         );
         assert_eq!(headers.get("x-tenant-id").map(String::as_str), Some("0"));
         assert_eq!(headers.get("x-user-id"), None);
+        assert_eq!(headers.get("x-session-id"), None);
     }
 }
 
