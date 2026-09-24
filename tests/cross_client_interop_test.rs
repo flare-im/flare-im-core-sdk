@@ -15,7 +15,6 @@
 //!   cargo test --features lifecycle-sqlite --test cross_client_interop_test -- --nocapture
 
 use std::env;
-use std::sync::Arc;
 use std::time::Duration;
 
 use flare_im_core_sdk::SdkEvent;
@@ -185,11 +184,11 @@ async fn cross_client_actions_reach_the_other_side() {
     // 后续所有动作都以它为目标，这样也顺带证明两端拿到的是同一个 id。
     let mut server_id = String::new();
     wait_for(&mut events, "文本消息", |event| {
-        if let SdkEvent::Message(MessageEvent::ReceivedBatch { messages }) = event {
-            if let Some(hit) = messages.iter().find(|m| text_of(m).contains(&tag)) {
-                server_id = hit.server_id.clone();
-                return true;
-            }
+        if let SdkEvent::Message(MessageEvent::ReceivedBatch { messages }) = event
+            && let Some(hit) = messages.iter().find(|m| text_of(m).contains(&tag))
+        {
+            server_id = hit.server_id.clone();
+            return true;
         }
         false
     })
@@ -290,11 +289,11 @@ async fn cross_client_actions_reach_the_other_side() {
         .expect("发送第二条");
     let mut second_id = String::new();
     wait_for(&mut events, "第二条文本", |event| {
-        if let SdkEvent::Message(MessageEvent::ReceivedBatch { messages }) = event {
-            if let Some(hit) = messages.iter().find(|m| text_of(m).contains(&tag2)) {
-                second_id = hit.server_id.clone();
-                return true;
-            }
+        if let SdkEvent::Message(MessageEvent::ReceivedBatch { messages }) = event
+            && let Some(hit) = messages.iter().find(|m| text_of(m).contains(&tag2))
+        {
+            second_id = hit.server_id.clone();
+            return true;
         }
         false
     })
@@ -395,11 +394,11 @@ async fn cross_client_actions_reach_the_other_side() {
         .expect("发送 @全员");
     let mut received_mention_all = false;
     wait_for(&mut events, "@全员 消息", |event| {
-        if let SdkEvent::Message(MessageEvent::ReceivedBatch { messages }) = event {
-            if let Some(hit) = messages.iter().find(|m| text_of(m).contains(&tag_all)) {
-                received_mention_all = hit.mention_all;
-                return true;
-            }
+        if let SdkEvent::Message(MessageEvent::ReceivedBatch { messages }) = event
+            && let Some(hit) = messages.iter().find(|m| text_of(m).contains(&tag_all))
+        {
+            received_mention_all = hit.mention_all;
+            return true;
         }
         false
     })

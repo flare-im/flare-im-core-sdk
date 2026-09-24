@@ -257,7 +257,6 @@ mod tests {
                     mentions,
                 },
             )),
-            ..Default::default()
         }
     }
 

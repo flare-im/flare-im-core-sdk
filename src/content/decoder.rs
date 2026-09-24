@@ -148,7 +148,6 @@ mod inbound_hardening_tests {
     fn encoded(content: Content) -> Vec<u8> {
         MessageContent {
             content: Some(content),
-            ..Default::default()
         }
         .encode_to_vec()
     }
