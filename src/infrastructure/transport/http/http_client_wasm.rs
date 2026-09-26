@@ -153,7 +153,17 @@ async fn fetch_bytes_with_headers_local(
         .map_err(|e| FlareError::system(format!("http request init failed: {e:?}")))?;
     let resp_value = JsFuture::from(window.fetch_with_request(&request))
         .await
-        .map_err(|e| FlareError::system(format!("http fetch failed: {method} {url}: {e:?}")))?;
+        .map_err(|e| {
+            // 浏览器报告离线时 fetch 根本没发出去：标成 NetworkUnreachable，调用方可以放心重发
+            // 一次性请求（刷新令牌）。在线时的失败分不清服务端是否已处理，仍按系统错误。
+            let reason = format!("http fetch failed: {method} {url}: {e:?}");
+            let offline = web_sys::window().is_some_and(|w| !w.navigator().on_line());
+            if offline {
+                FlareError::localized(crate::shared::error::ErrorCode::NetworkUnreachable, reason)
+            } else {
+                FlareError::system(reason)
+            }
+        })?;
     let resp: Response = resp_value
         .dyn_into()
         .map_err(|e| FlareError::system(format!("http response cast failed: {e:?}")))?;

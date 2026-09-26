@@ -180,6 +180,24 @@ impl HttpRequestContext {
     }
 }
 
+/// 请求发送失败时的错误。
+///
+/// 连接阶段就失败（DNS 解析、拒绝连接、网络不可达、TLS 握手）时请求根本没离开本机，
+/// 标成 [`ErrorCode::NetworkUnreachable`]：调用方据此可以放心重发一次性的请求——典型是
+/// 刷新令牌，服务端把同一枚刷新令牌的第二次使用当成泄露，会吊销该用户全部会话，所以
+/// 「可能已送达」的失败绝不能重发，而「肯定没发出去」的必须能重发，否则合盖唤醒那一下
+/// 网络还没起来，会话续期就被永久卡死。连接中途断开、超时等分不清服务端是否已处理，
+/// 仍按系统错误。
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn send_failure(error: reqwest::Error) -> FlareError {
+    let reason = format!("http request failed: {error}");
+    if error.is_connect() {
+        FlareError::localized(crate::shared::error::ErrorCode::NetworkUnreachable, reason)
+    } else {
+        FlareError::system(reason)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::HttpRequestContext;
@@ -225,6 +243,45 @@ mod tests {
         assert_eq!(headers.get("x-tenant-id").map(String::as_str), Some("0"));
         assert_eq!(headers.get("x-user-id"), None);
         assert_eq!(headers.get("x-session-id"), None);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[tokio::test]
+    async fn a_request_that_never_left_is_marked_network_unreachable() {
+        // 1 号端口没人监听：连接被拒，请求没发出去。
+        let client = super::HttpClient::new("http://127.0.0.1:1");
+        let error = client
+            .post::<_, serde_json::Value>("/api/v1/auth/refresh", &serde_json::json!({}))
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error.code(),
+            Some(crate::shared::error::ErrorCode::NetworkUnreachable),
+            "{error}"
+        );
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[tokio::test]
+    async fn a_request_cut_off_after_connecting_is_not_claimed_unsent() {
+        // 连上后对方一字不回就断开：请求可能已被处理，不能说它没发出去。
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            while let Ok((socket, _)) = listener.accept().await {
+                drop(socket);
+            }
+        });
+        let client = super::HttpClient::new(format!("http://{addr}"));
+        let error = client
+            .post::<_, serde_json::Value>("/api/v1/auth/refresh", &serde_json::json!({}))
+            .await
+            .unwrap_err();
+        assert_ne!(
+            error.code(),
+            Some(crate::shared::error::ErrorCode::NetworkUnreachable),
+            "{error}"
+        );
     }
 }
 
@@ -987,10 +1044,7 @@ impl HttpClient {
         if let Some(b) = body {
             req = req.json(b);
         }
-        let resp = req
-            .send()
-            .await
-            .map_err(|e| FlareError::system(format!("http request failed: {e}")))?;
+        let resp = req.send().await.map_err(send_failure)?;
         let status = resp.status();
         if !status.is_success() {
             let body = resp.text().await.unwrap_or_default();
@@ -1030,10 +1084,7 @@ impl HttpClient {
         if let Some(b) = body {
             req = req.json(b);
         }
-        let resp = req
-            .send()
-            .await
-            .map_err(|e| FlareError::system(format!("http request failed: {e}")))?;
+        let resp = req.send().await.map_err(send_failure)?;
         let status = resp.status();
         if !status.is_success() {
             let body = resp.text().await.unwrap_or_default();
