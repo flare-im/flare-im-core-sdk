@@ -312,6 +312,7 @@ impl IMClient {
                 g.extension_components.clone(),
                 g.configured_ws_url.clone(),
                 g.connect_token_refresher.clone(),
+                g.configured_config.clone(),
             )
         };
         self.logout_for_login().await?;
@@ -366,7 +367,12 @@ impl IMClient {
         // 优先级 overlay > 构建期配置 > 兜底，判据抽在 lifecycle::resolve_ws_url，
         // 那里有完整来龙去脉与回归测试。
         let ws_url = crate::client::lifecycle::resolve_ws_url(snap.1.as_ref(), snap.5.as_deref());
-        let config = merge_sdk_config(&ws_url, snap.1.as_ref());
+        let config = match snap.7 {
+            Some(base) => {
+                crate::client::lifecycle::merge_sdk_config_onto(base, &ws_url, snap.1.as_ref())
+            }
+            None => merge_sdk_config(&ws_url, snap.1.as_ref()),
+        };
         let mut child_builder = IMClientBuilder::new().config(config).stores(stores);
         if let Some(ctx) = snap.3.clone() {
             child_builder = child_builder.http_request_context(ctx);

@@ -103,6 +103,9 @@ pub(crate) struct IMClientInner {
     /// 所以配置传递断了也看不出来。线上实测过一次——web 客户端业务接口全通，
     /// 唯独 IM 长连接去连访问者自己的电脑。
     pub configured_ws_url: Option<String>,
+    /// 构建期传入的完整配置。登录重建会话时以它为底叠 overlay，而不是以默认值为底——
+    /// 否则除 ws 地址外，宿主配好的 HTTP 地址等都会在登录那一刻被默认值顶掉。
+    pub configured_config: Option<crate::client::config::SdkConfig>,
     pub data_root: Option<PathBuf>,
     pub current_user_id: Option<String>,
     pub connect_token: Option<String>,

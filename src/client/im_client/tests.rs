@@ -631,3 +631,67 @@ async fn a_token_pushed_in_by_the_host_first_still_counts_as_a_swap() {
         Some("fresh")
     );
 }
+
+#[tokio::test]
+async fn the_build_time_http_url_survives_the_login_rebuild() {
+    use crate::client::config::SdkConfig;
+    use crate::client::lifecycle::LoginDbKind;
+    let mut config = SdkConfig::new("wss://host.example/im-ws");
+    config.http_url = Some("https://host.example/api".to_string());
+    let client = IMClient::builder()
+        .config(config)
+        .stores(in_memory_empty_im_provider())
+        .build()
+        .unwrap();
+    let root = std::env::temp_dir().join(format!("flare-http-url-{}", std::process::id()));
+    client
+        .init(
+            None,
+            Some(SdkConfigOverlay {
+                data_url: Some(format!("file://{}", root.display())),
+                ..Default::default()
+            }),
+        )
+        .await
+        .unwrap();
+    client
+        .prepare(
+            "alice",
+            LoginDbKind::IndexedDb(in_memory_empty_im_provider()),
+        )
+        .await
+        .unwrap();
+
+    let http_url = client
+        .inner
+        .read()
+        .await
+        .configured_config
+        .as_ref()
+        .and_then(|config| config.http_url.clone());
+    assert_eq!(http_url.as_deref(), Some("https://host.example/api"));
+    client.logout().await.unwrap();
+}
+
+#[test]
+fn an_overlay_still_overrides_the_build_time_config() {
+    use crate::client::config::SdkConfig;
+    let mut base = SdkConfig::new("wss://host.example/im-ws");
+    base.http_url = Some("https://host.example/api".to_string());
+    base.tenant_id = Some("t-base".to_string());
+
+    let merged = crate::client::lifecycle::merge_sdk_config_onto(
+        base,
+        "wss://other.example/im-ws",
+        Some(&SdkConfigOverlay {
+            http_url: Some("https://other.example/api".to_string()),
+            ..Default::default()
+        }),
+    );
+    assert_eq!(merged.ws_url.as_deref(), Some("wss://other.example/im-ws"));
+    assert_eq!(
+        merged.http_url.as_deref(),
+        Some("https://other.example/api")
+    );
+    assert_eq!(merged.tenant_id.as_deref(), Some("t-base"));
+}

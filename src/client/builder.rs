@@ -424,6 +424,7 @@ impl IMClientBuilder {
     pub fn build(self) -> Result<IMClient> {
         // self.config 后面会被 move 进 transport，先把 ws 地址取出来。
         let configured_ws_url = self.config.ws_url.clone();
+        let configured_config = self.config.clone();
         if let Some(err) = self.builder_errors.first().cloned() {
             return Err(err);
         }
@@ -763,6 +764,7 @@ impl IMClientBuilder {
             // 把构建期的 ws 地址留下来：登录时重建子客户端只看快照里的 overlay，
             // 不留这一份的话父配置就在那一刻丢了（见字段上的说明）。
             configured_ws_url: configured_ws_url.clone(),
+            configured_config: Some(configured_config),
             engine: Some(engine),
             message_api: Some(MessageApi::new(
                 message_send_use_case,

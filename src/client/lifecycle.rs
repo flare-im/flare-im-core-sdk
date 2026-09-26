@@ -106,7 +106,20 @@ pub fn resolve_ws_url(overlay: Option<&SdkConfigOverlay>, configured: Option<&st
 ///
 /// 仅覆盖 `Some(...)` 字段，未提供的字段保持默认值。
 pub fn merge_sdk_config(ws_url: &str, overlay: Option<&SdkConfigOverlay>) -> SdkConfig {
-    let mut config = SdkConfig::new(ws_url);
+    merge_sdk_config_onto(SdkConfig::new(ws_url), ws_url, overlay)
+}
+
+/// 把 overlay 叠到**已有的**配置上（登录重建会话时用构建期配置作底）。
+///
+/// 只拿默认值作底的后果实测过：宿主在构建期配好的 IM HTTP 地址（媒体、在线状态）在登录
+/// 那一刻被 `SdkConfig::new` 的默认值 `http://localhost:50050` 顶掉——部署后浏览器把
+/// 图片上传、在线状态请求发到访问者自己的电脑，被直接拦下。
+pub fn merge_sdk_config_onto(
+    mut config: SdkConfig,
+    ws_url: &str,
+    overlay: Option<&SdkConfigOverlay>,
+) -> SdkConfig {
+    config.ws_url = Some(ws_url.to_string());
     if let Some(o) = overlay {
         if let Some(u) = &o.ws_url {
             config.ws_url = Some(u.clone());
