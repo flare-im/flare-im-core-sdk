@@ -10,6 +10,25 @@ use serde::{Deserialize, Serialize};
 use crate::infrastructure::transport::http::HttpClient;
 use crate::shared::error::{ErrorCode, FlareError, Result};
 
+/// 宿主托管令牌时的连接令牌续期回调。
+///
+/// 核心自己只会向 SDK 托管的签发端点换令牌（[`GatewayTokenProvider`]，要配
+/// `auth.token_endpoint`）。令牌由宿主递进来时（例如社交网关连同 IM 连接令牌一起签发），
+/// 核心没有渠道换新：连接一断，重连就一直拿着那枚过期令牌去撞网关，网关回通用的鉴权失败，
+/// 核心只记日志、不发任何事件，宿主也就无从知道该续期了。实测 web 端因此两个多小时重连
+/// 三百多次、始终连不上。
+///
+/// 装上这个回调后，重连被网关按鉴权拒绝时核心会向宿主要一枚新的，换到了就立刻用它重连。
+/// 宿主负责单飞与防重放：刷新令牌通常是一次性的，同一枚被换两次会被服务端当成泄露。
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+pub trait ConnectTokenRefresher: Send + Sync {
+    /// 返回当前可用的连接令牌（刷新成功后是新的那枚）；会话已失效、换不到时返回 `None`。
+    ///
+    /// 核心只在返回值与手上那枚不同时才当作「换到了」，所以刷新没成功时原样返回旧的也可以。
+    async fn refresh_connect_token(&self) -> Option<String>;
+}
+
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct IssuedAccessToken {

@@ -85,6 +85,17 @@ impl IMClient {
         Ok(())
     }
 
+    /// 安装宿主托管令牌的续期回调：重连被网关按鉴权拒绝时，核心向宿主要一枚新的连接令牌。
+    ///
+    /// SDK 托管形态（配了 `auth.token_endpoint`）不需要它，核心自己会向网关换。
+    /// 登录时重建会话也会保留它；传 `None` 卸下。
+    pub async fn set_connect_token_refresher(
+        &self,
+        refresher: Option<Arc<dyn crate::client::token_provider::ConnectTokenRefresher>>,
+    ) {
+        self.inner.write().await.connect_token_refresher = refresher;
+    }
+
     /// 更新 access token 并同步到共享 HTTP 上下文（token 刷新后调用）。
     pub async fn update_access_token(
         &self,

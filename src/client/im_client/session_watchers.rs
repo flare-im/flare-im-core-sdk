@@ -210,7 +210,8 @@ impl IMClient {
                         }
                         Err(err) => {
                             // 鉴权类失败（token 过期/无效）时，下一次强制换新 token 再重连。
-                            if is_auth_reconnect_failure(&err) {
+                            let auth_rejected = is_auth_reconnect_failure(&err);
+                            if auth_rejected {
                                 force_token_refresh = true;
                             }
                             tracing::warn!(
@@ -220,6 +221,19 @@ impl IMClient {
                                 force_token_refresh,
                                 "SDK reconnect failed"
                             );
+                            // 宿主托管令牌：网关按鉴权拒绝时立刻向宿主换一枚。换到了就从头计退避，
+                            // 别让一枚早已过期的令牌把恢复拖到退避上限。只在网关明确拒绝之后才换——
+                            // 那说明网络是通的；断网时就去换，刷新请求多半也失败，而一次性的刷新
+                            // 令牌失败后宿主不会再拿它重试，会话就此作废。
+                            if auth_rejected
+                                && reconnect_client
+                                    .refresh_connect_token_via_host(generation)
+                                    .await
+                                    .is_some()
+                            {
+                                attempt = 0;
+                                force_token_refresh = false;
+                            }
                         }
                     }
                 }
@@ -286,6 +300,41 @@ impl IMClient {
             }
         }
         Some((user_id, token, interval_secs, max_attempts))
+    }
+
+    /// 宿主托管令牌：向宿主装的续期回调要一枚新的连接令牌。
+    ///
+    /// 只有拿到的令牌与手上那枚不同才算换到（写回并返回它）；没装回调、会话世代已变、
+    /// 宿主返回空或原样返回旧令牌时返回 `None`，调用方照常退避。
+    pub(super) async fn refresh_connect_token_via_host(&self, generation: u64) -> Option<String> {
+        let (refresher, rejected) = {
+            let g = self.inner.read().await;
+            if g.session_generation != generation {
+                return None;
+            }
+            // SDK 托管形态由网关签发器负责，不走宿主。
+            if Self::gateway_token_provider_from_inner(&g).is_some() {
+                return None;
+            }
+            (g.connect_token_refresher.clone()?, g.connect_token.clone())
+        };
+        let fresh = refresher.refresh_connect_token().await?;
+        let fresh = fresh.trim();
+        // 和刷新**之前**手上那枚比，而不是和写回时的比：宿主刷新成功后往往还会另起任务把新令牌
+        // 推进来（update_access_token），它可能抢先写入，那时再比就会误判成「没换到」。
+        if fresh.is_empty() || rejected.as_deref() == Some(fresh) {
+            return None;
+        }
+        let mut g = self.inner.write().await;
+        if g.session_generation != generation {
+            return None;
+        }
+        g.connect_token = Some(fresh.to_string());
+        tracing::info!(
+            session_generation = generation,
+            "reconnect rejected by the gateway; the host supplied a fresh connect token"
+        );
+        Some(fresh.to_string())
     }
 
     /// SDK 托管形态下的网关签发器；应用托管（显式 token）时为 `None`。

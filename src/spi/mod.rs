@@ -10,6 +10,7 @@ pub use crate::application::{
     InboundNotificationView, LocalConversationClearResult, LocalConversationVisibility,
     NotificationDispatchReport, NotificationHandleResult, NotificationHandler,
 };
+pub use crate::client::token_provider::ConnectTokenRefresher;
 pub use crate::domain::UserProfile;
 pub use crate::domain::conversation::id::{
     CidConversationType, extract_conversation_type, generate_ai_conversation_id,

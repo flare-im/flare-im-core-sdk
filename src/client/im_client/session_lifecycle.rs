@@ -311,6 +311,7 @@ impl IMClient {
                 g.http_request_context.clone(),
                 g.extension_components.clone(),
                 g.configured_ws_url.clone(),
+                g.connect_token_refresher.clone(),
             )
         };
         self.logout_for_login().await?;
@@ -379,6 +380,8 @@ impl IMClient {
         if inner.http_request_context.is_none() {
             inner.http_request_context = snap.3;
         }
+        // 宿主装的续期回调跨会话保留：它属于宿主，不属于某一次登录。
+        inner.connect_token_refresher = snap.6;
         inner.current_user_id = Some(user_id.to_string());
         // 本地会话身份随 prepare 建立：bootstrap_startup_home / 视图等本地优先
         // 读路径在 connect 之前即可出图（热启动 T0）。

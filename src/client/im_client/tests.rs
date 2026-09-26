@@ -470,3 +470,164 @@ async fn prepared_session_searches_offline_and_invalidates_old_user() {
     assert!(client.message().is_err());
     assert!(bob_api.search("hello", 10).await.is_err());
 }
+
+/// 记下被调了几次的宿主续期回调。
+struct CountingRefresher {
+    token: Option<String>,
+    calls: std::sync::atomic::AtomicUsize,
+}
+
+#[async_trait::async_trait]
+impl crate::client::token_provider::ConnectTokenRefresher for CountingRefresher {
+    async fn refresh_connect_token(&self) -> Option<String> {
+        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.token.clone()
+    }
+}
+
+fn counting_refresher(token: Option<&str>) -> Arc<CountingRefresher> {
+    Arc::new(CountingRefresher {
+        token: token.map(str::to_string),
+        calls: std::sync::atomic::AtomicUsize::new(0),
+    })
+}
+
+async fn host_managed_client(generation: u64, refresher: Arc<CountingRefresher>) -> IMClient {
+    let client = IMClient::new();
+    {
+        let mut g = client.inner.write().await;
+        g.session_generation = generation;
+        g.connect_token = Some("expired".to_string());
+        g.connect_token_refresher = Some(refresher);
+    }
+    client
+}
+
+#[tokio::test]
+async fn a_rejected_reconnect_takes_a_fresh_token_from_the_host() {
+    let refresher = counting_refresher(Some("fresh"));
+    let client = host_managed_client(3, refresher.clone()).await;
+
+    assert_eq!(
+        client.refresh_connect_token_via_host(3).await.as_deref(),
+        Some("fresh")
+    );
+    assert_eq!(
+        client.inner.read().await.connect_token.as_deref(),
+        Some("fresh"),
+        "the next reconnect attempt must read the new token"
+    );
+    assert_eq!(refresher.calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn the_same_token_handed_back_is_not_a_swap() {
+    // 宿主刷新没成功（冷却中、刷新令牌已用过）时原样返回旧令牌：不能当成换到了，
+    // 否则重连会从头计退避、对着网关快速空转。
+    for unchanged in [Some("expired"), Some("  "), None] {
+        let refresher = counting_refresher(unchanged);
+        let client = host_managed_client(3, refresher).await;
+        assert_eq!(client.refresh_connect_token_via_host(3).await, None);
+        assert_eq!(
+            client.inner.read().await.connect_token.as_deref(),
+            Some("expired")
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_superseded_session_does_not_ask_the_host() {
+    let refresher = counting_refresher(Some("fresh"));
+    let client = host_managed_client(4, refresher.clone()).await;
+
+    assert_eq!(client.refresh_connect_token_via_host(3).await, None);
+    assert_eq!(refresher.calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+    assert_eq!(
+        client.inner.read().await.connect_token.as_deref(),
+        Some("expired")
+    );
+}
+
+#[tokio::test]
+async fn sdk_managed_tokens_are_left_to_the_gateway_issuer() {
+    let refresher = counting_refresher(Some("fresh"));
+    let client = host_managed_client(3, refresher.clone()).await;
+    client.inner.write().await.sdk_config = Some(SdkConfigOverlay {
+        auth: Some(crate::client::config::SdkAuthConfig {
+            token_endpoint: Some("http://gateway/api".to_string()),
+            refresh_lead_secs: None,
+        }),
+        ..Default::default()
+    });
+
+    assert_eq!(client.refresh_connect_token_via_host(3).await, None);
+    assert_eq!(refresher.calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn the_host_refresher_survives_the_login_rebuild() {
+    use crate::client::lifecycle::LoginDbKind;
+    let client = IMClient::new();
+    let root = std::env::temp_dir().join(format!("flare-refresher-{}", std::process::id()));
+    client
+        .init(
+            None,
+            Some(SdkConfigOverlay {
+                data_url: Some(format!("file://{}", root.display())),
+                ..Default::default()
+            }),
+        )
+        .await
+        .unwrap();
+    client
+        .set_connect_token_refresher(Some(counting_refresher(Some("fresh"))))
+        .await;
+    client
+        .prepare(
+            "alice",
+            LoginDbKind::IndexedDb(in_memory_empty_im_provider()),
+        )
+        .await
+        .unwrap();
+    assert!(client.inner.read().await.connect_token_refresher.is_some());
+    client.logout().await.unwrap();
+}
+
+/// 模拟宿主的另一条推送路径：刷新成功后先把新令牌写进核心，再把它返回。
+struct PushingRefresher {
+    client: std::sync::Mutex<Option<IMClient>>,
+}
+
+#[async_trait::async_trait]
+impl crate::client::token_provider::ConnectTokenRefresher for PushingRefresher {
+    async fn refresh_connect_token(&self) -> Option<String> {
+        let client = self.client.lock().unwrap().clone()?;
+        // 没配 HTTP 上下文时同步那一步会报错，但令牌已先写入，正是要模拟的情形。
+        let _ = client.update_access_token("fresh", None).await;
+        Some("fresh".to_string())
+    }
+}
+
+#[tokio::test]
+async fn a_token_pushed_in_by_the_host_first_still_counts_as_a_swap() {
+    let refresher = Arc::new(PushingRefresher {
+        client: std::sync::Mutex::new(None),
+    });
+    let client = IMClient::new();
+    {
+        let mut g = client.inner.write().await;
+        g.session_generation = 3;
+        g.connect_token = Some("expired".to_string());
+        g.connect_token_refresher = Some(refresher.clone());
+    }
+    *refresher.client.lock().unwrap() = Some(client.clone());
+
+    assert_eq!(
+        client.refresh_connect_token_via_host(3).await.as_deref(),
+        Some("fresh")
+    );
+    assert_eq!(
+        client.inner.read().await.connect_token.as_deref(),
+        Some("fresh")
+    );
+}

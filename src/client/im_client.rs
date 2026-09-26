@@ -108,6 +108,9 @@ pub(crate) struct IMClientInner {
     pub connect_token: Option<String>,
     /// 长效刷新令牌（SDK 托管形态由网关下发）。接入令牌过期后凭它换新，支撑 7x24。
     pub refresh_token: Option<String>,
+    /// 宿主托管令牌时的续期回调（见 [`crate::client::token_provider::ConnectTokenRefresher`]）。
+    pub connect_token_refresher:
+        Option<Arc<dyn crate::client::token_provider::ConnectTokenRefresher>>,
     pub engine: Option<SdkEngine>,
     pub message_api: Option<MessageApi>,
     pub media_api: Option<Arc<MediaApi>>,
