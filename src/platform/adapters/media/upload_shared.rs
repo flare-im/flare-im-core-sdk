@@ -1,10 +1,38 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use sha2::{Digest, Sha256};
 
+use crate::application::callbacks::{UploadPhase, UploadProgress, UploadProgressCallback};
 use crate::domain::{MediaUploadManifestVo, MediaUploadPartVo};
-use crate::infrastructure::transport::{UploadFileHttpResponse, UploadFileMetadataHttp};
+use crate::infrastructure::transport::{
+    SentBytesCallback, UploadFileHttpResponse, UploadFileMetadataHttp,
+};
 use crate::model::UploadedMedia;
+
+/// 单次 PUT 的已发送字节 → `Uploading` 进度事件。没有进度订阅者时返回 `None`，
+/// 传输层就走不计数的原路径。
+pub(super) fn single_put_progress(
+    on_progress: Option<&UploadProgressCallback>,
+    file_name: &str,
+    upload_id: &str,
+    total_bytes: u64,
+) -> Option<SentBytesCallback> {
+    let on_progress = on_progress?.clone();
+    let file_name = file_name.to_string();
+    let upload_id = upload_id.to_string();
+    Some(Arc::new(move |uploaded_bytes: u64| {
+        on_progress(UploadProgress {
+            file_name: file_name.clone(),
+            upload_id: upload_id.clone(),
+            phase: UploadPhase::Uploading,
+            uploaded_bytes,
+            total_bytes,
+            chunk_index: Some(0),
+            total_chunks: Some(1),
+        });
+    }))
+}
 
 pub(super) fn compute_bytes_fingerprints(data: &[u8]) -> (String, String, Option<String>) {
     let file_size = data.len() as u64;

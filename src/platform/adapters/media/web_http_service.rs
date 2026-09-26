@@ -13,7 +13,7 @@ use tokio::sync::RwLock;
 
 use super::upload_shared::{
     build_control_headers, build_upload_metadata, build_upload_parts, compute_bytes_fingerprints,
-    infer_file_type, random_upload_id, upload_file_to_uploaded_media,
+    infer_file_type, random_upload_id, single_put_progress, upload_file_to_uploaded_media,
 };
 use crate::application::callbacks::{UploadPhase, UploadProgress, UploadProgressCallback};
 use crate::domain::DirectUploadTransportKindVo;
@@ -181,8 +181,10 @@ impl MediaService {
                 );
                 let mut put_headers = HashMap::new();
                 put_headers.insert("Content-Type".to_string(), mime_type.clone());
+                let on_sent =
+                    single_put_progress(on_progress, &file_name, &upload_id, bytes.len() as u64);
                 self.http
-                    .put_bytes_full_url(&upload_url, bytes, &put_headers)
+                    .put_bytes_full_url_with_progress(&upload_url, bytes, &put_headers, on_sent)
                     .await?;
             }
             DirectUploadTransportKindVo::MultipartPut => {

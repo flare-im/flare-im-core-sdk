@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use crate::application::commands::SendMessageCommand;
 use crate::application::{UploadPhase, UploadProgress, UploadProgressCallback};
@@ -286,11 +287,20 @@ impl MessageSendUseCase {
         let store = self.store.clone();
         let conversation_store = self.conversation_store.clone();
         let bus = self.bus.clone();
+        let last_persisted = Arc::new(AtomicU32::new(0));
         Arc::new(move |progress: UploadProgress| {
             if let Some(callback) = external.as_ref() {
                 callback(progress.clone());
             }
-            let next_progress = upload_progress_percent(&progress);
+            let next_progress = if matches!(progress.phase, UploadPhase::Finished) {
+                100
+            } else {
+                upload_progress_percent(&progress).min(99)
+            };
+            if !progress_worth_persisting(last_persisted.load(Ordering::Relaxed), next_progress) {
+                return;
+            }
+            last_persisted.store(next_progress, Ordering::Relaxed);
             let client_msg_id = client_msg_id.clone();
             let store = store.clone();
             let conversation_store = conversation_store.clone();
@@ -305,11 +315,6 @@ impl MessageSendUseCase {
                 if !current.local_state.uploading && current.local_state.upload_progress >= 100 {
                     return;
                 }
-                let next_progress = if matches!(progress.phase, UploadPhase::Finished) {
-                    100
-                } else {
-                    next_progress.min(99)
-                };
                 if next_progress < current.local_state.upload_progress {
                     return;
                 }
@@ -492,6 +497,15 @@ async fn update_local_conversation_projection(
         .await
 }
 
+/// 进度落库的最小步长（百分点）。每次落库都整条重写消息再经总线推给界面，
+/// 而传输层按 64KB 块 / XHR 事件上报 —— 不节流，几 MB 的文件就是上百次整条重写。
+const UPLOAD_PROGRESS_PERSIST_STEP: u32 = 5;
+
+fn progress_worth_persisting(last_persisted: u32, next: u32) -> bool {
+    next > last_persisted
+        && (next >= 99 || next >= last_persisted.saturating_add(UPLOAD_PROGRESS_PERSIST_STEP))
+}
+
 fn upload_progress_percent(progress: &UploadProgress) -> u32 {
     if matches!(progress.phase, UploadPhase::Finished) {
         return 100;
@@ -522,10 +536,28 @@ fn attach_local_media_preview(message: &mut IMMessage) {
             {
                 file.url = locator;
             }
+            // 上传完成前气泡就要有文件名、大小、类型：以前要等上传结果回填，
+            // 上传期间文件气泡只有一个没名字的图标。
+            if let Some(facts) = local_media_facts(&file.file_id) {
+                if file.file_name.trim().is_empty() {
+                    file.file_name = facts.file_name;
+                }
+                if file.file_size <= 0 {
+                    file.file_size = facts.size;
+                }
+                if file.mime_type.trim().is_empty() {
+                    file.mime_type = facts.mime_type;
+                }
+            }
         }
         Elem::Image(image) => {
             if let Some(source) = image.source.as_mut() {
                 attach_image_preview(source);
+                fill_local_facts(
+                    &source.image_id.clone(),
+                    &mut source.mime_type,
+                    &mut source.size,
+                );
             }
             if let Some(thumbnail) = image.thumbnail.as_mut() {
                 attach_image_preview(thumbnail);
@@ -555,6 +587,7 @@ fn attach_local_media_preview(message: &mut IMMessage) {
             }
             if let Some(source) = video.source.as_mut() {
                 attach_video_preview(source, &video.video_id);
+                fill_local_facts(&video.video_id, &mut source.mime_type, &mut source.size);
             }
         }
         Elem::Audio(audio) => {
@@ -571,6 +604,7 @@ fn attach_local_media_preview(message: &mut IMMessage) {
             }
             if let Some(source) = audio.source.as_mut() {
                 attach_audio_preview(source, &audio.audio_id);
+                fill_local_facts(&audio.audio_id, &mut source.mime_type, &mut source.size);
             }
         }
         _ => {}
@@ -607,6 +641,122 @@ fn attach_audio_preview(info: &mut AudioInfoElem, fallback: &str) {
     if let Some(locator) = locator {
         info.url = locator;
     }
+}
+
+/// 从本地媒体来源读出的文件名、大小、类型（上传前就能显示）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LocalMediaFacts {
+    file_name: String,
+    size: i64,
+    mime_type: String,
+}
+
+fn fill_local_facts(locator: &str, mime_type: &mut String, size: &mut i64) {
+    if let Some(facts) = local_media_facts(locator) {
+        if mime_type.trim().is_empty() {
+            *mime_type = facts.mime_type;
+        }
+        if *size <= 0 {
+            *size = facts.size;
+        }
+    }
+}
+
+/// `data:<mime>;name=<编码后的文件名>;size=<字节数>;base64,…` 读头部；本地路径读文件名，
+/// 原生端再读文件大小。认不出的来源（blob:、content:// 等）返回 `None`，交给上传结果回填。
+fn local_media_facts(locator: &str) -> Option<LocalMediaFacts> {
+    let source = extract_media_source(locator)?;
+    match source.kind {
+        MediaSourceKind::Bytes if source.locator.starts_with("data:") => {
+            let (header, body) = source.locator.split_once(',')?;
+            let header = header.strip_prefix("data:").unwrap_or(header);
+            let mut facts = LocalMediaFacts {
+                file_name: String::new(),
+                size: 0,
+                mime_type: String::new(),
+            };
+            let mut base64_encoded = false;
+            for part in header.split(';').map(str::trim).filter(|p| !p.is_empty()) {
+                if part.eq_ignore_ascii_case("base64") {
+                    base64_encoded = true;
+                } else if let Some((key, value)) = part.split_once('=') {
+                    match key {
+                        "name" => facts.file_name = percent_decode(value),
+                        "size" => facts.size = value.parse::<i64>().unwrap_or(0),
+                        _ => {}
+                    }
+                } else if part.contains('/') {
+                    facts.mime_type = part.to_string();
+                }
+            }
+            if facts.size <= 0 && base64_encoded {
+                let body = body.trim_end();
+                let padding = body.chars().rev().take_while(|c| *c == '=').count();
+                facts.size = ((body.len() / 4) * 3).saturating_sub(padding) as i64;
+            }
+            if facts.mime_type.is_empty() {
+                facts.mime_type = mime_type_for_name(&facts.file_name);
+            }
+            Some(facts)
+        }
+        MediaSourceKind::Path => {
+            let path = std::path::Path::new(&source.locator);
+            let file_name = path
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            #[cfg(not(target_arch = "wasm32"))]
+            let size = std::fs::metadata(path)
+                .map(|meta| meta.len() as i64)
+                .unwrap_or(0);
+            #[cfg(target_arch = "wasm32")]
+            let size = 0;
+            let mime_type = mime_type_for_name(&file_name);
+            Some(LocalMediaFacts {
+                file_name,
+                size,
+                mime_type,
+            })
+        }
+        _ => None,
+    }
+}
+
+/// 按扩展名给出 MIME；认不出返回空串（不硬塞 octet-stream，让上传结果来定）。
+fn mime_type_for_name(file_name: &str) -> String {
+    let ext = file_name
+        .rsplit_once('.')
+        .map(|(_, ext)| ext.to_ascii_lowercase())
+        .unwrap_or_default();
+    match ext.as_str() {
+        "jpg" | "jpeg" => "image/jpeg",
+        "png" => "image/png",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "heic" => "image/heic",
+        "bmp" => "image/bmp",
+        "svg" => "image/svg+xml",
+        "mp4" | "m4v" => "video/mp4",
+        "mov" => "video/quicktime",
+        "webm" => "video/webm",
+        "mp3" => "audio/mpeg",
+        "m4a" => "audio/mp4",
+        "aac" => "audio/aac",
+        "wav" => "audio/wav",
+        "ogg" => "audio/ogg",
+        "pdf" => "application/pdf",
+        "zip" => "application/zip",
+        "txt" => "text/plain",
+        "csv" => "text/csv",
+        "doc" => "application/msword",
+        "docx" => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "xls" => "application/vnd.ms-excel",
+        "xlsx" => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "ppt" => "application/vnd.ms-powerpoint",
+        "pptx" => "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        _ => "",
+    }
+    .to_string()
 }
 
 fn local_preview_locator(value: &str) -> Option<String> {
@@ -1144,6 +1294,128 @@ mod tests {
         async fn recover_pending_for_current_user(&self) -> Result<Vec<String>> {
             Ok(Vec::new())
         }
+    }
+
+    fn bare_message(content: crate::content::content_builder::BuiltContent) -> IMMessage {
+        IMMessage::new(
+            MessageBuilder::new("conv-media", "hugo")
+                .single_chat()
+                .channel("peer-1")
+                .content(content)
+                .build()
+                .expect("message"),
+        )
+    }
+
+    fn file_of(message: &IMMessage) -> &crate::content::message_elem::FileElem {
+        match message.content.as_ref().expect("content") {
+            Elem::File(file) => file,
+            other => panic!("expected file, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn progress_is_persisted_in_five_point_steps_and_never_backwards() {
+        use super::progress_worth_persisting;
+        // 逐块上报 0..=99：只有跨过 5 个百分点才落库
+        let mut last = 0;
+        let mut written = Vec::new();
+        for next in 0..=99 {
+            if progress_worth_persisting(last, next) {
+                written.push(next);
+                last = next;
+            }
+        }
+        assert_eq!(
+            written,
+            vec![
+                5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80, 85, 90, 95, 99
+            ]
+        );
+        // 大跨步照写；完成必写；回退与重复不写
+        assert!(progress_worth_persisting(0, 50));
+        assert!(progress_worth_persisting(99, 100));
+        assert!(progress_worth_persisting(97, 99));
+        assert!(!progress_worth_persisting(50, 40));
+        assert!(!progress_worth_persisting(99, 99));
+    }
+
+    #[test]
+    fn a_pending_file_shows_its_name_size_and_type_before_upload() {
+        let mut message = bare_message(
+            ContentBuilder::file(
+                "data:application/pdf;name=%E6%8A%A5%E5%91%8A%20v2.pdf;size=1234;base64,AAAA",
+            )
+            .build(),
+        );
+        attach_local_media_preview(&mut message);
+        let file = file_of(&message);
+        assert_eq!(file.file_name, "报告 v2.pdf");
+        assert_eq!(file.file_size, 1234);
+        assert_eq!(file.mime_type, "application/pdf");
+    }
+
+    #[test]
+    fn a_data_url_without_a_declared_size_is_measured() {
+        // "hello" → aGVsbG8=（5 字节）
+        let mut message = bare_message(
+            ContentBuilder::file("data:text/plain;name=a.txt;base64,aGVsbG8=").build(),
+        );
+        attach_local_media_preview(&mut message);
+        let file = file_of(&message);
+        assert_eq!(file.file_size, 5);
+        assert_eq!(file.file_name, "a.txt");
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn a_local_path_gives_the_real_name_and_size() {
+        let dir = std::env::temp_dir().join(format!("flare-local-facts-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("季度报表.xlsx");
+        std::fs::write(&path, [0u8; 10]).unwrap();
+        let mut message = bare_message(ContentBuilder::file(path.to_str().unwrap()).build());
+        attach_local_media_preview(&mut message);
+        let file = file_of(&message);
+        assert_eq!(file.file_name, "季度报表.xlsx");
+        assert_eq!(file.file_size, 10);
+        assert_eq!(
+            file.mime_type,
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn declared_metadata_is_not_overwritten() {
+        let mut message = local_file_message("data:image/png;name=other.png;size=9;base64,AAAA");
+        attach_local_media_preview(&mut message);
+        let file = file_of(&message);
+        assert_eq!(file.file_name, "demo.png");
+        assert_eq!(file.file_size, 100);
+    }
+
+    #[test]
+    fn a_pending_image_and_video_carry_size_and_type() {
+        let mut image = bare_message(
+            ContentBuilder::image("data:image/png;name=p.png;size=77;base64,AAAA").build(),
+        );
+        attach_local_media_preview(&mut image);
+        let Some(Elem::Image(image)) = image.content.as_ref() else {
+            panic!("expected image")
+        };
+        let source = image.source.as_ref().expect("source");
+        assert_eq!((source.size, source.mime_type.as_str()), (77, "image/png"));
+
+        let mut video = bare_message(
+            ContentBuilder::video("data:video/mp4;name=v.mp4;size=88;base64,AAAA").build(),
+        );
+        attach_local_media_preview(&mut video);
+        let Some(Elem::Video(video)) = video.content.as_ref() else {
+            panic!("expected video")
+        };
+        let source = video.source.as_ref().expect("source");
+        assert_eq!((source.size, source.mime_type.as_str()), (88, "video/mp4"));
     }
 
     fn local_file_message(path: &str) -> IMMessage {

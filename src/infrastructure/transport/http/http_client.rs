@@ -16,6 +16,46 @@ use flare_core::common::cert::create_client_config_with_tls;
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
+/// 直传上传的进度回调：参数是已经交给网络层的累计字节数。
+///
+/// 单次 PUT 以前只能报「开始」和「完成」两个点，大文件上传期间进度条一直停在 0。
+pub type SentBytesCallback = Arc<dyn Fn(u64) + Send + Sync>;
+
+/// 原生端流式上传的分块大小：进度粒度，也是每次交给 hyper 的最大块。
+#[cfg(not(target_arch = "wasm32"))]
+const UPLOAD_PROGRESS_CHUNK: usize = 64 * 1024;
+
+/// 把内存里的字节按块交给 hyper，每取走一块就报一次「此前的块已交出」。
+///
+/// 报的是块的起点而不是终点：取走一块只说明它进了发送缓冲，还没写出去。
+/// 全部发完由调用方在响应成功后补报总字节数。
+#[cfg(not(target_arch = "wasm32"))]
+fn counted_bytes_body(data: bytes::Bytes, on_sent: SentBytesCallback) -> reqwest::Body {
+    let total = data.len();
+    let chunks = (0..total).step_by(UPLOAD_PROGRESS_CHUNK).map(move |start| {
+        on_sent(start as u64);
+        let end = (start + UPLOAD_PROGRESS_CHUNK).min(total);
+        Ok::<_, std::io::Error>(data.slice(start..end))
+    });
+    reqwest::Body::wrap_stream(futures_util::stream::iter(chunks))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn counted_file_body(file: tokio::fs::File, on_sent: SentBytesCallback) -> reqwest::Body {
+    use futures_util::StreamExt as _;
+    let mut sent = 0u64;
+    let stream = tokio_util::io::ReaderStream::with_capacity(file, UPLOAD_PROGRESS_CHUNK).map(
+        move |chunk| {
+            if let Ok(bytes) = &chunk {
+                on_sent(sent);
+                sent += bytes.len() as u64;
+            }
+            chunk
+        },
+    );
+    reqwest::Body::wrap_stream(stream)
+}
+
 /// 从 Bearer JWT payload 提取 `sub`（不校验签名，仅用于补齐 `x-user-id` header）。
 fn jwt_sub_unverified(token: &str) -> Option<String> {
     let payload = token.split('.').nth(1)?.trim();
@@ -201,6 +241,129 @@ pub(crate) fn send_failure(error: reqwest::Error) -> FlareError {
 #[cfg(test)]
 mod tests {
     use super::HttpRequestContext;
+
+    /// 起一个只收一次 PUT 的本地服务：返回请求头（小写）和请求体。
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn one_shot_put_server() -> (
+        String,
+        tokio::task::JoinHandle<(std::collections::HashMap<String, String>, Vec<u8>)>,
+    ) {
+        use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/bucket/object", listener.local_addr().unwrap());
+        let handle = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.unwrap();
+            let mut reader = BufReader::new(socket);
+            let mut headers = std::collections::HashMap::new();
+            loop {
+                let mut line = String::new();
+                reader.read_line(&mut line).await.unwrap();
+                let line = line.trim_end();
+                if line.is_empty() {
+                    break;
+                }
+                if let Some((key, value)) = line.split_once(':') {
+                    headers.insert(key.trim().to_ascii_lowercase(), value.trim().to_string());
+                }
+            }
+            let len: usize = headers
+                .get("content-length")
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(0);
+            let mut body = vec![0u8; len];
+            reader.read_exact(&mut body).await.unwrap();
+            reader
+                .get_mut()
+                .write_all(b"HTTP/1.1 200 OK\r\nETag: \"abc\"\r\nContent-Length: 0\r\n\r\n")
+                .await
+                .unwrap();
+            (headers, body)
+        });
+        (url, handle)
+    }
+
+    fn recorded_progress() -> (
+        super::SentBytesCallback,
+        std::sync::Arc<std::sync::Mutex<Vec<u64>>>,
+    ) {
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = seen.clone();
+        (
+            std::sync::Arc::new(move |sent: u64| sink.lock().unwrap().push(sent)),
+            seen,
+        )
+    }
+
+    fn assert_progress_walks_to(seen: &[u64], total: u64) {
+        assert!(seen.len() > 2, "应当逐块上报，实际只有 {seen:?}");
+        assert!(
+            seen.windows(2).all(|pair| pair[0] <= pair[1]),
+            "进度不能倒退: {seen:?}"
+        );
+        assert_eq!(seen.last().copied(), Some(total));
+        assert!(
+            seen[..seen.len() - 1].iter().all(|sent| *sent < total),
+            "响应成功前不能报满: {seen:?}"
+        );
+    }
+
+    /// 带进度的 PUT 是流式 body：必须显式带 Content-Length（对象存储预签名 PUT
+    /// 拒收 chunked），字节不能错，进度逐块递增、成功后才报满。
+    #[cfg(not(target_arch = "wasm32"))]
+    #[tokio::test]
+    async fn put_bytes_with_progress_streams_with_content_length() {
+        let (url, server) = one_shot_put_server().await;
+        let data: Vec<u8> = (0..300_000u32).map(|i| (i % 251) as u8).collect();
+        let (on_sent, seen) = recorded_progress();
+        let mut headers = std::collections::HashMap::new();
+        headers.insert("Content-Type".to_string(), "application/pdf".to_string());
+        let response = super::HttpClient::new("http://unused")
+            .put_bytes_full_url_with_progress(&url, &data, &headers, Some(on_sent))
+            .await
+            .expect("put");
+        let (request_headers, body) = server.await.unwrap();
+        assert_eq!(
+            request_headers.get("content-length").map(String::as_str),
+            Some("300000")
+        );
+        assert!(!request_headers.contains_key("transfer-encoding"));
+        assert_eq!(
+            request_headers.get("content-type").map(String::as_str),
+            Some("application/pdf")
+        );
+        assert_eq!(body, data);
+        assert_eq!(response.get("etag").map(String::as_str), Some("\"abc\""));
+        assert_progress_walks_to(&seen.lock().unwrap(), 300_000);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[tokio::test]
+    async fn put_file_with_progress_streams_the_whole_file() {
+        let (url, server) = one_shot_put_server().await;
+        let data: Vec<u8> = (0..200_000u32).map(|i| (i % 13) as u8).collect();
+        let path =
+            std::env::temp_dir().join(format!("flare-put-progress-{}.bin", std::process::id()));
+        std::fs::write(&path, &data).unwrap();
+        let (on_sent, seen) = recorded_progress();
+        super::HttpClient::new("http://unused")
+            .put_file_full_url_with_progress(
+                &url,
+                &path,
+                data.len() as u64,
+                &std::collections::HashMap::new(),
+                Some(on_sent),
+            )
+            .await
+            .expect("put");
+        let (request_headers, body) = server.await.unwrap();
+        std::fs::remove_file(&path).ok();
+        assert_eq!(
+            request_headers.get("content-length").map(String::as_str),
+            Some("200000")
+        );
+        assert_eq!(body, data);
+        assert_progress_walks_to(&seen.lock().unwrap(), 200_000);
+    }
 
     #[tokio::test]
     async fn clear_gateway_context_falls_back_to_im_auth_without_stale_identity() {
@@ -540,9 +703,40 @@ impl HttpClient {
         data: &[u8],
         headers: &HashMap<String, String>,
     ) -> Result<HashMap<String, String>> {
+        self.put_bytes_full_url_with_progress(url, data, headers, None)
+            .await
+    }
+
+    /// 同 [`Self::put_bytes_full_url`]，上传过程中按块回报已发送字节数。
+    #[cfg(not(target_arch = "wasm32"))]
+    pub async fn put_bytes_full_url_with_progress(
+        &self,
+        url: &str,
+        data: &[u8],
+        headers: &HashMap<String, String>,
+        on_sent: Option<SentBytesCallback>,
+    ) -> Result<HashMap<String, String>> {
         self.ensure_tls_ready()?;
-        let mut req = self.client.put(url.to_string()).body(data.to_vec());
+        let total = data.len() as u64;
+        let mut req = match on_sent.clone() {
+            // 流式 body 长度未知，不显式给 Content-Length 就会变成 chunked，
+            // 对象存储的预签名 PUT 不接受 chunked。
+            Some(on_sent) => self
+                .client
+                .put(url.to_string())
+                .body(counted_bytes_body(
+                    bytes::Bytes::copy_from_slice(data),
+                    on_sent,
+                ))
+                .header(reqwest::header::CONTENT_LENGTH, total.to_string()),
+            None => self.client.put(url.to_string()).body(data.to_vec()),
+        };
         for (key, value) in headers {
+            if on_sent.is_some()
+                && key.eq_ignore_ascii_case(reqwest::header::CONTENT_LENGTH.as_str())
+            {
+                continue;
+            }
             req = req.header(key, value);
         }
         let resp = req
@@ -554,6 +748,9 @@ impl HttpClient {
             return Err(FlareError::general_error(format!(
                 "http put bytes status not success: {status}"
             )));
+        }
+        if let Some(on_sent) = on_sent.as_ref() {
+            on_sent(total);
         }
         let mut out = HashMap::new();
         for (key, value) in resp.headers() {
@@ -572,6 +769,20 @@ impl HttpClient {
         content_len: u64,
         headers: &HashMap<String, String>,
     ) -> Result<HashMap<String, String>> {
+        self.put_file_full_url_with_progress(url, path, content_len, headers, None)
+            .await
+    }
+
+    /// 同 [`Self::put_file_full_url`]，边读文件边回报已发送字节数。
+    #[cfg(not(target_arch = "wasm32"))]
+    pub async fn put_file_full_url_with_progress(
+        &self,
+        url: &str,
+        path: &std::path::Path,
+        content_len: u64,
+        headers: &HashMap<String, String>,
+        on_sent: Option<SentBytesCallback>,
+    ) -> Result<HashMap<String, String>> {
         self.ensure_tls_ready()?;
         let file = tokio::fs::File::open(path)
             .await
@@ -579,7 +790,10 @@ impl HttpClient {
         let mut req = self
             .client
             .put(url.to_string())
-            .body(reqwest::Body::from(file));
+            .body(match on_sent.clone() {
+                Some(on_sent) => counted_file_body(file, on_sent),
+                None => reqwest::Body::from(file),
+            });
         for (key, value) in headers {
             if !key.eq_ignore_ascii_case(reqwest::header::CONTENT_LENGTH.as_str()) {
                 req = req.header(key, value);
@@ -595,6 +809,9 @@ impl HttpClient {
             return Err(FlareError::general_error(format!(
                 "http put file status not success: {status}"
             )));
+        }
+        if let Some(on_sent) = on_sent.as_ref() {
+            on_sent(content_len);
         }
         let mut out = HashMap::new();
         for (key, value) in resp.headers() {
@@ -897,6 +1114,28 @@ impl HttpClient {
         data: &[u8],
         extra_headers: &HashMap<String, String>,
     ) -> Result<HashMap<String, String>> {
+        self.put_bytes_full_url_with_progress(url, data, extra_headers, None)
+            .await
+    }
+
+    /// 同 [`Self::put_bytes_full_url`]；带回调时走 XHR（`fetch` 拿不到上传进度）。
+    #[cfg(target_arch = "wasm32")]
+    pub async fn put_bytes_full_url_with_progress(
+        &self,
+        url: &str,
+        data: &[u8],
+        extra_headers: &HashMap<String, String>,
+        on_sent: Option<SentBytesCallback>,
+    ) -> Result<HashMap<String, String>> {
+        if let Some(on_sent) = on_sent {
+            return wasm_http::put_bytes_with_progress(
+                self.rewrite_direct_url(url),
+                data.to_vec(),
+                extra_headers.clone(),
+                on_sent,
+            )
+            .await;
+        }
         let (_, headers) = wasm_http::fetch_bytes_with_headers(
             "PUT",
             self.rewrite_direct_url(url),

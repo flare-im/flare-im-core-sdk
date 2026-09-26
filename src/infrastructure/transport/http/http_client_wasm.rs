@@ -201,6 +201,134 @@ async fn fetch_bytes_with_headers_local(
     Ok((array.to_vec(), response_headers))
 }
 
+/// 带上传进度的 PUT（直传对象存储用）。`fetch` 不暴露上传进度，这里走 XHR 的
+/// `upload.onprogress`；和 [`fetch_bytes_with_headers`] 一样把 `!Send` 部分收进
+/// `spawn_local`，对外返回 Send future。
+pub async fn put_bytes_with_progress(
+    url: String,
+    body: Vec<u8>,
+    extra_headers: HashMap<String, String>,
+    on_sent: super::SentBytesCallback,
+) -> Result<HashMap<String, String>> {
+    let (tx, rx) = futures::channel::oneshot::channel();
+    wasm_bindgen_futures::spawn_local(async move {
+        let result = put_bytes_with_progress_local(url, body, extra_headers, on_sent).await;
+        let _ = tx.send(result);
+    });
+    rx.await
+        .map_err(|_| FlareError::system("http upload task dropped before completion"))?
+}
+
+async fn put_bytes_with_progress_local(
+    url: String,
+    body: Vec<u8>,
+    extra_headers: HashMap<String, String>,
+    on_sent: super::SentBytesCallback,
+) -> Result<HashMap<String, String>> {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    use wasm_bindgen::closure::Closure;
+    use web_sys::{ProgressEvent, XmlHttpRequest};
+
+    let total = body.len() as u64;
+    let xhr =
+        XmlHttpRequest::new().map_err(|e| FlareError::system(format!("xhr init failed: {e:?}")))?;
+    xhr.open_with_async("PUT", &url, true)
+        .map_err(|e| FlareError::system(format!("xhr open failed: {e:?}")))?;
+    for (key, value) in &extra_headers {
+        // 浏览器自己算 Content-Length，手动设会被拒（unsafe header）。
+        if key.eq_ignore_ascii_case("content-length") {
+            continue;
+        }
+        xhr.set_request_header(key, value)
+            .map_err(|e| FlareError::system(format!("xhr set header failed: {e:?}")))?;
+    }
+
+    // 0 = 成功（load 事件），其余是失败原因；只取第一次结果。
+    let (done_tx, done_rx) =
+        futures::channel::oneshot::channel::<std::result::Result<(), String>>();
+    let done_tx = Rc::new(RefCell::new(Some(done_tx)));
+    let finish = {
+        let done_tx = done_tx.clone();
+        move |outcome: std::result::Result<(), String>| {
+            if let Some(tx) = done_tx.borrow_mut().take() {
+                let _ = tx.send(outcome);
+            }
+        }
+    };
+    let on_load = {
+        let finish = finish.clone();
+        Closure::<dyn FnMut()>::new(move || finish(Ok(())))
+    };
+    let on_error = {
+        let finish = finish.clone();
+        Closure::<dyn FnMut()>::new(move || finish(Err("network error".to_string())))
+    };
+    let on_abort = {
+        let finish = finish.clone();
+        Closure::<dyn FnMut()>::new(move || finish(Err("aborted".to_string())))
+    };
+    let on_progress = {
+        let on_sent = on_sent.clone();
+        Closure::<dyn FnMut(ProgressEvent)>::new(move |event: ProgressEvent| {
+            on_sent((event.loaded() as u64).min(total));
+        })
+    };
+    xhr.set_onload(Some(on_load.as_ref().unchecked_ref()));
+    xhr.set_onerror(Some(on_error.as_ref().unchecked_ref()));
+    xhr.set_onabort(Some(on_abort.as_ref().unchecked_ref()));
+    xhr.set_ontimeout(Some(on_error.as_ref().unchecked_ref()));
+    let upload = xhr
+        .upload()
+        .map_err(|e| FlareError::system(format!("xhr upload handle failed: {e:?}")))?;
+    upload.set_onprogress(Some(on_progress.as_ref().unchecked_ref()));
+
+    let array = Uint8Array::from(body.as_slice());
+    xhr.send_with_opt_buffer_source(Some(array.as_ref()))
+        .map_err(|e| FlareError::system(format!("xhr send failed: {e:?}")))?;
+    let outcome = done_rx
+        .await
+        .unwrap_or_else(|_| Err("upload callback dropped".to_string()));
+
+    xhr.set_onload(None);
+    xhr.set_onerror(None);
+    xhr.set_onabort(None);
+    xhr.set_ontimeout(None);
+    upload.set_onprogress(None);
+    drop((on_load, on_error, on_abort, on_progress));
+
+    if let Err(reason) = outcome {
+        let reason = format!("http upload failed: PUT {url}: {reason}");
+        let offline = web_sys::window().is_some_and(|w| !w.navigator().on_line());
+        return Err(if offline {
+            FlareError::localized(crate::shared::error::ErrorCode::NetworkUnreachable, reason)
+        } else {
+            FlareError::system(reason)
+        });
+    }
+    let status = xhr
+        .status()
+        .map_err(|e| FlareError::system(format!("xhr status failed: {e:?}")))?;
+    if !(200..300).contains(&status) {
+        let body = xhr.response_text().ok().flatten().unwrap_or_default();
+        tracing::warn!(url = %url, status, body = %body, "http upload failed");
+        return Err(http_error_from_response_status(status, &body));
+    }
+    tracing::debug!(url = %url, status, "http upload ok");
+    let mut headers = HashMap::new();
+    let raw = xhr.get_all_response_headers().unwrap_or_default();
+    for line in raw.split("\r\n") {
+        if let Some((key, value)) = line.split_once(':') {
+            let key = key.trim().to_ascii_lowercase();
+            if !key.is_empty() {
+                headers.insert(key, value.trim().to_string());
+            }
+        }
+    }
+    on_sent(total);
+    Ok(headers)
+}
+
 fn collect_response_headers(headers: Headers) -> Result<HashMap<String, String>> {
     let mut out = HashMap::new();
     let iterator = js_sys::try_iter(headers.as_ref())

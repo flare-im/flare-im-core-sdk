@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use super::upload_shared::{
     build_control_headers as shared_build_control_headers, build_upload_metadata,
     build_upload_parts, build_upload_parts_from_manifest, compute_bytes_fingerprints,
-    infer_file_type, random_upload_id, upload_file_to_uploaded_media,
+    infer_file_type, random_upload_id, single_put_progress, upload_file_to_uploaded_media,
 };
 use async_trait::async_trait;
 #[cfg(not(target_arch = "wasm32"))]
@@ -515,9 +515,21 @@ impl MediaService {
                 );
                 let mut put_headers = HashMap::new();
                 put_headers.insert("Content-Type".to_string(), mime_type.clone());
+                let on_sent = single_put_progress(
+                    on_progress,
+                    &file_name,
+                    &manifest.remote_upload_id.clone().unwrap_or_default(),
+                    size as u64,
+                );
                 let _ = self
                     .http
-                    .put_file_full_url(&upload_url, path, size as u64, &put_headers)
+                    .put_file_full_url_with_progress(
+                        &upload_url,
+                        path,
+                        size as u64,
+                        &put_headers,
+                        on_sent,
+                    )
                     .await?;
                 emit_progress(
                     on_progress,
@@ -863,8 +875,10 @@ impl MediaService {
                 );
                 let mut put_headers = HashMap::new();
                 put_headers.insert("Content-Type".to_string(), mime_type.clone());
+                let on_sent =
+                    single_put_progress(on_progress, &file_name, &upload_id, bytes.len() as u64);
                 self.http
-                    .put_bytes_full_url(&upload_url, bytes, &put_headers)
+                    .put_bytes_full_url_with_progress(&upload_url, bytes, &put_headers, on_sent)
                     .await?;
             }
             DirectUploadTransportKindHttp::MultipartPut => {

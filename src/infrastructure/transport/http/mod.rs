@@ -2,7 +2,7 @@ pub mod http_client;
 #[cfg(target_arch = "wasm32")]
 pub mod http_client_wasm;
 pub mod media_dto;
-pub use http_client::{HttpClient, HttpRequestContext};
+pub use http_client::{HttpClient, HttpRequestContext, SentBytesCallback};
 pub use media_dto::{
     AbortDirectUploadHttpRequest, CommitDirectUploadPartsHttpRequest,
     CommitDirectUploadPartsHttpResponse, CompleteDirectUploadHttpRequest, DeleteFileHttpRequest,
