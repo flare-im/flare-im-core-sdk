@@ -1278,12 +1278,11 @@
               3600
             ]
           ],
-          "result": "json",
-          "cfg": "not(target_arch = \"wasm32\")"
+          "result": "json"
         },
         {
           "op": "resolve_access",
-          "method": "resolve_media_access",
+          "method": "resolve_media_access_opts",
           "args": [
             [
               "file_id",
@@ -1293,6 +1292,10 @@
               "expires_in",
               "optional_i32_default",
               3600
+            ],
+            [
+              "auto_cache",
+              "bool_default_false"
             ]
           ],
           "result": "json"
@@ -1336,7 +1339,7 @@
           "args": [
             [
               "absolute_path",
-              "optional_str_any:absolute_path,path"
+              "optional_str_any:absolute_path,path,root"
             ]
           ],
           "result": "unit"
@@ -1488,6 +1491,37 @@
             ]
           ],
           "result": "unit",
+          "cfg": "not(target_arch = \"wasm32\")"
+        },
+        {
+          "op": "user_download_get_directory",
+          "method": "user_download_get_directory",
+          "args": [],
+          "result": "json",
+          "cfg": "not(target_arch = \"wasm32\")"
+        },
+        {
+          "op": "user_download_set_directory",
+          "method": "user_download_set_directory",
+          "args": [
+            [
+              "directory",
+              "optional_str_any:directory,path"
+            ]
+          ],
+          "result": "json",
+          "cfg": "not(target_arch = \"wasm32\")"
+        },
+        {
+          "op": "download_to_user_directory",
+          "method": "download_to_user_directory",
+          "args": [
+            [
+              "request",
+              "user_download_request"
+            ]
+          ],
+          "result": "json",
           "cfg": "not(target_arch = \"wasm32\")"
         }
       ]

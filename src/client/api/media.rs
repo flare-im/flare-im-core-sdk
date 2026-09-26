@@ -15,6 +15,8 @@ pub use crate::application::{
 use crate::domain::{
     MediaCacheAdmin, MediaCacheStatsVo, MediaCacheStore, UploadManifestStore, UserFileDownloadStore,
 };
+#[cfg(not(target_arch = "wasm32"))]
+pub use crate::domain::{UserDownloadDirectoryVo, UserFileDownloadResultVo};
 use crate::infrastructure::transport::HttpClient;
 use crate::model::{
     MediaAccessUrl, MediaCacheEntryVo, MediaResolvedAccess, RenderableMedia, UploadOptions,
@@ -210,7 +212,6 @@ impl MediaApi {
     }
 
     /// 网关临时直链（`download: true`，适合附件另存为）。
-    #[cfg(not(target_arch = "wasm32"))]
     pub async fn get_temp_url_for_file_download(
         &self,
         file_id: &str,
@@ -274,6 +275,52 @@ impl MediaApi {
         self.run_session_bound(async move {
             handler
                 .download_file_to_user_downloads_folder(request)
+                .await
+        })
+        .await
+    }
+
+    /// 保存到「下载位置」（用户自选目录或平台默认目录）并写入 SQLite；返回保存结果。
+    #[cfg(not(target_arch = "wasm32"))]
+    pub async fn download_to_user_directory(
+        &self,
+        request: UserFileDownloadRequest,
+    ) -> Result<UserFileDownloadResultVo> {
+        let handler = self.handler.clone();
+        self.run_session_bound(async move { handler.download_to_user_directory(request).await })
+            .await
+    }
+
+    /// 「下载位置」：实际生效目录、平台默认目录、用户自选目录。
+    #[cfg(not(target_arch = "wasm32"))]
+    pub async fn user_download_get_directory(&self) -> Result<UserDownloadDirectoryVo> {
+        let handler = self.handler.clone();
+        self.run_session_bound(async move { handler.user_download_get_directory().await })
+            .await
+    }
+
+    /// 设置用户自选的下载目录（绝对路径，须可写）；`None` 回到平台默认目录。
+    #[cfg(not(target_arch = "wasm32"))]
+    pub async fn user_download_set_directory(
+        &self,
+        directory: Option<&str>,
+    ) -> Result<UserDownloadDirectoryVo> {
+        let handler = self.handler.clone();
+        self.run_session_bound(async move { handler.user_download_set_directory(directory).await })
+            .await
+    }
+
+    /// 同 [`Self::resolve_media_access`]；`auto_cache` 为真时未命中的文件在后台进本地缓存。
+    pub async fn resolve_media_access_opts(
+        &self,
+        file_id: &str,
+        expires_in: i32,
+        auto_cache: bool,
+    ) -> Result<MediaResolvedAccess> {
+        let handler = self.handler.clone();
+        self.run_session_bound(async move {
+            handler
+                .resolve_media_access_opts(file_id, expires_in, auto_cache)
                 .await
         })
         .await

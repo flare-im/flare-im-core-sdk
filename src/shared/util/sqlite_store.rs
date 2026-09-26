@@ -82,7 +82,11 @@ pub async fn open_sqlite_store_provider_with_security(
 
     let pending_repo = Arc::new(SqlitePendingSendRepo::new(pool.clone()));
     let upload_manifest_repo = Arc::new(SqliteUploadManifestRepo::new(pool.clone()));
-    let user_download_repo = Arc::new(SqliteUserFileDownloadRepo::new(pool.clone()));
+    let mut user_download_repo = SqliteUserFileDownloadRepo::new(pool.clone());
+    if let Some(user_dir) = media_cache_dir.and_then(|dir| dir.parent()) {
+        user_download_repo = user_download_repo.with_fallback_root(user_dir.join("downloads"));
+    }
+    let user_download_repo = Arc::new(user_download_repo);
     let user_repo = Arc::new(SqliteUserProfileRepo::new(pool.clone()));
     let (media_cache_store, media_cache_admin) = if let Some(root) = media_cache_dir {
         let repo = Arc::new(SqliteMediaCacheRepo::create(pool.clone(), root.to_path_buf()).await?);

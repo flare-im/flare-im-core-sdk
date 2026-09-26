@@ -1348,6 +1348,13 @@ fn render_dispatch_arg_extract_extended(
                 owned_clone_expr(value_expr)
             ),
         )),
+        "user_download_request" => Ok((
+            String::new(),
+            format!(
+                "build_user_download_request({})?",
+                owned_clone_expr(value_expr)
+            ),
+        )),
         "create_sticker_request" => Ok((
             String::new(),
             format!(

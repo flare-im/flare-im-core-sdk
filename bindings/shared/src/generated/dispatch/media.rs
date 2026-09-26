@@ -28,6 +28,9 @@ pub const MEDIA_DISPATCH_OPERATIONS: &[&str] = &[
     "user_download_set_subfolder",
     "user_download_get_saved_path",
     "user_download_delete_record",
+    "user_download_get_directory",
+    "user_download_set_directory",
+    "download_to_user_directory",
 ];
 
 pub fn is_media_operation(operation: &str) -> bool {
@@ -41,14 +44,6 @@ async fn dispatch_media_native_only(
     params: Value,
 ) -> Result<BindingResponse> {
     match operation {
-        "temp_download_url" => {
-            let file_id_s = json_string(&params, "fileId")?;
-            let expires_in_v = optional_i32(&params, "expiresIn")?.unwrap_or(3600);
-            json(
-                api.get_temp_url_for_file_download(&file_id_s, expires_in_v)
-                    .await?,
-            )
-        }
         "user_download_get_subfolder" => {
             let subfolder = api.user_download_get_subfolder().await?;
             json(serde_json::json!({ "subfolder": subfolder }))
@@ -68,6 +63,18 @@ async fn dispatch_media_native_only(
             api.user_download_delete_record(&download_key_s).await?;
             Ok(BindingResponse::unit())
         }
+        "user_download_get_directory" => json(api.user_download_get_directory().await?),
+        "user_download_set_directory" => {
+            let directory_o = optional_string_any(&params, &["directory", "path"]);
+            json(
+                api.user_download_set_directory(directory_o.as_deref())
+                    .await?,
+            )
+        }
+        "download_to_user_directory" => json(
+            api.download_to_user_directory(build_user_download_request(params.clone())?)
+                .await?,
+        ),
         _ => Err(binding_operation_not_supported(operation)),
     }
 }
@@ -80,11 +87,13 @@ pub async fn dispatch_media(
     #[cfg(not(target_arch = "wasm32"))]
     if matches!(
         operation,
-        "temp_download_url"
-            | "user_download_get_subfolder"
+        "user_download_get_subfolder"
             | "user_download_set_subfolder"
             | "user_download_get_saved_path"
             | "user_download_delete_record"
+            | "user_download_get_directory"
+            | "user_download_set_directory"
+            | "download_to_user_directory"
     ) {
         return dispatch_media_native_only(api, operation, params).await;
     }
@@ -95,10 +104,22 @@ pub async fn dispatch_media(
             let expires_in_v = optional_i32(&params, "expiresIn")?.unwrap_or(3600);
             json(api.get_file_url(&file_id_s, expires_in_v).await?)
         }
+        "temp_download_url" => {
+            let file_id_s = json_string(&params, "fileId")?;
+            let expires_in_v = optional_i32(&params, "expiresIn")?.unwrap_or(3600);
+            json(
+                api.get_temp_url_for_file_download(&file_id_s, expires_in_v)
+                    .await?,
+            )
+        }
         "resolve_access" => {
             let file_id_s = json_string(&params, "fileId")?;
             let expires_in_v = optional_i32(&params, "expiresIn")?.unwrap_or(3600);
-            json(api.resolve_media_access(&file_id_s, expires_in_v).await?)
+            let auto_cache_v = optional_bool(&params, "autoCache")?.unwrap_or(false);
+            json(
+                api.resolve_media_access_opts(&file_id_s, expires_in_v, auto_cache_v)
+                    .await?,
+            )
         }
         "cache_remote" => {
             let file_id_s = json_string(&params, "fileId")?;
@@ -112,7 +133,7 @@ pub async fn dispatch_media(
             Ok(BindingResponse::unit())
         }
         "set_cache_root" => {
-            let absolute_path_o = optional_string_any(&params, &["absolutePath", "path"]);
+            let absolute_path_o = optional_string_any(&params, &["absolutePath", "path", "root"]);
             api.set_media_cache_root(absolute_path_o.as_deref()).await?;
             Ok(BindingResponse::unit())
         }

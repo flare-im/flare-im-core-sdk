@@ -18,7 +18,10 @@ mod user_profile;
 
 pub use conversation::*;
 pub use download_manifest::{DownloadManifestState, MediaDownloadManifestVo, MediaDownloadPartVo};
-pub use media_cache::{MediaCacheEntryVo, MediaCacheStatsVo};
+pub use media_cache::{
+    DEFAULT_MEDIA_CACHE_MAX_BYTES, MediaCacheEntryVo, MediaCacheStatsVo, UserDownloadDirectoryVo,
+    UserFileDownloadResultVo,
+};
 pub use media_progressive::{MediaProgressiveEvent, MediaProgressiveStage, MediaProgressiveState};
 pub use message::*;
 pub use pending_send::PendingSendVo;

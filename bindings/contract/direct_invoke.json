@@ -198,8 +198,8 @@
       "result": "json",
       "cfg": "not(target_arch = \"wasm32\")",
       "skip_client": true,
-      "body": "\n            let api = session.media_api().await?;\n            let download_key = dispatch_support::json_string(request, \"downloadKey\")?;\n            let display_file_name = dispatch_support::json_string(request, \"displayFileName\")?;\n            let source_path = dispatch_support::optional_string(request, \"sourcePath\");\n            let source_http_url = dispatch_support::optional_string(request, \"sourceHttpUrl\");\n            let remote_file_id = dispatch_support::optional_string(request, \"remoteFileId\");\n            let expires_in = dispatch_support::optional_i32(request, \"expiresIn\")?.unwrap_or(3600);\n            let path = api.download_file_to_user_downloads_folder(flare_im_core_sdk::prelude::UserFileDownloadRequest {\n                download_key,\n                display_file_name,\n                source_path,\n                source_http_url,\n                remote_file_id,\n                expires_in,\n                on_progress: None,\n            }).await?;\n        ",
-      "json_expr": "serde_json::json!({ \"path\": path })"
+      "body": "\n            let api = session.media_api().await?;\n            let saved = api.download_to_user_directory(dispatch_support::build_user_download_request(request.clone())?).await?;\n        ",
+      "json_expr": "saved"
     }
   ]
 }

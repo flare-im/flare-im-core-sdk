@@ -19,4 +19,16 @@ pub trait MediaCacheStore: Send + Sync {
 
     /// 删除记录；若本地文件存在则一并删除（忽略文件删除错误）。
     async fn remove(&self, file_id: &str) -> Result<()>;
+
+    /// 写入缓存前的暂存目录（与缓存根同一文件系统，暂存文件可直接改名进缓存）。
+    async fn staging_dir(&self) -> Result<std::path::PathBuf>;
+
+    /// 把磁盘上的文件登记进缓存：`move_source` 为真时改名搬入（暂存文件），否则复制一份。
+    async fn put_file(
+        &self,
+        file_id: &str,
+        source: &std::path::Path,
+        mime_type: &str,
+        move_source: bool,
+    ) -> Result<MediaCacheEntryVo>;
 }

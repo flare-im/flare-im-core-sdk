@@ -9,7 +9,7 @@ use async_trait::async_trait;
 use std::{collections::HashMap, sync::Arc};
 
 use crate::application::callbacks::{UploadProgress, UserFileDownloadRequest};
-use crate::domain::MediaCacheStatsVo;
+use crate::domain::{MediaCacheStatsVo, UserDownloadDirectoryVo, UserFileDownloadResultVo};
 use crate::model::{
     MediaAccessUrl, MediaCacheEntryVo, MediaDestinationDescriptor, MediaDestinationKind,
     MediaResolvedAccess, RenderableMedia, UploadOptions, UploadedMedia,
@@ -296,6 +296,16 @@ pub trait MediaServicePort: Send + Sync {
         Err(unsupported_media_operation("resolve_media_access"))
     }
 
+    /// 同 [`Self::resolve_media_access`]；`auto_cache` 为真且未命中时，实现可在后台把文件拉进本地缓存。
+    async fn resolve_media_access_opts(
+        &self,
+        file_id: &str,
+        expires_in: i32,
+        _auto_cache: bool,
+    ) -> Result<MediaResolvedAccess> {
+        self.resolve_media_access(file_id, expires_in).await
+    }
+
     async fn resolve_for_display(&self, file_id: &str, expires_in: i32) -> Result<RenderableMedia> {
         let resolved = self.resolve_media_access(file_id, expires_in).await?;
         Ok(RenderableMedia::from_resolved_access(file_id, resolved))
@@ -352,6 +362,24 @@ pub trait MediaServicePort: Send + Sync {
         Err(unsupported_media_operation(
             "download_file_to_user_downloads_folder",
         ))
+    }
+
+    async fn download_to_user_directory(
+        &self,
+        _request: UserFileDownloadRequest,
+    ) -> Result<UserFileDownloadResultVo> {
+        Err(unsupported_media_operation("download_to_user_directory"))
+    }
+
+    async fn user_download_get_directory(&self) -> Result<UserDownloadDirectoryVo> {
+        Err(unsupported_media_operation("user_download_get_directory"))
+    }
+
+    async fn user_download_set_directory(
+        &self,
+        _directory: Option<&str>,
+    ) -> Result<UserDownloadDirectoryVo> {
+        Err(unsupported_media_operation("user_download_set_directory"))
     }
 }
 

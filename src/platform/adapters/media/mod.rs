@@ -5,6 +5,8 @@
 //! host adapter and should inject a `MediaUploaderPort`.
 
 #[cfg(not(target_arch = "wasm32"))]
+mod native_download;
+#[cfg(not(target_arch = "wasm32"))]
 mod native_file_service;
 mod profile;
 mod upload_only;

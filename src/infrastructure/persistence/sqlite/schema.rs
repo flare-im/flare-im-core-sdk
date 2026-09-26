@@ -660,12 +660,21 @@ pub async fn init_schema(pool: &SqlitePool) -> Result<()> {
     sqlx::query(
         r#"CREATE TABLE IF NOT EXISTS file_download_settings (
             singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
-            download_subfolder TEXT NOT NULL DEFAULT 'flare'
+            download_subfolder TEXT NOT NULL DEFAULT 'flare',
+            download_directory TEXT NOT NULL DEFAULT ''
         )"#,
     )
     .execute(pool)
     .await
     .map_err(|e| FlareError::localized(ErrorCode::DatabaseError, e.to_string()))?;
+    // 用户自选的下载目录（'' = 平台默认）；早期库没有这一列。
+    ensure_column(
+        pool,
+        "file_download_settings",
+        "download_directory",
+        "download_directory TEXT NOT NULL DEFAULT ''",
+    )
+    .await?;
 
     sqlx::query(
         r#"INSERT OR IGNORE INTO file_download_settings (singleton, download_subfolder) VALUES (1, 'flare')"#,

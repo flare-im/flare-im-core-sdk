@@ -6,13 +6,30 @@ use sha2::{Digest, Sha256};
 use sqlx::{Row, SqlitePool};
 use tokio::sync::RwLock;
 
-use crate::domain::{MediaCacheAdmin, MediaCacheEntryVo, MediaCacheStatsVo, MediaCacheStore};
+use crate::domain::{
+    DEFAULT_MEDIA_CACHE_MAX_BYTES, MediaCacheAdmin, MediaCacheEntryVo, MediaCacheStatsVo,
+    MediaCacheStore,
+};
 use crate::shared::error::{ErrorCode, FlareError, Result};
+
+/// 读命中时刷新最近使用时间的最小间隔：列表滚动会反复读同一批图，不必每次都写库。
+const TOUCH_INTERVAL_MS: i64 = 60_000;
 
 #[derive(Debug, Clone)]
 struct MediaCacheState {
+    /// 用户设置的上限；0 表示没设置过，用 [`DEFAULT_MEDIA_CACHE_MAX_BYTES`]。
     max_bytes: u64,
     root_override: Option<PathBuf>,
+}
+
+impl MediaCacheState {
+    fn effective_max_bytes(&self) -> u64 {
+        if self.max_bytes == 0 {
+            DEFAULT_MEDIA_CACHE_MAX_BYTES
+        } else {
+            self.max_bytes
+        }
+    }
 }
 
 pub struct SqliteMediaCacheRepo {
@@ -93,10 +110,7 @@ impl SqliteMediaCacheRepo {
     }
 
     async fn trim_to_max_bytes(&self) -> Result<()> {
-        let max = { self.state.read().await.max_bytes };
-        if max == 0 {
-            return Ok(());
-        }
+        let max = { self.state.read().await.effective_max_bytes() };
         let max_i64 = i64::try_from(max).unwrap_or(i64::MAX);
         loop {
             let sum: i64 =
@@ -141,6 +155,8 @@ impl SqliteMediaCacheRepo {
             let p: String = row.get("local_path");
             let _ = tokio::fs::remove_file(Path::new(&p)).await;
         }
+        // 中断的写入留下的暂存文件（没有行指向它们）。
+        let _ = tokio::fs::remove_dir_all(self.effective_root().await.join(".staging")).await;
         Ok(())
     }
 }
@@ -174,12 +190,24 @@ impl MediaCacheStore for SqliteMediaCacheRepo {
             return Ok(None);
         }
 
+        // 淘汰按最近使用：命中时刷新时间，常看的图不会因为「写得早」被先删。
+        let mut updated_at_ms: i64 = row.get("updated_at_ms");
+        let now = chrono::Utc::now().timestamp_millis();
+        if now - updated_at_ms >= TOUCH_INTERVAL_MS {
+            let _ = sqlx::query("UPDATE media_local_cache SET updated_at_ms = ? WHERE file_id = ?")
+                .bind(now)
+                .bind(fid)
+                .execute(&self.pool)
+                .await;
+            updated_at_ms = now;
+        }
+
         Ok(Some(MediaCacheEntryVo {
             file_id: row.get("file_id"),
             local_path: path,
             mime_type: row.get("mime_type"),
             size_bytes: row.get("size_bytes"),
-            updated_at_ms: row.get("updated_at_ms"),
+            updated_at_ms,
         }))
     }
 
@@ -188,6 +216,35 @@ impl MediaCacheStore for SqliteMediaCacheRepo {
         file_id: &str,
         data: &[u8],
         mime_type: &str,
+    ) -> Result<MediaCacheEntryVo> {
+        let staged = self
+            .staging_dir()
+            .await?
+            .join(format!("{}.part", uuid::Uuid::new_v4().simple()));
+        tokio::fs::write(&staged, data)
+            .await
+            .map_err(|e| FlareError::system(format!("media cache write: {e}")))?;
+        let result = self.put_file(file_id, &staged, mime_type, true).await;
+        if result.is_err() {
+            let _ = tokio::fs::remove_file(&staged).await;
+        }
+        result
+    }
+
+    async fn staging_dir(&self) -> Result<PathBuf> {
+        let dir = self.effective_root().await.join(".staging");
+        tokio::fs::create_dir_all(&dir)
+            .await
+            .map_err(|e| FlareError::system(format!("media cache mkdir: {e}")))?;
+        Ok(dir)
+    }
+
+    async fn put_file(
+        &self,
+        file_id: &str,
+        source: &Path,
+        mime_type: &str,
+        move_source: bool,
     ) -> Result<MediaCacheEntryVo> {
         let fid = file_id.trim();
         if fid.is_empty() {
@@ -198,8 +255,6 @@ impl MediaCacheStore for SqliteMediaCacheRepo {
         }
 
         let root = self.effective_root().await;
-        let _ = tokio::fs::create_dir_all(&root).await;
-
         let dest = Self::blob_path(&root, fid, mime_type);
         if let Some(parent) = dest.parent() {
             tokio::fs::create_dir_all(parent)
@@ -207,16 +262,31 @@ impl MediaCacheStore for SqliteMediaCacheRepo {
                 .map_err(|e| FlareError::system(format!("media cache mkdir: {e}")))?;
         }
 
+        // 先到同目录的临时名再改名：读者要么看到旧文件，要么看到完整的新文件。
         let tmp = dest.with_extension("part");
-        tokio::fs::write(&tmp, data)
-            .await
-            .map_err(|e| FlareError::system(format!("media cache write: {e}")))?;
-        tokio::fs::rename(&tmp, &dest)
-            .await
-            .map_err(|e| FlareError::system(format!("media cache rename: {e}")))?;
+        let placed = if move_source {
+            match tokio::fs::rename(source, &tmp).await {
+                Ok(()) => Ok(()),
+                // 跨文件系统改名会失败，退回复制后删源。
+                Err(_) => tokio::fs::copy(source, &tmp).await.map(|_| {
+                    let _ = std::fs::remove_file(source);
+                }),
+            }
+        } else {
+            tokio::fs::copy(source, &tmp).await.map(|_| ())
+        };
+        placed.map_err(|e| FlareError::system(format!("media cache write: {e}")))?;
+        if let Err(e) = tokio::fs::rename(&tmp, &dest).await {
+            let _ = tokio::fs::remove_file(&tmp).await;
+            return Err(FlareError::system(format!("media cache rename: {e}")));
+        }
 
+        let size = tokio::fs::metadata(&dest)
+            .await
+            .map_err(|e| FlareError::system(format!("media cache stat: {e}")))?
+            .len();
         let local_path = dest.to_string_lossy().to_string();
-        let size_bytes = i64::try_from(data.len())
+        let size_bytes = i64::try_from(size)
             .map_err(|_| FlareError::general_error("media cache: payload too large"))?;
         let now = chrono::Utc::now().timestamp_millis();
 
@@ -277,7 +347,10 @@ impl MediaCacheAdmin for SqliteMediaCacheRepo {
     async fn media_cache_stats(&self) -> Result<MediaCacheStatsVo> {
         let effective = self.effective_root().await;
         let default_s = self.default_root.to_string_lossy().to_string();
-        let max_bytes = { self.state.read().await.max_bytes };
+        let (max_bytes, max_bytes_is_default) = {
+            let state = self.state.read().await;
+            (state.effective_max_bytes(), state.max_bytes == 0)
+        };
         let total: i64 =
             sqlx::query_scalar("SELECT COALESCE(SUM(size_bytes), 0) FROM media_local_cache")
                 .fetch_one(&self.pool)
@@ -291,6 +364,7 @@ impl MediaCacheAdmin for SqliteMediaCacheRepo {
             effective_root: effective.to_string_lossy().to_string(),
             default_root: default_s,
             max_bytes,
+            max_bytes_is_default,
             total_bytes: total,
             entry_count,
         })

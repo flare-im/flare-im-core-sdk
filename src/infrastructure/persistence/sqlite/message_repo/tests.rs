@@ -1332,7 +1332,14 @@ async fn upload_progress_survives_a_round_trip_through_both_writers() {
     use crate::domain::MessageStore as _;
     let repo = make_repo().await;
 
-    let mut single = text_message("client-upload-single", "conv-upload", "u1", 0, 1_000, "file");
+    let mut single = text_message(
+        "client-upload-single",
+        "conv-upload",
+        "u1",
+        0,
+        1_000,
+        "file",
+    );
     single.client_msg_id = "client-upload-single".to_string();
     single.local_state.sending = true;
     single.local_state.is_local = true;
@@ -1340,7 +1347,14 @@ async fn upload_progress_survives_a_round_trip_through_both_writers() {
     single.local_state.upload_progress = 37;
     repo.save_one(&single).await.unwrap();
 
-    let mut batch = text_message("client-upload-batch", "conv-upload", "u1", 0, 2_000, "album");
+    let mut batch = text_message(
+        "client-upload-batch",
+        "conv-upload",
+        "u1",
+        0,
+        2_000,
+        "album",
+    );
     batch.client_msg_id = "client-upload-batch".to_string();
     batch.local_state.sending = true;
     batch.local_state.is_local = true;

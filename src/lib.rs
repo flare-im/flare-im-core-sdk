@@ -110,8 +110,9 @@ pub mod prelude {
         SdkRuntimeResources, TransportKind, TransportPolicy, UserCapabilityGrantDto,
     };
     pub use crate::domain::{
-        ConversationStore, MediaCacheEntryVo, MediaCacheStatsVo, MessageStore, PendingSendVo,
-        SyncCursorVo,
+        ConversationStore, DEFAULT_MEDIA_CACHE_MAX_BYTES, MediaCacheEntryVo, MediaCacheStatsVo,
+        MessageStore, PendingSendVo, SyncCursorVo, UserDownloadDirectoryVo,
+        UserFileDownloadResultVo,
     };
     /// E2EE 参考 codec（需 `e2ee` feature）。
     #[cfg(feature = "e2ee")]

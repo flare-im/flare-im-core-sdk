@@ -1,5 +1,7 @@
 //! SQLite：`user_file_download` + `file_download_settings`
 
+use std::path::PathBuf;
+
 use async_trait::async_trait;
 use sqlx::SqlitePool;
 
@@ -15,11 +17,21 @@ fn now_ms() -> i64 {
 
 pub struct SqliteUserFileDownloadRepo {
     pool: SqlitePool,
+    fallback_root: Option<PathBuf>,
 }
 
 impl SqliteUserFileDownloadRepo {
     pub fn new(pool: SqlitePool) -> Self {
-        Self { pool }
+        Self {
+            pool,
+            fallback_root: None,
+        }
+    }
+
+    /// 平台下载目录都不可用时的兜底根目录（通常是本地库同级的 `downloads`）。
+    pub fn with_fallback_root(mut self, root: PathBuf) -> Self {
+        self.fallback_root = Some(root);
+        self
     }
 }
 
@@ -126,6 +138,32 @@ impl UserFileDownloadStore for SqliteUserFileDownloadRepo {
             .await
             .map_err(|e| FlareError::localized(ErrorCode::DatabaseError, e.to_string()))?;
         Ok(())
+    }
+
+    async fn get_download_directory(&self) -> Result<Option<String>> {
+        let row: Option<(String,)> = sqlx::query_as(
+            "SELECT download_directory FROM file_download_settings WHERE singleton = 1",
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| FlareError::localized(ErrorCode::DatabaseError, e.to_string()))?;
+        Ok(row
+            .map(|r| r.0.trim().to_string())
+            .filter(|dir| !dir.is_empty()))
+    }
+
+    async fn set_download_directory(&self, directory: Option<&str>) -> Result<()> {
+        let value = directory.map(str::trim).unwrap_or("");
+        sqlx::query("UPDATE file_download_settings SET download_directory = ? WHERE singleton = 1")
+            .bind(value)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| FlareError::localized(ErrorCode::DatabaseError, e.to_string()))?;
+        Ok(())
+    }
+
+    fn fallback_download_root(&self) -> Option<PathBuf> {
+        self.fallback_root.clone()
     }
 
     async fn delete_download_record(&self, download_key: &str) -> Result<()> {

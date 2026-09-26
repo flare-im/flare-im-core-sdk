@@ -567,6 +567,31 @@ fn message_type_for_elem(elem: &Elem) -> MessageType {
     }
 }
 
+/// 「保存到本机」请求：接受各端历史上用过的键名（`fileId`/`remoteFileId`、`fileName`/`displayFileName`、
+/// `sourceUrl`/`sourceHttpUrl`），`downloadKey` 与文件名缺省时由核心推导。
+#[cfg(not(target_arch = "wasm32"))]
+pub fn build_user_download_request(
+    params: Value,
+) -> Result<flare_im_core_sdk::prelude::UserFileDownloadRequest> {
+    // 第一个非空的键：宿主可能同时带上空的旧键名。
+    let pick = |keys: &[&str]| {
+        keys.iter().find_map(|key| {
+            optional_string(&params, key)
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+        })
+    };
+    Ok(flare_im_core_sdk::prelude::UserFileDownloadRequest {
+        download_key: pick(&["downloadKey"]).unwrap_or_default(),
+        display_file_name: pick(&["fileName", "displayFileName", "name"]).unwrap_or_default(),
+        source_path: pick(&["sourcePath", "localPath"]),
+        source_http_url: pick(&["sourceUrl", "sourceHttpUrl"]),
+        remote_file_id: pick(&["fileId", "remoteFileId", "mediaId"]),
+        expires_in: optional_i32(&params, "expiresIn")?.unwrap_or(3600),
+        on_progress: None,
+    })
+}
+
 pub fn build_create_location_request(params: Value) -> Result<CreateLocationRequest> {
     Ok(CreateLocationRequest {
         conversation_id: conversation_id(&params)?,

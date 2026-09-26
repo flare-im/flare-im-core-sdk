@@ -408,26 +408,12 @@ pub async fn dispatch_direct(
         #[cfg(not(target_arch = "wasm32"))]
         "media.download_file_to_downloads" => {
             let api = session.media_api().await?;
-            let download_key = dispatch_support::json_string(request, "downloadKey")?;
-            let display_file_name = dispatch_support::json_string(request, "displayFileName")?;
-            let source_path = dispatch_support::optional_string(request, "sourcePath");
-            let source_http_url = dispatch_support::optional_string(request, "sourceHttpUrl");
-            let remote_file_id = dispatch_support::optional_string(request, "remoteFileId");
-            let expires_in = dispatch_support::optional_i32(request, "expiresIn")?.unwrap_or(3600);
-            let path = api
-                .download_file_to_user_downloads_folder(
-                    flare_im_core_sdk::prelude::UserFileDownloadRequest {
-                        download_key,
-                        display_file_name,
-                        source_path,
-                        source_http_url,
-                        remote_file_id,
-                        expires_in,
-                        on_progress: None,
-                    },
-                )
+            let saved = api
+                .download_to_user_directory(dispatch_support::build_user_download_request(
+                    request.clone(),
+                )?)
                 .await?;
-            dispatch_support::json(serde_json::json!({ "path": path }))
+            dispatch_support::json(saved)
         }
         _ => Err(crate::binding_operation_not_supported(route)),
     }

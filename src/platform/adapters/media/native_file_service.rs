@@ -1,6 +1,8 @@
 //! 媒体上传与下载：直传分片、网关取链、本地缓存、附件下载到用户目录并落库。
 
 use std::collections::HashMap;
+#[cfg(not(target_arch = "wasm32"))]
+use std::collections::HashSet;
 use std::path::Path;
 #[cfg(not(target_arch = "wasm32"))]
 use std::path::PathBuf;
@@ -8,6 +10,12 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+#[cfg(not(target_arch = "wasm32"))]
+use super::native_download::{
+    AUTO_CACHE_MAX_ENTRY_BYTES, WrittenFile, copy_file_to, ensure_writable_dir,
+    fill_cache_from_url, platform_default_download_root, read_head, stream_http_to_file,
+    temp_sibling,
+};
 use super::upload_shared::{
     build_control_headers as shared_build_control_headers, build_upload_metadata,
     build_upload_parts, build_upload_parts_from_manifest, compute_bytes_fingerprints,
@@ -23,13 +31,12 @@ use tokio::io::{AsyncReadExt, AsyncSeekExt, SeekFrom};
 use tokio::sync::RwLock;
 
 use crate::application::callbacks::{
-    FileDownloadProgress, FileDownloadProgressCallback, UploadPhase, UploadProgress,
-    UploadProgressCallback, UserFileDownloadRequest,
+    UploadPhase, UploadProgress, UploadProgressCallback, UserFileDownloadRequest,
 };
 use crate::domain::{
     DirectUploadTransportKindVo, MediaCacheAdmin, MediaCacheEntryVo, MediaCacheStore,
     MediaUploadManifestVo, UploadManifestState, UploadManifestStore, UploadSourceKind,
-    UserFileDownloadStore,
+    UserDownloadDirectoryVo, UserFileDownloadResultVo, UserFileDownloadStore,
 };
 use crate::infrastructure::transport::{
     CommitDirectUploadPartsHttpRequest, CommitDirectUploadPartsHttpResponse,
@@ -59,6 +66,9 @@ pub struct MediaService {
     user_file_download_store: Option<Arc<dyn UserFileDownloadStore>>,
     /// 与 `download_key` 对应；`false` 表示取消下载。
     download_cancel_flags: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
+    /// 正在后台自动缓存的 `file_id`（同一张图同时只拉一次）。
+    #[cfg(not(target_arch = "wasm32"))]
+    auto_cache_inflight: Arc<Mutex<HashSet<String>>>,
 }
 
 struct NewUploadManifest<'a> {
@@ -82,33 +92,6 @@ struct UploadedDirectPart {
 #[cfg(not(target_arch = "wasm32"))]
 const MAX_USER_DOWNLOAD_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 
-#[cfg(not(target_arch = "wasm32"))]
-fn enforce_user_download_byte_budget(
-    content_length: Option<u64>,
-    downloaded_bytes: u64,
-    incoming_bytes: u64,
-) -> Result<()> {
-    if content_length.is_some_and(|total| total > MAX_USER_DOWNLOAD_BYTES) {
-        return Err(FlareError::localized(
-            ErrorCode::ResourceExhausted,
-            format!("download exceeds {MAX_USER_DOWNLOAD_BYTES} bytes"),
-        ));
-    }
-
-    let next_total = downloaded_bytes
-        .checked_add(incoming_bytes)
-        .ok_or_else(|| {
-            FlareError::localized(ErrorCode::ResourceExhausted, "download byte count overflow")
-        })?;
-    if next_total > MAX_USER_DOWNLOAD_BYTES {
-        return Err(FlareError::localized(
-            ErrorCode::ResourceExhausted,
-            format!("download exceeds {MAX_USER_DOWNLOAD_BYTES} bytes"),
-        ));
-    }
-    Ok(())
-}
-
 impl MediaService {
     pub fn new(
         http: HttpClient,
@@ -126,6 +109,8 @@ impl MediaService {
             media_cache_admin,
             user_file_download_store,
             download_cancel_flags: Arc::new(Mutex::new(HashMap::new())),
+            #[cfg(not(target_arch = "wasm32"))]
+            auto_cache_inflight: Arc::new(Mutex::new(HashSet::new())),
         }
     }
 
@@ -319,9 +304,15 @@ impl MediaService {
             ));
         }
 
-        let bytes = self.http.get_bytes_direct_url(url).await?;
-        let mime = infer_mime_from_url_or_octet_stream(url, &bytes);
-        cache.put_bytes(fid, &bytes, &mime).await
+        fill_cache_from_url(
+            &self.http,
+            cache,
+            fid,
+            url,
+            MAX_USER_DOWNLOAD_BYTES,
+            media_mime_of,
+        )
+        .await
     }
 
     #[cfg(target_arch = "wasm32")]
@@ -1292,6 +1283,33 @@ impl MediaServicePort for MediaService {
     ) -> Result<String> {
         MediaService::download_file_to_user_downloads_folder(self, request).await
     }
+
+    async fn download_to_user_directory(
+        &self,
+        request: UserFileDownloadRequest,
+    ) -> Result<UserFileDownloadResultVo> {
+        MediaService::download_to_user_directory(self, request).await
+    }
+
+    async fn user_download_get_directory(&self) -> Result<UserDownloadDirectoryVo> {
+        MediaService::user_download_get_directory(self).await
+    }
+
+    async fn user_download_set_directory(
+        &self,
+        directory: Option<&str>,
+    ) -> Result<UserDownloadDirectoryVo> {
+        MediaService::user_download_set_directory(self, directory).await
+    }
+
+    async fn resolve_media_access_opts(
+        &self,
+        file_id: &str,
+        expires_in: i32,
+        auto_cache: bool,
+    ) -> Result<MediaResolvedAccess> {
+        MediaService::resolve_media_access_opts(self, file_id, expires_in, auto_cache).await
+    }
 }
 
 fn local_path_from_media_source(source: &MediaSourceDescriptor) -> Result<String> {
@@ -1428,13 +1446,106 @@ impl MediaService {
         store.delete_download_record(download_key).await
     }
 
-    /// 将文件保存到「系统下载目录 / 可配置子目录」，并写入 SQLite `user_file_download`。
-    ///
-    /// 来源优先级：`source_path` → `source_http_url` → `remote_file_id`（经网关取临时直链）。
+    fn download_store(&self) -> Result<&Arc<dyn UserFileDownloadStore>> {
+        self.user_file_download_store.as_ref().ok_or_else(|| {
+            FlareError::localized(
+                ErrorCode::ConfigurationError,
+                "user file download store is not configured",
+            )
+        })
+    }
+
+    /// 平台默认下载目录（含子文件夹）：平台约定的「下载」根 → 不可用时退到本地库同级的 `downloads`。
+    async fn default_download_directory(
+        &self,
+        store: &Arc<dyn UserFileDownloadStore>,
+    ) -> Result<(PathBuf, String)> {
+        let subfolder = store.get_download_subfolder().await?;
+        let fallback = store
+            .fallback_download_root()
+            .unwrap_or_else(|| std::env::temp_dir().join("flare-downloads"));
+        let root = platform_default_download_root().unwrap_or_else(|| fallback.clone());
+        Ok((root.join(subfolder.trim()), subfolder))
+    }
+
+    /// 「下载位置」：实际生效目录、平台默认目录、用户自选目录。
+    pub async fn user_download_get_directory(&self) -> Result<UserDownloadDirectoryVo> {
+        let store = self.download_store()?;
+        let (default_dir, subfolder) = self.default_download_directory(store).await?;
+        let custom = store.get_download_directory().await?;
+        let directory = custom
+            .clone()
+            .unwrap_or_else(|| default_dir.to_string_lossy().into_owned());
+        Ok(UserDownloadDirectoryVo {
+            directory,
+            default_directory: default_dir.to_string_lossy().into_owned(),
+            is_custom: custom.is_some(),
+            custom_directory: custom,
+            subfolder,
+        })
+    }
+
+    /// 设置用户自选的下载目录（绝对路径，必须可写）；`None` 或空串回到平台默认目录。
+    pub async fn user_download_set_directory(
+        &self,
+        directory: Option<&str>,
+    ) -> Result<UserDownloadDirectoryVo> {
+        let store = self.download_store()?;
+        match directory.map(str::trim).filter(|d| !d.is_empty()) {
+            None => store.set_download_directory(None).await?,
+            Some(raw) => {
+                let dir = resolve_user_download_source_path(raw);
+                ensure_writable_dir(&dir).await?;
+                store
+                    .set_download_directory(Some(&dir.to_string_lossy()))
+                    .await?;
+            }
+        }
+        self.user_download_get_directory().await
+    }
+
+    /// 这次保存实际写入的目录：自选目录（必须可写，否则报错让用户重选）；
+    /// 否则平台默认目录，默认目录不可写时退到兜底目录。
+    async fn effective_download_directory(
+        &self,
+        store: &Arc<dyn UserFileDownloadStore>,
+    ) -> Result<PathBuf> {
+        if let Some(custom) = store.get_download_directory().await? {
+            let dir = PathBuf::from(custom);
+            ensure_writable_dir(&dir).await?;
+            return Ok(dir);
+        }
+        let (default_dir, subfolder) = self.default_download_directory(store).await?;
+        if ensure_writable_dir(&default_dir).await.is_ok() {
+            return Ok(default_dir);
+        }
+        let fallback = store
+            .fallback_download_root()
+            .unwrap_or_else(|| std::env::temp_dir().join("flare-downloads"))
+            .join(subfolder.trim());
+        ensure_writable_dir(&fallback).await?;
+        Ok(fallback)
+    }
+
+    /// 将文件保存到「下载位置」，并写入 SQLite `user_file_download`。返回保存后的路径。
     pub async fn download_file_to_user_downloads_folder(
         &self,
         request: UserFileDownloadRequest,
     ) -> Result<String> {
+        self.download_to_user_directory(request)
+            .await
+            .map(|saved| saved.path)
+    }
+
+    /// 将文件保存到「下载位置」（用户自选目录或平台默认目录），并写入 SQLite `user_file_download`。
+    ///
+    /// 来源优先级：`source_path` → 本地媒体缓存（按 `remote_file_id`）→ `source_http_url`
+    /// → `remote_file_id`（经网关取附件直链）。先写同目录下的隐藏临时文件，完成后改名；
+    /// 失败或取消时不留半截文件。远端图片保存后顺带进媒体缓存。
+    pub async fn download_to_user_directory(
+        &self,
+        request: UserFileDownloadRequest,
+    ) -> Result<UserFileDownloadResultVo> {
         let UserFileDownloadRequest {
             download_key,
             display_file_name,
@@ -1444,21 +1555,43 @@ impl MediaService {
             expires_in,
             on_progress,
         } = request;
-        let key = download_key.trim().to_string();
-        if key.is_empty() {
+        let non_empty =
+            |v: Option<String>| v.map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+        let source_path = non_empty(source_path);
+        let source_http_url = non_empty(source_http_url);
+        let remote_file_id = non_empty(remote_file_id);
+        if source_path.is_none() && source_http_url.is_none() && remote_file_id.is_none() {
             return Err(FlareError::localized(
                 ErrorCode::InvalidParameter,
-                "download_file_to_user_downloads_folder: empty download_key",
+                "provide source_path, source_http_url, or remote_file_id",
             ));
         }
+        if let Some(url) = &source_http_url
+            && !(url.starts_with("http://") || url.starts_with("https://"))
+        {
+            return Err(FlareError::localized(
+                ErrorCode::InvalidParameter,
+                "source_http_url must be http(s)",
+            ));
+        }
+        let key = non_empty(Some(download_key))
+            .or_else(|| remote_file_id.clone())
+            .or_else(|| source_http_url.clone())
+            .or_else(|| source_path.clone())
+            .unwrap_or_default();
+        let wanted_name = non_empty(Some(display_file_name)).unwrap_or_else(|| {
+            source_path
+                .as_deref()
+                .or(source_http_url
+                    .as_deref()
+                    .map(|u| u.split('?').next().unwrap_or(u)))
+                .and_then(|s| s.rsplit(['/', '\\']).find(|seg| !seg.is_empty()))
+                .map(str::to_string)
+                .or_else(|| remote_file_id.clone())
+                .unwrap_or_else(|| "download".to_string())
+        });
 
-        let store = self.user_file_download_store.as_ref().ok_or_else(|| {
-            FlareError::localized(
-                ErrorCode::ConfigurationError,
-                "user file download store is not configured",
-            )
-        })?;
-
+        let store = self.download_store()?.clone();
         let run_flag = Arc::new(AtomicBool::new(true));
         {
             let mut m = self.download_cancel_flags.lock().map_err(|_| {
@@ -1468,81 +1601,100 @@ impl MediaService {
         }
 
         let result = async {
-            let sub = store.get_download_subfolder().await?;
-            let base = dirs::download_dir().ok_or_else(|| {
-                FlareError::localized(ErrorCode::ConfigurationError, "cannot resolve download dir")
-            })?;
-            let dir = base.join(sub.trim());
-            tokio::fs::create_dir_all(&dir).await.map_err(|e| {
-                FlareError::localized(
-                    ErrorCode::GeneralError,
-                    format!("create download subdir failed: {e}"),
-                )
-            })?;
+            let dir = self.effective_download_directory(&store).await?;
+            let safe_name = sanitize_user_download_file_name(&wanted_name);
+            let mut dest = checked_user_download_destination(&dir, &safe_name)?;
+            let tmp = temp_sibling(&dest);
+            let flag = Some(run_flag.as_ref());
+            let progress = on_progress.as_ref();
 
-            let safe_name = sanitize_user_download_file_name(&display_file_name);
-            let dest_path = checked_user_download_destination(&dir, &safe_name)?;
-
-            let sp = source_path
-                .as_deref()
-                .map(str::trim)
-                .filter(|s| !s.is_empty());
-            let su = source_http_url
-                .as_deref()
-                .map(str::trim)
-                .filter(|s| !s.is_empty());
-            let rf = remote_file_id
-                .as_deref()
-                .map(str::trim)
-                .filter(|s| !s.is_empty());
-
-            let out_path = if let Some(p) = sp {
-                Self::user_download_copy_from_path(p, &dest_path, &run_flag, on_progress.as_ref())
-                    .await?
-            } else if let Some(u) = su {
-                if !(u.starts_with("http://") || u.starts_with("https://")) {
-                    return Err(FlareError::localized(
-                        ErrorCode::InvalidParameter,
-                        "source_http_url must be http(s)",
-                    ));
-                }
-                Self::user_download_stream_http(
-                    &self.http,
-                    u,
-                    &dest_path,
-                    &run_flag,
-                    on_progress.as_ref(),
-                )
-                .await?
-            } else if let Some(fid) = rf {
-                let access = self.get_temp_url_for_file_download(fid, expires_in).await?;
-                let url = pick_download_url(&access);
-                if url.is_empty() {
-                    return Err(FlareError::localized(
-                        ErrorCode::GeneralError,
-                        "empty download url from gateway",
-                    ));
-                }
-                Self::user_download_stream_http(
-                    &self.http,
-                    url,
-                    &dest_path,
-                    &run_flag,
-                    on_progress.as_ref(),
+            let cached = match (&remote_file_id, &self.media_cache_store) {
+                (Some(fid), Some(cache)) if source_path.is_none() => cache.get_cached(fid).await?,
+                _ => None,
+            };
+            let mut from_cache = false;
+            let mut fetched_url: Option<String> = None;
+            let written: WrittenFile = if let Some(p) = &source_path {
+                let src = resolve_user_download_source_path(p);
+                copy_file_to(&src, &tmp, MAX_USER_DOWNLOAD_BYTES, flag, progress).await?
+            } else if let Some(hit) = &cached {
+                from_cache = true;
+                copy_file_to(
+                    Path::new(&hit.local_path),
+                    &tmp,
+                    MAX_USER_DOWNLOAD_BYTES,
+                    flag,
+                    progress,
                 )
                 .await?
             } else {
-                return Err(FlareError::localized(
-                    ErrorCode::InvalidParameter,
-                    "provide source_path, source_http_url, or remote_file_id",
-                ));
+                let url = match (&source_http_url, &remote_file_id) {
+                    (Some(u), _) => u.clone(),
+                    (None, Some(fid)) => {
+                        let access = self.get_temp_url_for_file_download(fid, expires_in).await?;
+                        let u = pick_download_url(&access).to_string();
+                        if u.is_empty() {
+                            return Err(FlareError::localized(
+                                ErrorCode::GeneralError,
+                                "empty download url from gateway",
+                            ));
+                        }
+                        u
+                    }
+                    (None, None) => unreachable!("checked above"),
+                };
+                let w = stream_http_to_file(
+                    &self.http,
+                    &url,
+                    &tmp,
+                    MAX_USER_DOWNLOAD_BYTES,
+                    flag,
+                    progress,
+                )
+                .await?;
+                fetched_url = Some(url);
+                w
             };
 
-            let path_str = out_path.to_string_lossy().into_owned();
+            // 等待期间同名文件可能被别处写出来了：改名前再挑一次不冲突的名字。
+            if dest.exists() {
+                dest = checked_user_download_destination(&dir, &safe_name)?;
+            }
+            if let Err(e) = tokio::fs::rename(&tmp, &dest).await {
+                let _ = tokio::fs::remove_file(&tmp).await;
+                return Err(FlareError::general_error(format!(
+                    "save downloaded file failed: {e}"
+                )));
+            }
+
+            // 远端来的图片顺带进缓存：之后显示与再次保存都不再走网络。
+            if let (Some(url), Some(fid), Some(cache)) =
+                (&fetched_url, &remote_file_id, &self.media_cache_store)
+                && written.size <= AUTO_CACHE_MAX_ENTRY_BYTES
+            {
+                let head = read_head(&dest, 16).await;
+                let mime = media_mime_of(url, written.content_type.as_deref(), &head);
+                if mime.starts_with("image/") {
+                    let _ = cache.put_file(fid, &dest, &mime, false).await;
+                }
+            }
+
+            let path_str = dest.to_string_lossy().into_owned();
+            let file_name = dest
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| safe_name.clone());
             store
-                .save_download_record(&key, &path_str, &display_file_name)
+                .save_download_record(&key, &path_str, &wanted_name)
                 .await?;
-            Ok(path_str)
+            Ok(UserFileDownloadResultVo {
+                path: path_str,
+                directory: dir.to_string_lossy().into_owned(),
+                file_name,
+                size_bytes: written.size,
+                from_cache,
+                download_key: key.clone(),
+            })
         }
         .await;
 
@@ -1553,104 +1705,63 @@ impl MediaService {
         result
     }
 
-    async fn user_download_copy_from_path(
-        src_raw: &str,
-        dest: &Path,
-        run_flag: &AtomicBool,
-        on_progress: Option<&FileDownloadProgressCallback>,
-    ) -> Result<PathBuf> {
-        let src = resolve_user_download_source_path(src_raw);
-        if !src.is_file() {
-            return Err(FlareError::localized(
-                ErrorCode::InvalidParameter,
-                "source file does not exist",
-            ));
+    /// 解析媒体访问方式：本地缓存命中返回本地文件，否则返回短时 URL。
+    /// `auto_cache` 为真时，未命中的文件在后台拉进缓存（单个 ≤ 32 MiB），下次直接用本地文件。
+    pub async fn resolve_media_access_opts(
+        &self,
+        file_id: &str,
+        expires_in: i32,
+        auto_cache: bool,
+    ) -> Result<MediaResolvedAccess> {
+        let resolved = self.resolve_media_access(file_id, expires_in).await?;
+        if auto_cache
+            && resolved.local_path.is_none()
+            && let Some(remote) = &resolved.remote
+        {
+            self.spawn_auto_cache(file_id.trim(), pick_download_url(remote));
         }
-        let total = tokio::fs::metadata(&src)
-            .await
-            .map_err(|e| FlareError::general_error(format!("metadata: {e}")))?
-            .len();
-        enforce_user_download_byte_budget(Some(total), 0, 0)?;
-        emit_file_download_progress(on_progress, 0, Some(total));
-        let mut reader = tokio::fs::File::open(&src)
-            .await
-            .map_err(|e| FlareError::general_error(format!("open source: {e}")))?;
-        let mut writer = tokio::fs::File::create(dest)
-            .await
-            .map_err(|e| FlareError::general_error(format!("create dest: {e}")))?;
-        let mut buf = vec![0u8; 256 * 1024];
-        let mut downloaded: u64 = 0;
-        loop {
-            if !run_flag.load(Ordering::Relaxed) {
-                drop(writer);
-                let _ = tokio::fs::remove_file(dest).await;
-                return Err(FlareError::general_error("下载已取消"));
-            }
-            let n = reader
-                .read(&mut buf)
-                .await
-                .map_err(|e| FlareError::general_error(format!("read: {e}")))?;
-            if n == 0 {
-                break;
-            }
-            enforce_user_download_byte_budget(Some(total), downloaded, n as u64)?;
-            writer
-                .write_all(&buf[..n])
-                .await
-                .map_err(|e| FlareError::general_error(format!("write: {e}")))?;
-            downloaded += n as u64;
-            emit_file_download_progress(on_progress, downloaded, Some(total));
-        }
-        writer.flush().await.ok();
-        emit_file_download_progress(on_progress, downloaded, Some(total));
-        Ok(dest.to_path_buf())
+        Ok(resolved)
     }
 
-    async fn user_download_stream_http(
-        http: &HttpClient,
-        url: &str,
-        dest: &Path,
-        run_flag: &AtomicBool,
-        on_progress: Option<&FileDownloadProgressCallback>,
-    ) -> Result<PathBuf> {
-        let resp = http.get_response_direct_url(url).await?;
-        let total = resp.content_length();
-        enforce_user_download_byte_budget(total, 0, 0)?;
-        emit_file_download_progress(on_progress, 0, total);
-        let mut stream = resp.bytes_stream();
-        let mut file = tokio::fs::File::create(dest)
-            .await
-            .map_err(|e| FlareError::general_error(format!("create dest: {e}")))?;
-        let mut downloaded: u64 = 0;
-        while let Some(item) = stream.next().await {
-            if !run_flag.load(Ordering::Relaxed) {
-                drop(file);
-                let _ = tokio::fs::remove_file(dest).await;
-                return Err(FlareError::general_error("下载已取消"));
-            }
-            let chunk = item.map_err(|e| FlareError::system(format!("http chunk: {e}")))?;
-            enforce_user_download_byte_budget(total, downloaded, chunk.len() as u64)?;
-            file.write_all(&chunk)
-                .await
-                .map_err(|e| FlareError::general_error(format!("write: {e}")))?;
-            downloaded += chunk.len() as u64;
-            emit_file_download_progress(on_progress, downloaded, total);
+    fn spawn_auto_cache(&self, file_id: &str, url: &str) {
+        let Some(cache) = self.media_cache_store.clone() else {
+            return;
+        };
+        if file_id.is_empty() || url.is_empty() {
+            return;
         }
-        file.flush()
+        let Ok(handle) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        {
+            let Ok(mut inflight) = self.auto_cache_inflight.lock() else {
+                return;
+            };
+            if !inflight.insert(file_id.to_string()) {
+                return;
+            }
+        }
+        let http = self.http.clone();
+        let inflight = self.auto_cache_inflight.clone();
+        let fid = file_id.to_string();
+        let url = url.to_string();
+        handle.spawn(async move {
+            if let Err(e) = fill_cache_from_url(
+                &http,
+                &cache,
+                &fid,
+                &url,
+                AUTO_CACHE_MAX_ENTRY_BYTES,
+                media_mime_of,
+            )
             .await
-            .map_err(|e| FlareError::general_error(format!("flush: {e}")))?;
-        Ok(dest.to_path_buf())
-    }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn emit_file_download_progress(
-    on: Option<&FileDownloadProgressCallback>,
-    downloaded: u64,
-    total: Option<u64>,
-) {
-    if let Some(cb) = on {
-        cb(FileDownloadProgress { downloaded, total });
+            {
+                tracing::debug!(file_id = %fid, error = %e, "media auto cache skipped");
+            }
+            if let Ok(mut set) = inflight.lock() {
+                set.remove(&fid);
+            }
+        });
     }
 }
 
@@ -1778,17 +1889,24 @@ fn unique_user_download_destination(dir: &Path, file_name: &str) -> PathBuf {
 mod user_download_policy_tests {
     use super::*;
 
+    use super::super::native_download::check_budget;
+
     #[test]
     fn rejects_content_length_over_user_download_budget() {
-        let err = enforce_user_download_byte_budget(Some(MAX_USER_DOWNLOAD_BYTES + 1), 0, 0)
-            .expect_err("content length beyond budget must fail");
+        let err = check_budget(
+            Some(MAX_USER_DOWNLOAD_BYTES + 1),
+            0,
+            0,
+            MAX_USER_DOWNLOAD_BYTES,
+        )
+        .expect_err("content length beyond budget must fail");
 
         assert_eq!(err.code(), Some(ErrorCode::ResourceExhausted));
     }
 
     #[test]
     fn rejects_chunked_download_when_accumulated_bytes_exceed_budget() {
-        let err = enforce_user_download_byte_budget(None, MAX_USER_DOWNLOAD_BYTES, 1)
+        let err = check_budget(None, MAX_USER_DOWNLOAD_BYTES, 1, MAX_USER_DOWNLOAD_BYTES)
             .expect_err("chunked response beyond budget must fail");
 
         assert_eq!(err.code(), Some(ErrorCode::ResourceExhausted));
@@ -1874,6 +1992,17 @@ mod media_access_url_selection_tests {
             "http://127.0.0.1:29000/flare-media/public.png"
         );
     }
+}
+
+/// 下载来的文件的 MIME：响应头（非通用二进制时）→ URL 后缀 → 文件头。
+#[cfg(not(target_arch = "wasm32"))]
+fn media_mime_of(url: &str, content_type: Option<&str>, head: &[u8]) -> String {
+    if let Some(ct) = content_type.filter(|ct| {
+        !ct.is_empty() && *ct != "application/octet-stream" && *ct != "binary/octet-stream"
+    }) {
+        return ct.to_string();
+    }
+    infer_mime_from_url_or_octet_stream(url, head)
 }
 
 fn infer_mime_from_url_or_octet_stream(url: &str, bytes: &[u8]) -> String {
@@ -1995,5 +2124,309 @@ mod tests {
         assert_eq!(infer_mime_type("clip.mp4"), "video/mp4");
         assert_eq!(infer_mime_type("voice.mp3"), "audio/mpeg");
         assert_eq!(infer_mime_type("report.pdf"), "application/pdf");
+    }
+}
+
+#[cfg(all(test, feature = "storage-sqlite", not(target_arch = "wasm32")))]
+mod download_and_cache_tests {
+    use super::*;
+    use crate::domain::{DEFAULT_MEDIA_CACHE_MAX_BYTES, MediaCacheAdmin};
+    use crate::infrastructure::persistence::sqlite::{
+        SqliteMediaCacheRepo, SqliteUserFileDownloadRepo, init_schema,
+    };
+    use sqlx::SqlitePool;
+    use std::sync::atomic::AtomicUsize;
+    use tokio::io::{AsyncBufReadExt, BufReader};
+
+    const PNG: &[u8] = &[
+        0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 1, 2, 3, 4, 5, 6, 7, 8,
+    ];
+
+    /// 假网关：`POST /api/v1/medias/file-url` 返回指向自己的 `/blob/<fileId>`；
+    /// `GET /blob/ok-*` 返回 PNG 字节，`GET /blob/broken-*` 返回 500。记录 blob 被取的次数。
+    async fn fake_gateway() -> (String, Arc<AtomicUsize>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let hits = Arc::new(AtomicUsize::new(0));
+        let (base_c, hits_c) = (base.clone(), hits.clone());
+        tokio::spawn(async move {
+            loop {
+                let Ok((socket, _)) = listener.accept().await else {
+                    return;
+                };
+                let (base, hits) = (base_c.clone(), hits_c.clone());
+                tokio::spawn(async move {
+                    let mut reader = BufReader::new(socket);
+                    let mut request_line = String::new();
+                    reader.read_line(&mut request_line).await.unwrap();
+                    let mut len = 0usize;
+                    loop {
+                        let mut line = String::new();
+                        reader.read_line(&mut line).await.unwrap();
+                        let line = line.trim_end();
+                        if line.is_empty() {
+                            break;
+                        }
+                        if let Some((k, v)) = line.split_once(':')
+                            && k.eq_ignore_ascii_case("content-length")
+                        {
+                            len = v.trim().parse().unwrap_or(0);
+                        }
+                    }
+                    let mut body = vec![0u8; len];
+                    reader.read_exact(&mut body).await.unwrap();
+                    let path = request_line
+                        .split_whitespace()
+                        .nth(1)
+                        .unwrap_or("/")
+                        .to_string();
+                    let (status, ctype, payload): (&str, &str, Vec<u8>) =
+                        if path.starts_with("/api/v1/medias/file-url") {
+                            let req: serde_json::Value = serde_json::from_slice(&body).unwrap();
+                            let fid = req["file_id"].as_str().unwrap_or_default();
+                            let json = serde_json::json!({
+                                "code": 0,
+                                "data": { "url": format!("{base}/blob/{fid}") }
+                            });
+                            ("200 OK", "application/json", json.to_string().into_bytes())
+                        } else if path.starts_with("/blob/broken") {
+                            hits.fetch_add(1, Ordering::SeqCst);
+                            ("500 Internal Server Error", "text/plain", b"boom".to_vec())
+                        } else {
+                            hits.fetch_add(1, Ordering::SeqCst);
+                            ("200 OK", "image/png", PNG.to_vec())
+                        };
+                    let head = format!(
+                        "HTTP/1.1 {status}\r\nContent-Type: {ctype}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        payload.len()
+                    );
+                    let socket = reader.get_mut();
+                    socket.write_all(head.as_bytes()).await.unwrap();
+                    socket.write_all(&payload).await.unwrap();
+                });
+            }
+        });
+        (base, hits)
+    }
+
+    struct Fixture {
+        service: MediaService,
+        cache_admin: Arc<SqliteMediaCacheRepo>,
+        root: PathBuf,
+        hits: Arc<AtomicUsize>,
+    }
+
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.root);
+        }
+    }
+
+    async fn fixture() -> Fixture {
+        let (base, hits) = fake_gateway().await;
+        let root =
+            std::env::temp_dir().join(format!("flare-media-{}", uuid::Uuid::new_v4().simple()));
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        init_schema(&pool).await.unwrap();
+        let cache = Arc::new(
+            SqliteMediaCacheRepo::create(pool.clone(), root.join("media_cache"))
+                .await
+                .unwrap(),
+        );
+        let downloads = Arc::new(
+            SqliteUserFileDownloadRepo::new(pool).with_fallback_root(root.join("downloads")),
+        );
+        let service = MediaService::new(
+            HttpClient::new(base),
+            Arc::new(RwLock::new("u1".to_string())),
+            None,
+            Some(cache.clone() as Arc<dyn MediaCacheStore>),
+            Some(cache.clone() as Arc<dyn MediaCacheAdmin>),
+            Some(downloads as Arc<dyn UserFileDownloadStore>),
+        );
+        Fixture {
+            service,
+            cache_admin: cache,
+            root,
+            hits,
+        }
+    }
+
+    fn request(file_id: &str, name: &str) -> UserFileDownloadRequest {
+        UserFileDownloadRequest {
+            download_key: String::new(),
+            display_file_name: name.to_string(),
+            source_path: None,
+            source_http_url: None,
+            remote_file_id: Some(file_id.to_string()),
+            expires_in: 600,
+            on_progress: None,
+        }
+    }
+
+    fn leftovers(dir: &Path) -> Vec<String> {
+        std::fs::read_dir(dir)
+            .map(|it| {
+                it.filter_map(|e| e.ok())
+                    .map(|e| e.file_name().to_string_lossy().into_owned())
+                    .filter(|n| n.ends_with(".flaredownload"))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    #[tokio::test]
+    async fn saves_into_chosen_directory_and_reuses_the_cache() {
+        let f = fixture().await;
+        let chosen = f.root.join("我的下载");
+        let info = f
+            .service
+            .user_download_set_directory(Some(&chosen.to_string_lossy()))
+            .await
+            .unwrap();
+        assert!(info.is_custom);
+        assert_eq!(PathBuf::from(&info.directory), chosen);
+
+        let first = f
+            .service
+            .download_to_user_directory(request("ok-1", "截图.png"))
+            .await
+            .unwrap();
+        assert_eq!(PathBuf::from(&first.path), chosen.join("截图.png"));
+        assert_eq!(std::fs::read(&first.path).unwrap(), PNG);
+        assert!(!first.from_cache);
+        assert_eq!(first.download_key, "ok-1");
+        assert_eq!(f.hits.load(Ordering::SeqCst), 1);
+        assert!(leftovers(&chosen).is_empty());
+
+        // 远端图片保存时顺带进了缓存：再保存一次不走网络，同名文件带序号。
+        let second = f
+            .service
+            .download_to_user_directory(request("ok-1", "截图.png"))
+            .await
+            .unwrap();
+        assert!(second.from_cache);
+        assert_eq!(second.file_name, "截图 (1).png");
+        assert_eq!(f.hits.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            f.service
+                .user_download_get_saved_path("ok-1")
+                .await
+                .unwrap(),
+            Some(second.path.clone())
+        );
+    }
+
+    #[tokio::test]
+    async fn default_directory_and_reset() {
+        let f = fixture().await;
+        let info = f.service.user_download_get_directory().await.unwrap();
+        assert!(!info.is_custom);
+        assert_eq!(info.custom_directory, None);
+        assert_eq!(info.directory, info.default_directory);
+        assert!(info.directory.ends_with("flare"), "{}", info.directory);
+
+        assert!(
+            f.service
+                .user_download_set_directory(Some("relative/dir"))
+                .await
+                .is_err(),
+            "相对路径必须拒绝"
+        );
+        let chosen = f.root.join("picked");
+        f.service
+            .user_download_set_directory(Some(&chosen.to_string_lossy()))
+            .await
+            .unwrap();
+        let reset = f.service.user_download_set_directory(None).await.unwrap();
+        assert!(!reset.is_custom);
+        assert_eq!(reset.directory, info.default_directory);
+    }
+
+    #[tokio::test]
+    async fn failed_download_leaves_nothing_behind() {
+        let f = fixture().await;
+        let chosen = f.root.join("out");
+        f.service
+            .user_download_set_directory(Some(&chosen.to_string_lossy()))
+            .await
+            .unwrap();
+        let err = f
+            .service
+            .download_to_user_directory(request("broken-1", "坏文件.pdf"))
+            .await;
+        assert!(err.is_err());
+        assert!(!chosen.join("坏文件.pdf").exists());
+        assert!(leftovers(&chosen).is_empty(), "{:?}", leftovers(&chosen));
+        assert_eq!(
+            f.service
+                .user_download_get_saved_path("broken-1")
+                .await
+                .unwrap(),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn displayed_images_are_cached_in_the_background() {
+        let f = fixture().await;
+        let first = f
+            .service
+            .resolve_media_access_opts("ok-auto", 600, true)
+            .await
+            .unwrap();
+        assert!(first.local_path.is_none());
+        let mut cached = None;
+        for _ in 0..100 {
+            let again = f
+                .service
+                .resolve_media_access_opts("ok-auto", 600, true)
+                .await
+                .unwrap();
+            if again.local_path.is_some() {
+                cached = again.local_path;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        let local = cached.expect("自动缓存应在后台完成");
+        assert_eq!(std::fs::read(local).unwrap(), PNG);
+        // 后台只拉一次；之后都读本地。
+        assert_eq!(f.hits.load(Ordering::SeqCst), 1);
+
+        // 不开自动缓存则从不落盘。
+        let plain = f
+            .service
+            .resolve_media_access_opts("ok-plain", 600, false)
+            .await
+            .unwrap();
+        assert!(plain.local_path.is_none());
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert_eq!(f.hits.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn cache_has_a_default_cap_and_clears_staging() {
+        let f = fixture().await;
+        let stats = f.cache_admin.media_cache_stats().await.unwrap();
+        assert_eq!(stats.max_bytes, DEFAULT_MEDIA_CACHE_MAX_BYTES);
+        assert!(stats.max_bytes_is_default);
+
+        let entry = f.service.cache_remote_media("ok-2", 600).await.unwrap();
+        assert_eq!(entry.mime_type, "image/png");
+        assert_eq!(entry.size_bytes, PNG.len() as i64);
+        let staging = f.root.join("media_cache").join(".staging");
+        std::fs::write(staging.join("orphan.part"), b"x").unwrap();
+        f.cache_admin.clear_media_cache().await.unwrap();
+        assert!(!staging.exists());
+        assert_eq!(
+            f.cache_admin.media_cache_stats().await.unwrap().entry_count,
+            0
+        );
+
+        f.cache_admin.set_media_cache_max_bytes(10).await.unwrap();
+        let stats = f.cache_admin.media_cache_stats().await.unwrap();
+        assert_eq!(stats.max_bytes, 10);
+        assert!(!stats.max_bytes_is_default);
     }
 }

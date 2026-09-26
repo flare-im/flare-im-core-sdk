@@ -68,10 +68,35 @@ impl MediaService {
     }
 
     pub async fn get_file_url(&self, file_id: &str, expires_in: i32) -> Result<MediaAccessUrl> {
+        self.file_url(file_id, expires_in, false).await
+    }
+
+    /// 附件直链（`download: true`：服务端可带 `Content-Disposition: attachment`），web 端「另存为」用。
+    pub async fn get_temp_url_for_file_download(
+        &self,
+        file_id: &str,
+        expires_in: i32,
+    ) -> Result<MediaAccessUrl> {
+        let fid = file_id.trim();
+        if fid.is_empty() {
+            return Err(FlareError::localized(
+                ErrorCode::InvalidParameter,
+                "get_temp_url_for_file_download: empty file_id",
+            ));
+        }
+        self.file_url(fid, expires_in, true).await
+    }
+
+    async fn file_url(
+        &self,
+        file_id: &str,
+        expires_in: i32,
+        download: bool,
+    ) -> Result<MediaAccessUrl> {
         let req = GetFileUrlHttpRequest {
             file_id: file_id.to_string(),
             expires_in,
-            download: false,
+            download,
             response_headers: HashMap::new(),
         };
         let body: HttpApiResponse<GetFileUrlHttpResponse> =
@@ -444,6 +469,14 @@ impl MediaServicePort for MediaService {
 
     async fn get_file_url(&self, file_id: &str, expires_in: i32) -> Result<MediaAccessUrl> {
         MediaService::get_file_url(self, file_id, expires_in).await
+    }
+
+    async fn get_temp_url_for_file_download(
+        &self,
+        file_id: &str,
+        expires_in: i32,
+    ) -> Result<MediaAccessUrl> {
+        MediaService::get_temp_url_for_file_download(self, file_id, expires_in).await
     }
 
     async fn resolve_media_access(
