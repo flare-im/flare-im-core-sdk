@@ -421,11 +421,13 @@ impl MessageSendUseCase {
                     }
                 }
                 Elem::ImageGroup(group) => {
-                    for image in &mut group.images {
+                    let count = group.images.len();
+                    for (index, image) in group.images.iter_mut().enumerate() {
                         if let Some(source) = image_info_media_source(image) {
-                            let uploaded = self
-                                .upload_media_source(source, on_progress.clone())
-                                .await?;
+                            let progress = on_progress
+                                .clone()
+                                .map(|callback| image_group_progress(callback, index, count));
+                            let uploaded = self.upload_media_source(source, progress).await?;
                             if let Some(desc) = uploaded_media_to_image_descriptor(&uploaded) {
                                 *image = desc;
                                 touched = true;
@@ -495,6 +497,26 @@ async fn update_local_conversation_projection(
             message.conversation_seq,
         )
         .await
+}
+
+/// 多图消息逐张上传，每张各自从 0 报到 100；换算成整组进度，否则第二张起
+/// 全被「进度不回退」挡掉，进度条停在第一张传完的位置。
+fn image_group_progress(
+    callback: UploadProgressCallback,
+    index: usize,
+    count: usize,
+) -> UploadProgressCallback {
+    let count = count.max(1) as u64;
+    let index = index as u64;
+    Arc::new(move |mut progress: UploadProgress| {
+        let percent = u64::from(upload_progress_percent(&progress));
+        progress.uploaded_bytes = index * 100 + percent;
+        progress.total_bytes = count * 100;
+        if matches!(progress.phase, UploadPhase::Finished) && index + 1 < count {
+            progress.phase = UploadPhase::Uploading;
+        }
+        callback(progress);
+    })
 }
 
 /// 进度落库的最小步长（百分点）。每次落库都整条重写消息再经总线推给界面，
@@ -569,6 +591,8 @@ fn attach_local_media_preview(message: &mut IMMessage) {
         Elem::ImageGroup(group) => {
             for image in &mut group.images {
                 attach_image_preview(image);
+                let locator = image.image_id.clone();
+                fill_local_facts(&locator, &mut image.mime_type, &mut image.size);
             }
         }
         Elem::Video(video) => {
@@ -1312,6 +1336,39 @@ mod tests {
             Elem::File(file) => file,
             other => panic!("expected file, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn image_group_progress_advances_across_images() {
+        use super::{image_group_progress, upload_progress_percent};
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = seen.clone();
+        let callback: crate::application::UploadProgressCallback =
+            Arc::new(move |progress: crate::application::UploadProgress| {
+                sink.lock().unwrap().push((
+                    upload_progress_percent(&progress),
+                    matches!(progress.phase, crate::application::UploadPhase::Finished),
+                ));
+            });
+        let step = |index, phase, uploaded| {
+            image_group_progress(callback.clone(), index, 2)(crate::application::UploadProgress {
+                file_name: String::new(),
+                upload_id: String::new(),
+                phase,
+                uploaded_bytes: uploaded,
+                total_bytes: 10,
+                chunk_index: None,
+                total_chunks: None,
+            })
+        };
+        step(0, crate::application::UploadPhase::Uploading, 5);
+        step(0, crate::application::UploadPhase::Finished, 10);
+        step(1, crate::application::UploadPhase::Uploading, 5);
+        step(1, crate::application::UploadPhase::Finished, 10);
+        assert_eq!(
+            seen.lock().unwrap().clone(),
+            vec![(25, false), (50, false), (75, false), (100, true)]
+        );
     }
 
     #[test]
