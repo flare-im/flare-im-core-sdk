@@ -122,6 +122,13 @@ async fn ensure_current_message_columns(pool: &SqlitePool) -> Result<()> {
         ("failed", "failed INTEGER NOT NULL DEFAULT 0"),
         ("is_local", "is_local INTEGER NOT NULL DEFAULT 0"),
         ("sort_ts", "sort_ts INTEGER NOT NULL DEFAULT 0"),
+        // 本地媒体上传中与进度（0..=100）：发送方时间线要画进度条。以前只存了 sending/failed/is_local，
+        // 读回时这两项恒为 false/0，原生端（SQLite）上传期间看不到进度，web（IndexedDB 存整条）却能。
+        ("uploading", "uploading INTEGER NOT NULL DEFAULT 0"),
+        (
+            "upload_progress",
+            "upload_progress INTEGER NOT NULL DEFAULT 0",
+        ),
     ] {
         ensure_column(pool, "messages", column, definition).await?;
     }
@@ -316,7 +323,9 @@ pub async fn init_schema(pool: &SqlitePool) -> Result<()> {
             sending INTEGER NOT NULL DEFAULT 0,
             failed INTEGER NOT NULL DEFAULT 0,
             is_local INTEGER NOT NULL DEFAULT 0,
-            sort_ts INTEGER NOT NULL DEFAULT 0
+            sort_ts INTEGER NOT NULL DEFAULT 0,
+            uploading INTEGER NOT NULL DEFAULT 0,
+            upload_progress INTEGER NOT NULL DEFAULT 0
         )"#,
     )
     .execute(pool)

@@ -396,7 +396,7 @@ async fn insert_message_rows_tx(
            retention_policy, retention_state,
            is_read, is_recalled, is_edited,
            reply_to, quote_preview, thread_id, mention_users, mention_all, attributes, extensions, version, updated_at, text,
-           sending, failed, is_local, sort_ts)
+           sending, failed, is_local, sort_ts, uploading, upload_progress)
         "#,
     );
     qb.push_values(rows.iter().enumerate(), |mut b, (index, row)| {
@@ -435,7 +435,9 @@ async fn insert_message_rows_tx(
             .push_bind(if m.local_state.sending { 1i32 } else { 0 })
             .push_bind(if m.local_state.failed { 1i32 } else { 0 })
             .push_bind(if m.local_state.is_local { 1i32 } else { 0 })
-            .push_bind(effective_sort_ts_for_persist(m));
+            .push_bind(effective_sort_ts_for_persist(m))
+            .push_bind(if m.local_state.uploading { 1i32 } else { 0 })
+            .push_bind(m.local_state.upload_progress.min(100) as i64);
     });
     qb.build().execute(&mut **tx).await.map_err(sqlx_err)?;
     Ok(())
@@ -586,7 +588,7 @@ const MESSAGE_SELECT_COLS: &str = r#"server_id, conversation_id, client_msg_id, 
     retention_policy, retention_state,
     is_read, is_recalled, is_edited,
     reply_to, quote_preview, thread_id, mention_users, mention_all, attributes, extensions, version, updated_at, text,
-    sending, failed, is_local, sort_ts"#;
+    sending, failed, is_local, sort_ts, uploading, upload_progress"#;
 
 pub struct SqliteMessageRepo {
     pool: SqlitePool,
@@ -667,6 +669,8 @@ impl SqliteMessageRepo {
         let failed: i32 = row.try_get("failed").map_err(sqlx_err)?;
         let is_local: i32 = row.try_get("is_local").map_err(sqlx_err)?;
         let sort_ts: i64 = row.try_get("sort_ts").map_err(sqlx_err)?;
+        let uploading: i32 = row.try_get("uploading").map_err(sqlx_err)?;
+        let upload_progress: i64 = row.try_get("upload_progress").map_err(sqlx_err)?;
         let text_col: Option<String> = row.try_get("text").map_err(sqlx_err)?;
 
         let mut attributes = parse_extra(extra_json.as_deref());
@@ -740,8 +744,8 @@ impl SqliteMessageRepo {
                 sending: sending != 0,
                 failed: failed != 0,
                 is_local: is_local != 0,
-                uploading: false,
-                upload_progress: 0,
+                uploading: uploading != 0,
+                upload_progress: upload_progress.clamp(0, 100) as u32,
                 sort_ts: sort_ts.max(0) as u64,
             },
         })

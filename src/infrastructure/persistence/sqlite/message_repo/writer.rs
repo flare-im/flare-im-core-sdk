@@ -316,8 +316,8 @@ impl MessageWriter for SqliteMessageRepo {
                retention_policy, retention_state,
                is_read, is_recalled, is_edited,
                reply_to, quote_preview, thread_id, mention_users, mention_all, attributes, extensions, version, updated_at, text,
-               sending, failed, is_local, sort_ts)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"#,
+               sending, failed, is_local, sort_ts, uploading, upload_progress)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"#,
         )
         .bind(&message.server_id)
         .bind(&message.conversation_id)
@@ -354,6 +354,8 @@ impl MessageWriter for SqliteMessageRepo {
         .bind(if message.local_state.failed { 1i32 } else { 0 })
         .bind(if message.local_state.is_local { 1i32 } else { 0 })
         .bind(effective_sort_ts_for_persist(&message))
+        .bind(if message.local_state.uploading { 1i32 } else { 0 })
+        .bind(message.local_state.upload_progress.min(100) as i64)
         .execute(&mut *tx)
         .await
         .map_err(|e| FlareError::localized(ErrorCode::DatabaseError, e.to_string()))?;

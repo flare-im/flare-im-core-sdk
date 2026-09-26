@@ -1324,3 +1324,75 @@ async fn timeline_read_resolves_current_identity_then_falls_back() {
     assert_eq!(name_of("s2"), "Bob", "缓存 miss→内嵌发送时快照");
     assert_eq!(name_of("s3"), "u3", "都无→回退 sender_id");
 }
+
+/// The sender's timeline draws its upload bar from `local_state.uploading` / `upload_progress`. SQLite used to keep
+/// only sending/failed/is_local and read the other two back as false/0, so native clients never showed any progress.
+#[tokio::test]
+async fn upload_progress_survives_a_round_trip_through_both_writers() {
+    use crate::domain::MessageStore as _;
+    let repo = make_repo().await;
+
+    let mut single = text_message("client-upload-single", "conv-upload", "u1", 0, 1_000, "file");
+    single.client_msg_id = "client-upload-single".to_string();
+    single.local_state.sending = true;
+    single.local_state.is_local = true;
+    single.local_state.uploading = true;
+    single.local_state.upload_progress = 37;
+    repo.save_one(&single).await.unwrap();
+
+    let mut batch = text_message("client-upload-batch", "conv-upload", "u1", 0, 2_000, "album");
+    batch.client_msg_id = "client-upload-batch".to_string();
+    batch.local_state.sending = true;
+    batch.local_state.is_local = true;
+    batch.local_state.uploading = true;
+    batch.local_state.upload_progress = 250;
+    repo.save_batch(&[batch]).await.unwrap();
+
+    let single = repo
+        .get_by_client_msg_id("client-upload-single")
+        .await
+        .unwrap()
+        .expect("single");
+    assert!(single.local_state.uploading);
+    assert_eq!(single.local_state.upload_progress, 37);
+    let batch = repo
+        .get_by_client_msg_id("client-upload-batch")
+        .await
+        .unwrap()
+        .expect("batch");
+    assert!(batch.local_state.uploading);
+    assert_eq!(
+        batch.local_state.upload_progress, 100,
+        "stored progress is capped at 100"
+    );
+}
+
+/// A database created before the upload columns existed gains them on open, and its rows read as not uploading.
+#[tokio::test]
+async fn an_older_database_gains_the_upload_columns() {
+    use crate::domain::MessageStore as _;
+    let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+    sqlite_init_schema(&pool).await.unwrap();
+    let repo = SqliteMessageRepo::new(pool.clone());
+    let mut old = text_message("s-old", "conv-old", "u1", 1, 1_000, "before");
+    old.client_msg_id = "client-old".to_string();
+    repo.save_one(&old).await.unwrap();
+    sqlx::query("ALTER TABLE messages DROP COLUMN uploading")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("ALTER TABLE messages DROP COLUMN upload_progress")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    sqlite_init_schema(&pool).await.unwrap();
+
+    let stored = repo
+        .get_by_client_msg_id("client-old")
+        .await
+        .unwrap()
+        .expect("old row");
+    assert!(!stored.local_state.uploading);
+    assert_eq!(stored.local_state.upload_progress, 0);
+}

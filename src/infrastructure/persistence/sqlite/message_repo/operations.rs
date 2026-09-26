@@ -807,8 +807,9 @@ impl MessageStore for SqliteMessageRepo {
         }
 
         let orphan_client_ids: Vec<String> = orphan_rows.into_iter().map(|(id,)| id).collect();
-        let mut update_qb =
-            QueryBuilder::<Sqlite>::new("UPDATE messages SET sending = 0, failed = 1, status = ");
+        let mut update_qb = QueryBuilder::<Sqlite>::new(
+            "UPDATE messages SET sending = 0, failed = 1, uploading = 0, status = ",
+        );
         update_qb.push_bind(MessageStatus::Failed as i32);
         update_qb.push(", updated_at = ");
         update_qb.push_bind(now_ms_i64());
@@ -856,8 +857,9 @@ impl MessageStore for SqliteMessageRepo {
             mismatched_rows.into_iter().map(|(id,)| id).collect();
 
         let mut tx = self.pool.begin().await.map_err(sqlx_err)?;
-        let mut update_qb =
-            QueryBuilder::<Sqlite>::new("UPDATE messages SET sending = 0, failed = 1, status = ");
+        let mut update_qb = QueryBuilder::<Sqlite>::new(
+            "UPDATE messages SET sending = 0, failed = 1, uploading = 0, status = ",
+        );
         update_qb.push_bind(MessageStatus::Failed as i32);
         update_qb.push(", updated_at = ");
         update_qb.push_bind(now_ms_i64());
