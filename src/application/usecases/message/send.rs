@@ -941,14 +941,15 @@ fn uploaded_media_to_audio_descriptor(uploaded: &UploadedMedia) -> Option<AudioI
     })
 }
 
-fn uploaded_media_display_url(uploaded: &UploadedMedia) -> String {
-    [uploaded.cdn_url.as_deref(), uploaded.url.as_deref()]
-        .into_iter()
-        .flatten()
-        .map(str::trim)
-        .find(|url| url.starts_with("https://") || url.starts_with("http://"))
-        .unwrap_or_default()
-        .to_string()
+/// The address an uploaded file goes out with: none. The message carries the file id and every reader resolves it
+/// through `media.get_url`, which answers with whatever this deployment can serve — a public address, or a presigned
+/// one for a private bucket.
+///
+/// The upload response's own addresses cannot stand in for that. For a private object `url` is a presigned link that
+/// expires, and `cdn_url` is `cdn_base + object path` with no signature, which the bucket refuses (403): a message
+/// stamped with either showed "image failed to load" to its sender and to everyone who received it.
+fn uploaded_media_display_url(_uploaded: &UploadedMedia) -> String {
+    String::new()
 }
 
 fn processed_media_from_source(mut source: MediaSourceDescriptor) -> Result<ProcessedMedia> {
@@ -1585,7 +1586,7 @@ mod tests {
     }
 
     #[test]
-    fn uploaded_image_descriptor_keeps_stable_metadata_and_display_url() {
+    fn uploaded_image_descriptor_keeps_stable_metadata() {
         let uploaded = UploadedMedia {
             file_id: "img-1".to_string(),
             file_name: "demo.png".to_string(),
@@ -1599,27 +1600,31 @@ mod tests {
 
         assert_eq!(source.uuid, "img-1");
         assert_eq!(source.image_id, "img-1");
-        assert_eq!(source.url, "https://cdn.example.com/demo.png");
+        assert_eq!(source.url, "");
         assert_eq!(source.mime_type, "image/png");
         assert_eq!(source.size, 123);
         assert_eq!(source.format, ImageFormat::Png as i32);
         assert!(!source.animated);
     }
 
+    /// An uploaded file goes out as its id alone: the upload response's `url` expires (presigned) and its `cdn_url`
+    /// is unsigned, so neither may be stamped into a message everyone keeps. Readers resolve the id.
     #[test]
-    fn uploaded_media_display_url_falls_back_to_origin_url() {
+    fn uploaded_media_goes_out_as_its_id_not_the_upload_response_address() {
         let uploaded = UploadedMedia {
             file_id: "img-1".to_string(),
             file_name: "demo.png".to_string(),
             mime_type: "image/png".to_string(),
             size: 123,
-            url: Some("https://origin.example.com/demo.png".to_string()),
-            cdn_url: None,
+            url: Some("https://origin.example.com/demo.png?X-Amz-Signature=abc".to_string()),
+            cdn_url: Some("https://cdn.example.com/media/demo.png".to_string()),
         };
 
         let source = uploaded_media_to_image_descriptor(&uploaded).expect("image descriptor");
 
-        assert_eq!(source.url, "https://origin.example.com/demo.png");
+        assert_eq!(source.image_id, "img-1");
+        assert_eq!(source.url, "");
+        assert_eq!(uploaded_media_display_url(&uploaded), "");
     }
 
     #[test]
