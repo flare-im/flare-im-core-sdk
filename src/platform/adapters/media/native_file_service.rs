@@ -137,8 +137,13 @@ impl MediaService {
             .map_err(|_| FlareError::general_error("file too large"))?;
         let mime = infer_mime_type(&file_name);
         let options = options.unwrap_or_default();
-        self.upload_via_direct_session(path, file_name, mime, size, options, on_progress.as_ref())
-            .await
+        let uploaded = self
+            .upload_via_direct_session(path, file_name, mime, size, options, on_progress.as_ref())
+            .await?;
+        #[cfg(not(target_arch = "wasm32"))]
+        self.cache_uploaded_file(&uploaded, path, metadata.len())
+            .await;
+        Ok(uploaded)
     }
 
     pub async fn upload_image_from_path_with_progress(
@@ -176,8 +181,12 @@ impl MediaService {
         on_progress: Option<UploadProgressCallback>,
     ) -> Result<UploadedMedia> {
         let options = options.unwrap_or_default();
-        self.upload_bytes_direct(&bytes, file_name, mime_type, options, on_progress.as_ref())
-            .await
+        let uploaded = self
+            .upload_bytes_direct(&bytes, file_name, mime_type, options, on_progress.as_ref())
+            .await?;
+        #[cfg(not(target_arch = "wasm32"))]
+        self.cache_uploaded_bytes(&uploaded, &bytes).await;
+        Ok(uploaded)
     }
 
     pub async fn delete_file(&self, file_id: &str, hard_delete: bool) -> Result<bool> {
@@ -1780,6 +1789,61 @@ impl MediaService {
             }
         });
     }
+
+    /// 上传成功后把发送方手里的源文件按上传得到的 `file_id` **复制**进媒体缓存（原文件留在原处）。
+    ///
+    /// 消息内容上传后只剩 `file_id`：不进缓存的话，气泡解析时拿到的是远端地址，还会在后台把
+    /// 发送方磁盘上本来就有的文件再下载一遍 —— 慢网下自己刚发的图要空白好几分钟。
+    ///
+    /// 规则与显示时自动缓存一致：任何类型、单个不超过 [`AUTO_CACHE_MAX_ENTRY_BYTES`]；
+    /// 更大的（长视频、大附件）不进缓存，免得一个文件把缓存里的图片整批挤出去。
+    /// 写缓存失败只记日志，绝不让上传 / 发送失败。
+    async fn cache_uploaded_file(&self, uploaded: &UploadedMedia, path: &Path, size: u64) {
+        let Some((cache, fid)) = self.uploaded_cache_target(uploaded, size) else {
+            return;
+        };
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        let head = read_head(path, 16).await;
+        let mime = uploaded_media_mime(&uploaded.mime_type, name, &head);
+        if let Err(e) = cache.put_file(fid, path, &mime, false).await {
+            tracing::warn!(file_id = %fid, error = %e, "caching uploaded media failed; upload unaffected");
+        }
+    }
+
+    /// [`Self::cache_uploaded_file`] 的字节版（`data:` 来源、`upload_bytes`）。
+    async fn cache_uploaded_bytes(&self, uploaded: &UploadedMedia, bytes: &[u8]) {
+        let Some((cache, fid)) = self.uploaded_cache_target(uploaded, bytes.len() as u64) else {
+            return;
+        };
+        let head = &bytes[..bytes.len().min(16)];
+        let mime = uploaded_media_mime(&uploaded.mime_type, &uploaded.file_name, head);
+        if let Err(e) = cache.put_bytes(fid, bytes, &mime).await {
+            tracing::warn!(file_id = %fid, error = %e, "caching uploaded media failed; upload unaffected");
+        }
+    }
+
+    fn uploaded_cache_target<'a>(
+        &'a self,
+        uploaded: &'a UploadedMedia,
+        size: u64,
+    ) -> Option<(&'a Arc<dyn MediaCacheStore>, &'a str)> {
+        let cache = self.media_cache_store.as_ref()?;
+        let fid = uploaded.file_id.trim();
+        if fid.is_empty() {
+            return None;
+        }
+        if size > AUTO_CACHE_MAX_ENTRY_BYTES {
+            tracing::debug!(file_id = %fid, size, "uploaded media over the per-entry cache limit; not cached");
+            return None;
+        }
+        Some((cache, fid))
+    }
+}
+
+/// 上传后进缓存时记下的 MIME：上传结果里的类型（非通用二进制时）→ 文件名后缀 → 文件头。
+#[cfg(not(target_arch = "wasm32"))]
+fn uploaded_media_mime(declared: &str, file_name: &str, head: &[u8]) -> String {
+    media_mime_of(&format!("/{file_name}"), Some(declared.trim()), head)
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -2177,6 +2241,7 @@ mod download_and_cache_tests {
 
     /// 假网关：`POST /api/v1/medias/file-url` 返回指向自己的 `/blob/<fileId>`；
     /// `GET /blob/ok-*` 返回 PNG 字节，`GET /blob/broken-*` 返回 500。记录 blob 被取的次数。
+    /// 直传三步（initiate → `PUT /put/<fileId>` → complete）按单次 PUT 应答，fileId 为 `ok-up-<本地上传 id>`。
     async fn fake_gateway() -> (String, Arc<AtomicUsize>) {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let base = format!("http://{}", listener.local_addr().unwrap());
@@ -2220,6 +2285,44 @@ mod download_and_cache_tests {
                             let json = serde_json::json!({
                                 "code": 0,
                                 "data": { "url": format!("{base}/blob/{fid}") }
+                            });
+                            ("200 OK", "application/json", json.to_string().into_bytes())
+                        } else if path.starts_with("/api/v1/medias/uploads/initiate") {
+                            let req: serde_json::Value = serde_json::from_slice(&body).unwrap();
+                            let local = req["metadata"]["upload_id"].as_str().unwrap_or_default();
+                            let fid = format!("ok-up-{local}");
+                            let json = serde_json::json!({
+                                "code": 0,
+                                "data": {
+                                    "upload_id": fid,
+                                    "file_id": fid,
+                                    "transport_kind": "single_put",
+                                    "bucket": "flare-media",
+                                    "object_key": fid,
+                                    "storage_upload_id": null,
+                                    "part_size": req["metadata"]["file_size"],
+                                    "total_parts": 1,
+                                    "upload_url": format!("{base}/put/{fid}"),
+                                    "success": true,
+                                    "error_message": null
+                                }
+                            });
+                            ("200 OK", "application/json", json.to_string().into_bytes())
+                        } else if path.starts_with("/put/") {
+                            ("200 OK", "text/plain", Vec::new())
+                        } else if path.starts_with("/api/v1/medias/uploads/complete") {
+                            let req: serde_json::Value = serde_json::from_slice(&body).unwrap();
+                            let fid = req["upload_id"].as_str().unwrap_or_default();
+                            let json = serde_json::json!({
+                                "code": 0,
+                                "data": {
+                                    "file_id": fid,
+                                    "url": null,
+                                    "cdn_url": null,
+                                    "success": true,
+                                    "error_message": null,
+                                    "info": null
+                                }
                             });
                             ("200 OK", "application/json", json.to_string().into_bytes())
                         } else if path.starts_with("/blob/broken") {
@@ -2485,5 +2588,248 @@ mod download_and_cache_tests {
         let stats = f.cache_admin.media_cache_stats().await.unwrap();
         assert_eq!(stats.max_bytes, 10);
         assert!(!stats.max_bytes_is_default);
+    }
+
+    /// 发送方选中的一张图：PNG 头 + 一段可区分的字节（与假网关 blob 返回的不同）。
+    fn picked_image(dir: &Path, name: &str) -> (PathBuf, Vec<u8>) {
+        std::fs::create_dir_all(dir).unwrap();
+        let mut bytes = PNG[..8].to_vec();
+        bytes.extend((0..4096u32).map(|i| (i % 251) as u8));
+        let path = dir.join(name);
+        std::fs::write(&path, &bytes).unwrap();
+        (path, bytes)
+    }
+
+    /// `message.send` 上传本地来源的方式：路径来源、不带载荷。
+    fn from_path(path: &Path) -> ProcessedMedia {
+        ProcessedMedia {
+            source: MediaSourceDescriptor::path(path.to_string_lossy().into_owned()),
+            metadata: MediaMetadata::default(),
+            payload: None,
+        }
+    }
+
+    /// `data:` 来源解码后的上传方式：字节载荷。
+    fn from_payload(name: &str, bytes: &[u8]) -> ProcessedMedia {
+        let metadata = MediaMetadata {
+            file_name: name.to_string(),
+            mime_type: "image/png".to_string(),
+            size: bytes.len() as u64,
+            ..Default::default()
+        };
+        ProcessedMedia {
+            source: MediaSourceDescriptor::bytes("data:image/png;base64,", metadata.clone()),
+            metadata,
+            payload: Some(bytes.to_vec()),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_sent_local_image_resolves_to_a_local_copy() {
+        let f = fixture().await;
+        let (src, bytes) = picked_image(&f.root.join("相册"), "IMG_0001.png");
+
+        // message.send 上传本地来源走的入口。
+        let uploaded =
+            <MediaService as MediaServicePort>::upload(&f.service, from_path(&src), None, None)
+                .await
+                .unwrap();
+        assert!(
+            uploaded.file_id.starts_with("ok-up-"),
+            "{}",
+            uploaded.file_id
+        );
+
+        let access = f
+            .service
+            .resolve_media_access_opts(&uploaded.file_id, 600, true)
+            .await
+            .unwrap();
+        assert_eq!(access.source, "local");
+        let local = PathBuf::from(
+            access
+                .local_path
+                .expect("发送方自己刚发的图应直接命中本地缓存"),
+        );
+        assert_ne!(local, src, "缓存里是一份副本，不是用户的原文件");
+        assert_eq!(std::fs::read(&local).unwrap(), bytes);
+        // 原文件原样留在原处。
+        assert_eq!(std::fs::read(&src).unwrap(), bytes);
+        let entry = f
+            .cache_admin
+            .get_cached(&uploaded.file_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(entry.mime_type, "image/png");
+        assert_eq!(entry.size_bytes, bytes.len() as i64);
+
+        // 直接调 media.upload_image 也一样。
+        let (src2, bytes2) = picked_image(&f.root.join("相册"), "IMG_0002.png");
+        let direct = f
+            .service
+            .upload_image_from_path_with_progress(&src2, None, None)
+            .await
+            .unwrap();
+        let access2 = f
+            .service
+            .resolve_media_access(&direct.file_id, 600)
+            .await
+            .unwrap();
+        assert_eq!(std::fs::read(access2.local_path.unwrap()).unwrap(), bytes2);
+        assert_eq!(
+            f.cache_admin.media_cache_stats().await.unwrap().entry_count,
+            2
+        );
+
+        // 没有为自己刚发出的图再从网络下载一遍。
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert_eq!(f.hits.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn an_uploaded_payload_resolves_to_a_local_copy() {
+        let f = fixture().await;
+        let mut bytes = PNG[..8].to_vec();
+        bytes.extend_from_slice(b"pasted screenshot");
+        let uploaded = <MediaService as MediaServicePort>::upload(
+            &f.service,
+            from_payload("paste.png", &bytes),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        let access = f
+            .service
+            .resolve_media_access(&uploaded.file_id, 600)
+            .await
+            .unwrap();
+        let local = access.local_path.expect("上传的字节应进缓存");
+        assert_eq!(std::fs::read(local).unwrap(), bytes);
+        assert_eq!(f.hits.load(Ordering::SeqCst), 0);
+    }
+
+    /// 每次写入都失败的缓存（磁盘满、目录不可写）：记下写入被尝试的次数。
+    #[derive(Default)]
+    struct FailingCache {
+        writes: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl MediaCacheStore for FailingCache {
+        async fn get_cached(&self, _file_id: &str) -> Result<Option<MediaCacheEntryVo>> {
+            Ok(None)
+        }
+
+        async fn put_bytes(
+            &self,
+            _file_id: &str,
+            _data: &[u8],
+            _mime_type: &str,
+        ) -> Result<MediaCacheEntryVo> {
+            self.writes.fetch_add(1, Ordering::SeqCst);
+            Err(FlareError::system("media cache write: disk full"))
+        }
+
+        async fn remove(&self, _file_id: &str) -> Result<()> {
+            Ok(())
+        }
+
+        async fn staging_dir(&self) -> Result<PathBuf> {
+            Err(FlareError::system("media cache mkdir: disk full"))
+        }
+
+        async fn put_file(
+            &self,
+            _file_id: &str,
+            _source: &Path,
+            _mime_type: &str,
+            _move_source: bool,
+        ) -> Result<MediaCacheEntryVo> {
+            self.writes.fetch_add(1, Ordering::SeqCst);
+            Err(FlareError::system("media cache write: disk full"))
+        }
+    }
+
+    #[tokio::test]
+    async fn a_cache_failure_never_fails_the_upload() {
+        let (base, _hits) = fake_gateway().await;
+        let cache = Arc::new(FailingCache::default());
+        let service = MediaService::new(
+            HttpClient::new(base),
+            Arc::new(RwLock::new("u1".to_string())),
+            None,
+            Some(cache.clone() as Arc<dyn MediaCacheStore>),
+            None,
+            None,
+        );
+        let dir =
+            std::env::temp_dir().join(format!("flare-media-{}", uuid::Uuid::new_v4().simple()));
+        let (src, bytes) = picked_image(&dir, "IMG_0003.png");
+
+        let uploaded =
+            <MediaService as MediaServicePort>::upload(&service, from_path(&src), None, None)
+                .await
+                .expect("缓存写不进去也不能让发送失败");
+        assert!(
+            uploaded.file_id.starts_with("ok-up-"),
+            "{}",
+            uploaded.file_id
+        );
+        assert_eq!(
+            cache.writes.load(Ordering::SeqCst),
+            1,
+            "上传成功后应尝试写缓存"
+        );
+        assert_eq!(std::fs::read(&src).unwrap(), bytes);
+
+        <MediaService as MediaServicePort>::upload(
+            &service,
+            from_payload("paste.png", &bytes),
+            None,
+            None,
+        )
+        .await
+        .expect("字节上传同理");
+        assert_eq!(cache.writes.load(Ordering::SeqCst), 2);
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn uploads_over_the_per_entry_limit_are_not_cached() {
+        let f = fixture().await;
+        let (src, _) = picked_image(&f.root.join("相册"), "big.png");
+        let uploaded = UploadedMedia {
+            file_id: "ok-up-big".to_string(),
+            file_name: "big.png".to_string(),
+            mime_type: "image/png".to_string(),
+            size: 0,
+            url: None,
+            cdn_url: None,
+        };
+        f.service
+            .cache_uploaded_file(&uploaded, &src, AUTO_CACHE_MAX_ENTRY_BYTES + 1)
+            .await;
+        assert!(
+            f.cache_admin
+                .get_cached("ok-up-big")
+                .await
+                .unwrap()
+                .is_none()
+        );
+        f.service
+            .cache_uploaded_file(&uploaded, &src, AUTO_CACHE_MAX_ENTRY_BYTES)
+            .await;
+        assert!(
+            f.cache_admin
+                .get_cached("ok-up-big")
+                .await
+                .unwrap()
+                .is_some()
+        );
+        // 用户的原文件始终留在原处。
+        assert!(src.exists());
     }
 }
