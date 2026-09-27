@@ -12,7 +12,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 #[cfg(not(target_arch = "wasm32"))]
 use super::native_download::{
-    AUTO_CACHE_MAX_ENTRY_BYTES, WrittenFile, copy_file_to, ensure_writable_dir,
+    AUTO_CACHE_MAX_ENTRY_BYTES, WrittenFile, copy_file_to, ensure_writable_dir, extension_for_mime,
     fill_cache_from_url, platform_default_download_root, read_head, stream_http_to_file,
     temp_sibling,
 };
@@ -1656,9 +1656,29 @@ impl MediaService {
                 w
             };
 
+            // 文件的类型：缓存记录 → 响应头 / 来源地址 → 文件头。
+            let head = read_head(&tmp, 16).await;
+            let mime = cached
+                .as_ref()
+                .map(|hit| hit.mime_type.clone())
+                .filter(|m| !m.is_empty() && m != "application/octet-stream")
+                .unwrap_or_else(|| {
+                    let origin = fetched_url
+                        .as_deref()
+                        .or(source_path.as_deref())
+                        .unwrap_or("");
+                    media_mime_of(origin, written.content_type.as_deref(), &head)
+                });
+            // 图片、视频通常没有文件名：名字没扩展名就按类型补上，否则存下来的文件打不开。
+            let final_name = match extension_for_mime(&mime) {
+                Some(ext) if Path::new(&safe_name).extension().is_none() => {
+                    format!("{safe_name}.{ext}")
+                }
+                _ => safe_name.clone(),
+            };
             // 等待期间同名文件可能被别处写出来了：改名前再挑一次不冲突的名字。
-            if dest.exists() {
-                dest = checked_user_download_destination(&dir, &safe_name)?;
+            if final_name != safe_name || dest.exists() {
+                dest = checked_user_download_destination(&dir, &final_name)?;
             }
             if let Err(e) = tokio::fs::rename(&tmp, &dest).await {
                 let _ = tokio::fs::remove_file(&tmp).await;
@@ -1668,15 +1688,12 @@ impl MediaService {
             }
 
             // 远端来的图片顺带进缓存：之后显示与再次保存都不再走网络。
-            if let (Some(url), Some(fid), Some(cache)) =
+            if let (Some(_), Some(fid), Some(cache)) =
                 (&fetched_url, &remote_file_id, &self.media_cache_store)
                 && written.size <= AUTO_CACHE_MAX_ENTRY_BYTES
+                && mime.starts_with("image/")
             {
-                let head = read_head(&dest, 16).await;
-                let mime = media_mime_of(url, written.content_type.as_deref(), &head);
-                if mime.starts_with("image/") {
-                    let _ = cache.put_file(fid, &dest, &mime, false).await;
-                }
+                let _ = cache.put_file(fid, &dest, &mime, false).await;
             }
 
             let path_str = dest.to_string_lossy().into_owned();
@@ -2022,6 +2039,22 @@ fn infer_mime_from_url_or_octet_stream(url: &str, bytes: &[u8]) -> String {
     if bytes.len() >= 12 && &bytes[..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
         return "image/webp".to_string();
     }
+    if bytes.len() >= 4 && &bytes[..4] == b"GIF8" {
+        return "image/gif".to_string();
+    }
+    if bytes.len() >= 4 && &bytes[..4] == b"%PDF" {
+        return "application/pdf".to_string();
+    }
+    if bytes.len() >= 12 && &bytes[4..8] == b"ftyp" {
+        return if &bytes[8..10] == b"qt" {
+            "video/quicktime".to_string()
+        } else {
+            "video/mp4".to_string()
+        };
+    }
+    if bytes.len() >= 4 && bytes[..4] == [0x1A, 0x45, 0xDF, 0xA3] {
+        return "video/webm".to_string();
+    }
     "application/octet-stream".to_string()
 }
 
@@ -2315,6 +2348,30 @@ mod download_and_cache_tests {
                 .unwrap(),
             Some(second.path.clone())
         );
+    }
+
+    #[tokio::test]
+    async fn a_name_without_extension_gets_one_from_the_media_type() {
+        let f = fixture().await;
+        let chosen = f.root.join("ext");
+        f.service
+            .user_download_set_directory(Some(&chosen.to_string_lossy()))
+            .await
+            .unwrap();
+        let saved = f
+            .service
+            .download_to_user_directory(request("ok-ext", "IMG_20260927"))
+            .await
+            .unwrap();
+        assert_eq!(saved.file_name, "IMG_20260927.png");
+        // 名字自带扩展名时原样保留。
+        let named = f
+            .service
+            .download_to_user_directory(request("ok-ext2", "报告.pdf"))
+            .await
+            .unwrap();
+        assert_eq!(named.file_name, "报告.pdf");
+        assert!(leftovers(&chosen).is_empty());
     }
 
     #[tokio::test]

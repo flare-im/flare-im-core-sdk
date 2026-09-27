@@ -68,6 +68,40 @@ pub(super) async fn ensure_writable_dir(dir: &Path) -> Result<()> {
     Ok(())
 }
 
+/// 常见媒体类型的扩展名：保存时名字没有扩展名（图片、视频通常没有文件名）就按类型补上，
+/// 否则存下来的文件系统打不开。
+pub(super) fn extension_for_mime(mime: &str) -> Option<&'static str> {
+    let essence = mime
+        .split(';')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
+    Some(match essence.as_str() {
+        "image/jpeg" | "image/jpg" => "jpg",
+        "image/png" => "png",
+        "image/gif" => "gif",
+        "image/webp" => "webp",
+        "image/heic" => "heic",
+        "image/heif" => "heif",
+        "image/bmp" => "bmp",
+        "image/svg+xml" => "svg",
+        "video/mp4" => "mp4",
+        "video/quicktime" => "mov",
+        "video/webm" => "webm",
+        "video/x-matroska" => "mkv",
+        "audio/mpeg" => "mp3",
+        "audio/mp4" | "audio/x-m4a" => "m4a",
+        "audio/aac" => "aac",
+        "audio/ogg" => "ogg",
+        "audio/wav" | "audio/x-wav" => "wav",
+        "application/pdf" => "pdf",
+        "application/zip" => "zip",
+        "text/plain" => "txt",
+        _ => return None,
+    })
+}
+
 /// 目标文件同目录下的临时文件名：隐藏、带专用后缀，完成后改名成目标。
 pub(super) fn temp_sibling(dest: &Path) -> PathBuf {
     let name = dest
@@ -281,6 +315,17 @@ pub(super) async fn fill_cache_from_url(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn extension_follows_the_media_type() {
+        assert_eq!(extension_for_mime("image/png"), Some("png"));
+        assert_eq!(
+            extension_for_mime("IMAGE/JPEG; charset=binary"),
+            Some("jpg")
+        );
+        assert_eq!(extension_for_mime("video/quicktime"), Some("mov"));
+        assert_eq!(extension_for_mime("application/octet-stream"), None);
+    }
 
     #[test]
     fn temp_sibling_is_hidden_next_to_target() {
