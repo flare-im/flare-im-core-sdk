@@ -401,7 +401,8 @@ impl MessageSendUseCase {
                             .upload_media_source(source, on_progress.clone())
                             .await?;
                         video.video_id = uploaded.file_id.clone();
-                        video.source = uploaded_media_to_video_descriptor(&uploaded);
+                        video.source =
+                            uploaded_media_to_video_descriptor(&uploaded, video.source.as_ref());
                         touched = true;
                     }
                 }
@@ -416,7 +417,8 @@ impl MessageSendUseCase {
                             .upload_media_source(source, on_progress.clone())
                             .await?;
                         audio.audio_id = uploaded.file_id.clone();
-                        audio.source = uploaded_media_to_audio_descriptor(&uploaded);
+                        audio.source =
+                            uploaded_media_to_audio_descriptor(&uploaded, audio.source.as_ref());
                         touched = true;
                     }
                 }
@@ -612,6 +614,7 @@ fn attach_local_media_preview(message: &mut IMMessage) {
             if let Some(source) = video.source.as_mut() {
                 attach_video_preview(source, &video.video_id);
                 fill_local_facts(&video.video_id, &mut source.mime_type, &mut source.size);
+                fill_local_duration(&video.video_id, &source.url, &mut source.duration_ms);
             }
         }
         Elem::Audio(audio) => {
@@ -629,6 +632,7 @@ fn attach_local_media_preview(message: &mut IMMessage) {
             if let Some(source) = audio.source.as_mut() {
                 attach_audio_preview(source, &audio.audio_id);
                 fill_local_facts(&audio.audio_id, &mut source.mime_type, &mut source.size);
+                fill_local_duration(&audio.audio_id, &source.url, &mut source.duration_ms);
             }
         }
         _ => {}
@@ -684,6 +688,35 @@ fn fill_local_facts(locator: &str, mime_type: &mut String, size: &mut i64) {
             *size = facts.size;
         }
     }
+}
+
+/// 音视频没带时长（0）时，从本地 MP4/MOV/M4A 文件的 `mvhd` 读出来。
+///
+/// 宿主按本地路径发视频通常不传时长（Flutter `createMedia(path, 'video')` 就没有），
+/// 以前气泡在各端都显示 00:00。只读容器头；webm/wav、截断文件、非本地路径
+/// （`data:`、`content://`、`blob:`）读不出就维持 0，绝不因此让发送失败。
+fn fill_local_duration(media_id: &str, preview_url: &str, duration_ms: &mut i64) {
+    if *duration_ms > 0 {
+        return;
+    }
+    if let Some(ms) =
+        local_container_duration_ms(media_id).or_else(|| local_container_duration_ms(preview_url))
+    {
+        *duration_ms = ms;
+    }
+}
+
+fn local_container_duration_ms(locator: &str) -> Option<i64> {
+    let source = extract_media_source(locator)?;
+    if !matches!(source.kind, MediaSourceKind::Path) {
+        return None;
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    let duration =
+        crate::shared::util::mp4::file_duration_ms(std::path::Path::new(&source.locator));
+    #[cfg(target_arch = "wasm32")]
+    let duration: Option<u64> = None;
+    duration.and_then(|ms| i64::try_from(ms).ok())
 }
 
 /// `data:<mime>;name=<编码后的文件名>;size=<字节数>;base64,…` 读头部；本地路径读文件名，
@@ -913,7 +946,12 @@ fn uploaded_media_to_image_descriptor(uploaded: &UploadedMedia) -> Option<ImageI
     })
 }
 
-fn uploaded_media_to_video_descriptor(uploaded: &UploadedMedia) -> Option<VideoInfoElem> {
+/// 上传结果只有 id/名字/类型/大小；时长和宽高是上传前从本地文件读出（或宿主给）的，
+/// 换成上传后的描述时要从 `local` 带过来，否则发出去的视频时长又回到 0。
+fn uploaded_media_to_video_descriptor(
+    uploaded: &UploadedMedia,
+    local: Option<&VideoInfoElem>,
+) -> Option<VideoInfoElem> {
     if uploaded.file_id.trim().is_empty() {
         return None;
     }
@@ -922,13 +960,16 @@ fn uploaded_media_to_video_descriptor(uploaded: &UploadedMedia) -> Option<VideoI
         url: uploaded_media_display_url(uploaded),
         mime_type: uploaded.mime_type.clone(),
         size: uploaded.size,
-        duration_ms: 0,
-        width: 0,
-        height: 0,
+        duration_ms: local.map_or(0, |local| local.duration_ms),
+        width: local.map_or(0, |local| local.width),
+        height: local.map_or(0, |local| local.height),
     })
 }
 
-fn uploaded_media_to_audio_descriptor(uploaded: &UploadedMedia) -> Option<AudioInfoElem> {
+fn uploaded_media_to_audio_descriptor(
+    uploaded: &UploadedMedia,
+    local: Option<&AudioInfoElem>,
+) -> Option<AudioInfoElem> {
     if uploaded.file_id.trim().is_empty() {
         return None;
     }
@@ -937,7 +978,7 @@ fn uploaded_media_to_audio_descriptor(uploaded: &UploadedMedia) -> Option<AudioI
         url: uploaded_media_display_url(uploaded),
         mime_type: uploaded.mime_type.clone(),
         size: uploaded.size,
-        duration_ms: 0,
+        duration_ms: local.map_or(0, |local| local.duration_ms),
     })
 }
 
@@ -1474,6 +1515,146 @@ mod tests {
         };
         let source = video.source.as_ref().expect("source");
         assert_eq!((source.size, source.mime_type.as_str()), (88, "video/mp4"));
+    }
+
+    /// 写一个本测试独占的临时文件（并行测试互不踩）。
+    #[cfg(not(target_arch = "wasm32"))]
+    fn temp_media_file(test: &str, name: &str, bytes: &[u8]) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "flare-local-duration-{test}-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(name);
+        std::fs::write(&path, bytes).unwrap();
+        path
+    }
+
+    fn video_of(message: &IMMessage) -> &crate::content::message_elem::VideoElem {
+        match message.content.as_ref().expect("content") {
+            Elem::Video(video) => video,
+            other => panic!("expected video, got {other:?}"),
+        }
+    }
+
+    /// 宿主按本地路径建视频消息不带时长（Flutter `createMedia(path, 'video')`），
+    /// 以前各端气泡都是 00:00：上屏的乐观消息和上传后真正发出去的消息都要带容器时长，
+    /// 且落在各端读的 `content.source.durationMs`（毫秒）。
+    #[cfg(not(target_arch = "wasm32"))]
+    #[tokio::test]
+    async fn a_local_mp4_video_built_without_duration_goes_out_with_its_container_duration() {
+        use crate::application::MessageBuilderService;
+        let path = temp_media_file(
+            "video-send",
+            "clip.mp4",
+            &crate::shared::util::mp4::tiny_mp4(1000, 4000),
+        );
+        let message = MessageBuilderService::build_video(
+            "conv-media",
+            "hugo",
+            path.to_str().unwrap(),
+            Some("peer-1"),
+        )
+        .expect("video message");
+        assert!(
+            video_of(&message).source.is_none(),
+            "builder carries no duration"
+        );
+        let client_msg_id = message.client_msg_id.clone();
+        let harness = TestHarness::new(MediaResult::Uploaded(UploadedMedia {
+            file_id: "remote-video-1".to_string(),
+            file_name: "clip.mp4".to_string(),
+            mime_type: "video/mp4".to_string(),
+            size: 208,
+            url: None,
+            cdn_url: None,
+        }));
+
+        let send_task = harness.usecase.send_with_media(message, None);
+        tokio::pin!(send_task);
+        tokio::select! {
+            _ = harness.media.wait_until_upload_started() => {}
+            result = &mut send_task => panic!("send finished before upload could be inspected: {result:?}"),
+        }
+        let optimistic = harness
+            .messages
+            .get_by_client_msg_id(&client_msg_id)
+            .await
+            .expect("store read")
+            .expect("optimistic message");
+        let source = video_of(&optimistic)
+            .source
+            .as_ref()
+            .expect("preview source");
+        assert_eq!(source.duration_ms, 4000, "uploading bubble shows 0:04");
+
+        harness.media.finish_upload().await;
+        send_task.await.expect("send");
+        let queued = harness.queue.enqueued().await;
+        assert_eq!(queued.len(), 1);
+        let video = video_of(&queued[0]);
+        assert_eq!(video.video_id, "remote-video-1");
+        assert_eq!(
+            video.source.as_ref().expect("uploaded source").duration_ms,
+            4000,
+            "the upload result must not drop the duration read before upload"
+        );
+        let wire = serde_json::to_value(queued[0].content.as_ref().unwrap()).unwrap();
+        assert_eq!(wire["source"]["durationMs"], 4000);
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn a_local_m4a_voice_gets_its_container_duration() {
+        let path = temp_media_file(
+            "audio",
+            "voice.m4a",
+            &crate::shared::util::mp4::tiny_mp4(44_100, 44_100 * 7),
+        );
+        let mut message = bare_message(ContentBuilder::audio(path.to_str().unwrap()).build());
+        attach_local_media_preview(&mut message);
+        let Some(Elem::Audio(audio)) = message.content.as_ref() else {
+            panic!("expected audio")
+        };
+        assert_eq!(audio.source.as_ref().expect("source").duration_ms, 7000);
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn a_declared_duration_is_kept_and_an_unreadable_file_leaves_zero() {
+        let mp4 = temp_media_file(
+            "declared",
+            "clip.mp4",
+            &crate::shared::util::mp4::tiny_mp4(1000, 4000),
+        );
+        let mut declared = bare_message(
+            ContentBuilder::video(mp4.to_str().unwrap())
+                .video_source(flare_proto::common::VideoInfo {
+                    uuid: mp4.to_str().unwrap().to_string(),
+                    duration_ms: 1234,
+                    ..Default::default()
+                })
+                .build(),
+        );
+        attach_local_media_preview(&mut declared);
+        assert_eq!(
+            video_of(&declared).source.as_ref().unwrap().duration_ms,
+            1234
+        );
+
+        let webm = temp_media_file(
+            "declared",
+            "clip.webm",
+            &[0x1A, 0x45, 0xDF, 0xA3, 0x9F, 0x42, 0x86, 0x81],
+        );
+        let mut unreadable = bare_message(ContentBuilder::video(webm.to_str().unwrap()).build());
+        attach_local_media_preview(&mut unreadable);
+        let source = video_of(&unreadable).source.as_ref().unwrap();
+        assert_eq!(source.duration_ms, 0);
+        assert_eq!(source.url, webm.to_str().unwrap(), "still previewable");
+        std::fs::remove_dir_all(mp4.parent().unwrap()).ok();
     }
 
     fn local_file_message(path: &str) -> IMMessage {
