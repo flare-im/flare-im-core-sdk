@@ -690,11 +690,11 @@ fn fill_local_facts(locator: &str, mime_type: &mut String, size: &mut i64) {
     }
 }
 
-/// 音视频没带时长（0）时，从本地 MP4/MOV/M4A 文件的 `mvhd` 读出来。
+/// 音视频没带时长（0）时，从本地文件头读出来：MP4/MOV/M4A 读 `mvhd`，WAV 读 `fmt `/`data`。
 ///
-/// 宿主按本地路径发视频通常不传时长（Flutter `createMedia(path, 'video')` 就没有），
-/// 以前气泡在各端都显示 00:00。只读容器头；webm/wav、截断文件、非本地路径
-/// （`data:`、`content://`、`blob:`）读不出就维持 0，绝不因此让发送失败。
+/// 宿主按本地路径发音视频通常不传时长（Flutter `createMedia(path, 'video')`、kit 录的
+/// pcm16 `.wav` 语音都没有），以前气泡在各端都显示 00:00。只读容器头；webm、截断文件、
+/// 非本地路径（`data:`、`content://`、`blob:`）读不出就维持 0，绝不因此让发送失败。
 fn fill_local_duration(media_id: &str, preview_url: &str, duration_ms: &mut i64) {
     if *duration_ms > 0 {
         return;
@@ -712,8 +712,9 @@ fn local_container_duration_ms(locator: &str) -> Option<i64> {
         return None;
     }
     #[cfg(not(target_arch = "wasm32"))]
-    let duration =
-        crate::shared::util::mp4::file_duration_ms(std::path::Path::new(&source.locator));
+    let duration = crate::shared::util::media_duration::file_duration_ms(std::path::Path::new(
+        &source.locator,
+    ));
     #[cfg(target_arch = "wasm32")]
     let duration: Option<u64> = None;
     duration.and_then(|ms| i64::try_from(ms).ok())
@@ -1547,7 +1548,7 @@ mod tests {
         let path = temp_media_file(
             "video-send",
             "clip.mp4",
-            &crate::shared::util::mp4::tiny_mp4(1000, 4000),
+            &crate::shared::util::media_duration::mp4::tiny_mp4(1000, 4000),
         );
         let message = MessageBuilderService::build_video(
             "conv-media",
@@ -1610,7 +1611,7 @@ mod tests {
         let path = temp_media_file(
             "audio",
             "voice.m4a",
-            &crate::shared::util::mp4::tiny_mp4(44_100, 44_100 * 7),
+            &crate::shared::util::media_duration::mp4::tiny_mp4(44_100, 44_100 * 7),
         );
         let mut message = bare_message(ContentBuilder::audio(path.to_str().unwrap()).build());
         attach_local_media_preview(&mut message);
@@ -1621,13 +1622,82 @@ mod tests {
         std::fs::remove_dir_all(path.parent().unwrap()).ok();
     }
 
+    fn audio_of(message: &IMMessage) -> &crate::content::message_elem::AudioElem {
+        match message.content.as_ref().expect("content") {
+            Elem::Audio(audio) => audio,
+            other => panic!("expected audio, got {other:?}"),
+        }
+    }
+
+    /// kit 录的语音是 16kHz 单声道 pcm16 `.wav`，宿主只给路径不给时长：
+    /// 上屏和上传后发出去的消息都要带从 WAV 头算出来的 `content.source.durationMs`。
+    #[cfg(not(target_arch = "wasm32"))]
+    #[tokio::test]
+    async fn a_local_wav_voice_built_without_duration_goes_out_with_its_duration() {
+        use crate::application::MessageBuilderService;
+        let path = temp_media_file(
+            "voice-send",
+            "flare-voice.wav",
+            &crate::shared::util::media_duration::wav::tiny_wav(32_000, 80_000),
+        );
+        let message = MessageBuilderService::build_audio(
+            "conv-media",
+            "hugo",
+            path.to_str().unwrap(),
+            Some("peer-1"),
+        )
+        .expect("audio message");
+        assert!(
+            audio_of(&message).source.is_none(),
+            "builder carries no duration"
+        );
+        let client_msg_id = message.client_msg_id.clone();
+        let harness = TestHarness::new(MediaResult::Uploaded(UploadedMedia {
+            file_id: "remote-voice-1".to_string(),
+            file_name: "flare-voice.wav".to_string(),
+            mime_type: "audio/wav".to_string(),
+            size: 80_044,
+            url: None,
+            cdn_url: None,
+        }));
+
+        let send_task = harness.usecase.send_with_media(message, None);
+        tokio::pin!(send_task);
+        tokio::select! {
+            _ = harness.media.wait_until_upload_started() => {}
+            result = &mut send_task => panic!("send finished before upload could be inspected: {result:?}"),
+        }
+        let optimistic = harness
+            .messages
+            .get_by_client_msg_id(&client_msg_id)
+            .await
+            .expect("store read")
+            .expect("optimistic message");
+        assert_eq!(
+            audio_of(&optimistic).source.as_ref().unwrap().duration_ms,
+            2500,
+            "uploading voice bubble shows 2.5s"
+        );
+
+        harness.media.finish_upload().await;
+        send_task.await.expect("send");
+        let queued = harness.queue.enqueued().await;
+        assert_eq!(queued.len(), 1);
+        let audio = audio_of(&queued[0]);
+        assert_eq!(audio.audio_id, "remote-voice-1");
+        assert_eq!(audio.source.as_ref().unwrap().duration_ms, 2500);
+        let wire = serde_json::to_value(queued[0].content.as_ref().unwrap()).unwrap();
+        assert_eq!(wire["source"]["durationMs"], 2500);
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn a_declared_duration_is_kept_and_an_unreadable_file_leaves_zero() {
         let mp4 = temp_media_file(
             "declared",
             "clip.mp4",
-            &crate::shared::util::mp4::tiny_mp4(1000, 4000),
+            &crate::shared::util::media_duration::mp4::tiny_mp4(1000, 4000),
         );
         let mut declared = bare_message(
             ContentBuilder::video(mp4.to_str().unwrap())

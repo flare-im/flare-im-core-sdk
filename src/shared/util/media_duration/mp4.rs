@@ -33,13 +33,6 @@ pub fn duration_ms<R: Read + Seek>(reader: &mut R) -> Option<u64> {
     None
 }
 
-/// 按路径读本地文件的容器时长；打不开或读不出返回 `None`。
-#[cfg(not(target_arch = "wasm32"))]
-pub fn file_duration_ms(path: &std::path::Path) -> Option<u64> {
-    let mut file = std::fs::File::open(path).ok()?;
-    duration_ms(&mut file)
-}
-
 fn movie_header_duration_ms<R: Read + Seek>(reader: &mut R, moov: &BoxHeader) -> Option<u64> {
     let mut pos = moov.body_start;
     for _ in 0..MAX_MOOV_CHILDREN {

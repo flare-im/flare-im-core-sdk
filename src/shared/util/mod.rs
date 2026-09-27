@@ -2,7 +2,7 @@ pub mod background;
 pub mod constants;
 pub mod date;
 pub mod id;
-pub mod mp4;
+pub mod media_duration;
 pub mod paths;
 #[cfg(feature = "lifecycle-sqlite")]
 pub mod sqlite_store;
