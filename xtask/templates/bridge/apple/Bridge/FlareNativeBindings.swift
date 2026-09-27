@@ -28,7 +28,7 @@ public final class FlareNativeBindings: @unchecked Sendable {
     public private(set) var errorHeapFree: ErrorHeapFreeFn!
     public private(set) var eventUnsubscribe: EventUnsubscribeFn!
     public private(set) var eventUnsubscribeAll: EventUnsubscribeAllFn!
-    public private(set) var mediaCancelUserFileDownload: MediaCancelUserFileDownloadFn!
+    public private(set) var mediaCancelUserFileDownload: AsyncStringFn!
 
     // MARK: - Async symbols
     public private(set) var sdkInit: AsyncJsonFn!
@@ -128,7 +128,6 @@ public typealias SyncStringFreeFn = @convention(c) (FlareString) -> Void
 public typealias ErrorHeapFreeFn = @convention(c) (UnsafePointer<FlareError>?) -> Void
 public typealias EventUnsubscribeFn = @convention(c) (FlareSubscriptionHandle) -> Void
 public typealias EventUnsubscribeAllFn = @convention(c) () -> Void
-public typealias MediaCancelUserFileDownloadFn = @convention(c) (FlareHandle, UnsafePointer<CChar>?) -> Bool
 public typealias Async0Fn = @convention(c) (FlareHandle, UnsafeMutableRawPointer?, FlareResultCallback) -> Int32
 public typealias AsyncJsonFn = @convention(c) (FlareHandle, UnsafePointer<CChar>?, UnsafeMutableRawPointer?, FlareResultCallback) -> Int32
 public typealias AsyncStringFn = @convention(c) (FlareHandle, UnsafePointer<CChar>?, UnsafeMutableRawPointer?, FlareResultCallback) -> Int32

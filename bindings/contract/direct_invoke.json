@@ -191,7 +191,7 @@
       "cfg": "not(target_arch = \"wasm32\")",
       "skip_client": true,
       "body": "\n            let api = session.media_api().await?;\n            let download_key = dispatch_support::json_string(request, \"downloadKey\")?;\n            let cancelled = api.cancel_user_file_download(&download_key);\n        ",
-      "json_expr": "serde_json::json!({ \"cancelled\": cancelled })"
+      "json_expr": "cancelled"
     },
     {
       "route": "media.download_file_to_downloads",

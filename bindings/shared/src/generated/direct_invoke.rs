@@ -403,7 +403,7 @@ pub async fn dispatch_direct(
             let api = session.media_api().await?;
             let download_key = dispatch_support::json_string(request, "downloadKey")?;
             let cancelled = api.cancel_user_file_download(&download_key);
-            dispatch_support::json(serde_json::json!({ "cancelled": cancelled }))
+            dispatch_support::json(cancelled)
         }
         #[cfg(not(target_arch = "wasm32"))]
         "media.download_file_to_downloads" => {

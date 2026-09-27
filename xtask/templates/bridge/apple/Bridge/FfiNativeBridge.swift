@@ -129,7 +129,7 @@ public final class FfiNativeBridge: NativeBridgeProtocol, @unchecked Sendable {
         case "media.delete_file":
             return try await mediaDeleteFile(FfiJson.asMap(request?.value))
         case "media.cancel_user_file_download":
-            return try mediaCancelUserFileDownload(FfiJson.asMap(request?.value))
+            return try await mediaCancelUserFileDownload(FfiJson.asMap(request?.value))
         case "media.download_file_to_downloads":
             return FfiJson.asResponseMap(try await callWithJson(bindings.mediaDownloadFileToDownloads, request?.value))
         case "event.subscribe":
@@ -345,11 +345,12 @@ public final class FfiNativeBridge: NativeBridgeProtocol, @unchecked Sendable {
         }
     }
 
-    private func mediaCancelUserFileDownload(_ request: [String: Any]) throws -> Bool {
-        let handle = try requireHandle()
-        return FfiStringCodec.withCString(FfiFields.string(request, "downloadKey")) { downloadKey in
-            bindings.mediaCancelUserFileDownload(handle, downloadKey)
-        }
+    /// The C function answers through the result callback with `{cancelled: bool}`.
+    private func mediaCancelUserFileDownload(_ request: [String: Any]) async throws -> Bool {
+        let result = try await callWithString(
+            bindings.mediaCancelUserFileDownload, FfiFields.string(request, "downloadKey"))
+        if let map = result as? [String: Any] { return map["cancelled"] as? Bool ?? false }
+        return result as? Bool ?? false
     }
 
     private func dispatchJson(_ request: [String: Any], opOverride: String? = nil) async throws -> Any? {
