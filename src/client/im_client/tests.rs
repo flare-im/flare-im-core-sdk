@@ -85,6 +85,20 @@ fn local_client_disconnect_reasons_do_not_schedule_reconnect() {
     ));
 }
 
+/// 心跳判死是 flare-core 替我们断的，不是「我方主动断开」：必须重连，否则界面一直停在「连接已断开」。
+#[test]
+fn heartbeat_verdict_disconnects_schedule_reconnect() {
+    use flare_core::client::heartbeat::manager::{
+        HEARTBEAT_SEND_FAILED_REASON, HEARTBEAT_TIMEOUT_REASON,
+    };
+    assert!(!should_skip_reconnect_for_disconnect_reason(
+        HEARTBEAT_TIMEOUT_REASON
+    ));
+    assert!(!should_skip_reconnect_for_disconnect_reason(
+        HEARTBEAT_SEND_FAILED_REASON
+    ));
+}
+
 #[test]
 fn generate_core_token_requires_explicit_signing_config() {
     let err = IMClient::generate_core_token(CoreTokenConfig {
