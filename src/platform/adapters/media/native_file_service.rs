@@ -1435,6 +1435,8 @@ impl MediaService {
         store.set_download_subfolder(name).await
     }
 
+    /// 这个 key 保存过的文件路径。记录指向的文件已被用户删掉（或挪走）时删记录、返回 `None`：
+    /// 宿主据此把「在文件夹中显示」换回「下载」。
     pub async fn user_download_get_saved_path(&self, download_key: &str) -> Result<Option<String>> {
         let store = self.user_file_download_store.as_ref().ok_or_else(|| {
             FlareError::localized(
@@ -1442,7 +1444,18 @@ impl MediaService {
                 "user file download store is not configured",
             )
         })?;
-        store.get_saved_path(download_key).await
+        let Some(path) = store.get_saved_path(download_key).await? else {
+            return Ok(None);
+        };
+        let present = tokio::fs::metadata(&path)
+            .await
+            .map(|m| m.is_file())
+            .unwrap_or(false);
+        if present {
+            return Ok(Some(path));
+        }
+        store.delete_download_record(download_key).await?;
+        Ok(None)
     }
 
     pub async fn user_download_delete_record(&self, download_key: &str) -> Result<()> {
@@ -2450,6 +2463,52 @@ mod download_and_cache_tests {
                 .await
                 .unwrap(),
             Some(second.path.clone())
+        );
+    }
+
+    #[tokio::test]
+    async fn a_saved_file_deleted_by_the_user_is_forgotten() {
+        let f = fixture().await;
+        let chosen = f.root.join("gone");
+        f.service
+            .user_download_set_directory(Some(&chosen.to_string_lossy()))
+            .await
+            .unwrap();
+        let saved = f
+            .service
+            .download_to_user_directory(request("ok-gone", "合同.pdf"))
+            .await
+            .unwrap();
+        assert_eq!(
+            f.service
+                .user_download_get_saved_path("ok-gone")
+                .await
+                .unwrap(),
+            Some(saved.path.clone())
+        );
+
+        std::fs::remove_file(&saved.path).unwrap();
+        assert_eq!(
+            f.service
+                .user_download_get_saved_path("ok-gone")
+                .await
+                .unwrap(),
+            None
+        );
+
+        // 再下载一次回到原名（旧文件已不在），记录指向新文件。
+        let again = f
+            .service
+            .download_to_user_directory(request("ok-gone", "合同.pdf"))
+            .await
+            .unwrap();
+        assert_eq!(again.file_name, "合同.pdf");
+        assert_eq!(
+            f.service
+                .user_download_get_saved_path("ok-gone")
+                .await
+                .unwrap(),
+            Some(again.path)
         );
     }
 
