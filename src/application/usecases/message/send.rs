@@ -1995,6 +1995,7 @@ mod tests {
         );
     }
 
+    #[tokio::test]
     async fn send_with_media_persists_uploading_message_before_upload_finishes() {
         let uploaded = UploadedMedia {
             file_id: "remote-file-1".to_string(),
@@ -2046,7 +2047,11 @@ mod tests {
         };
         assert_eq!(file.file_id, "remote-file-1");
         assert_eq!(file.file_name, "remote-demo.png");
-        assert_eq!(file.url, "https://cdn.example/demo.png");
+        assert!(
+            file.url.is_empty(),
+            "an uploaded file goes out as its id alone, readers resolve it (got {:?})",
+            file.url
+        );
 
         let final_local = harness
             .messages
