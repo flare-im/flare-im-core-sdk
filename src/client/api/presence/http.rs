@@ -8,7 +8,6 @@ use tokio::sync::{Mutex, RwLock};
 
 use super::presence_wire::BatchGetUserPresenceHttpRequest;
 use crate::client::api::session_guard::SessionGuard;
-use crate::infrastructure::transport::http::http_client::HttpRequestContext;
 use crate::infrastructure::transport::http::{
     HttpApiResponse, HttpClient, unwrap_api_response, unwrap_void_api_response,
 };
@@ -93,12 +92,12 @@ pub struct PresenceApi {
 }
 
 impl PresenceApi {
+    /// `http` is the Core API client (IM bearer, the deployment's TLS trust).
     pub fn new(
-        http_base_url: impl Into<String>,
+        http: HttpClient,
         current_user_id: Arc<RwLock<String>>,
         device_id: impl Into<String>,
         default_tenant_id: impl Into<String>,
-        http_request_context: Arc<HttpRequestContext>,
         bus: EventBus,
     ) -> Self {
         let cache = Arc::new(RwLock::new(HashMap::new()));
@@ -160,7 +159,7 @@ impl PresenceApi {
         let _ = crate::shared::util::normalize_tenant_id(default_tenant_id.into());
         Self {
             session_guard: SessionGuard::new(current_user_id.clone(), "presence"),
-            http: HttpClient::with_context(http_base_url, http_request_context).with_core_bearer(),
+            http,
             current_user_id,
             device_id: device_id.into().trim().to_string(),
             cache,

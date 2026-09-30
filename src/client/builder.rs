@@ -582,7 +582,6 @@ impl IMClientBuilder {
             .http_url
             .clone()
             .unwrap_or_else(|| "http://localhost:50050".to_string());
-        let media_http_base = media_base_url.clone();
         let capability_base_url = derive_capability_url(&self.config);
         let tenant_id = self
             .config
@@ -609,6 +608,8 @@ impl IMClientBuilder {
                     self.config.media_storage_proxy_prefix.clone(),
                     self.config.media_storage_proxy_targets.clone(),
                 );
+        // Presence talks to the same Core API gateway with the same trust and bearer.
+        let presence_http_client = media_http_client.clone();
         let default_media_service: Arc<dyn MediaServicePort> = Arc::new(MediaService::new(
             media_http_client,
             current_user_id.clone(),
@@ -651,11 +652,10 @@ impl IMClientBuilder {
             http_request_context.clone(),
         ));
         let presence_api = Arc::new(PresenceApi::new(
-            media_http_base,
+            presence_http_client,
             current_user_id.clone(),
             self.config.effective_device_id(),
             tenant_id,
-            http_request_context.clone(),
             bus.clone(),
         ));
         let capability_registry = Arc::new(SdkCapabilityRegistry::new_session_bound(
