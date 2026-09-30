@@ -160,7 +160,7 @@ impl PresenceApi {
         let _ = crate::shared::util::normalize_tenant_id(default_tenant_id.into());
         Self {
             session_guard: SessionGuard::new(current_user_id.clone(), "presence"),
-            http: HttpClient::with_context(http_base_url, http_request_context),
+            http: HttpClient::with_context(http_base_url, http_request_context).with_core_bearer(),
             current_user_id,
             device_id: device_id.into().trim().to_string(),
             cache,

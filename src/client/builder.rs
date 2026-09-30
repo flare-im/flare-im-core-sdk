@@ -629,10 +629,12 @@ impl IMClientBuilder {
             media_base_url.clone(),
             http_request_context.clone(),
             self.config.core_tls_config(),
-        );
+        )
+        .with_core_bearer();
         #[cfg(target_arch = "wasm32")]
         let media_http_client =
             HttpClient::with_context(media_base_url.clone(), http_request_context.clone())
+                .with_core_bearer()
                 .with_direct_url_rewrite(
                     self.config.media_storage_proxy_prefix.clone(),
                     self.config.media_storage_proxy_targets.clone(),

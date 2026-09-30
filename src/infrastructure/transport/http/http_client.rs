@@ -166,13 +166,29 @@ impl HttpRequestContext {
         *self.trace_id.write().await = trace_id;
     }
 
+    /// Headers for business gateway (BFF) requests: the gateway Bearer when set.
     pub async fn build_headers(&self) -> HashMap<String, String> {
+        self.build_headers_preferring(false).await
+    }
+
+    /// Headers for Core HTTP (media, presence): the IM Bearer when set. The
+    /// gateway token belongs to the business backend and Core does not accept it.
+    pub async fn build_core_headers(&self) -> HashMap<String, String> {
+        self.build_headers_preferring(true).await
+    }
+
+    async fn build_headers_preferring(&self, im_first: bool) -> HashMap<String, String> {
         let gateway_token = self.gateway_token.read().await.clone();
         let im_token = self.auth_token.read().await.clone();
-        let token = if !gateway_token.trim().is_empty() {
-            gateway_token
+        let (preferred, fallback) = if im_first {
+            (im_token, gateway_token)
         } else {
-            im_token
+            (gateway_token, im_token)
+        };
+        let token = if !preferred.trim().is_empty() {
+            preferred
+        } else {
+            fallback
         };
         let mut tenant_id =
             crate::shared::util::normalize_tenant_id(self.tenant_id.read().await.trim());
@@ -396,6 +412,17 @@ mod tests {
             Some("session-a")
         );
 
+        // Core HTTP never receives the business gateway's token.
+        let core = context.build_core_headers().await;
+        assert_eq!(
+            core.get("Authorization").map(String::as_str),
+            Some("Bearer im-token")
+        );
+        assert_eq!(
+            core.get("x-tenant-id").map(String::as_str),
+            Some("tenant-a")
+        );
+
         context.clear_gateway_context().await;
 
         let headers = context.build_headers().await;
@@ -406,6 +433,60 @@ mod tests {
         assert_eq!(headers.get("x-tenant-id").map(String::as_str), Some("0"));
         assert_eq!(headers.get("x-user-id"), None);
         assert_eq!(headers.get("x-session-id"), None);
+    }
+
+    /// Serves one request, answers `{}` and returns its Authorization header.
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn authorization_of_one_request() -> (String, tokio::task::JoinHandle<Option<String>>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut head = Vec::new();
+            let mut buf = [0u8; 1024];
+            while !head.windows(4).any(|w| w == b"\r\n\r\n") {
+                let n = socket.read(&mut buf).await.unwrap();
+                if n == 0 {
+                    break;
+                }
+                head.extend_from_slice(&buf[..n]);
+            }
+            socket
+                .write_all(b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: 2\r\nconnection: close\r\n\r\n{}")
+                .await
+                .unwrap();
+            String::from_utf8_lossy(&head).lines().find_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                name.eq_ignore_ascii_case("authorization")
+                    .then(|| value.trim().to_string())
+            })
+        });
+        (url, server)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[tokio::test]
+    async fn core_clients_send_the_im_token_beside_a_gateway_session() {
+        let context = std::sync::Arc::new(HttpRequestContext::new());
+        context.set_auth_context("im-token".into(), None).await;
+        context
+            .set_gateway_context(
+                "gateway-token".into(),
+                "tenant-a".into(),
+                "alice".into(),
+                None,
+            )
+            .await;
+        for (core, expected) in [(true, "Bearer im-token"), (false, "Bearer gateway-token")] {
+            let (url, server) = authorization_of_one_request().await;
+            let mut client = super::HttpClient::with_context(url, std::sync::Arc::clone(&context));
+            if core {
+                client = client.with_core_bearer();
+            }
+            let _: serde_json::Value = client.get("/x", None).await.expect("request");
+            assert_eq!(server.await.unwrap().as_deref(), Some(expected));
+        }
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -476,6 +557,8 @@ pub struct HttpClient {
     context: Option<Arc<HttpRequestContext>>,
     direct_url_rewrite_prefix: Option<String>,
     direct_url_rewrite_targets: Vec<String>,
+    /// Core HTTP client: send the IM Bearer rather than the business gateway's.
+    core_bearer: bool,
     #[cfg(not(target_arch = "wasm32"))]
     client: reqwest::Client,
     #[cfg(not(target_arch = "wasm32"))]
@@ -522,6 +605,7 @@ impl HttpClient {
             context: None,
             direct_url_rewrite_prefix: None,
             direct_url_rewrite_targets: Vec::new(),
+            core_bearer: false,
             #[cfg(not(target_arch = "wasm32"))]
             client,
             #[cfg(not(target_arch = "wasm32"))]
@@ -537,6 +621,7 @@ impl HttpClient {
             context: Some(context),
             direct_url_rewrite_prefix: None,
             direct_url_rewrite_targets: Vec::new(),
+            core_bearer: false,
             #[cfg(not(target_arch = "wasm32"))]
             client,
             #[cfg(not(target_arch = "wasm32"))]
@@ -554,6 +639,7 @@ impl HttpClient {
             context: None,
             direct_url_rewrite_prefix: None,
             direct_url_rewrite_targets: Vec::new(),
+            core_bearer: false,
             client,
             tls_config_error,
         }
@@ -571,6 +657,7 @@ impl HttpClient {
             context: Some(context),
             direct_url_rewrite_prefix: None,
             direct_url_rewrite_targets: Vec::new(),
+            core_bearer: false,
             client,
             tls_config_error,
         }
@@ -586,6 +673,21 @@ impl HttpClient {
             .filter(|value| !value.is_empty())
             .collect();
         self
+    }
+
+    /// Authenticate with the IM token: for Core HTTP endpoints sharing a request
+    /// context with a business gateway client.
+    pub fn with_core_bearer(mut self) -> Self {
+        self.core_bearer = true;
+        self
+    }
+
+    async fn headers_from(&self, context: &HttpRequestContext) -> HashMap<String, String> {
+        if self.core_bearer {
+            context.build_core_headers().await
+        } else {
+            context.build_headers().await
+        }
     }
 
     pub fn base_url(&self) -> &str {
@@ -614,7 +716,7 @@ impl HttpClient {
     #[cfg(target_arch = "wasm32")]
     async fn context_headers(&self) -> HashMap<String, String> {
         if let Some(ctx) = &self.context {
-            ctx.build_headers().await
+            self.headers_from(ctx).await
         } else {
             HashMap::new()
         }
@@ -1310,7 +1412,7 @@ impl HttpClient {
         self.ensure_tls_ready()?;
         let mut req = self.client.request(method, url);
         if let Some(context) = &self.context {
-            for (key, value) in context.build_headers().await {
+            for (key, value) in self.headers_from(context).await {
                 req = req.header(key, value);
             }
         }
@@ -1347,7 +1449,7 @@ impl HttpClient {
         self.ensure_tls_ready()?;
         let mut req = self.client.request(method, url);
         if let Some(context) = &self.context {
-            for (key, value) in context.build_headers().await {
+            for (key, value) in self.headers_from(context).await {
                 req = req.header(key, value);
             }
         }
