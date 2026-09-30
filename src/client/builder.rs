@@ -129,37 +129,12 @@ fn derive_capability_url(config: &SdkConfig) -> String {
     "http://localhost:50110".to_string()
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-fn derive_online_url(config: &SdkConfig) -> String {
-    if let Some(url) = config.online_url.as_ref().filter(|u| !u.trim().is_empty()) {
-        return url.clone();
-    }
-    if let Some(http_url) = config.http_url.as_ref()
-        && let Ok(mut parsed) = url::Url::parse(http_url)
-    {
-        let _ = parsed.set_port(Some(50061));
-        parsed.set_path("");
-        parsed.set_query(None);
-        parsed.set_fragment(None);
-        return parsed.to_string().trim_end_matches('/').to_string();
-    }
-    "http://localhost:50061".to_string()
-}
-
 #[cfg(target_arch = "wasm32")]
 fn derive_capability_url(config: &SdkConfig) -> String {
     config
         .capability_url
         .clone()
         .unwrap_or_else(|| "http://localhost:50110".to_string())
-}
-
-#[cfg(target_arch = "wasm32")]
-fn derive_online_url(config: &SdkConfig) -> String {
-    config
-        .online_url
-        .clone()
-        .unwrap_or_else(|| "http://localhost:50061".to_string())
 }
 
 /// IMClient 构建器
@@ -607,13 +582,8 @@ impl IMClientBuilder {
             .http_url
             .clone()
             .unwrap_or_else(|| "http://localhost:50050".to_string());
-        #[cfg(target_arch = "wasm32")]
         let media_http_base = media_base_url.clone();
         let capability_base_url = derive_capability_url(&self.config);
-        #[cfg(not(target_arch = "wasm32"))]
-        let online_base_url = derive_online_url(&self.config);
-        #[cfg(target_arch = "wasm32")]
-        let _online_base_url = derive_online_url(&self.config);
         let tenant_id = self
             .config
             .tenant_id
@@ -681,16 +651,7 @@ impl IMClientBuilder {
             http_request_context.clone(),
         ));
         let presence_api = Arc::new(PresenceApi::new(
-            {
-                #[cfg(target_arch = "wasm32")]
-                {
-                    media_http_base
-                }
-                #[cfg(not(target_arch = "wasm32"))]
-                {
-                    online_base_url
-                }
-            },
+            media_http_base,
             current_user_id.clone(),
             self.config.effective_device_id(),
             tenant_id,

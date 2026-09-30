@@ -193,6 +193,8 @@ pub struct SdkConfig {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub media_storage_proxy_targets: Vec<String>,
     pub capability_url: Option<String>,
+    /// No longer used: presence goes through `http_url` (the Core API gateway) on
+    /// every target. Accepted so existing configurations still parse.
     pub online_url: Option<String>,
     pub tenant_id: Option<String>,
     /// Stable client device id used by connection metadata and sync cursors.

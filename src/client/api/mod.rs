@@ -7,13 +7,10 @@ mod conversation;
 mod media;
 mod message;
 mod message_build;
-#[cfg(target_arch = "wasm32")]
-#[path = "presence/web.rs"]
+// Presence goes through the Core API gateway on every target: the Online
+// service is internal and only accepts gateway-signed context.
+#[path = "presence/http.rs"]
 mod presence;
-#[cfg(not(target_arch = "wasm32"))]
-#[path = "presence/native.rs"]
-mod presence;
-#[cfg(any(target_arch = "wasm32", test))]
 #[path = "presence/wire.rs"]
 mod presence_wire;
 pub(crate) mod session_guard;

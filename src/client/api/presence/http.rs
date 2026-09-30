@@ -107,7 +107,7 @@ impl PresenceApi {
         let cache_owner_for_task = cache_owner_user_id.clone();
         let current_user_id_for_task = current_user_id.clone();
         let mut rx = bus.subscribe();
-        wasm_bindgen_futures::spawn_local(async move {
+        crate::shared::util::background::spawn_background(async move {
             loop {
                 let ev = match rx.recv().await {
                     Ok(event) => event,
