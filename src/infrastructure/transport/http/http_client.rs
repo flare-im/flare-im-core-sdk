@@ -409,6 +409,28 @@ mod tests {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn a_private_ca_client_loads_the_ca_and_reports_an_unreadable_one() {
+        use flare_core::common::TlsConfig;
+        let cert = rcgen::generate_simple_self_signed(vec!["im.example.test".to_string()]).unwrap();
+        let path = std::env::temp_dir().join(format!("flare-http-ca-{}.pem", uuid::Uuid::new_v4()));
+        std::fs::write(&path, cert.cert.pem()).unwrap();
+        let trusted = super::HttpClient::with_tls(
+            "https://im.example.test",
+            TlsConfig::none().with_ca_cert(path.clone()),
+        );
+        std::fs::remove_file(&path).unwrap();
+        assert!(trusted.tls_config_error.is_none());
+        assert!(trusted.context.is_none());
+
+        let missing = super::HttpClient::with_tls(
+            "https://im.example.test",
+            TlsConfig::none().with_ca_cert(path),
+        );
+        assert!(missing.tls_config_error.is_some());
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
     #[tokio::test]
     async fn a_request_that_never_left_is_marked_network_unreachable() {
         // 1 号端口没人监听：连接被拒，请求没发出去。
@@ -518,6 +540,21 @@ impl HttpClient {
             #[cfg(not(target_arch = "wasm32"))]
             client,
             #[cfg(not(target_arch = "wasm32"))]
+            tls_config_error,
+        }
+    }
+
+    /// A client without request context (no bearer token or refresh), such as
+    /// login and token refresh, that verifies the server with `tls`.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn with_tls(base_url: impl Into<String>, tls: CoreTlsConfig) -> Self {
+        let (client, tls_config_error) = Self::build_reqwest_client(Some(&tls));
+        Self {
+            base_url: base_url.into(),
+            context: None,
+            direct_url_rewrite_prefix: None,
+            direct_url_rewrite_targets: Vec::new(),
+            client,
             tls_config_error,
         }
     }

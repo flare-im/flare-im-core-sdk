@@ -37,7 +37,7 @@ pub use config::{
     TransportPolicy,
 };
 pub use connected_apis::ConnectedApis;
-pub use flare_core::common::{HeartbeatAppState, HeartbeatConfig};
+pub use flare_core::common::{HeartbeatAppState, HeartbeatConfig, TlsConfig};
 pub use im_client::{IMClient, NetworkChangeEvent, RuntimeHealthSnapshot};
 pub use lifecycle::{
     LoginDbKind, SdkConfigOverlay, default_sdk_data_root, default_ws_url,

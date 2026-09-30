@@ -335,6 +335,20 @@ impl SdkConfig {
         }
     }
 
+    /// The configured private CA for other HTTPS endpoints of the same deployment
+    /// (Social gateway, business APIs). Certificate pins stay with the IM
+    /// connection: another endpoint may present a different certificate, and a
+    /// trust anchor only widens what verifies. `None` without a configured CA.
+    pub fn ca_trust_tls_config(&self) -> Option<CoreTlsConfig> {
+        let mut tls = self.core_tls_config();
+        if tls.ca_cert_path.is_none() && tls.ca_cert_data.is_none() {
+            return None;
+        }
+        tls.spki_sha256_pins.clear();
+        tls.certificate_sha256_pins.clear();
+        Some(tls)
+    }
+
     pub fn core_tls_config(&self) -> CoreTlsConfig {
         let mut tls = CoreTlsConfig::none()
             .with_spki_sha256_pins(self.tls_spki_sha256_pins.clone())
@@ -426,6 +440,30 @@ mod tests {
         assert_eq!(config.runtime_resources().event_bus_capacity, 128);
         assert_eq!(config.runtime_resources().event_dedupe_capacity, 256);
         assert_eq!(config.runtime_resources().message_dedupe_capacity, 512);
+    }
+
+    #[test]
+    fn ca_trust_carries_the_ca_without_pins() {
+        assert!(SdkConfig::default().ca_trust_tls_config().is_none());
+        let pinned_only = SdkConfig {
+            tls_spki_sha256_pins: vec!["spki-sha256/current".to_string()],
+            ..SdkConfig::default()
+        };
+        assert!(pinned_only.ca_trust_tls_config().is_none());
+
+        let config = SdkConfig {
+            tls_ca_cert_path: Some("/tmp/flare-ca.crt".to_string()),
+            tls_spki_sha256_pins: vec!["spki-sha256/current".to_string()],
+            tls_certificate_sha256_pins: vec!["sha256/legacy".to_string()],
+            ..SdkConfig::default()
+        };
+        let tls = config.ca_trust_tls_config().expect("CA configured");
+        assert_eq!(
+            tls.ca_cert_path.as_deref(),
+            Some(std::path::Path::new("/tmp/flare-ca.crt"))
+        );
+        assert!(!tls.has_certificate_pins());
+        assert!(tls.requires_custom_client_tls());
     }
 
     #[test]
