@@ -85,6 +85,14 @@ fn local_client_disconnect_reasons_do_not_schedule_reconnect() {
     ));
 }
 
+/// 租户不可用的断开不排重连：网关只会再拒一次，由 KickedOff 交给应用。
+#[test]
+fn tenant_unavailable_disconnect_does_not_schedule_reconnect() {
+    assert!(should_skip_reconnect_for_disconnect_reason(
+        "TENANT_UNAVAILABLE"
+    ));
+}
+
 /// 心跳判死是 flare-core 替我们断的，不是「我方主动断开」：必须重连，否则界面一直停在「连接已断开」。
 #[test]
 fn heartbeat_verdict_disconnects_schedule_reconnect() {

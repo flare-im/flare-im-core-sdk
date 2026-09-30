@@ -8,6 +8,17 @@ pub use flare_core::common::error::{
     ClientError, ErrorBuilder, ErrorCode, FlareError, Result, ServerError,
 };
 
+/// Core 因租户不可用（停用、删除中）拒绝建连、踢线或拒绝请求时给出的类型化原因。
+pub const TENANT_UNAVAILABLE: &str = "TENANT_UNAVAILABLE";
+
+/// 错误是否表示租户不可用。
+///
+/// 它不是鉴权失败：换令牌、自动重连都无济于事，只会反复打到网关。SDK 据此停止重连并把
+/// `KickedOff { reason: "TENANT_UNAVAILABLE" }` 交给应用。
+pub fn is_tenant_unavailable(err: &FlareError) -> bool {
+    err.to_string().contains(TENANT_UNAVAILABLE)
+}
+
 /// 从 proto RpcStatus 的 code + message 映射为 FlareError
 ///
 /// 与 `errors.proto` 中 ErrorCode 对齐；未命中时使用 `message` 构造 GeneralError。

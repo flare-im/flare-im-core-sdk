@@ -8,9 +8,7 @@ use tokio::sync::{Mutex, RwLock};
 
 use super::presence_wire::BatchGetUserPresenceHttpRequest;
 use crate::client::api::session_guard::SessionGuard;
-use crate::infrastructure::transport::http::{
-    HttpApiResponse, HttpClient, unwrap_api_response, unwrap_void_api_response,
-};
+use crate::infrastructure::transport::http::{HttpApiResponse, HttpClient, unwrap_api_response};
 use crate::kernel::event::{EventBus, MessageEvent, SdkEvent};
 use crate::shared::error::{ErrorCode, FlareError, Result};
 
@@ -60,6 +58,13 @@ struct BatchGetUserPresenceHttpResponse {
 #[serde(rename_all = "camelCase")]
 struct LogoutPresenceHttpRequest {
     conversation_id: String,
+}
+
+/// `POST /api/v1/presence/logout` 的 `data`：网关回 `{"success": bool}`（Online 登出的结果），
+/// 不是空体。按 `()` 解码会在每次登出时报「error decoding response body」。
+#[derive(Debug, Deserialize)]
+struct LogoutPresenceHttpResponse {
+    success: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -460,8 +465,15 @@ impl PresenceApi {
         let req = LogoutPresenceHttpRequest {
             conversation_id: device.conversation_id,
         };
-        let body: HttpApiResponse<()> = self.http.post("/api/v1/presence/logout", &req).await?;
-        unwrap_void_api_response(body, "logout presence")?;
+        let body: HttpApiResponse<LogoutPresenceHttpResponse> =
+            self.http.post("/api/v1/presence/logout", &req).await?;
+        let logout = unwrap_api_response(body, "logout presence")?;
+        if !logout.success {
+            return Err(FlareError::localized(
+                ErrorCode::GeneralError,
+                "logout presence failed: the online service did not end the session",
+            ));
+        }
         self.cache.write().await.clear();
         Ok(())
     }
@@ -664,6 +676,58 @@ mod tests {
             "0",
             EventBus::new(),
         )
+    }
+
+    /// 在线状态查询里的当前设备（登出按它的 conversationId 走）。
+    #[cfg(not(target_arch = "wasm32"))]
+    const PRESENCE_WITH_CURRENT_DEVICE: &str = r#"{"code":0,"data":{
+        "userId":"alice","isOnline":true,"status":"online","lastSeenMs":1,
+        "devices":[{"deviceId":"dev-a","platform":"pc","model":"m","osVersion":"1",
+            "lastActiveTimeMs":1,"priority":1,"tokenVersion":1,"connectionQuality":null,
+            "conversationId":"conn-a","gatewayId":"gw","serverId":"srv"}]}}"#;
+
+    /// 登出响应的契约：`flare-api-gateway` 的 `logout_presence` 返回
+    /// `ApiResponse::success(LogoutPresenceHttpResponse { success })`，`ApiResponse` 省略空字段，
+    /// 线上就是下面这一行。以前 SDK 按 `data: ()` 解码，每次都报
+    /// 「parse http json failed: error decoding response body」再退回直接断开传输。
+    #[cfg(not(target_arch = "wasm32"))]
+    #[tokio::test]
+    async fn presence_logout_accepts_the_gateway_response() {
+        let logout_ok = r#"{"code":0,"data":{"success":true}}"#;
+        let (base, stub) =
+            gateway_stub(vec![(200, PRESENCE_WITH_CURRENT_DEVICE), (200, logout_ok)]).await;
+        let api = presence_api(&base, "alice", "dev-a");
+
+        api.logout_user_device_presence("alice")
+            .await
+            .expect("gateway logout response must decode");
+
+        let seen = stub.await.unwrap();
+        assert_eq!(seen[0].0, "GET /api/v1/presence/users/alice");
+        assert_eq!(seen[1].0, "POST /api/v1/presence/logout");
+        let body: serde_json::Value = serde_json::from_str(&seen[1].1).unwrap();
+        assert_eq!(body, serde_json::json!({"conversationId": "conn-a"}));
+    }
+
+    /// Online 没结束会话（`success: false`）要报错，调用方据此退回断开传输。
+    #[cfg(not(target_arch = "wasm32"))]
+    #[tokio::test]
+    async fn presence_logout_not_ended_is_an_error() {
+        let logout_rejected = r#"{"code":0,"data":{"success":false}}"#;
+        let (base, stub) = gateway_stub(vec![
+            (200, PRESENCE_WITH_CURRENT_DEVICE),
+            (200, logout_rejected),
+        ])
+        .await;
+        let api = presence_api(&base, "alice", "dev-a");
+
+        let err = api
+            .logout_user_device_presence("alice")
+            .await
+            .expect_err("success=false is not a logout");
+        assert!(err.to_string().contains("logout presence failed"), "{err}");
+        assert!(!err.to_string().contains("decoding"), "{err}");
+        stub.await.unwrap();
     }
 
     #[cfg(not(target_arch = "wasm32"))]

@@ -685,6 +685,8 @@ fn should_skip_reconnect_for_disconnect_reason(reason: &str) -> bool {
         || lower.contains("token expired")
         || lower.contains("401")
         || lower.contains("credential expired")
+        // 租户不可用：重连只会被网关再拒一次，由 KickedOff 交给应用
+        || lower.contains("tenant_unavailable")
 }
 
 fn reconnect_delay_secs(base_interval_secs: u64, attempt: u32) -> u64 {

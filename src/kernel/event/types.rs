@@ -32,7 +32,8 @@ pub enum ConnectionEvent {
     ServerError { code: i32, message: String },
     /// 重连中（attempt 为当前第几次重试）
     Reconnecting { attempt: u32 },
-    /// 账号已在其他设备/地点登录，当前设备被踢下线
+    /// 当前设备被服务端踢下线，会话随之终止、不自动重连：账号已在其他设备/地点登录，
+    /// 或 `reason` 为 `TENANT_UNAVAILABLE`（所属租户已停用或正在删除，恢复前需重新登录）
     KickedOff { reason: String },
     /// 登录凭证已过期，需要重新登录（如刷新 Token 或跳转登录页）
     TokenExpired { message: String },

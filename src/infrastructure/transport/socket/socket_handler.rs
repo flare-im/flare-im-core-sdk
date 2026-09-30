@@ -4,7 +4,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use crate::shared::error::Result;
+use crate::shared::error::{Result, TENANT_UNAVAILABLE};
 use async_trait::async_trait;
 use flare_core::client::builder::flare::MessageListener;
 use flare_core::common::compression::CompressionUtil;
@@ -29,6 +29,8 @@ pub struct SocketHandler {
     codec: Arc<dyn Codec>,
     ready_notify: Arc<Notify>,
     notified: AtomicBool,
+    /// 已向总线报过「租户不可用」的踢线：KICKED 帧与随后的断开原因可能都带着它，只报一次。
+    tenant_unavailable_reported: AtomicBool,
 }
 
 impl SocketHandler {
@@ -42,6 +44,7 @@ impl SocketHandler {
             codec,
             ready_notify,
             notified: AtomicBool::new(false),
+            tenant_unavailable_reported: AtomicBool::new(false),
         }
     }
 
@@ -50,6 +53,34 @@ impl SocketHandler {
             self.ready_notify.notify_one();
         }
     }
+
+    /// 服务端以 `TENANT_UNAVAILABLE` 踢线：交给应用一个 `KickedOff`，会话随之终止，
+    /// 不自动重连、不刷新令牌（租户恢复前两者都只会被网关再拒一次）。
+    fn report_tenant_unavailable(&self) {
+        if self
+            .tenant_unavailable_reported
+            .swap(true, Ordering::SeqCst)
+        {
+            return;
+        }
+        warn!("server kicked the connection: tenant unavailable");
+        self.dispatcher
+            .bus()
+            .publish(SdkEvent::Connection(ConnectionEvent::KickedOff {
+                reason: TENANT_UNAVAILABLE.to_string(),
+            }));
+    }
+}
+
+/// KICKED 帧是否因租户不可用：原因在 `message`，网关也会放一份在 `metadata.reason`。
+fn is_tenant_unavailable_kick(
+    sys_cmd: &flare_core::common::protocol::flare::core::commands::SystemCommand,
+) -> bool {
+    sys_cmd.message.trim() == TENANT_UNAVAILABLE
+        || sys_cmd
+            .metadata
+            .get("reason")
+            .is_some_and(|reason| reason.as_slice() == TENANT_UNAVAILABLE.as_bytes())
 }
 
 #[async_trait]
@@ -61,6 +92,9 @@ impl MessageListener for SocketHandler {
                     let t = sys_cmd.r#type;
                     if t == SystemType::ConnectAck as i32 {
                         self.signal_ready();
+                    } else if t == SystemType::Kicked as i32 && is_tenant_unavailable_kick(sys_cmd)
+                    {
+                        self.report_tenant_unavailable();
                     }
                 }
                 Some(CommandType::Payload(_)) => {
@@ -194,7 +228,11 @@ impl MessageListener for SocketHandler {
         let reason = reason.unwrap_or("unknown").to_string();
         let lower = reason.to_lowercase();
         // 被踢语义由 flare-core 在协商完成后通过 Disconnected(reason) 下发，此处仅根据 reason 映射
-        if lower.contains("kick") || lower.contains("设备冲突") || lower.contains("device_conflict")
+        if reason.contains(TENANT_UNAVAILABLE) {
+            self.report_tenant_unavailable();
+        } else if lower.contains("kick")
+            || lower.contains("设备冲突")
+            || lower.contains("device_conflict")
         {
             self.dispatcher
                 .bus()
@@ -256,4 +294,100 @@ fn payload_exceeds_budget(payload: &[u8], frame_id: &str, payload_type: i32, lab
         "payload exceeds downlink budget, ignored"
     );
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::application::notification::{
+        NotificationHandlerRegistry, NotificationInboundPipeline,
+    };
+    use crate::application::services::{EventDeduper, MessageDeduper};
+    use crate::infrastructure::protocol::ProtobufCodec;
+    use crate::kernel::event::EventBus;
+    use crate::spi::metrics::MetricsRecorder;
+    use flare_core::common::protocol::{Reliability, builder, frame_with_system_command};
+    use std::collections::HashMap;
+    use tokio::sync::RwLock;
+
+    fn handler(bus: &EventBus) -> SocketHandler {
+        let dispatcher = Dispatcher::new(
+            bus.clone(),
+            None,
+            None,
+            None,
+            None,
+            Arc::new(RwLock::new("u1".to_string())),
+            EventDeduper::new(Some(64)),
+            NotificationInboundPipeline::new(
+                Arc::new(NotificationHandlerRegistry::new()),
+                MessageDeduper::new(Some(64)),
+                bus.clone(),
+            ),
+            MetricsRecorder::disabled(),
+        );
+        SocketHandler::new(
+            Arc::new(dispatcher),
+            Arc::new(ProtobufCodec),
+            Arc::new(Notify::new()),
+        )
+    }
+
+    async fn kicked_off_reasons(rx: &mut crate::kernel::event::EventReceiver) -> Vec<String> {
+        let mut reasons = Vec::new();
+        while let Ok(Ok(event)) =
+            tokio::time::timeout(std::time::Duration::from_millis(100), rx.recv()).await
+        {
+            if let SdkEvent::Connection(ConnectionEvent::KickedOff { reason }) = event {
+                reasons.push(reason);
+            }
+        }
+        reasons
+    }
+
+    /// 服务端以 TENANT_UNAVAILABLE 踢线：应用收到一次 KickedOff（会话随之终止、不重连），
+    /// 紧跟着的传输断开不会再报第二次。
+    #[tokio::test]
+    async fn tenant_unavailable_kick_is_reported_once_as_kicked_off() {
+        let bus = EventBus::new();
+        let mut rx = bus.subscribe();
+        let handler = handler(&bus);
+        let frame = frame_with_system_command(
+            builder::kicked(
+                TENANT_UNAVAILABLE.to_string(),
+                Some(HashMap::from([(
+                    "reason".to_string(),
+                    TENANT_UNAVAILABLE.as_bytes().to_vec(),
+                )])),
+            ),
+            Reliability::AtLeastOnce,
+        );
+
+        // 读循环先把 KICKED 帧交上来（EOF 之后才解析到也一样）
+        handler.on_message(&frame).await.unwrap();
+        assert_eq!(kicked_off_reasons(&mut rx).await, vec![TENANT_UNAVAILABLE]);
+
+        // 随后的传输断开若也带着这个原因，不再报第二次
+        handler
+            .on_disconnect(Some(TENANT_UNAVAILABLE))
+            .await
+            .unwrap();
+        assert!(kicked_off_reasons(&mut rx).await.is_empty());
+    }
+
+    /// 其他原因的踢线（设备冲突等）不走这条路：它们的去留由断开原因决定，保持原样。
+    #[tokio::test]
+    async fn other_kicks_are_not_reported_as_tenant_unavailable() {
+        let bus = EventBus::new();
+        let mut rx = bus.subscribe();
+        let handler = handler(&bus);
+        let frame = frame_with_system_command(
+            builder::kicked("DEVICE_KICKED".to_string(), None),
+            Reliability::AtLeastOnce,
+        );
+
+        handler.on_message(&frame).await.unwrap();
+
+        assert!(kicked_off_reasons(&mut rx).await.is_empty());
+    }
 }

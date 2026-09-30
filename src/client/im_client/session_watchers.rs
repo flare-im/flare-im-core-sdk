@@ -4,7 +4,7 @@ use crate::FlareError;
 use crate::client::token_provider::{GatewayTokenProvider, jwt_exp_secs};
 use crate::kernel::event::{ConnectionEvent, EventBus, SdkEvent, SdkEventKind};
 use crate::kernel::{SdkState, SyncRunContext};
-use crate::shared::error::{ErrorCode, Result};
+use crate::shared::error::{ErrorCode, Result, TENANT_UNAVAILABLE, is_tenant_unavailable};
 use crate::shared::util::{delay, now_unix_secs};
 
 use super::{
@@ -115,9 +115,11 @@ impl IMClient {
                 let Some(snapshot_client) = client.upgrade() else {
                     break;
                 };
+                // 这里只取重连参数，不换令牌：断开原因可能随后才到（例如租户不可用的踢线紧跟在
+                // 断开之后），换令牌放到退避之后、确认会话仍在时的那次快照里做。
                 let (user_id, mut token, interval_secs, max_attempts) =
-                    match snapshot_client.reconnect_snapshot(generation, false).await {
-                        Some(snapshot) => snapshot,
+                    match snapshot_client.reconnect_settings(generation).await {
+                        Some(settings) => settings,
                         None => break,
                     };
                 drop(snapshot_client);
@@ -209,6 +211,27 @@ impl IMClient {
                             break;
                         }
                         Err(err) => {
+                            // 租户不可用：换令牌、再重连都只会被网关再拒一次。停手，交给应用。
+                            if is_tenant_unavailable(&err) {
+                                tracing::warn!(
+                                    session_generation = generation,
+                                    attempt,
+                                    error = %err,
+                                    "SDK reconnect rejected: tenant unavailable; not retrying"
+                                );
+                                reconnect_client
+                                    .mark_current_engine_disconnected(generation)
+                                    .await;
+                                reconnect_client
+                                    .publish_session_event_if_generation(
+                                        generation,
+                                        SdkEvent::Connection(ConnectionEvent::KickedOff {
+                                            reason: TENANT_UNAVAILABLE.to_string(),
+                                        }),
+                                    )
+                                    .await;
+                                break;
+                            }
                             // 鉴权类失败（token 过期/无效）时，下一次强制换新 token 再重连。
                             let auth_rejected = is_auth_reconnect_failure(&err);
                             if auth_rejected {
@@ -257,21 +280,20 @@ impl IMClient {
         .await
     }
 
-    pub(super) async fn reconnect_snapshot(
+    /// 重连参数（用户、当前令牌、退避间隔、最大次数），不换令牌。
+    pub(super) async fn reconnect_settings(
         &self,
         generation: u64,
-        force_refresh: bool,
     ) -> Option<(String, String, u64, Option<u32>)> {
         let g = self.inner.read().await;
         if g.session_generation != generation {
             return None;
         }
         let user_id = g.current_user_id.clone()?;
-        let mut token = g
+        let token = g
             .connect_token
             .clone()
             .or_else(|| crate::client::lifecycle::resolve_connect_token(&user_id, None).ok())?;
-        let provider = Self::gateway_token_provider_from_inner(&g);
         let interval_secs = g
             .sdk_config
             .as_ref()
@@ -283,7 +305,23 @@ impl IMClient {
             .as_ref()
             .and_then(|c| c.max_reconnect_attempts)
             .map(|attempts| attempts.max(1));
-        drop(g);
+        Some((user_id, token, interval_secs, max_attempts))
+    }
+
+    pub(super) async fn reconnect_snapshot(
+        &self,
+        generation: u64,
+        force_refresh: bool,
+    ) -> Option<(String, String, u64, Option<u32>)> {
+        let (user_id, mut token, interval_secs, max_attempts) =
+            self.reconnect_settings(generation).await?;
+        let provider = {
+            let g = self.inner.read().await;
+            if g.session_generation != generation {
+                return None;
+            }
+            Self::gateway_token_provider_from_inner(&g)
+        };
         // 重连前 token 已到期/临期，或上一次重连被网关按鉴权拒绝（force_refresh）：先换新，
         // 否则带着旧 token 重连必被网关拒。force_refresh 绕过本机时钟判定，防时钟偏移死循环。
         // 走刷新令牌换新（接入令牌早过期也能换），是 7x24 的关键。
@@ -672,6 +710,24 @@ mod token_refresh_tests {
             ErrorCode::ConnectionFailed,
             "AUTHENTICATION_FAILED: token 无效或已过期",
         )));
+    }
+
+    /// 租户不可用不是鉴权失败：不强制换令牌；重连循环据此停手并上报。
+    /// 连接在 CONNECT_ACK 之前被关、服务端没给原因，也不是鉴权失败。
+    #[test]
+    fn tenant_unavailable_and_reasonless_close_are_not_auth_failures() {
+        let tenant = FlareError::localized(
+            ErrorCode::PermissionDenied,
+            "connect failed primary=wss://x: 错误 [PERMISSION_DENIED] TENANT_UNAVAILABLE: server rejected CONNECT",
+        );
+        assert!(!is_auth_reconnect_failure(&tenant));
+        assert!(is_tenant_unavailable(&tenant));
+
+        let closed = FlareError::connection_failed(
+            "server closed the connection before CONNECT_ACK without a reason (heartbeat send failed)",
+        );
+        assert!(!is_auth_reconnect_failure(&closed));
+        assert!(!is_tenant_unavailable(&closed));
     }
 
     fn token(ttl_secs: u64) -> String {

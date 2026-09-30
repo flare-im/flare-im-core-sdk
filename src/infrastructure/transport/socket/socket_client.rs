@@ -35,6 +35,21 @@ fn sdk_device_info(config: &SdkConfig) -> DeviceInfo {
         )
 }
 
+/// 建连失败时保留下来的错误码：服务端明确拒绝的类别原样上报，其余都是连接失败。
+fn connect_failure_code(error: &FlareError) -> ErrorCode {
+    match error.code() {
+        Some(
+            code @ (ErrorCode::AuthenticationFailed
+            | ErrorCode::AuthenticationExpired
+            | ErrorCode::AuthenticationInvalid
+            | ErrorCode::TokenInvalid
+            | ErrorCode::TokenExpired
+            | ErrorCode::PermissionDenied),
+        ) => code,
+        _ => ErrorCode::ConnectionFailed,
+    }
+}
+
 /// Socket 传输层 — 基于 flare-core 的多协议长连接封装
 pub struct SocketTransport {
     config: SdkConfig,
@@ -153,14 +168,11 @@ impl SocketTransport {
                     "connect failed primary={primary_url} ws={ws_url} policy={policy:?} default_transport={:?}: {e}",
                     self.config.default_transport
                 );
-                // 网关拒掉 CONNECT 里的 token（密钥/签发者不一致、过期）时，传输层已经判成
-                // AUTHENTICATION_FAILED；这里不能再一律降级成 CONNECTION_FAILED，
-                // 否则应用层只能把「密钥填错」显示成「连不上服务器」。
-                if e.code() == Some(ErrorCode::AuthenticationFailed) {
-                    FlareError::authentication_failed(detail)
-                } else {
-                    FlareError::connection_failed(detail)
-                }
+                // 网关拒绝 CONNECT 时传输层已经按服务端给的原因分好类：令牌问题是
+                // AUTHENTICATION_FAILED / TOKEN_*，租户不可用是 PERMISSION_DENIED。这里不能再一律
+                // 降级成 CONNECTION_FAILED，否则应用层只能把「密钥填错」「租户被停用」都显示成
+                // 「连不上服务器」，重连逻辑也分不清该换令牌还是该停手。
+                FlareError::localized(connect_failure_code(&e), detail)
             })?;
 
         *self.client.lock().await = Some(flare_client);
@@ -236,6 +248,37 @@ impl SocketTransport {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 服务端给出的拒绝类别要一路带到应用层；只有真正的连不上才是 CONNECTION_FAILED。
+    #[test]
+    fn connect_failure_keeps_the_rejection_class() {
+        let cases = [
+            (
+                FlareError::localized(
+                    ErrorCode::PermissionDenied,
+                    "TENANT_UNAVAILABLE: server rejected CONNECT",
+                ),
+                ErrorCode::PermissionDenied,
+            ),
+            (
+                FlareError::authentication_failed("AUTHENTICATION_FAILED: server rejected CONNECT"),
+                ErrorCode::AuthenticationFailed,
+            ),
+            (
+                FlareError::connection_failed(
+                    "server closed the connection before CONNECT_ACK without a reason",
+                ),
+                ErrorCode::ConnectionFailed,
+            ),
+            (
+                FlareError::connection_timeout("Negotiation timeout"),
+                ErrorCode::ConnectionFailed,
+            ),
+        ];
+        for (error, expected) in cases {
+            assert_eq!(connect_failure_code(&error), expected, "{error}");
+        }
+    }
 
     /// 连接状态查询绝不能在 async 上下文里再阻塞一次。
     ///
