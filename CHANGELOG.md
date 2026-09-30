@@ -9,6 +9,9 @@
 
 - 跟进契约层新增的两个会话参与者字段（需要 `flare-proto` 2.1.0）：
   `is_mention_only`（只接收提到我的消息）与 `visible_from_seq`（可见历史下限）。
+- `PresenceApi::register_push_token` / `unregister_push_token`：为本设备登记、注销离线推送令牌，
+  走 Core API 网关的 `PUT` / `DELETE /api/v1/devices/{device_id}/push-token`（需要带该接口的 Core 网关）。
+  用户与租户由网关从 IM 令牌确定，设备取 SDK 配置的 `device_id`；推送通道目前只支持 `getui`。
 
 ### 修复
 

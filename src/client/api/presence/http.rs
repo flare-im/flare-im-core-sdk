@@ -80,6 +80,21 @@ struct KickDeviceHttpResponse {
     success: bool,
 }
 
+/// `PUT /api/v1/devices/{device_id}/push-token` 的请求体。网关拒收其它字段：
+/// 用户与租户只由 IM 令牌确定。
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RegisterPushTokenHttpRequest {
+    platform: String,
+    provider: String,
+    token: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct PushTokenHttpResponse {
+    success: bool,
+}
+
 #[derive(Clone)]
 pub struct PresenceApi {
     session_guard: SessionGuard,
@@ -359,6 +374,64 @@ impl PresenceApi {
         Ok(unwrap_api_response(body, "kick device")?.success)
     }
 
+    /// 为本设备登记（或更新）离线推送令牌。
+    ///
+    /// 设备取 SDK 配置的 `device_id`，与登录时绑定进 IM 令牌的是同一个值；用户与租户由
+    /// Core API 网关从 IM 令牌确定，调用方无法指定。`provider` 目前只支持 `getui`，
+    /// `platform` 形如 `ios`、`android`、`harmony`。返回下游是否确认保存。
+    pub async fn register_push_token(
+        &self,
+        platform: &str,
+        provider: &str,
+        token: &str,
+    ) -> Result<bool> {
+        let req = RegisterPushTokenHttpRequest {
+            platform: required_text(platform, "sdk.push.platform_required")?,
+            provider: required_text(provider, "sdk.push.provider_required")?,
+            token: required_text(token, "sdk.push.token_required")?,
+        };
+        let path = self.push_token_path()?;
+        let api = self.clone();
+        self.session_guard
+            .run(async move {
+                let body: HttpApiResponse<PushTokenHttpResponse> =
+                    api.http.put(&path, &req).await?;
+                Ok(unwrap_api_response(body, "register push token")?.success)
+            })
+            .await
+    }
+
+    /// 注销本设备在 `provider` 通道的离线推送令牌。
+    ///
+    /// 需要有效的 IM 令牌，登出时应在断开会话之前调用。返回下游是否确认删除。
+    pub async fn unregister_push_token(&self, provider: &str) -> Result<bool> {
+        let provider = required_text(provider, "sdk.push.provider_required")?;
+        let path = self.push_token_path()?;
+        let query = HashMap::from([("provider".to_string(), provider)]);
+        let api = self.clone();
+        self.session_guard
+            .run(async move {
+                let body: HttpApiResponse<PushTokenHttpResponse> =
+                    api.http.delete(&path, Some(&query)).await?;
+                Ok(unwrap_api_response(body, "unregister push token")?.success)
+            })
+            .await
+    }
+
+    fn push_token_path(&self) -> Result<String> {
+        let device_id = self.device_id.trim();
+        if device_id.is_empty() {
+            return Err(FlareError::localized(
+                ErrorCode::InvalidParameter,
+                "sdk.presence.device_id_required",
+            ));
+        }
+        Ok(format!(
+            "/api/v1/devices/{}/push-token",
+            encode_path_segment(device_id)
+        ))
+    }
+
     pub async fn logout_current_device_presence(&self) -> Result<()> {
         let user_id = self.current_user_id.read().await.trim().to_string();
         if user_id.is_empty() {
@@ -404,6 +477,31 @@ impl PresenceApi {
         }
         Ok(())
     }
+}
+
+fn required_text(value: &str, error_key: &'static str) -> Result<String> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Err(FlareError::localized(
+            ErrorCode::InvalidParameter,
+            error_key,
+        ));
+    }
+    Ok(value.to_string())
+}
+
+/// 把设备 ID 作为单个 URL 路径段转义（只保留 RFC 3986 unreserved 字符）。
+fn encode_path_segment(value: &str) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
+            out.push(char::from(byte));
+        } else {
+            let _ = write!(out, "%{byte:02X}");
+        }
+    }
+    out
 }
 
 fn current_device_presence(
@@ -505,6 +603,151 @@ mod tests {
 
         assert_eq!(selected.device_id, "device-a");
         assert_eq!(selected.conversation_id, "conn-a");
+    }
+
+    /// 本机桩：依次接受 `responses.len()` 个连接，每个连接读一个请求并回对应的响应；
+    /// 返回每个请求的「方法 路径」行与请求体。
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn gateway_stub(
+        responses: Vec<(u16, &'static str)>,
+    ) -> (String, tokio::task::JoinHandle<Vec<(String, String)>>) {
+        use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let handle = tokio::spawn(async move {
+            let mut seen = Vec::new();
+            for (status, body) in responses {
+                let (socket, _) = listener.accept().await.unwrap();
+                let mut reader = BufReader::new(socket);
+                let mut request_line = String::new();
+                reader.read_line(&mut request_line).await.unwrap();
+                let mut content_length = 0usize;
+                loop {
+                    let mut line = String::new();
+                    reader.read_line(&mut line).await.unwrap();
+                    let line = line.trim_end();
+                    if line.is_empty() {
+                        break;
+                    }
+                    if let Some((key, value)) = line.split_once(':')
+                        && key.trim().eq_ignore_ascii_case("content-length")
+                    {
+                        content_length = value.trim().parse().unwrap();
+                    }
+                }
+                let mut request_body = vec![0u8; content_length];
+                reader.read_exact(&mut request_body).await.unwrap();
+                let response = format!(
+                    "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                reader
+                    .get_mut()
+                    .write_all(response.as_bytes())
+                    .await
+                    .unwrap();
+                let line = request_line.trim_end();
+                let line = line.strip_suffix(" HTTP/1.1").unwrap_or(line).to_string();
+                seen.push((line, String::from_utf8(request_body).unwrap()));
+            }
+            seen
+        });
+        (base, handle)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn presence_api(base: &str, user_id: &str, device_id: &str) -> PresenceApi {
+        PresenceApi::new(
+            HttpClient::new(base),
+            Arc::new(RwLock::new(user_id.to_string())),
+            device_id,
+            "0",
+            EventBus::new(),
+        )
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[tokio::test]
+    async fn push_token_calls_follow_the_gateway_contract() {
+        let ok = r#"{"code":0,"data":{"success":true}}"#;
+        let (base, stub) = gateway_stub(vec![(200, ok), (200, ok)]).await;
+        let api = presence_api(&base, "alice", "dev 1/\u{3b1}");
+
+        assert!(
+            api.register_push_token(" ios ", "getui", " tok-1 ")
+                .await
+                .unwrap()
+        );
+        assert!(api.unregister_push_token("getui").await.unwrap());
+
+        let seen = stub.await.unwrap();
+        assert_eq!(seen[0].0, "PUT /api/v1/devices/dev%201%2F%CE%B1/push-token");
+        // 请求体只有这三个字段：身份由网关从 IM 令牌取，SDK 不发 user/tenant。
+        let body: serde_json::Value = serde_json::from_str(&seen[0].1).unwrap();
+        assert_eq!(
+            body,
+            serde_json::json!({"platform": "ios", "provider": "getui", "token": "tok-1"})
+        );
+        assert_eq!(
+            seen[1].0,
+            "DELETE /api/v1/devices/dev%201%2F%CE%B1/push-token?provider=getui"
+        );
+        assert!(seen[1].1.is_empty());
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[tokio::test]
+    async fn push_token_gateway_denial_surfaces_as_error() {
+        let denied = r#"{"code":403,"reason":"DEVICE_MISMATCH","message":"the token is bound to a different device"}"#;
+        let (base, stub) = gateway_stub(vec![(403, denied)]).await;
+        let api = presence_api(&base, "alice", "d1");
+        let error = api
+            .register_push_token("ios", "getui", "tok-1")
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("DEVICE_MISMATCH"), "{error}");
+        stub.await.unwrap();
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[tokio::test]
+    async fn push_token_requires_session_device_and_fields_before_any_request() {
+        // 端口不监听：若请求真的发出，会得到网络错误而不是下面断言的错误码。
+        let base = "http://127.0.0.1:9";
+        let err = presence_api(base, "", "d1")
+            .register_push_token("ios", "getui", "tok-1")
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), Some(ErrorCode::NotConnected));
+        let err = presence_api(base, "", "d1")
+            .unregister_push_token("getui")
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), Some(ErrorCode::NotConnected));
+
+        let api = presence_api(base, "alice", "d1");
+        for (platform, provider, token) in
+            [(" ", "getui", "t"), ("ios", "", "t"), ("ios", "getui", " ")]
+        {
+            let err = api
+                .register_push_token(platform, provider, token)
+                .await
+                .unwrap_err();
+            assert_eq!(err.code(), Some(ErrorCode::InvalidParameter));
+        }
+        let err = api.unregister_push_token(" ").await.unwrap_err();
+        assert_eq!(err.code(), Some(ErrorCode::InvalidParameter));
+        let err = presence_api(base, "alice", " ")
+            .register_push_token("ios", "getui", "t")
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), Some(ErrorCode::InvalidParameter));
+    }
+
+    #[test]
+    fn device_id_is_escaped_as_one_path_segment() {
+        assert_eq!(encode_path_segment("A-z_0.9~"), "A-z_0.9~");
+        assert_eq!(encode_path_segment("a/b?c#d e%"), "a%2Fb%3Fc%23d%20e%25");
     }
 
     #[test]
