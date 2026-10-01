@@ -25,6 +25,11 @@
   `KickedOff { reason: "TENANT_UNAVAILABLE" }` 并终止会话，不再自动重连、不再为它换令牌；
   断开后的第一次重连快照也不再提前换令牌。建连失败保留服务端给的错误类别（鉴权类、
   `PERMISSION_DENIED`），不再一律降级成 `CONNECTION_FAILED`。
+- 服务端暂时放不了行时（网关读不到租户状态等，flare-core 1.1.1 以 `SERVICE_UNAVAILABLE`
+  拒绝建连），建连错误保留 `SERVICE_UNAVAILABLE`，不再降级成 `CONNECTION_FAILED`；
+  会话中的重连循环把它当可重试，照常退避重连，不换令牌、不终止会话。新增回环集成测试
+  `tests/transient_rejection_reconnect.rs`：本机起 flare-core 服务端，驱动 SDK 走完整的
+  断线、被暂时性拒绝、退避、再连上的循环，并以 `TENANT_UNAVAILABLE` 终止会话作对照。
 - QUIC 连接被踢后迟迟不重连、断开被误报成令牌被拒，根因在 flare-core 客户端，随其修复一并生效。
 - 调度与恢复路径的失败改为记日志，不再静默吞掉。此前这类失败没有任何信号，
   只能靠用户报障才发现。

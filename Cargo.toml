@@ -166,6 +166,8 @@ web-sys = { version = "0.3", features = [
 ] }
 
 [dev-dependencies]
+# 仅测试：本机回环起 flare-core 服务端，驱动 SDK 走完整的建连 / 重连循环
+flare-core = { workspace = true, default-features = false, features = ["client", "server", "websocket", "compression-gzip", "encryption-aes-gcm"] }
 rcgen = "0.14"
 # 仅测试：用与服务端 TokenService 同规则的校验器验证客户端签发的 token
 jsonwebtoken = "9"

@@ -14,6 +14,7 @@ rtk cargo test --workspace
 覆盖范围：
 
 - `core_sdk_contract_test.rs`：当前 `IMClient::builder()` 装配合同、未登录写侧拒绝语义、内存 message/conversation store 对当前 `IMMessage` / `Conversation` 模型的保存与查询。
+- `transient_rejection_reconnect.rs`：本机回环（127.0.0.1）起 flare-core WebSocket 服务端，驱动 SDK 走完整的建连与重连循环：服务端暂时性拒绝（`SERVICE_UNAVAILABLE`）时退避重连直到放行，`TENANT_UNAVAILABLE` 时终止会话、不再重连。
 - crate 内 `#[cfg(test)]` 单元测试：消息内容 oneof 映射、dispatcher、sync adapter、event applier、reliable queue、SQLite repository 等靠近领域和协议边界的行为。
 - `bindings/shared` crate test：binding contract route discovery 覆盖生成 API ids 与 vNext runtime routes。
 - `bindings/uniffi` crate test：UniFFI object facade 通过共享 JSON runtime 调用 `sdk.state`，并验证旧 snapshot/restore JSON 入口明确返回 unsupported。

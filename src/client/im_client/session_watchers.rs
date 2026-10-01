@@ -730,6 +730,17 @@ mod token_refresh_tests {
         assert!(!is_tenant_unavailable(&closed));
     }
 
+    /// 服务端暂时放不了行（如网关读不到租户状态）：既不换令牌，也不停手，照常退避重连。
+    #[test]
+    fn transient_rejection_is_neither_an_auth_failure_nor_tenant_unavailable() {
+        let transient = FlareError::localized(
+            ErrorCode::ServiceUnavailable,
+            "connect failed primary=wss://x: 错误 [SERVICE_UNAVAILABLE] SERVICE_UNAVAILABLE: server rejected CONNECT",
+        );
+        assert!(!is_auth_reconnect_failure(&transient));
+        assert!(!is_tenant_unavailable(&transient));
+    }
+
     fn token(ttl_secs: u64) -> String {
         generate_core_token(&CoreTokenConfig {
             secret: "a-strong-shared-secret-with-more-than-32-bytes!".into(),

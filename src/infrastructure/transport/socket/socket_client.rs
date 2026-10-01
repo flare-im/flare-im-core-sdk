@@ -36,6 +36,9 @@ fn sdk_device_info(config: &SdkConfig) -> DeviceInfo {
 }
 
 /// 建连失败时保留下来的错误码：服务端明确拒绝的类别原样上报，其余都是连接失败。
+///
+/// `SERVICE_UNAVAILABLE` 是服务端的暂时性拒绝（例如网关读不到租户状态）：既不是令牌问题，
+/// 也不是租户被停用，应用与重连循环都应当退避重试，而不是提示重新登录或终止会话。
 fn connect_failure_code(error: &FlareError) -> ErrorCode {
     match error.code() {
         Some(
@@ -44,7 +47,8 @@ fn connect_failure_code(error: &FlareError) -> ErrorCode {
             | ErrorCode::AuthenticationInvalid
             | ErrorCode::TokenInvalid
             | ErrorCode::TokenExpired
-            | ErrorCode::PermissionDenied),
+            | ErrorCode::PermissionDenied
+            | ErrorCode::ServiceUnavailable),
         ) => code,
         _ => ErrorCode::ConnectionFailed,
     }
@@ -263,6 +267,14 @@ mod tests {
             (
                 FlareError::authentication_failed("AUTHENTICATION_FAILED: server rejected CONNECT"),
                 ErrorCode::AuthenticationFailed,
+            ),
+            // 服务端暂时放不了行（如读不到租户状态）：可重试，不能降级成连不上，也不是鉴权失败
+            (
+                FlareError::localized(
+                    ErrorCode::ServiceUnavailable,
+                    "SERVICE_UNAVAILABLE: server rejected CONNECT",
+                ),
+                ErrorCode::ServiceUnavailable,
             ),
             (
                 FlareError::connection_failed(
