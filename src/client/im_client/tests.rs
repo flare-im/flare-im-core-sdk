@@ -717,3 +717,235 @@ fn an_overlay_still_overrides_the_build_time_config() {
     );
     assert_eq!(merged.tenant_id.as_deref(), Some("t-base"));
 }
+
+/// 经 builder 配的重连间隔与次数要到 SDK 自己的重连循环，不只到 flare-core 客户端；
+/// `init()` 的覆盖项仍然优先，没覆盖的那一项照旧取 builder 的配置。
+#[tokio::test]
+async fn reconnect_backoff_comes_from_the_builder_config_unless_overridden() {
+    use crate::client::config::SdkConfig;
+    let mut config = SdkConfig::new("ws://127.0.0.1:9");
+    config.reconnect_interval_secs = Some(2);
+    config.max_reconnect_attempts = Some(4);
+    let client = IMClient::builder()
+        .config(config)
+        .stores(in_memory_empty_im_provider())
+        .build()
+        .expect("build client");
+    {
+        let mut inner = client.inner.write().await;
+        inner.current_user_id = Some("alice".to_string());
+        inner.connect_token = Some("token".to_string());
+    }
+    let generation = client.session_generation_snapshot();
+    let (_, _, interval_secs, max_attempts) = client
+        .reconnect_settings(generation)
+        .await
+        .expect("reconnect settings");
+    assert_eq!((interval_secs, max_attempts), (2, Some(4)));
+
+    client.inner.write().await.sdk_config = Some(SdkConfigOverlay {
+        reconnect_interval_secs: Some(1),
+        ..Default::default()
+    });
+    let (_, _, interval_secs, max_attempts) = client
+        .reconnect_settings(generation)
+        .await
+        .expect("reconnect settings");
+    assert_eq!((interval_secs, max_attempts), (1, Some(4)));
+}
+
+/// 登录路径（`prepare` 按快照重建会话）也带着 builder 的重连配置。
+#[tokio::test]
+async fn reconnect_backoff_survives_the_login_rebuild() {
+    use crate::client::config::SdkConfig;
+    use crate::client::lifecycle::LoginDbKind;
+    let mut config = SdkConfig::new("ws://127.0.0.1:9");
+    config.reconnect_interval_secs = Some(3);
+    config.max_reconnect_attempts = Some(2);
+    let client = IMClient::builder()
+        .config(config)
+        .stores(in_memory_empty_im_provider())
+        .build()
+        .expect("build client");
+    client
+        .prepare(
+            "alice",
+            LoginDbKind::IndexedDb(in_memory_empty_im_provider()),
+        )
+        .await
+        .expect("prepare");
+    client.inner.write().await.connect_token = Some("token".to_string());
+
+    let generation = client.session_generation_snapshot();
+    let (_, _, interval_secs, max_attempts) = client
+        .reconnect_settings(generation)
+        .await
+        .expect("reconnect settings");
+    assert_eq!((interval_secs, max_attempts), (3, Some(2)));
+    client.logout().await.expect("logout");
+}
+
+#[test]
+fn reconnect_backoff_defaults_and_floors() {
+    use super::session_watchers::reconnect_backoff_settings;
+    use crate::client::config::SdkConfig;
+    assert_eq!(reconnect_backoff_settings(None, None), (5, None));
+
+    let mut zeroed = SdkConfig::new("ws://127.0.0.1:9");
+    zeroed.reconnect_interval_secs = Some(0);
+    zeroed.max_reconnect_attempts = Some(0);
+    assert_eq!(
+        reconnect_backoff_settings(None, Some(&zeroed)),
+        (1, Some(1))
+    );
+
+    let mut unset = SdkConfig::new("ws://127.0.0.1:9");
+    unset.reconnect_interval_secs = None;
+    assert_eq!(reconnect_backoff_settings(None, Some(&unset)), (5, None));
+}
+
+/// 把当前线程的 tracing 输出收进内存，供断言「会话结束后没有再记重连成功」。
+#[derive(Clone, Default)]
+struct CapturedLogs(Arc<std::sync::Mutex<Vec<u8>>>);
+
+struct CapturedLogsWriter(Arc<std::sync::Mutex<Vec<u8>>>);
+
+impl std::io::Write for CapturedLogsWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().expect("log buffer").extend_from_slice(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for CapturedLogs {
+    type Writer = CapturedLogsWriter;
+
+    fn make_writer(&'a self) -> Self::Writer {
+        CapturedLogsWriter(self.0.clone())
+    }
+}
+
+impl CapturedLogs {
+    /// 只在当前线程生效：`#[tokio::test]` 的单线程运行时里，SDK 后台任务也在这条线程上跑。
+    fn install(&self) -> tracing::subscriber::DefaultGuard {
+        tracing::subscriber::set_default(
+            tracing_subscriber::fmt()
+                .with_writer(self.clone())
+                .with_max_level(tracing::Level::DEBUG)
+                .with_ansi(false)
+                .finish(),
+        )
+    }
+
+    fn text(&self) -> String {
+        String::from_utf8_lossy(&self.0.lock().expect("log buffer")).into_owned()
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+enum SessionEnd {
+    Logout,
+    Disconnect,
+    DropClient,
+}
+
+/// 重连监视器在退避中时会话结束：监视器应立刻收手，退避到点后不再记「SDK reconnect
+/// succeeded」，也不再发起重连。此前它睡满退避，醒来后 `reconnect_current_engine` 因世代
+/// 已变直接返回 Ok，于是在已结束的会话上记一条重连成功。
+async fn reconnect_monitor_stops_when_the_session_ends(end: SessionEnd) {
+    use crate::client::config::SdkConfig;
+    use crate::kernel::event::{ConnectionEvent, SdkEvent, SdkEventKind};
+
+    let logs = CapturedLogs::default();
+    let _logs = logs.install();
+
+    // 两个地址都指向本机不监听的端口：本用例不会真去连，只要不碰外网。
+    let mut config = SdkConfig::new("ws://127.0.0.1:9");
+    config.http_url = Some("http://127.0.0.1:9".to_string());
+    config.reconnect_interval_secs = Some(1);
+    let client = IMClient::builder()
+        .config(config)
+        .stores(in_memory_empty_im_provider())
+        .build()
+        .expect("build client");
+    let bus = {
+        let mut inner = client.inner.write().await;
+        inner.current_user_id = Some("alice".to_string());
+        inner.connect_token = Some("token".to_string());
+        inner.engine.as_ref().expect("engine").bus().clone()
+    };
+    let generation = client.session_generation_snapshot();
+    let mut connection_events = bus.subscribe_filter(SdkEventKind::Connection);
+    client.spawn_reconnect_session_watcher(generation, bus.clone());
+
+    bus.publish(SdkEvent::Connection(ConnectionEvent::Disconnected {
+        reason: "network lost".to_string(),
+    }));
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if let Ok(SdkEvent::Connection(ConnectionEvent::Reconnecting { attempt: 1 })) =
+                connection_events.recv().await
+            {
+                break;
+            }
+        }
+    })
+    .await
+    .expect("the monitor announces its first attempt and starts the backoff");
+
+    // 第一次退避是 1–2 s；在退避中结束会话。
+    match end {
+        SessionEnd::Logout => client.logout().await.expect("logout"),
+        SessionEnd::Disconnect => client.disconnect().await.expect("disconnect"),
+        SessionEnd::DropClient => drop(client),
+    }
+    let ended_at = std::time::Instant::now();
+    while !logs.text().contains("SDK reconnect monitor stopped") {
+        assert!(
+            ended_at.elapsed() < Duration::from_millis(500),
+            "{end:?}: the reconnect monitor must stop as soon as the session ends\n{}",
+            logs.text()
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    // 等过退避上限：不能再出现重连结果，也不能有第二次尝试。
+    tokio::time::sleep(Duration::from_millis(2_500)).await;
+    let text = logs.text();
+    assert!(
+        !text.contains("SDK reconnect succeeded"),
+        "{end:?}: a reconnect must not be reported after the session ended\n{text}"
+    );
+    assert!(
+        !text.contains("SDK reconnect failed"),
+        "{end:?}: no reconnect may run after the session ended\n{text}"
+    );
+    while let Ok(event) = connection_events.try_recv() {
+        assert!(
+            !matches!(
+                event,
+                SdkEvent::Connection(ConnectionEvent::Reconnecting { .. })
+            ),
+            "{end:?}: no further reconnect attempt after the session ended"
+        );
+    }
+}
+
+#[tokio::test]
+async fn reconnect_monitor_stops_on_logout() {
+    reconnect_monitor_stops_when_the_session_ends(SessionEnd::Logout).await;
+}
+
+#[tokio::test]
+async fn reconnect_monitor_stops_on_disconnect() {
+    reconnect_monitor_stops_when_the_session_ends(SessionEnd::Disconnect).await;
+}
+
+#[tokio::test]
+async fn reconnect_monitor_stops_when_the_client_is_destroyed() {
+    reconnect_monitor_stops_when_the_session_ends(SessionEnd::DropClient).await;
+}

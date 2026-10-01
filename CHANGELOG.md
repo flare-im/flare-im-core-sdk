@@ -37,6 +37,11 @@
   一条消息。退避从 1 s 起翻倍，封顶 30 s，带 ±20% 抖动。重发与发送失败共用 `ack_max_retries`
   的次数预算，用完后按服务端给的原因判失败。其余错误（含 `TENANT_UNAVAILABLE`）仍立即判失败。
   重发期间应用收不到错误 SendAck。新增回环集成测试 `tests/transient_send_rejection_retry.rs`。
+- 经 `IMClientBuilder::config` 设置的 `reconnect_interval_secs` 与 `max_reconnect_attempts` 现在也作用于
+  SDK 的重连循环。此前这两项只传到 flare-core 客户端，SDK 自己的循环仍按 `init()` 的覆盖项或默认
+  5 s、不限次数退避。两处都设置时，`init()` 的覆盖项优先。
+- 会话结束时（登出、断开、重新登录、终止会话、销毁客户端），该会话的重连监视器立即停止。此前它会
+  睡满当前退避，醒来后在已结束的会话上记一条「SDK reconnect succeeded」。
 - 调度与恢复路径的失败改为记日志，不再静默吞掉。此前这类失败没有任何信号，
   只能靠用户报障才发现。
 - `media.user_download_get_saved_path` 只返回仍在磁盘上的文件：用户删掉或挪走了保存的文件，

@@ -164,11 +164,13 @@ async fn drop_the_connection(server: &FlareServer) {
         .expect("server closes the connection");
 }
 
-/// SDK 发出的连接事件里与本用例相关的两类：重连循环的第几次尝试、交给应用的 KickedOff。
+/// SDK 发出的连接事件里与本用例相关的几类：重连循环的第几次尝试、交给应用的 KickedOff、
+/// 断开原因。
 #[derive(Default)]
 struct ConnectionEvents {
     max_reconnect_attempt: AtomicUsize,
     kicked_off: std::sync::Mutex<Vec<String>>,
+    disconnected: std::sync::Mutex<Vec<String>>,
 }
 
 impl ConnectionEvents {
@@ -191,6 +193,9 @@ impl ConnectionEvents {
                     SdkEvent::Connection(ConnectionEvent::KickedOff { reason }) => {
                         sink.kicked_off.lock().unwrap().push(reason.clone());
                     }
+                    SdkEvent::Connection(ConnectionEvent::Disconnected { reason }) => {
+                        sink.disconnected.lock().unwrap().push(reason.clone());
+                    }
                     _ => {}
                 }
             })
@@ -204,6 +209,10 @@ impl ConnectionEvents {
 
     fn kicked_off(&self) -> Vec<String> {
         self.kicked_off.lock().unwrap().clone()
+    }
+
+    fn disconnected(&self) -> Vec<String> {
+        self.disconnected.lock().unwrap().clone()
     }
 }
 
@@ -329,6 +338,73 @@ async fn tenant_unavailable_ends_the_session_without_retrying() {
     tokio::time::sleep(Duration::from_secs(4)).await;
     assert_eq!(gate.attempts(), attempts_after_rejection);
     assert_eq!(events.max_reconnect_attempt(), 1);
+
+    let _ = client.disconnect().await;
+    server.stop().await.expect("stop server");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// 重连间隔与次数只经 builder 配置、`init()` 不覆盖时，SDK 自己的重连循环也照它退避，到次数
+/// 即停手并报「reconnect attempts exhausted」。此前这两项只到 flare-core 客户端，SDK 的循环
+/// 仍按默认 5 s、无限次重连，本用例的时限内既到不了第 2 次，也永远不会停。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn builder_reconnect_settings_drive_the_sdk_reconnect_loop() {
+    let gate = Arc::new(TenantGate::default());
+    let (server, ws_url) = start_server(gate.clone()).await;
+    let root = data_root("builder-backoff");
+    let mut config = SdkConfig::new(&ws_url);
+    config.reconnect_interval_secs = Some(1);
+    config.max_reconnect_attempts = Some(2);
+    let client = IMClient::builder()
+        .config(config)
+        .stores(in_memory_im_provider())
+        .build()
+        .expect("build IMClient");
+    client
+        .init(
+            None,
+            Some(SdkConfigOverlay {
+                data_url: Some(root.display().to_string()),
+                ws_url: Some(ws_url.clone()),
+                ..Default::default()
+            }),
+        )
+        .await
+        .expect("init SDK config");
+    client
+        .connect(USER_ID, Some("token"))
+        .await
+        .expect("initial connect");
+    wait_until("Ready after connect", Duration::from_secs(10), || async {
+        client.state() == SdkState::Ready
+    })
+    .await;
+    let (events, _subscription) = ConnectionEvents::record(&client, |_| {});
+
+    // 投影库一直读不到：每次重连都被暂时性拒绝，循环只能靠次数上限停下。
+    gate.outage.store(true, Ordering::SeqCst);
+    drop_the_connection(&server).await;
+
+    // 1 s 间隔下两次退避合计 3–5 s；默认 5 s 时第 2 次尝试要到 12 s 之后。
+    wait_until(
+        "reconnect attempts exhausted",
+        Duration::from_secs(12),
+        || async {
+            events
+                .disconnected()
+                .iter()
+                .any(|reason| reason.contains("reconnect attempts exhausted"))
+        },
+    )
+    .await;
+    assert_eq!(events.max_reconnect_attempt(), 2);
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    assert_eq!(
+        events.max_reconnect_attempt(),
+        2,
+        "the reconnect loop stops at the configured attempt limit"
+    );
+    assert!(events.kicked_off().is_empty(), "{:?}", events.kicked_off());
 
     let _ = client.disconnect().await;
     server.stop().await.expect("stop server");

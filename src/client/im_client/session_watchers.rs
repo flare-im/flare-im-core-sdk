@@ -94,14 +94,21 @@ impl IMClient {
         });
     }
 
+    /// 会话期间的重连监视器。会话结束（登出、断开、重新登录、终止会话、客户端销毁）时立即
+    /// 收手：在等断开事件或在退避中都会被唤醒；正在进行的那次重连照常收尾，但不再记成功、
+    /// 不再继续下一次。
     pub(super) fn spawn_reconnect_session_watcher(&self, generation: u64, bus: EventBus) {
         let client = self.downgrade();
+        let session_end = self.session_end_watch(generation);
         let mut rx = bus.subscribe_filter(SdkEventKind::Connection);
         spawn_im_background(async move {
-            loop {
-                let event = match rx.recv().await {
-                    Ok(ev) => ev,
-                    Err(_) => break,
+            'monitor: loop {
+                let event = tokio::select! {
+                    event = rx.recv() => match event {
+                        Ok(ev) => ev,
+                        Err(_) => break,
+                    },
+                    () = session_end.ended() => break,
                 };
 
                 let reason = match event {
@@ -168,7 +175,10 @@ impl IMClient {
                         .await;
                     let delay_secs = reconnect_delay_secs(interval_secs, attempt);
                     drop(attempt_client);
-                    delay(Duration::from_secs(delay_secs)).await;
+                    tokio::select! {
+                        () = delay(Duration::from_secs(delay_secs)) => {}
+                        () = session_end.ended() => break 'monitor,
+                    }
 
                     let Some(reconnect_client) = client.upgrade() else {
                         break;
@@ -198,10 +208,15 @@ impl IMClient {
                     }
                     force_token_refresh = false;
 
-                    match reconnect_client
+                    let reconnect_result = reconnect_client
                         .reconnect_current_engine(generation, &user_id, &token)
-                        .await
-                    {
+                        .await;
+                    // 会话在这次重连期间结束：reconnect_current_engine 已把引擎收尾，结果属于
+                    // 已结束的会话，既不算成功也不再重试。
+                    if session_end.is_ended() {
+                        break 'monitor;
+                    }
+                    match reconnect_result {
                         Ok(()) => {
                             tracing::info!(
                                 session_generation = generation,
@@ -261,6 +276,11 @@ impl IMClient {
                     }
                 }
             }
+            tracing::debug!(
+                session_generation = generation,
+                session_ended = session_end.is_ended(),
+                "SDK reconnect monitor stopped"
+            );
         });
     }
 
@@ -294,17 +314,8 @@ impl IMClient {
             .connect_token
             .clone()
             .or_else(|| crate::client::lifecycle::resolve_connect_token(&user_id, None).ok())?;
-        let interval_secs = g
-            .sdk_config
-            .as_ref()
-            .and_then(|c| c.reconnect_interval_secs)
-            .unwrap_or(5)
-            .max(1);
-        let max_attempts = g
-            .sdk_config
-            .as_ref()
-            .and_then(|c| c.max_reconnect_attempts)
-            .map(|attempts| attempts.max(1));
+        let (interval_secs, max_attempts) =
+            reconnect_backoff_settings(g.sdk_config.as_ref(), g.configured_config.as_ref());
         Some((user_id, token, interval_secs, max_attempts))
     }
 
@@ -644,6 +655,27 @@ impl IMClient {
         }
         true
     }
+}
+
+/// 重连监视器的退避间隔（秒，至少 1）与最大次数（`None` 为不限）。
+///
+/// 优先级与其他连接参数一致：`init()` 的覆盖项 > 构建期 `IMClientBuilder::config` 的配置 >
+/// 默认 5 s、不限次数。此前只看覆盖项：经 builder 设置的间隔与次数只到了 flare-core 客户端，
+/// SDK 自己的重连循环仍按 5 s、无限次退避。
+pub(super) fn reconnect_backoff_settings(
+    overlay: Option<&crate::client::lifecycle::SdkConfigOverlay>,
+    configured: Option<&crate::client::config::SdkConfig>,
+) -> (u64, Option<u32>) {
+    let interval_secs = overlay
+        .and_then(|c| c.reconnect_interval_secs)
+        .or_else(|| configured.and_then(|c| c.reconnect_interval_secs))
+        .unwrap_or(5)
+        .max(1);
+    let max_attempts = overlay
+        .and_then(|c| c.max_reconnect_attempts)
+        .or_else(|| configured.and_then(|c| c.max_reconnect_attempts))
+        .map(|attempts| attempts.max(1));
+    (interval_secs, max_attempts)
 }
 
 /// Only a stable engine state may clear a reconnect notice. Transport health by

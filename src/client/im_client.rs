@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Weak};
 
 use arc_swap::ArcSwapOption;
-use tokio::sync::RwLock;
+use tokio::sync::{Notify, RwLock};
 
 use crate::FlareError;
 use crate::application::notification::NotificationHandlerRegistry;
@@ -131,6 +131,59 @@ pub(crate) struct IMClientInner {
     pub metrics: MetricsRecorder,
 }
 
+/// 会话结束信号：会话世代每变一次（登出、断开、重新登录、终止会话）唤醒所有在等的会话监视器；
+/// 最后一个 [`IMClient`] 句柄释放（客户端销毁）时也唤醒一次。
+///
+/// 监视器只持有里面的 [`Notify`]，不持有本结构，所以句柄全部释放时 `Drop` 一定会跑到。
+struct SessionEndSignal(Arc<Notify>);
+
+impl SessionEndSignal {
+    fn new() -> Self {
+        Self(Arc::new(Notify::new()))
+    }
+
+    fn notify(&self) {
+        self.0.notify_waiters();
+    }
+}
+
+impl Drop for SessionEndSignal {
+    fn drop(&mut self) {
+        self.notify();
+    }
+}
+
+/// 会话监视器等待「本世代会话已结束」的句柄，见 [`IMClient::session_end_watch`]。
+#[derive(Clone)]
+struct SessionEndWatch {
+    notify: Arc<Notify>,
+    generation_snapshot: Weak<AtomicU64>,
+    generation: u64,
+}
+
+impl SessionEndWatch {
+    /// 会话世代已不是监视器所属的那一代，或客户端已销毁。
+    fn is_ended(&self) -> bool {
+        self.generation_snapshot
+            .upgrade()
+            .is_none_or(|snapshot| snapshot.load(Ordering::Acquire) != self.generation)
+    }
+
+    /// 本世代会话结束时返回；已结束则立即返回。
+    async fn ended(&self) {
+        loop {
+            let notified = self.notify.notified();
+            tokio::pin!(notified);
+            // 先登记再判断：判断与等待之间发生的结束不会被漏掉。
+            notified.as_mut().enable();
+            if self.is_ended() {
+                return;
+            }
+            notified.await;
+        }
+    }
+}
+
 /// 唯一 SDK 句柄：[`Self::init`] → [`Self::login`]，或 [`Self::builder`] → [`Self::connect`]。
 #[derive(Clone)]
 pub struct IMClient {
@@ -141,6 +194,7 @@ pub struct IMClient {
     heartbeat_app_state_snapshot: Arc<AtomicU8>,
     network_reconnect_in_flight: Arc<AtomicBool>,
     startup_convergence_in_flight: Arc<AtomicBool>,
+    session_end: Arc<SessionEndSignal>,
 }
 
 #[derive(Clone)]
@@ -152,6 +206,7 @@ pub(crate) struct WeakIMClient {
     heartbeat_app_state_snapshot: Weak<AtomicU8>,
     network_reconnect_in_flight: Weak<AtomicBool>,
     startup_convergence_in_flight: Weak<AtomicBool>,
+    session_end: Weak<SessionEndSignal>,
 }
 
 impl WeakIMClient {
@@ -164,6 +219,7 @@ impl WeakIMClient {
             heartbeat_app_state_snapshot: self.heartbeat_app_state_snapshot.upgrade()?,
             network_reconnect_in_flight: self.network_reconnect_in_flight.upgrade()?,
             startup_convergence_in_flight: self.startup_convergence_in_flight.upgrade()?,
+            session_end: self.session_end.upgrade()?,
         })
     }
 }
@@ -183,6 +239,7 @@ impl IMClient {
             heartbeat_app_state_snapshot: Arc::new(AtomicU8::new(HEARTBEAT_APP_STATE_FOREGROUND)),
             network_reconnect_in_flight: Arc::new(AtomicBool::new(false)),
             startup_convergence_in_flight: Arc::new(AtomicBool::new(false)),
+            session_end: Arc::new(SessionEndSignal::new()),
         }
     }
 
@@ -206,6 +263,7 @@ impl IMClient {
             heartbeat_app_state_snapshot: Arc::new(AtomicU8::new(HEARTBEAT_APP_STATE_FOREGROUND)),
             network_reconnect_in_flight: Arc::new(AtomicBool::new(false)),
             startup_convergence_in_flight: Arc::new(AtomicBool::new(false)),
+            session_end: Arc::new(SessionEndSignal::new()),
         }
     }
 
@@ -218,6 +276,7 @@ impl IMClient {
             heartbeat_app_state_snapshot: Arc::downgrade(&self.heartbeat_app_state_snapshot),
             network_reconnect_in_flight: Arc::downgrade(&self.network_reconnect_in_flight),
             startup_convergence_in_flight: Arc::downgrade(&self.startup_convergence_in_flight),
+            session_end: Arc::downgrade(&self.session_end),
         }
     }
 
@@ -260,6 +319,17 @@ impl IMClient {
     fn store_session_generation_snapshot(&self, generation: u64) {
         self.session_generation_snapshot
             .store(generation, Ordering::Release);
+        // 世代一变，上一代会话的监视器就该收手（登出、断开、重新登录、终止都走这里）。
+        self.session_end.notify();
+    }
+
+    /// 给第 `generation` 代会话的监视器用：会话结束（世代变化或客户端销毁）时返回。
+    fn session_end_watch(&self, generation: u64) -> SessionEndWatch {
+        SessionEndWatch {
+            notify: self.session_end.0.clone(),
+            generation_snapshot: Arc::downgrade(&self.session_generation_snapshot),
+            generation,
+        }
     }
 
     fn load_session_generation_snapshot(&self) -> u64 {
