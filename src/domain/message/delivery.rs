@@ -1,7 +1,7 @@
 use crate::model::message::MessageLocalState;
 use crate::model::message::MessageStatus;
 use crate::model::message::{IMMessage, SendAck};
-use flare_proto::common::{SendAccepted, SendAckDurability, send_ack};
+use flare_proto::common::{ErrorCode as ProtoErrorCode, SendAccepted, SendAckDurability, send_ack};
 
 pub const REASON_PENDING_ANOTHER_ACCOUNT: &str = "pending message belongs to another account";
 pub const REASON_MAX_RETRIES_EXCEEDED: &str = "max retries exceeded";
@@ -10,6 +10,14 @@ pub const REASON_RECONCILED_FAILED: &str = "in-flight reconciled to failed by lo
 pub const REASON_SEND_FAILED_BEFORE_ACK_MAX_RETRIES: &str =
     "send failed before ack; max retries exceeded";
 pub const REASON_ORPHAN_RECOVERED: &str = "orphan sending message reconciled during queue recovery";
+
+/// 服务端暂时性拒绝后重发的退避基准与上限（毫秒）：第 n 次重发约等 `基准 × 2^(n-1)`，
+/// 封顶后再取 ±20% 抖动，免得服务恢复的那一刻所有客户端同时重发。
+pub const RETRYABLE_ACK_BACKOFF_BASE_MS: u64 = 1_000;
+pub const RETRYABLE_ACK_BACKOFF_MAX_MS: u64 = 30_000;
+
+/// 租户被停用或删除中的类型化原因；它不是暂时性的，重发只会再被拒。
+const TENANT_UNAVAILABLE_REASON: &str = "TENANT_UNAVAILABLE";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeliveryLocalSnapshot {
@@ -127,6 +135,25 @@ impl MessageDeliveryService {
         } else {
             RetryDecision::Retry { next_retry_count }
         }
+    }
+
+    /// SendAck 带的是服务端的暂时性拒绝（见 [`Self::is_retryable_ack_error`]）时是否再发一次。
+    ///
+    /// 与发送失败共用同一份重试预算（`max_retries` 是一条消息的总尝试次数），预算用完即判失败，
+    /// 失败原因由调用方取服务端给的错误文本。
+    pub fn decide_retryable_ack_error(retries: u32, max_retries: u32) -> RetryDecision {
+        Self::decide_send_attempt_failure(retries, max_retries)
+    }
+
+    /// 第 `retry` 次（从 1 起）重发前的退避区间（毫秒，含两端）。
+    pub fn retryable_ack_backoff_bounds_ms(retry: u32) -> (u64, u64) {
+        let shift = retry.saturating_sub(1).min(16);
+        let nominal = RETRYABLE_ACK_BACKOFF_BASE_MS
+            .saturating_mul(1_u64 << shift)
+            .min(RETRYABLE_ACK_BACKOFF_MAX_MS);
+        let min = nominal.saturating_mul(80) / 100;
+        let max = (nominal.saturating_mul(120) / 100).min(RETRYABLE_ACK_BACKOFF_MAX_MS);
+        (min, max.max(min))
     }
 
     pub fn decide_timeout_expiry(retries: u32, max_retries: u32) -> RetryDecision {
@@ -248,6 +275,31 @@ impl MessageDeliveryService {
             | SendAckDurability::WalAccepted
             | SendAckDurability::BrokerAccepted => None,
         }
+    }
+
+    /// SendAck 的错误是否是服务端的暂时性拒绝：服务暂不可用、超时、限流或要求重试。
+    ///
+    /// 这类拒绝用同一个 `client_msg_id` 稍后重发即可——message-ingest 按它做摄入幂等，重发
+    /// 不会多出一条消息（首发其实已成功时直接回放首发的结果；首发还在处理时回
+    /// `SERVICE_UNAVAILABLE` 让客户端稍后再来）。其余错误（参数非法、无权限、租户不可用、
+    /// 内部错误等）重发也不会变，按终态失败处理。
+    pub fn is_retryable_ack_error(ack: &SendAck) -> bool {
+        let Some(send_ack::Result::Error(error)) = ack.result.as_ref() else {
+            return false;
+        };
+        if error.reason.contains(TENANT_UNAVAILABLE_REASON)
+            || error.message.contains(TENANT_UNAVAILABLE_REASON)
+        {
+            return false;
+        }
+        matches!(
+            ProtoErrorCode::try_from(error.code),
+            Ok(ProtoErrorCode::Unavailable
+                | ProtoErrorCode::Timeout
+                | ProtoErrorCode::RateLimited
+                | ProtoErrorCode::SlowDown
+                | ProtoErrorCode::NeedsRetry)
+        )
     }
 
     pub fn error_message_from_ack(ack: &SendAck) -> Option<String> {
@@ -389,6 +441,130 @@ mod tests {
             })),
             ..Default::default()
         }
+    }
+
+    fn error_ack_with(code: i32, reason: &str, message: &str) -> SendAck {
+        SendAck {
+            client_msg_id: "client-1".to_string(),
+            conversation_id: "conv-1".to_string(),
+            result: Some(send_ack::Result::Error(flare_proto::common::ErrorDetail {
+                code,
+                reason: reason.to_string(),
+                message: message.to_string(),
+                track: String::new(),
+            })),
+            ..Default::default()
+        }
+    }
+
+    /// 网关把 ingest 的服务不可用、超时、限流映射成这几个码（`proto_ack_error_code`）；
+    /// 它们稍后用同一个 client_msg_id 重发即可。拒发、无权限、租户不可用、内部错误等不重发。
+    #[test]
+    fn only_transient_ack_errors_are_retryable() {
+        use flare_proto::common::ErrorCode;
+        for code in [
+            ErrorCode::Unavailable,
+            ErrorCode::Timeout,
+            ErrorCode::RateLimited,
+            ErrorCode::SlowDown,
+            ErrorCode::NeedsRetry,
+        ] {
+            let ack = error_ack_with(
+                code as i32,
+                "SERVICE_UNAVAILABLE",
+                "tenant runtime projection unavailable",
+            );
+            assert!(
+                MessageDeliveryService::is_retryable_ack_error(&ack),
+                "{code:?} must be retried"
+            );
+        }
+        for code in [
+            ErrorCode::Unspecified,
+            ErrorCode::InvalidArgument,
+            ErrorCode::UnsupportedOperation,
+            ErrorCode::PermissionDenied,
+            ErrorCode::ResourceExhausted,
+            ErrorCode::Internal,
+        ] {
+            let ack = error_ack_with(code as i32, "MESSAGE_SEND_FAILED", "rejected");
+            assert!(
+                !MessageDeliveryService::is_retryable_ack_error(&ack),
+                "{code:?} is terminal"
+            );
+        }
+        assert!(!MessageDeliveryService::is_retryable_ack_error(&error_ack()));
+        assert!(!MessageDeliveryService::is_retryable_ack_error(
+            &accepted_ack(SendAckDurability::Persisted)
+        ));
+    }
+
+    /// 租户停用是终态：即使某一层把它包成了可重试的码，也不重发。
+    #[test]
+    fn tenant_unavailable_is_never_retried() {
+        use flare_proto::common::ErrorCode;
+        for (reason, message) in [
+            ("TENANT_UNAVAILABLE", "tenant suspended"),
+            ("MESSAGE_SEND_FAILED", "TENANT_UNAVAILABLE"),
+        ] {
+            let ack = error_ack_with(ErrorCode::Unavailable as i32, reason, message);
+            assert!(!MessageDeliveryService::is_retryable_ack_error(&ack));
+        }
+        let ack = error_ack_with(
+            ErrorCode::PermissionDenied as i32,
+            "TENANT_UNAVAILABLE",
+            "TENANT_UNAVAILABLE",
+        );
+        assert!(!MessageDeliveryService::is_retryable_ack_error(&ack));
+    }
+
+    /// 暂时性拒绝与发送失败共用一份预算：`max_retries` 是一条消息的总尝试次数。
+    #[test]
+    fn retryable_ack_errors_share_the_bounded_retry_budget() {
+        assert_eq!(
+            MessageDeliveryService::decide_retryable_ack_error(0, 3),
+            RetryDecision::Retry {
+                next_retry_count: 1
+            }
+        );
+        assert_eq!(
+            MessageDeliveryService::decide_retryable_ack_error(1, 3),
+            RetryDecision::Retry {
+                next_retry_count: 2
+            }
+        );
+        assert!(matches!(
+            MessageDeliveryService::decide_retryable_ack_error(2, 3),
+            RetryDecision::Fail { .. }
+        ));
+        assert!(matches!(
+            MessageDeliveryService::decide_retryable_ack_error(0, 1),
+            RetryDecision::Fail { .. }
+        ));
+    }
+
+    #[test]
+    fn retryable_ack_backoff_doubles_with_jitter_and_is_capped() {
+        assert_eq!(
+            MessageDeliveryService::retryable_ack_backoff_bounds_ms(1),
+            (800, 1_200)
+        );
+        assert_eq!(
+            MessageDeliveryService::retryable_ack_backoff_bounds_ms(2),
+            (1_600, 2_400)
+        );
+        assert_eq!(
+            MessageDeliveryService::retryable_ack_backoff_bounds_ms(3),
+            (3_200, 4_800)
+        );
+        assert_eq!(
+            MessageDeliveryService::retryable_ack_backoff_bounds_ms(6),
+            (24_000, 30_000)
+        );
+        assert_eq!(
+            MessageDeliveryService::retryable_ack_backoff_bounds_ms(u32::MAX),
+            (24_000, 30_000)
+        );
     }
 
     #[test]

@@ -5,6 +5,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use flare_proto::common::SendAck;
+use rand::Rng;
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, warn};
 
@@ -54,6 +55,8 @@ enum QueueCommand {
     RecoverPendingForCurrentUser {
         resp: oneshot::Sender<Result<Vec<String>>>,
     },
+    /// 暂时性拒绝的退避到期，该条消息可以重发了（`retries` 用来识别过期的到期通知）。
+    RetryBackoffElapsed { client_msg_id: String, retries: u32 },
 }
 
 /// 可靠发送队列句柄（发命令 + 持有 actor 所需依赖）
@@ -97,6 +100,9 @@ struct QueueState {
     retry_count: HashMap<String, u32>,
     /// 提前/乱序到达的 ACK，等待对应 pending 成为当前处理项后再收敛
     pending_acks: HashMap<String, SendAck>,
+    /// 被服务端暂时性拒绝、正在退避等待重发的消息：client_msg_id -> 排定重发时的重试次数。
+    /// 退避期间不占发送窗口，也不会被 `try_send_next` 提前捡起。
+    retry_backoff: HashMap<String, u32>,
     metrics: MetricsRecorder,
 }
 
@@ -161,6 +167,8 @@ enum AckApplyResult {
     Terminal,
     KeepInFlight,
     AwaitDurable,
+    /// 服务端暂时性拒绝：已排定退避后重发，调用方不再持有这一条。
+    RetryScheduled,
 }
 
 impl ReliableSendQueue {
@@ -209,6 +217,7 @@ impl ReliableSendQueue {
             awaiting_durable: HashMap::new(),
             retry_count: HashMap::new(),
             pending_acks: HashMap::new(),
+            retry_backoff: HashMap::new(),
             metrics,
         };
         state
@@ -395,7 +404,7 @@ async fn handle_command(st: &mut QueueState, cmd: QueueCommand) -> Result<()> {
             let ack = *ack;
             if let Some(in_flight) = st.in_flight.remove(&ack.client_msg_id) {
                 match apply_ack_and_publish(st, &in_flight.entry, ack).await {
-                    AckApplyResult::Terminal => {}
+                    AckApplyResult::Terminal | AckApplyResult::RetryScheduled => {}
                     AckApplyResult::KeepInFlight => {
                         st.in_flight
                             .insert(in_flight.entry.client_msg_id.clone(), in_flight);
@@ -412,7 +421,7 @@ async fn handle_command(st: &mut QueueState, cmd: QueueCommand) -> Result<()> {
                 }
             } else if let Some(awaiting) = st.awaiting_durable.remove(&ack.client_msg_id) {
                 match apply_ack_and_publish(st, &awaiting.entry, ack).await {
-                    AckApplyResult::Terminal => {}
+                    AckApplyResult::Terminal | AckApplyResult::RetryScheduled => {}
                     AckApplyResult::KeepInFlight | AckApplyResult::AwaitDurable => {
                         st.awaiting_durable.insert(
                             awaiting.entry.client_msg_id.clone(),
@@ -456,6 +465,17 @@ async fn handle_command(st: &mut QueueState, cmd: QueueCommand) -> Result<()> {
             let result = recover_pending_for_current_user(st).await;
             let _ = resp.send(result);
         }
+        QueueCommand::RetryBackoffElapsed {
+            client_msg_id,
+            retries,
+        } => {
+            // 只认最近一次排定的到期；期间被登录重置、跨账号清理过的条目已不在表里。
+            if st.retry_backoff.get(&client_msg_id) == Some(&retries) {
+                st.retry_backoff.remove(&client_msg_id);
+                debug!(%client_msg_id, retries, "reliable queue retry backoff elapsed");
+            }
+            try_send_next(st).await?;
+        }
     }
     record_queue_health(st);
     Ok(())
@@ -470,6 +490,10 @@ fn record_queue_health(st: &QueueState) {
     );
     st.metrics
         .gauge("reliable_queue.pending_acks", st.pending_acks.len() as i64);
+    st.metrics.gauge(
+        "reliable_queue.retry_backoff",
+        st.retry_backoff.len() as i64,
+    );
     st.metrics.gauge(
         "reliable_queue.adaptive_in_flight",
         st.adaptive_window.current() as i64,
@@ -621,6 +645,8 @@ async fn handle_send_attempt_finished(
 async fn reset_pending_on_login(st: &mut QueueState) -> Result<Vec<String>> {
     let mut dropped = Vec::new();
     st.pending_acks.clear();
+    // 退避中的条目仍在 pending 里，下面按 pending 一并判失败；这里只撤掉它们的重发排期。
+    st.retry_backoff.clear();
 
     let in_flight_entries = st
         .in_flight
@@ -691,6 +717,7 @@ async fn recover_pending_for_current_user(st: &mut QueueState) -> Result<Vec<Str
         let _ = st.pending_writer.pop(client_msg_id).await?;
         st.retry_count.remove(client_msg_id);
         st.pending_acks.remove(client_msg_id);
+        st.retry_backoff.remove(client_msg_id);
         st.bus.publish(SdkEvent::Message(MessageEvent::SendFailed {
             client_msg_id: client_msg_id.clone(),
             reason: crate::domain::REASON_PENDING_ANOTHER_ACCOUNT.to_string(),
@@ -991,6 +1018,7 @@ async fn try_send_next(st: &mut QueueState) -> Result<()> {
         }
         let mut excluded = st.in_flight.keys().cloned().collect::<Vec<_>>();
         excluded.extend(st.awaiting_durable.keys().cloned());
+        excluded.extend(st.retry_backoff.keys().cloned());
         let entries = st
             .pending_reader
             .list_oldest_excluding(&excluded, available)
@@ -1100,7 +1128,7 @@ async fn try_send_next(st: &mut QueueState) -> Result<()> {
             }
             if let Some(ack) = st.pending_acks.remove(&entry.client_msg_id) {
                 match apply_ack_and_publish(st, &entry, ack).await {
-                    AckApplyResult::Terminal => {}
+                    AckApplyResult::Terminal | AckApplyResult::RetryScheduled => {}
                     AckApplyResult::KeepInFlight => {
                         st.in_flight.insert(
                             entry.client_msg_id.clone(),
@@ -1223,6 +1251,15 @@ async fn apply_ack_and_publish(
         }));
         return AckApplyResult::AwaitDurable;
     }
+    if MessageDeliveryService::is_retryable_ack_error(&ack) {
+        let retries = st.retry_count.get(&ack.client_msg_id).copied().unwrap_or(0);
+        if let RetryDecision::Retry { next_retry_count } =
+            MessageDeliveryService::decide_retryable_ack_error(retries, st.max_retries)
+        {
+            schedule_retry_after_backoff(st, entry, &ack, next_retry_count);
+            return AckApplyResult::RetryScheduled;
+        }
+    }
     let _ = st.pending_writer.pop(&ack.client_msg_id).await;
     st.retry_count.remove(&ack.client_msg_id);
     let failed_msg = MessageDeliveryService::mark_failed(&entry.message);
@@ -1240,6 +1277,57 @@ async fn apply_ack_and_publish(
         reason,
     }));
     AckApplyResult::Terminal
+}
+
+/// 服务端暂时性拒绝（见 [`MessageDeliveryService::is_retryable_ack_error`]）：消息保持发送中、
+/// 留在 pending 里，退避后用同一个 `client_msg_id` 重发。不发 SendAck/SendFailed 事件——
+/// 对应用来说这条消息还在发送中，没有失败。
+fn schedule_retry_after_backoff(
+    st: &mut QueueState,
+    entry: &PendingSendVo,
+    ack: &SendAck,
+    next_retry_count: u32,
+) {
+    let (min_ms, max_ms) =
+        MessageDeliveryService::retryable_ack_backoff_bounds_ms(next_retry_count);
+    let backoff_ms = if min_ms == max_ms {
+        min_ms
+    } else {
+        rand::thread_rng().gen_range(min_ms..=max_ms)
+    };
+    let error_code = match ack.result.as_ref() {
+        Some(flare_proto::common::send_ack::Result::Error(error)) => error.code,
+        _ => 0,
+    };
+    st.metrics.counter_with_labels(
+        "reliable_queue.send_retry_total",
+        &[MetricLabel::new("reason", "retryable_ack_error")],
+        1,
+    );
+    note_send_congestion(st, "retryable_ack_error");
+    st.retry_count
+        .insert(entry.client_msg_id.clone(), next_retry_count);
+    st.retry_backoff
+        .insert(entry.client_msg_id.clone(), next_retry_count);
+    warn!(
+        client_msg_id = %entry.client_msg_id,
+        error_code,
+        retries = next_retry_count,
+        max_retries = st.max_retries,
+        backoff_ms,
+        "send rejected for now by the server; resending the same message after backoff"
+    );
+    let command_tx = st.command_tx.clone();
+    let client_msg_id = entry.client_msg_id.clone();
+    let _ = spawn_background_task(async move {
+        delay(Duration::from_millis(backoff_ms)).await;
+        let _ = command_tx
+            .send(QueueCommand::RetryBackoffElapsed {
+                client_msg_id,
+                retries: next_retry_count,
+            })
+            .await;
+    });
 }
 
 async fn apply_orphan_durable_ack(st: &mut QueueState, ack: &SendAck) -> Result<()> {

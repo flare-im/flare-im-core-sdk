@@ -31,6 +31,12 @@
   `tests/transient_rejection_reconnect.rs`：本机起 flare-core 服务端，驱动 SDK 走完整的
   断线、被暂时性拒绝、退避、再连上的循环，并以 `TENANT_UNAVAILABLE` 终止会话作对照。
 - QUIC 连接被踢后迟迟不重连、断开被误报成令牌被拒，根因在 flare-core 客户端，随其修复一并生效。
+- 发送被服务端暂时拒绝时不再判失败。SendAck 错误码为 `UNAVAILABLE`、`TIMEOUT`、`RATE_LIMITED`、
+  `SLOW_DOWN`、`NEEDS_RETRY` 时（例如 message-ingest 读不到租户投影，或同一条消息首发仍在处理），
+  可靠队列让消息保持发送中，退避后用同一个 `client_msg_id` 重发；ingest 按它做摄入幂等，不会多出
+  一条消息。退避从 1 s 起翻倍，封顶 30 s，带 ±20% 抖动。重发与发送失败共用 `ack_max_retries`
+  的次数预算，用完后按服务端给的原因判失败。其余错误（含 `TENANT_UNAVAILABLE`）仍立即判失败。
+  重发期间应用收不到错误 SendAck。新增回环集成测试 `tests/transient_send_rejection_retry.rs`。
 - 调度与恢复路径的失败改为记日志，不再静默吞掉。此前这类失败没有任何信号，
   只能靠用户报障才发现。
 - `media.user_download_get_saved_path` 只返回仍在磁盘上的文件：用户删掉或挪走了保存的文件，
