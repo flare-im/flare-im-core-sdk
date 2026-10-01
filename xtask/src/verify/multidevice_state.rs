@@ -242,10 +242,25 @@ pub(crate) fn verify_multidevice_state_gate(root: &Path) -> Result<()> {
         "client builder device identity wiring",
         &["self.config.effective_device_id()"],
     );
+    // 原生端与 Web 的在线状态自 745e53f 起是同一份实现（presence/http.rs，原 web.rs；
+    // native.rs 已删除），所有目标都经 Core API 网关。锚点随之只查这一份，并要求模块声明
+    // 不按目标分流，否则某一端换回另一份实现时这里查不到。
     require_contains_all(
         &mut errors,
-        &sdk_root.join("src/client/api/presence/native.rs"),
-        "native presence exact device logout",
+        &sdk_root.join("src/client/api/mod.rs"),
+        "presence module wiring",
+        &["#[path = \"presence/http.rs\"]\nmod presence;"],
+    );
+    forbid_contains_any(
+        &mut errors,
+        &sdk_root.join("src/client/api/mod.rs"),
+        "presence module wiring",
+        &["presence/native.rs", "presence/web.rs"],
+    );
+    require_contains_all(
+        &mut errors,
+        &sdk_root.join("src/client/api/presence/http.rs"),
+        "presence exact device logout",
         &[
             "device_id: String",
             "current_device_presence(presence.devices, device_id)",
@@ -259,33 +274,12 @@ pub(crate) fn verify_multidevice_state_gate(root: &Path) -> Result<()> {
     );
     forbid_contains_any(
         &mut errors,
-        &sdk_root.join("src/client/api/presence/native.rs"),
-        "native presence exact device logout",
+        &sdk_root.join("src/client/api/presence/http.rs"),
+        "presence exact device logout",
         &[
             "max_by_key(|device| device.last_active_time_ms)",
             "最近活跃",
         ],
-    );
-    require_contains_all(
-        &mut errors,
-        &sdk_root.join("src/client/api/presence/web.rs"),
-        "web presence exact device logout",
-        &[
-            "device_id: String",
-            "current_device_presence(presence.devices, device_id)",
-            "device.device_id.trim() == device_id",
-            "current_device_presence_selects_exact_device_id_not_recent_device",
-            "pub async fn list_current_user_devices",
-            "pub async fn get_device",
-            "pub async fn kick_device",
-            "ConnectionQualityDto",
-        ],
-    );
-    forbid_contains_any(
-        &mut errors,
-        &sdk_root.join("src/client/api/presence/web.rs"),
-        "web presence exact device logout",
-        &["max_by_key(|device| device.last_active_time_ms)"],
     );
     require_contains_all(
         &mut errors,
