@@ -466,12 +466,12 @@ pub(crate) fn verify_multidevice_state_gate(root: &Path) -> Result<()> {
     require_contains_all(
         &mut errors,
         // manager.rs 早已拆成 manager/ 目录（mod / ops / lifecycle / trait_impl / tests）。
-        // 扇出这几个标记落在 trait_impl.rs 里。
+        // 扇出这几个标记落在 trait_impl.rs 里。用户索引按（租户，用户）即 DeviceOwner 建立。
         &monorepo_root.join("flare-core/src/server/connection/manager/trait_impl.rs"),
         "transport active multi-device fanout",
         &[
             "async fn send_to_user",
-            "ConnectionManager::get_user_connections(self, user_id)",
+            "ConnectionManager::get_user_connections(self, owner)",
             "self.connection_handles_for_ids",
             ".for_each_concurrent(",
             "self.fanout_concurrency",
