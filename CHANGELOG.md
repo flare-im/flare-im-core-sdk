@@ -12,6 +12,9 @@
 - `PresenceApi::register_push_token` / `unregister_push_token`：为本设备登记、注销离线推送令牌，
   走 Core API 网关的 `PUT` / `DELETE /api/v1/devices/{device_id}/push-token`（需要带该接口的 Core 网关）。
   用户与租户由网关从 IM 令牌确定，设备取 SDK 配置的 `device_id`；推送通道目前只支持 `getui`。
+- 扩展门面补齐两项：`prelude::TlsConfig`（`HttpClient::with_tls` 与 `SdkConfig::ca_trust_tls_config`
+  的参数和返回类型）与 `spi::delay`（跨平台异步延时）。业务 SDK 只允许经 `spi` / `model` / `prelude`
+  调用 Core SDK，此前要用这两项只能越过门面。
 
 ### 修复
 

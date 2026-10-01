@@ -47,6 +47,9 @@ pub use crate::platform::ports::storage::{
     LOCAL_DATABASE_KEY_BYTES, SecureKeyDescriptor, SecureKeyStore, SecureSecret,
     VolatileSecureKeyStore, load_or_create_local_database_key, validate_local_database_key,
 };
+/// Cross-platform async delay (JS timers on wasm, tokio on native) for
+/// bounded backoff in extensions.
+pub use crate::shared::util::time::delay;
 pub use metrics::{
     HistogramSnapshot, InMemoryMetricsSink, MetricLabel, MetricsRecorder, MetricsSink,
     MetricsSnapshot,
