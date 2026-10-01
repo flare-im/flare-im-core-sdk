@@ -759,12 +759,14 @@ fn should_skip_reconnect_for_disconnect_reason(reason: &str) -> bool {
         || lower.contains("tenant_unavailable")
 }
 
-fn reconnect_delay_secs(base_interval_secs: u64, attempt: u32) -> u64 {
+/// 第 `attempt` 次重连前的退避：在 [`reconnect_delay_bounds_secs`] 给出的窗口里按毫秒均匀取值。
+///
+/// 以前按整秒取值，5 s 间隔的第一次重连只会落在 4、5、6 s 三个点上：服务端重启后同一批断开的
+/// 客户端被分成三拨同时涌上来，抖动形同虚设。
+fn reconnect_delay(base_interval_secs: u64, attempt: u32) -> std::time::Duration {
     let (min, max) = reconnect_delay_bounds_secs(base_interval_secs, attempt);
-    if min == max {
-        return min;
-    }
-    rand::thread_rng().gen_range(min..=max)
+    let (min_ms, max_ms) = (min.saturating_mul(1_000), max.saturating_mul(1_000));
+    std::time::Duration::from_millis(rand::thread_rng().gen_range(min_ms..=max_ms))
 }
 
 fn reconnect_delay_bounds_secs(base_interval_secs: u64, attempt: u32) -> (u64, u64) {

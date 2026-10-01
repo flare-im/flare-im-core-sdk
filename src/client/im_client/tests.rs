@@ -3,8 +3,8 @@ use std::time::Duration;
 
 use super::session_watchers::recovered_connection_state;
 use super::{
-    HeartbeatAppState, IMClient, NetworkChangeEvent, SdkConfigOverlay, SdkState,
-    reconnect_delay_bounds_secs, reconnect_delay_secs, should_skip_reconnect_for_disconnect_reason,
+    HeartbeatAppState, IMClient, NetworkChangeEvent, SdkConfigOverlay, SdkState, reconnect_delay,
+    reconnect_delay_bounds_secs, should_skip_reconnect_for_disconnect_reason,
 };
 use crate::infrastructure::persistence::in_memory_empty_im_provider;
 use crate::infrastructure::transport::http::HttpRequestContext;
@@ -21,12 +21,30 @@ fn reconnect_delay_uses_capped_exponential_backoff_with_jitter_window() {
 
     for attempt in 1..=10 {
         let (min, max) = reconnect_delay_bounds_secs(5, attempt);
-        let actual = reconnect_delay_secs(5, attempt);
+        let actual = reconnect_delay(5, attempt);
         assert!(
-            (min..=max).contains(&actual),
-            "attempt {attempt} delay {actual} outside {min}..={max}"
+            (Duration::from_secs(min)..=Duration::from_secs(max)).contains(&actual),
+            "attempt {attempt} delay {actual:?} outside {min}..={max}s"
         );
     }
+}
+
+/// 抖动按毫秒取值：同一窗口里的取值铺开，而不是只落在几个整秒上（以前 5 s 间隔的第一次重连只有
+/// 4、5、6 s 三个取值）。暂时性拒绝（SERVICE_UNAVAILABLE）、服务端重启后的重连都走这条退避。
+#[test]
+fn reconnect_jitter_is_spread_at_millisecond_granularity() {
+    let distinct: std::collections::HashSet<Duration> =
+        (0..200).map(|_| reconnect_delay(5, 1)).collect();
+    assert!(
+        distinct.len() > 50,
+        "only {} distinct delays in 200 draws",
+        distinct.len()
+    );
+    assert!(
+        distinct
+            .iter()
+            .all(|delay| (Duration::from_secs(4)..=Duration::from_secs(6)).contains(delay))
+    );
 }
 
 #[test]

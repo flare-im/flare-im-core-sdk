@@ -8,13 +8,13 @@ use crate::shared::error::{ErrorCode, Result, TENANT_UNAVAILABLE, is_tenant_unav
 use crate::shared::util::{delay, now_unix_secs};
 
 use super::{
-    IMClient, reconnect_delay_secs, should_skip_reconnect_for_disconnect_reason,
-    spawn_im_background,
+    IMClient, reconnect_delay, should_skip_reconnect_for_disconnect_reason, spawn_im_background,
 };
 
 /// 第 `attempt` 次重连前的等待。`after_server_shutdown`：断开原因是服务端停机，且这是停机后的
 /// 第一次尝试——在 1–5 s 之间随机等一段（flare-core 的停机约定），而不是按配置的退避：停机是
-/// 计划内的，所有客户端同一刻重连会把刚起来的实例冲垮。之后的尝试照常按退避（封顶 30 s、±20% 抖动）。
+/// 计划内的，所有客户端同一刻重连会把刚起来的实例冲垮。之后的尝试照常按退避（封顶 30 s、±20% 抖动，
+/// 按毫秒取值）。
 pub(super) fn reconnect_wait(
     interval_secs: u64,
     attempt: u32,
@@ -23,7 +23,7 @@ pub(super) fn reconnect_wait(
     if after_server_shutdown {
         flare_core::common::server_shutdown_reconnect_delay()
     } else {
-        Duration::from_secs(reconnect_delay_secs(interval_secs, attempt))
+        reconnect_delay(interval_secs, attempt)
     }
 }
 
