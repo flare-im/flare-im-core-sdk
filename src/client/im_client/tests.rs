@@ -949,3 +949,164 @@ async fn reconnect_monitor_stops_on_disconnect() {
 async fn reconnect_monitor_stops_when_the_client_is_destroyed() {
     reconnect_monitor_stops_when_the_session_ends(SessionEnd::DropClient).await;
 }
+
+/// 会话结束（登出、断开、客户端销毁）时，状态快照、终局事件、令牌刷新三个监视器都立刻收手。
+/// 此前令牌刷新监视器要睡到下一次刷新（这里约 55 分钟后）才发现会话已结束，状态快照与终局
+/// 事件监视器要等到下一条连接事件。
+async fn session_watchers_stop_when_the_session_ends(end: SessionEnd) {
+    use crate::client::config::{SdkAuthConfig, SdkConfig};
+    use crate::shared::util::generate_core_token;
+
+    let logs = CapturedLogs::default();
+    let _logs = logs.install();
+
+    // 两个地址都指向本机不监听的端口：本用例不会真去连，只要不碰外网。
+    let mut config = SdkConfig::new("ws://127.0.0.1:9");
+    config.http_url = Some("http://127.0.0.1:9".to_string());
+    let client = IMClient::builder()
+        .config(config)
+        .stores(in_memory_empty_im_provider())
+        .build()
+        .expect("build client");
+    // SDK 托管令牌，令牌一小时后到期：刷新监视器会睡到到期前 5 分钟。
+    let token = generate_core_token(&CoreTokenConfig {
+        secret: "a-strong-shared-secret-with-more-than-32-bytes!".into(),
+        issuer: "flare-im-core".into(),
+        user_id: "alice".into(),
+        ttl_secs: 3600,
+        device_id: None,
+        tenant_id: None,
+    })
+    .expect("token");
+    let bus = {
+        let mut inner = client.inner.write().await;
+        inner.current_user_id = Some("alice".to_string());
+        inner.connect_token = Some(token);
+        inner.sdk_config = Some(SdkConfigOverlay {
+            auth: Some(SdkAuthConfig {
+                token_endpoint: Some("http://127.0.0.1:9".to_string()),
+                refresh_lead_secs: None,
+            }),
+            ..SdkConfigOverlay::default()
+        });
+        inner.engine.as_ref().expect("engine").bus().clone()
+    };
+    let generation = client.session_generation_snapshot();
+    client.spawn_state_snapshot_watcher(generation, bus.clone());
+    client.spawn_terminal_session_watcher(generation, bus.clone());
+    client.spawn_token_refresh_watcher(generation);
+    // 让三个监视器都进入等待
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    match end {
+        SessionEnd::Logout => client.logout().await.expect("logout"),
+        SessionEnd::Disconnect => client.disconnect().await.expect("disconnect"),
+        SessionEnd::DropClient => drop(client),
+    }
+    let ended_at = std::time::Instant::now();
+    for watcher in [
+        "SDK state snapshot watcher stopped",
+        "SDK terminal session watcher stopped",
+        "SDK token refresh watcher stopped",
+    ] {
+        while !logs.text().contains(watcher) {
+            assert!(
+                ended_at.elapsed() < Duration::from_millis(500),
+                "{end:?}: {watcher:?} must happen as soon as the session ends\n{}",
+                logs.text()
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+    // 测试持有总线，它不会因客户端销毁而关闭
+    drop(bus);
+}
+
+#[tokio::test]
+async fn session_watchers_stop_on_logout() {
+    session_watchers_stop_when_the_session_ends(SessionEnd::Logout).await;
+}
+
+#[tokio::test]
+async fn session_watchers_stop_on_disconnect() {
+    session_watchers_stop_when_the_session_ends(SessionEnd::Disconnect).await;
+}
+
+#[tokio::test]
+async fn session_watchers_stop_when_the_client_is_destroyed() {
+    session_watchers_stop_when_the_session_ends(SessionEnd::DropClient).await;
+}
+
+/// 会话在重连开始前已结束：`reconnect_current_engine` 报明确的错误，而不是 Ok
+/// （此前调用方会把它当成重连成功）。
+#[tokio::test]
+async fn reconnect_after_the_session_ended_is_an_error() {
+    use crate::client::config::SdkConfig;
+
+    let client = IMClient::builder()
+        .config(SdkConfig::new("ws://127.0.0.1:9"))
+        .stores(in_memory_empty_im_provider())
+        .build()
+        .expect("build client");
+    let stale_generation = client.session_generation_snapshot();
+    {
+        let mut inner = client.inner.write().await;
+        inner.session_generation = inner.session_generation.wrapping_add(1);
+        client.store_session_generation_snapshot(inner.session_generation);
+    }
+
+    let err = client
+        .reconnect_current_engine(stale_generation, "alice", "token")
+        .await
+        .expect_err("a reconnect for an ended session must not report success");
+    assert_eq!(err.code(), Some(ErrorCode::NotConnected), "{err}");
+    assert!(err.to_string().contains("session ended"), "{err}");
+}
+
+/// 断开原因是服务端停机：重连监视器的第一次尝试只等 1–5 s 的随机一段，不按配置的 30 s 退避
+/// （按退避要 24–30 s）。地址指向本机不监听的端口，只看重连何时真正开始（重建传输的日志带
+/// `trigger=Reconnect`）。
+#[tokio::test]
+async fn reconnect_monitor_pauses_briefly_after_a_server_shutdown() {
+    use crate::client::config::SdkConfig;
+    use crate::kernel::event::{ConnectionEvent, SdkEvent};
+
+    let logs = CapturedLogs::default();
+    let _logs = logs.install();
+
+    let mut config = SdkConfig::new("ws://127.0.0.1:9");
+    config.http_url = Some("http://127.0.0.1:9".to_string());
+    config.reconnect_interval_secs = Some(30);
+    let client = IMClient::builder()
+        .config(config)
+        .stores(in_memory_empty_im_provider())
+        .build()
+        .expect("build client");
+    let bus = {
+        let mut inner = client.inner.write().await;
+        inner.current_user_id = Some("alice".to_string());
+        inner.connect_token = Some("token".to_string());
+        inner.engine.as_ref().expect("engine").bus().clone()
+    };
+    let generation = client.session_generation_snapshot();
+    client.spawn_reconnect_session_watcher(generation, bus.clone());
+
+    let disconnected_at = std::time::Instant::now();
+    bus.publish(SdkEvent::Connection(ConnectionEvent::Disconnected {
+        reason: "SERVER_SHUTDOWN: server closed the connection".to_string(),
+    }));
+    while !logs.text().contains("trigger=Reconnect") {
+        assert!(
+            disconnected_at.elapsed() < Duration::from_secs(8),
+            "the first reconnect after a shutdown must not wait for the 30 s backoff\n{}",
+            logs.text()
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(
+        disconnected_at.elapsed() >= flare_core::common::shutdown::SERVER_SHUTDOWN_RECONNECT_MIN,
+        "the reconnect after a shutdown still pauses first"
+    );
+    assert!(logs.text().contains("reconnecting after a jittered pause"));
+    client.disconnect().await.expect("disconnect");
+}

@@ -11,12 +11,17 @@ pub use flare_core::common::error::{
 /// Core 因租户不可用（停用、删除中）拒绝建连、踢线或拒绝请求时给出的类型化原因。
 pub const TENANT_UNAVAILABLE: &str = "TENANT_UNAVAILABLE";
 
-/// 错误是否表示租户不可用。
+/// 建连 / 重连错误是否表示租户不可用。
+///
+/// 按错误码识别：网关以 `TENANT_UNAVAILABLE` 拒绝 CONNECT 时，flare-core 把它映射为
+/// `PERMISSION_DENIED`（`connect_rejection_error`），socket 层原样保留这个错误码；网关拒绝 CONNECT
+/// 不会因为别的原因用 `PERMISSION_DENIED`。以前在错误文本里找 `TENANT_UNAVAILABLE`，地址、服务端
+/// 文案里碰巧带上这几个字就会误判，换了措辞又会漏判。
 ///
 /// 它不是鉴权失败：换令牌、自动重连都无济于事，只会反复打到网关。SDK 据此停止重连并把
 /// `KickedOff { reason: "TENANT_UNAVAILABLE" }` 交给应用。
 pub fn is_tenant_unavailable(err: &FlareError) -> bool {
-    err.to_string().contains(TENANT_UNAVAILABLE)
+    err.code() == Some(ErrorCode::PermissionDenied)
 }
 
 /// 从 proto RpcStatus 的 code + message 映射为 FlareError

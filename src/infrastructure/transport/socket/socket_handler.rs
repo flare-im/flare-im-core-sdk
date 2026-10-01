@@ -227,8 +227,9 @@ impl MessageListener for SocketHandler {
     async fn on_disconnect(&self, reason: Option<&str>) -> Result<()> {
         let reason = reason.unwrap_or("unknown").to_string();
         let lower = reason.to_lowercase();
-        // 被踢语义由 flare-core 在协商完成后通过 Disconnected(reason) 下发，此处仅根据 reason 映射
-        if reason.contains(TENANT_UNAVAILABLE) {
+        // 被踢语义由 flare-core 在协商完成后通过 Disconnected(reason) 下发，此处仅根据 reason 映射。
+        // 租户不可用的踢线原因就是类型化原因本身（KICKED 的 message），按它整体比对。
+        if reason.trim() == TENANT_UNAVAILABLE {
             self.report_tenant_unavailable();
         } else if lower.contains("kick")
             || lower.contains("设备冲突")

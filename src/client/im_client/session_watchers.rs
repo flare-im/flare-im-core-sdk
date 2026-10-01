@@ -12,16 +12,45 @@ use super::{
     spawn_im_background,
 };
 
+/// 第 `attempt` 次重连前的等待。`after_server_shutdown`：断开原因是服务端停机，且这是停机后的
+/// 第一次尝试——在 1–5 s 之间随机等一段（flare-core 的停机约定），而不是按配置的退避：停机是
+/// 计划内的，所有客户端同一刻重连会把刚起来的实例冲垮。之后的尝试照常按退避（封顶 30 s、±20% 抖动）。
+pub(super) fn reconnect_wait(
+    interval_secs: u64,
+    attempt: u32,
+    after_server_shutdown: bool,
+) -> Duration {
+    if after_server_shutdown {
+        flare_core::common::server_shutdown_reconnect_delay()
+    } else {
+        Duration::from_secs(reconnect_delay_secs(interval_secs, attempt))
+    }
+}
+
+/// 会话在一次重连期间（或开始之前）已经结束：这次重连的结果属于已结束的会话。
+pub(super) fn session_ended_during_reconnect() -> FlareError {
+    FlareError::localized(
+        ErrorCode::NotConnected,
+        "session ended before the reconnect completed",
+    )
+}
+
 impl IMClient {
+    /// 会话期间按连接事件维护状态快照。会话结束（登出、断开、重新登录、终止会话、客户端销毁）
+    /// 时立即收手；此前它要等到下一条连接事件才发现世代已变，一直挂着。
     pub(super) fn spawn_state_snapshot_watcher(&self, generation: u64, bus: EventBus) {
         let client = self.downgrade();
+        let session_end = self.session_end_watch(generation);
         // 只消费连接事件——按 Kind 过滤使总线不再为本订阅者深克隆消息批等热事件。
         let mut rx = bus.subscribe_filter(SdkEventKind::Connection);
         spawn_im_background(async move {
             loop {
-                let event = match rx.recv().await {
-                    Ok(ev) => ev,
-                    Err(_) => break,
+                let event = tokio::select! {
+                    event = rx.recv() => match event {
+                        Ok(ev) => ev,
+                        Err(_) => break,
+                    },
+                    () = session_end.ended() => break,
                 };
                 let Some(client) = client.upgrade() else {
                     break;
@@ -44,18 +73,26 @@ impl IMClient {
                     _ => {}
                 }
             }
+            tracing::debug!(
+                session_generation = generation,
+                "SDK state snapshot watcher stopped"
+            );
         });
     }
 
     /// 中断连接会话监听器
     pub(super) fn spawn_terminal_session_watcher(&self, generation: u64, bus: EventBus) {
         let client = self.downgrade();
+        let session_end = self.session_end_watch(generation);
         let mut rx = bus.subscribe_filter(SdkEventKind::Connection);
         spawn_im_background(async move {
             loop {
-                let event = match rx.recv().await {
-                    Ok(ev) => ev,
-                    Err(_) => break,
+                let event = tokio::select! {
+                    event = rx.recv() => match event {
+                        Ok(ev) => ev,
+                        Err(_) => break,
+                    },
+                    () = session_end.ended() => break,
                 };
                 let terminal_reason = match event {
                     SdkEvent::Connection(ConnectionEvent::KickedOff { reason }) => {
@@ -91,6 +128,10 @@ impl IMClient {
                 }
                 break;
             }
+            tracing::debug!(
+                session_generation = generation,
+                "SDK terminal session watcher stopped"
+            );
         });
     }
 
@@ -117,6 +158,17 @@ impl IMClient {
                 };
                 if should_skip_reconnect_for_disconnect_reason(&reason) {
                     continue;
+                }
+                // 服务端停机（CLOSE(SERVER_SHUTDOWN)、WebSocket 1001、QUIC 应用关闭带来的原因）：
+                // 第一次重连前短暂随机等待，而不是按错误的退避节奏。
+                let mut after_server_shutdown =
+                    flare_core::common::is_server_shutdown_reason(&reason);
+                if after_server_shutdown {
+                    tracing::info!(
+                        session_generation = generation,
+                        reason = %reason,
+                        "server is shutting down; reconnecting after a jittered pause"
+                    );
                 }
 
                 let Some(snapshot_client) = client.upgrade() else {
@@ -173,10 +225,14 @@ impl IMClient {
                             SdkEvent::Connection(ConnectionEvent::Reconnecting { attempt }),
                         )
                         .await;
-                    let delay_secs = reconnect_delay_secs(interval_secs, attempt);
+                    let wait = reconnect_wait(
+                        interval_secs,
+                        attempt,
+                        std::mem::take(&mut after_server_shutdown),
+                    );
                     drop(attempt_client);
                     tokio::select! {
-                        () = delay(Duration::from_secs(delay_secs)) => {}
+                        () = delay(wait) => {}
                         () = session_end.ended() => break 'monitor,
                     }
 
@@ -479,10 +535,14 @@ impl IMClient {
 
     /// SDK 托管 token：到期前 `refresh_lead_secs` 秒换新并 `update_access_token`。
     /// 应用托管形态（没配 token_endpoint）什么都不做——刷新是应用的事，核心只抛 TOKEN_EXPIRED。
+    ///
+    /// 会话结束（登出、断开、重新登录、终止会话、客户端销毁）时立即收手：此前它睡到下一次刷新
+    /// （可能是几十分钟后）才发现世代已变，一直挂着。
     pub(super) fn spawn_token_refresh_watcher(&self, generation: u64) {
         let client = self.downgrade();
+        let session_end = self.session_end_watch(generation);
         spawn_im_background(async move {
-            loop {
+            'watcher: loop {
                 let Some(c) = client.upgrade() else { break };
                 if !c.is_generation_current(generation).await {
                     break;
@@ -512,7 +572,10 @@ impl IMClient {
                     _ => 600u64,
                 };
                 drop(c);
-                delay(Duration::from_secs(wait_secs.max(5))).await;
+                tokio::select! {
+                    () = delay(Duration::from_secs(wait_secs.max(5))) => {}
+                    () = session_end.ended() => break 'watcher,
+                }
                 let Some(c) = client.upgrade() else { break };
                 if !c.is_generation_current(generation).await {
                     break;
@@ -528,10 +591,18 @@ impl IMClient {
                     Err(err) => {
                         // 网关暂时不可达：一分钟后再试；真正过期时 TOKEN_EXPIRED 路径还会兜底。
                         tracing::warn!(%err, "scheduled token refresh failed; retrying in 60s");
-                        delay(Duration::from_secs(60)).await;
+                        drop(c);
+                        tokio::select! {
+                            () = delay(Duration::from_secs(60)) => {}
+                            () = session_end.ended() => break 'watcher,
+                        }
                     }
                 }
             }
+            tracing::debug!(
+                session_generation = generation,
+                "SDK token refresh watcher stopped"
+            );
         });
     }
 
@@ -571,7 +642,7 @@ impl IMClient {
         let mut engine = {
             let mut g = self.inner.write().await;
             if g.session_generation != generation {
-                return Ok(());
+                return Err(session_ended_during_reconnect());
             }
             g.engine.take().ok_or_else(Self::not_connected)?
         };
@@ -596,9 +667,12 @@ impl IMClient {
                 self.clear_session_snapshot();
             }
         } else {
+            // 会话在这次重连期间结束：收尾这台引擎，结果不再算数。以前照样返回 Ok，调用方会在已结束
+            // 的会话上记一次重连成功（网络切换的主动重连还会向应用报告成功）。
             drop(g);
             engine.deactivate_local_session().await;
             let _ = engine.disconnect().await;
+            return Err(session_ended_during_reconnect());
         }
         result
     }
@@ -760,6 +834,43 @@ mod token_refresh_tests {
         );
         assert!(!is_auth_reconnect_failure(&closed));
         assert!(!is_tenant_unavailable(&closed));
+    }
+
+    /// 租户不可用按错误码识别，与错误文本无关：文本里带着 TENANT_UNAVAILABLE 的连接失败不算，
+    /// 文本没有它的 PERMISSION_DENIED 算。
+    #[test]
+    fn tenant_unavailable_is_recognised_by_the_error_code_not_the_text() {
+        assert!(!is_tenant_unavailable(&FlareError::connection_failed(
+            "connect failed primary=wss://tenant_unavailable.example: TENANT_UNAVAILABLE",
+        )));
+        assert!(is_tenant_unavailable(&FlareError::localized(
+            ErrorCode::PermissionDenied,
+            "connect failed primary=wss://x: server rejected CONNECT",
+        )));
+    }
+
+    /// 服务端停机后的第一次重连只等 1–5 s 的随机一段，不按配置的退避（这里 30 s）；
+    /// 之后的尝试、以及非停机的断开照常按退避。
+    #[test]
+    fn the_first_reconnect_after_a_server_shutdown_waits_a_short_jittered_pause() {
+        use flare_core::common::shutdown::{
+            SERVER_SHUTDOWN_RECONNECT_MAX, SERVER_SHUTDOWN_RECONNECT_MIN,
+        };
+        let mut distinct = std::collections::HashSet::new();
+        for _ in 0..100 {
+            let wait = reconnect_wait(30, 1, true);
+            assert!(
+                (SERVER_SHUTDOWN_RECONNECT_MIN..=SERVER_SHUTDOWN_RECONNECT_MAX).contains(&wait),
+                "{wait:?}"
+            );
+            distinct.insert(wait);
+        }
+        assert!(distinct.len() > 20, "the pause must be jittered");
+        let normal = reconnect_wait(30, 1, false);
+        assert!(
+            (Duration::from_secs(24)..=Duration::from_secs(30)).contains(&normal),
+            "{normal:?}"
+        );
     }
 
     /// 服务端暂时放不了行（如网关读不到租户状态）：既不换令牌，也不停手，照常退避重连。
