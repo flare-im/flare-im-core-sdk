@@ -757,6 +757,8 @@ fn should_skip_reconnect_for_disconnect_reason(reason: &str) -> bool {
         || lower.contains("credential expired")
         // 租户不可用：重连只会被网关再拒一次，由 KickedOff 交给应用
         || lower.contains("tenant_unavailable")
+        // 结束会话的踢线（设备冲突、租户不可用）：由 KickedOff 交给应用，不重连
+        || flare_core::common::kick::ends_session(reason)
 }
 
 /// 第 `attempt` 次重连前的退避：在 [`reconnect_delay_bounds_secs`] 给出的窗口里按毫秒均匀取值。

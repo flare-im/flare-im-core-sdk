@@ -31,6 +31,15 @@
   `tests/transient_rejection_reconnect.rs`：本机起 flare-core 服务端，驱动 SDK 走完整的
   断线、被暂时性拒绝、退避、再连上的循环，并以 `TENANT_UNAVAILABLE` 终止会话作对照。
 - QUIC 连接被踢后迟迟不重连、断开被误报成令牌被拒，根因在 flare-core 客户端，随其修复一并生效。
+- 同一账号在同一平台的新设备登录、本设备被服务端顶下线时（「已在别处登录」），SDK 可靠地发出一次
+  `KickedOff { reason: "DEVICE_CONFLICT" }` 并终止会话：状态置为 Disconnected，重连监视器不再重连，
+  令牌刷新等会话监视器随会话结束收手；恢复要由应用重新登录（`login`，或社交层重新建立 IM 会话）。
+  此前同一次踢线随帧到达顺序有两种结果：要么停在「看似 Ready、实际不可用」（不发 `KickedOff`，
+  之后发送与同步都是 `NOT_CONNECTED`），要么被当成对端断开、几秒后被重连监视器连回去，又把新设备
+  顶下线。根因在 flare-core 客户端（被踢的断开没有可靠上报），随其修复一并生效；`KickedOff` 的
+  原因从 `设备冲突：<说明>` 变为类型化的 `DEVICE_CONFLICT`（即 `flare_core::common::kick::DEVICE_CONFLICT_REASON`）。
+  新增回环集成测试 `tests/device_conflict_kick.rs`：两台同平台设备，第二台登录后第一台收到
+  `KickedOff`、会话终止、几个退避周期内没有重连，重新登录后恢复。
 - 发送被服务端暂时拒绝时不再判失败。SendAck 错误码为 `UNAVAILABLE`、`TIMEOUT`、`RATE_LIMITED`、
   `SLOW_DOWN`、`NEEDS_RETRY` 时（例如 message-ingest 读不到租户投影，或同一条消息首发仍在处理），
   可靠队列让消息保持发送中，退避后用同一个 `client_msg_id` 重发；ingest 按它做摄入幂等，不会多出

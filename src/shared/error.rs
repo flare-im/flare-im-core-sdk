@@ -11,6 +11,12 @@ pub use flare_core::common::error::{
 /// Core 因租户不可用（停用、删除中）拒绝建连、踢线或拒绝请求时给出的类型化原因。
 pub const TENANT_UNAVAILABLE: &str = "TENANT_UNAVAILABLE";
 
+/// 同一账号在同一平台的新设备登录，本设备被踢下线时的类型化原因（「已在别处登录」）。
+///
+/// SDK 收到它就把 `KickedOff { reason: "DEVICE_CONFLICT" }` 交给应用并终止会话：不自动重连
+/// （连回去会把新设备再顶下线），恢复要由应用重新登录。
+pub const DEVICE_CONFLICT: &str = flare_core::common::kick::DEVICE_CONFLICT_REASON;
+
 /// 建连 / 重连错误是否表示租户不可用。
 ///
 /// 按错误码识别：网关以 `TENANT_UNAVAILABLE` 拒绝 CONNECT 时，flare-core 把它映射为

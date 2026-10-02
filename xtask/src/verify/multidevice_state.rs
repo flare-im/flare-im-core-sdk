@@ -281,6 +281,34 @@ pub(crate) fn verify_multidevice_state_gate(root: &Path) -> Result<()> {
             "最近活跃",
         ],
     );
+    // 同平台新设备登录把本设备顶下线（「已在别处登录」）：上报一次 KickedOff(DEVICE_CONFLICT)、
+    // 会话终止、不再自动重连，由本机回环两台同平台设备的集成测试守住。
+    require_contains_all(
+        &mut errors,
+        &sdk_root.join("src/infrastructure/transport/socket/socket_handler.rs"),
+        "device conflict kick reported as KickedOff",
+        &[
+            "fn report_session_ending_kick",
+            "flare_core::common::kick::is_device_conflict_reason(reason)",
+            "device_conflict_disconnect_is_reported_once_as_kicked_off",
+        ],
+    );
+    require_contains_all(
+        &mut errors,
+        &sdk_root.join("src/client/im_client.rs"),
+        "device conflict kick never reconnects",
+        &["flare_core::common::kick::ends_session(reason)"],
+    );
+    require_contains_all(
+        &mut errors,
+        &sdk_root.join("tests/device_conflict_kick.rs"),
+        "device conflict kick loopback test",
+        &[
+            "a_device_conflict_kick_ends_the_session_without_reconnecting",
+            "assert_eq!(owner_events.kicked_off(), vec![DEVICE_CONFLICT]);",
+            "a kicked session must not reconnect",
+        ],
+    );
     require_contains_all(
         &mut errors,
         &root.join("sdk-spec/modules/conversations.json"),

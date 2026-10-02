@@ -4,7 +4,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use crate::shared::error::{Result, TENANT_UNAVAILABLE};
+use crate::shared::error::{DEVICE_CONFLICT, Result, TENANT_UNAVAILABLE};
 use async_trait::async_trait;
 use flare_core::client::builder::flare::MessageListener;
 use flare_core::common::compression::CompressionUtil;
@@ -32,8 +32,9 @@ pub struct SocketHandler {
     codec: Arc<dyn Codec>,
     ready_notify: Arc<Notify>,
     notified: AtomicBool,
-    /// 已向总线报过「租户不可用」的踢线：KICKED 帧与随后的断开原因可能都带着它，只报一次。
-    tenant_unavailable_reported: AtomicBool,
+    /// 已向总线报过结束会话的踢线（租户不可用、设备冲突）：KICKED 帧与随后的断开原因可能都带着它，
+    /// 只报一次。
+    session_ending_kick_reported: AtomicBool,
 }
 
 impl SocketHandler {
@@ -47,7 +48,7 @@ impl SocketHandler {
             codec,
             ready_notify,
             notified: AtomicBool::new(false),
-            tenant_unavailable_reported: AtomicBool::new(false),
+            session_ending_kick_reported: AtomicBool::new(false),
         }
     }
 
@@ -57,21 +58,38 @@ impl SocketHandler {
         }
     }
 
-    /// 服务端以 `TENANT_UNAVAILABLE` 踢线：交给应用一个 `KickedOff`，会话随之终止，
-    /// 不自动重连、不刷新令牌（租户恢复前两者都只会被网关再拒一次）。
-    fn report_tenant_unavailable(&self) {
+    /// 服务端以结束会话的原因踢线：交给应用一个带类型化原因的 `KickedOff`，会话随之终止
+    /// （会话的终止监视器收到它就结束会话，重连、令牌刷新等监视器随之收手），恢复要由应用重新登录。
+    ///
+    /// - `TENANT_UNAVAILABLE`：租户恢复前，重连、刷新令牌都只会被网关再拒一次；
+    /// - `DEVICE_CONFLICT`：同一账号在同一平台的新设备登录（「已在别处登录」），连回去会把新设备
+    ///   再顶下线。
+    fn report_session_ending_kick(&self, reason: &'static str) {
         if self
-            .tenant_unavailable_reported
+            .session_ending_kick_reported
             .swap(true, Ordering::SeqCst)
         {
             return;
         }
-        warn!("server kicked the connection: tenant unavailable");
+        warn!(reason, "server kicked the connection; the session ends");
         self.dispatcher
             .bus()
             .publish(SdkEvent::Connection(ConnectionEvent::KickedOff {
-                reason: TENANT_UNAVAILABLE.to_string(),
+                reason: reason.to_string(),
             }));
+    }
+}
+
+/// 断开原因若是结束会话的踢线，返回它的类型化原因。flare-core 以 KICKED 的类型化原因作为断开原因
+/// 上报（见 `flare_core::common::kick`）。
+fn session_ending_kick_reason(reason: &str) -> Option<&'static str> {
+    let reason = reason.trim();
+    if reason == TENANT_UNAVAILABLE {
+        Some(TENANT_UNAVAILABLE)
+    } else if flare_core::common::kick::is_device_conflict_reason(reason) {
+        Some(DEVICE_CONFLICT)
+    } else {
+        None
     }
 }
 
@@ -97,7 +115,7 @@ impl MessageListener for SocketHandler {
                         self.signal_ready();
                     } else if t == SystemType::Kicked as i32 && is_tenant_unavailable_kick(sys_cmd)
                     {
-                        self.report_tenant_unavailable();
+                        self.report_session_ending_kick(TENANT_UNAVAILABLE);
                     }
                 }
                 Some(CommandType::Payload(_)) => {
@@ -230,14 +248,12 @@ impl MessageListener for SocketHandler {
     async fn on_disconnect(&self, reason: Option<&str>) -> Result<()> {
         let reason = reason.unwrap_or("unknown").to_string();
         let lower = reason.to_lowercase();
-        // 被踢语义由 flare-core 在协商完成后通过 Disconnected(reason) 下发，此处仅根据 reason 映射。
-        // 租户不可用的踢线原因就是类型化原因本身（KICKED 的 message），按它整体比对。
-        if reason.trim() == TENANT_UNAVAILABLE {
-            self.report_tenant_unavailable();
-        } else if lower.contains("kick")
-            || lower.contains("设备冲突")
-            || lower.contains("device_conflict")
-        {
+        // 被踢语义由 flare-core 在协商完成后通过 Disconnected(reason) 下发（恰好一次，原因就是 KICKED 的
+        // 类型化原因），此处仅根据 reason 映射。结束会话的原因（租户不可用、设备冲突）按类型化原因整体比对；
+        // 其余踢线（如运维踢线 DEVICE_KICKED）原样交给应用。
+        if let Some(kick) = session_ending_kick_reason(&reason) {
+            self.report_session_ending_kick(kick);
+        } else if lower.contains("kick") || lower.contains("设备冲突") {
             self.dispatcher
                 .bus()
                 .publish(SdkEvent::Connection(ConnectionEvent::KickedOff {
@@ -387,7 +403,54 @@ mod tests {
         assert!(kicked_off_reasons(&mut rx).await.is_empty());
     }
 
-    /// 其他原因的踢线（设备冲突等）不走这条路：它们的去留由断开原因决定，保持原样。
+    /// 同平台新设备登录把本设备顶下线：flare-core 以 `DEVICE_CONFLICT` 报断开，应用收到一次
+    /// `KickedOff { reason: "DEVICE_CONFLICT" }`（会话随之终止、不重连）和一次断开；同一原因再来一次
+    /// 不重复报 KickedOff。
+    #[tokio::test]
+    async fn device_conflict_disconnect_is_reported_once_as_kicked_off() {
+        let bus = EventBus::new();
+        let mut rx = bus.subscribe();
+        let handler = handler(&bus);
+
+        handler.on_disconnect(Some(DEVICE_CONFLICT)).await.unwrap();
+        let events = connection_events(&mut rx).await;
+        let kicked: Vec<&str> = events
+            .iter()
+            .filter_map(|event| match event {
+                ConnectionEvent::KickedOff { reason } => Some(reason.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(kicked, vec![DEVICE_CONFLICT], "{events:?}");
+        assert!(
+            events.iter().any(|event| matches!(
+                event,
+                ConnectionEvent::Disconnected { reason } if reason == DEVICE_CONFLICT
+            )),
+            "{events:?}"
+        );
+
+        handler.on_disconnect(Some(DEVICE_CONFLICT)).await.unwrap();
+        assert!(kicked_off_reasons(&mut rx).await.is_empty());
+    }
+
+    /// 普通断线不是踢线：不报 KickedOff，交给重连监视器。
+    #[tokio::test]
+    async fn plain_disconnects_are_not_kicks() {
+        let bus = EventBus::new();
+        let mut rx = bus.subscribe();
+        let handler = handler(&bus);
+        for reason in [
+            "WebSocket connection closed by peer",
+            "Stream closed by peer",
+            "SERVER_SHUTDOWN: server closed the connection",
+        ] {
+            handler.on_disconnect(Some(reason)).await.unwrap();
+        }
+        assert!(kicked_off_reasons(&mut rx).await.is_empty());
+    }
+
+    /// 其他原因的踢线（运维踢线等）不走这条路：它们的去留由断开原因决定，保持原样。
     #[tokio::test]
     async fn other_kicks_are_not_reported_as_tenant_unavailable() {
         let bus = EventBus::new();
