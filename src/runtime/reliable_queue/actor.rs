@@ -749,7 +749,8 @@ async fn recover_pending_for_current_user(st: &mut QueueState) -> Result<Vec<Str
     affected.extend(orphan_ids);
 
     // 上一次尝试没能发出去的消息：连接刚恢复，立即重发（重试次数照旧累计），不等到超时。
-    // 只按超时重发时，断线期间发出的消息要在重连之后再等一个完整的超时（默认 120 s）。
+    // 只按超时重发时，断线期间发出的消息要在重连之后再等一个完整的超时（`ack_timeout_secs`，SdkConfig
+    // 默认 10 s；队列没拿到配置时兜底 120 s）。
     let unsent = st
         .in_flight
         .iter()
@@ -2120,7 +2121,7 @@ mod unsent_resend_tests {
     }
 
     /// 长连接断开时发送直接失败（传输层不再自己重连）：消息留在发送中，不立刻重试；连接恢复、
-    /// 恢复当前账号的队列时立即重发，不等到超时（默认 120 s，这里配 60 s）。
+    /// 恢复当前账号的队列时立即重发，不等到超时（SdkConfig 默认 10 s，队列兜底 120 s，这里配 60 s）。
     #[tokio::test]
     async fn unsent_attempts_are_resent_as_soon_as_the_connection_is_back() {
         let stores = in_memory_im_provider();

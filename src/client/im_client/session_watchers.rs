@@ -610,12 +610,15 @@ impl IMClient {
         self.load_session_generation_snapshot() == generation
     }
 
-    /// A socket transport may recover on its own while the reconnect watcher is
-    /// sleeping. In that race the watcher has already published `Reconnecting`,
-    /// but the engine is still authoritatively `Connected`/`Ready`; simply
-    /// leaving the loop strands every UI on the stale reconnecting snapshot.
-    /// Republish the engine state before leaving so current and future
-    /// subscribers converge on the usable session.
+    /// The transport may already be connected when the reconnect watcher wakes
+    /// from its backoff: the `Disconnected` it reacted to was stale (left in the
+    /// queue by an attempt that later succeeded), or another path reconnected
+    /// meanwhile (a network-change reconnect). The transport no longer
+    /// reconnects on its own before a send. In that race the watcher has already
+    /// published `Reconnecting`, but the engine is still authoritatively
+    /// `Connected`/`Ready`; simply leaving the loop strands every UI on the stale
+    /// reconnecting snapshot. Republish the engine state before leaving so
+    /// current and future subscribers converge on the usable session.
     async fn restore_state_after_stale_reconnect(&self, generation: u64) -> Option<SdkState> {
         let g = self.inner.read().await;
         if g.session_generation != generation {
