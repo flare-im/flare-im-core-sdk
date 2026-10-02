@@ -19,13 +19,37 @@ use prost::Message;
 use tokio::sync::Mutex;
 
 use crate::infrastructure::protocol::Codec;
-use crate::shared::error::{FlareError, Result};
+use crate::shared::error::{ErrorCode, FlareError, Result};
 use crate::shared::util::{now_millis, timeout};
 
 const CONTROL_SEND_TIMEOUT: Duration = Duration::from_secs(10);
 const BEST_EFFORT_CONTROL_SEND_TIMEOUT: Duration = Duration::from_millis(250);
 
+/// 发送帧失败时按原因给错误码，供应用按码提示，而不是解析错误文本。
+///
+/// - `NOT_CONNECTED`：长连接不在（断线、重连还没完成、被服务端以结束会话的原因踢掉）。SDK 建连时关掉了
+///   flare-core 的发送前重连，断线时发送立即返回它，原样保留（含原因文本）。此前一律改成
+///   `CONNECTION_FAILED`，应用分不清「没连上，等恢复后再试」与「发送途中出错」。
+/// - flare-core 报的连接、网络超时（例如等 CONNECT 协商完成超时）：`OPERATION_TIMEOUT`，与发送本身
+///   超时一致。
+/// - 其余（写入失败、连接在写入时断开、编码失败等）：`fallback`（直发为 `CONNECTION_FAILED`，
+///   同步请求为 `GENERAL_ERROR`，与此前一致）。
+fn frame_send_error(error: FlareError, fallback: ErrorCode) -> FlareError {
+    match error.code() {
+        Some(ErrorCode::NotConnected) => error,
+        Some(
+            ErrorCode::ConnectionTimeout | ErrorCode::NetworkTimeout | ErrorCode::OperationTimeout,
+        ) => FlareError::localized(ErrorCode::OperationTimeout, error.to_string()),
+        _ => FlareError::localized(fallback, error.to_string()),
+    }
+}
+
 /// 上行包发送器 — Message / Event / Ack / DataPacket（同步与用户扩展）
+///
+/// 除了可靠队列（`send_message` 的调用方之一）之外，这里的发送都是「直发」：不排队、不重试，长连接
+/// 断开时立即失败（错误码见 [`frame_send_error`]）。撤回、编辑、删除、已读回执、同步请求、能力包等
+/// 都走直发，应用在 `NOT_CONNECTED` 时提示未连接、等会话回到 `Ready` 后再试；输入状态是有损信令，
+/// 断线时直接丢弃（见 [`Self::send_realtime_control_best_effort`]）。
 pub struct PacketSender {
     client: Arc<Mutex<Option<FlareClient>>>,
     /// 串行化 `send_frame_and_wait`：`HybridClient` 按 message_id 匹配响应，不宜并发等待。
@@ -41,9 +65,12 @@ impl PacketSender {
     }
 
     async fn client_snapshot(&self) -> Result<FlareClient> {
-        self.client.lock().await.as_ref().cloned().ok_or_else(|| {
-            FlareError::localized(flare_core::common::ErrorCode::NotConnected, "未连接")
-        })
+        self.client
+            .lock()
+            .await
+            .as_ref()
+            .cloned()
+            .ok_or_else(|| FlareError::localized(ErrorCode::NotConnected, "未连接"))
     }
 
     async fn send_frame_with_timeout(
@@ -55,13 +82,8 @@ impl PacketSender {
         let client = self.client_snapshot().await?;
         timeout(timeout_duration, client.send_frame(frame))
             .await
-            .map_err(|_| {
-                FlareError::localized(
-                    flare_core::common::ErrorCode::OperationTimeout,
-                    timeout_message,
-                )
-            })?
-            .map_err(|e| FlareError::connection_failed(e.to_string()))?;
+            .map_err(|_| FlareError::localized(ErrorCode::OperationTimeout, timeout_message))?
+            .map_err(|e| frame_send_error(e, ErrorCode::ConnectionFailed))?;
         Ok(())
     }
 
@@ -216,7 +238,7 @@ impl PacketSender {
         let response = client
             .send_frame_and_wait(&frame, timeout)
             .await
-            .map_err(|e| FlareError::general_error(e.to_string()))?;
+            .map_err(|e| frame_send_error(e, ErrorCode::GeneralError))?;
         decode_sync_response_frame(&response)
     }
 
@@ -257,5 +279,74 @@ fn decode_sync_response_frame(frame: &Frame) -> Result<SyncRes> {
         _ => Err(FlareError::general_error(
             "unexpected sync response payload".to_string(),
         )),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 断线时 flare-core 的发送返回 `NOT_CONNECTED`（SDK 关掉了发送前重连）：原样交给调用方，
+    /// 不再改成 `CONNECTION_FAILED`（直发与同步请求都是）。
+    #[test]
+    fn not_connected_is_kept_for_direct_sends_and_sync_requests() {
+        let not_connected = || {
+            FlareError::localized(
+                ErrorCode::NotConnected,
+                "not connected; reconnect_on_send is off, reconnecting is left to the caller",
+            )
+        };
+        for fallback in [ErrorCode::ConnectionFailed, ErrorCode::GeneralError] {
+            let mapped = frame_send_error(not_connected(), fallback);
+            assert_eq!(mapped.code(), Some(ErrorCode::NotConnected), "{mapped}");
+            assert!(
+                mapped.to_string().contains("reconnect_on_send is off"),
+                "{mapped}"
+            );
+        }
+        // 被服务端以结束会话的原因踢掉之后同样是 NOT_CONNECTED，原因在文本开头
+        let ended = FlareError::localized(
+            ErrorCode::NotConnected,
+            "DEVICE_CONFLICT: the server ended this session; not reconnecting",
+        );
+        let mapped = frame_send_error(ended, ErrorCode::ConnectionFailed);
+        assert_eq!(mapped.code(), Some(ErrorCode::NotConnected));
+        assert!(mapped.to_string().contains("DEVICE_CONFLICT"));
+    }
+
+    /// 连接、网络超时与发送超时一样是 `OPERATION_TIMEOUT`；其余错误按调用方给的兜底码。
+    #[test]
+    fn other_send_errors_map_by_cause() {
+        let timeout = frame_send_error(
+            FlareError::connection_timeout("Negotiation timeout"),
+            ErrorCode::ConnectionFailed,
+        );
+        assert_eq!(timeout.code(), Some(ErrorCode::OperationTimeout));
+        assert!(timeout.to_string().contains("Negotiation timeout"));
+
+        let write_failed =
+            frame_send_error(FlareError::io("broken pipe"), ErrorCode::ConnectionFailed);
+        assert_eq!(write_failed.code(), Some(ErrorCode::ConnectionFailed));
+        assert!(write_failed.to_string().contains("broken pipe"));
+
+        let sync_failed = frame_send_error(
+            FlareError::protocol_error("Response channel closed"),
+            ErrorCode::GeneralError,
+        );
+        assert_eq!(sync_failed.code(), Some(ErrorCode::GeneralError));
+    }
+
+    /// 还没建连（没有 flare-core 客户端）时直发返回 `NOT_CONNECTED`。
+    #[tokio::test]
+    async fn a_direct_send_without_a_client_is_not_connected() {
+        let sender = PacketSender::new(
+            Arc::new(Mutex::new(None)),
+            Arc::new(crate::infrastructure::protocol::ProtobufCodec),
+        );
+        let err = sender
+            .send_ack(&Ack::default())
+            .await
+            .expect_err("no client");
+        assert_eq!(err.code(), Some(ErrorCode::NotConnected), "{err}");
     }
 }

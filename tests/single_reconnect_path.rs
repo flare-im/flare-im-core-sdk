@@ -11,6 +11,8 @@
 //!
 //! 协议竞速（原生端、Tauri 的默认：同时配了 ws_url 与 quic_url）也要走到监视器：QUIC 不可达、
 //! WebSocket 胜出时，选中的连接以错误终止同样报断开。
+//!
+//! 断线期间不经可靠队列的操作（撤回、已读回执）立即以 `NOT_CONNECTED` 失败。
 
 #![cfg(not(target_arch = "wasm32"))]
 
@@ -603,6 +605,63 @@ async fn transport_error_hands_over_to_the_reconnect_watcher(case: &str, quic_ur
         observed.accepted.lock().unwrap().contains(&client_msg_id)
     })
     .await;
+
+    let _ = client.disconnect().await;
+    relay.stop().await;
+    server.stop().await.expect("stop server");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// 断线期间，不经可靠队列的操作（撤回、阅后即焚的已读回执）立即失败，错误码是 `NOT_CONNECTED`，
+/// 应用据此提示未连接、等会话回到 Ready 后再试；输入状态是有损信令，断线时直接丢弃、不报错。
+/// 此前 flare-core 返回的 `NOT_CONNECTED` 被 SDK 一律改成 `CONNECTION_FAILED`。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn operations_outside_the_send_queue_fail_fast_with_not_connected_while_offline() {
+    let gate = Arc::new(AdmitAll::default());
+    let ingest = Arc::new(AcceptAll::default());
+    let (server, server_address) = start_server(gate.clone(), ingest.clone()).await;
+    let relay = Relay::start(server_address).await;
+    let root = data_root("offline-direct-ops");
+    let client = connected_client(&format!("ws://{}", relay.address), &root).await;
+    let (observed, _subscriptions) = Observed::record(&client);
+
+    let client_msg_id = send_text(&client, "sent before the outage").await;
+    wait_until("message accepted", Duration::from_secs(5), || async {
+        observed.accepted.lock().unwrap().contains(&client_msg_id)
+    })
+    .await;
+
+    relay.cut().await;
+    wait_until(
+        "SDK sees the disconnect",
+        Duration::from_secs(5),
+        || async { observed.first_disconnect().is_some() },
+    )
+    .await;
+
+    // 重连监视器最早在断开后 1.6 s 重连：在那之前做完
+    let message = client.message().expect("message api");
+    let started = Instant::now();
+    let recall = message
+        .recall(&client_msg_id)
+        .await
+        .expect_err("recall needs the connection");
+    assert_eq!(recall.code(), Some(ErrorCode::NotConnected), "{recall}");
+    let read = message
+        .mark_read_and_burn(&client_msg_id)
+        .await
+        .expect_err("a read receipt needs the connection");
+    assert_eq!(read.code(), Some(ErrorCode::NotConnected), "{read}");
+    message
+        .typing(CONVERSATION_ID, true)
+        .await
+        .expect("typing is best effort and dropped while offline");
+    assert!(
+        started.elapsed() < Duration::from_secs(1),
+        "operations outside the send queue fail fast: {:?}",
+        started.elapsed()
+    );
+    assert_eq!(relay.accepted(), 1, "none of them reconnects");
 
     let _ = client.disconnect().await;
     relay.stop().await;

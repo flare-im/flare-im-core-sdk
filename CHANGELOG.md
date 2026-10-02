@@ -89,6 +89,13 @@
   接收；协议竞速下（QUIC 不可达、WebSocket 胜出）连接以错误终止时同样由监视器重连。服务端停机用例
   （`tests/server_shutdown_reconnect.rs`）现在也能单独验证监视器的停机暂停：此前旧客户端的惰性重连会
   先把连接恢复。
+- 断线时不经可靠队列的操作（撤回、编辑、删除、表情回应、置顶与标记、已读回执、同步请求、能力包与
+  自定义数据）立即失败，错误码按原因给出：长连接不在时为 `NOT_CONNECTED`（C ABI
+  `FLARE_ERR_NOT_CONNECTED`），连接或网络超时为 `OPERATION_TIMEOUT`，写入失败照旧为
+  `CONNECTION_FAILED`（同步请求为 `GENERAL_ERROR`）。此前 `PacketSender` 把 flare-core 返回的
+  `NOT_CONNECTED` 一律改成 `CONNECTION_FAILED`（同步请求改成 `GENERAL_ERROR`），应用分不清「没连上，
+  等恢复后再试」与「发送途中出错」。输入状态照旧是有损信令，断线时丢弃、返回成功。README 的
+  「Outbox 和同步」一节写明了这些操作的断线行为与应用侧的处理建议。
 - `media.user_download_get_saved_path` 只返回仍在磁盘上的文件：用户删掉或挪走了保存的文件，
   它删掉这条下载记录并返回 `null`，客户端据此把「在文件夹中显示」换回「下载」。
 

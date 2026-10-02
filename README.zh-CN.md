@@ -154,6 +154,18 @@ Contract 源在 `bindings/contract/*.json`；修改后运行 `rtk cargo xtask co
 - 会话列表分页 cursor 使用服务端 string cursor；本地 adapter 只在需要时解析数值水位。
 - `SyncRes` / `EventEnvelope` 当前字段以 `max_conversation_seq`、`next_cursor` 和 oneof payload 为准。
 
+### 断线时不经 outbox 的操作
+
+只有发消息走 outbox。撤回、编辑、删除、表情回应、置顶与标记、已读回执（`mark_read`、`mark_read_and_burn`）、同步请求、能力包与自定义数据都是直发：不排队、不重试。长连接断开期间（包括重连监视器还在退避时）它们立即失败，不会自己重连；重连只走重连监视器一条路径。请按错误码分支，不要解析错误文本：
+
+| 错误码 | 含义 | 应用侧建议 |
+| --- | --- | --- |
+| `NOT_CONNECTED`（C ABI `FLARE_ERR_NOT_CONNECTED`） | 没有可用的连接：已断开、正在重连，或服务端结束了会话（`DEVICE_CONFLICT` / `TENANT_UNAVAILABLE`，同时报 `KickedOff`） | 提示「未连接」，等状态回到 `Ready` 后再试 |
+| `OPERATION_TIMEOUT`（C ABI `FLARE_ERR_OPERATION_TIMEOUT`） | 发送没有在时限内完成 | 提示超时；服务端可能已经生效，先刷新再决定是否重试 |
+| `CONNECTION_FAILED`（同步请求为 `GENERAL_ERROR`；C ABI 目前都报 `FLARE_ERR_INTERNAL`） | 写入失败，例如发送途中连接断开 | 按暂时性失败处理，回到 `Ready` 后重试 |
+
+输入状态是有损信令：断线时直接丢弃，调用照样返回 `Ok`。
+
 ## Bindings
 
 | Binding | 目录 | 验证 |

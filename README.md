@@ -181,6 +181,24 @@ Events uniformly use `SdkEvent`:
 - `SyncRes` / `EventEnvelope` fields are currently authoritative on
   `max_conversation_seq`, `next_cursor`, and the oneof payload.
 
+### Operations outside the outbox while disconnected
+
+Only message sends go through the outbox. Recall, edit, delete, reactions,
+pin/mark, read receipts (`mark_read`, `mark_read_and_burn`), sync requests,
+capability packets and custom data are sent directly: they are not queued and
+not retried. While the long connection is down (including while the reconnect
+watcher is still backing off) they fail at once instead of reconnecting; the
+watcher is the only reconnect path. Branch on the error code, not the message:
+
+| Code | Meaning | Suggested app handling |
+| --- | --- | --- |
+| `NOT_CONNECTED` (C ABI `FLARE_ERR_NOT_CONNECTED`) | No usable connection: disconnected, reconnecting, or the server ended the session (`DEVICE_CONFLICT` / `TENANT_UNAVAILABLE`, reported as `KickedOff`) | Show "not connected"; retry after the state returns to `Ready` |
+| `OPERATION_TIMEOUT` (C ABI `FLARE_ERR_OPERATION_TIMEOUT`) | The send did not complete in time | Show a timeout; the server may still have applied it, so refresh before retrying |
+| `CONNECTION_FAILED` (sync requests: `GENERAL_ERROR`; the C ABI currently reports both as `FLARE_ERR_INTERNAL`) | The write failed, e.g. the connection dropped mid-send | Treat as a transient failure; retry after `Ready` |
+
+Typing indicators are best effort: while disconnected they are dropped and the
+call still returns `Ok`.
+
 ## Bindings
 
 | Binding | Directory | Verification |
