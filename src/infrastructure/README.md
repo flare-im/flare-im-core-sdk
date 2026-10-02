@@ -58,9 +58,14 @@
         → MessageStore.save_batch([failed_msg])   ← 覆盖原乐观行 (server_id=client_msg_id)
         → EventBus MessageEvent::SendFailed
 
-[直发路径]
+[直发路径]（存储不带 PendingSend 仓储时）
     → PacketSender.send_message
     → MessageStore.save_batch([message])   ← 无主键迁移，一次落库
+    没有暂时性重试：不等 SendAck，服务端的暂时性拒绝不会重发；未连接、发送超时直接返回错误
+    （长连接断开后 flare-core 客户端不再自己重连，重连只走会话的重连监视器）。生产登录路径
+    （SQLite、加密 SQLite、Web 的 IndexedDB 存储）都带 PendingSend 仓储、走可靠队列；只有
+    in_memory_empty_im_provider、运行时 StorageKind::Memory、FlareAppClientBuilder 在登录前的
+    默认存储会走直发，供联调与测试使用。
 ```
 
 ### 1.4 消息存储接口与实现位置

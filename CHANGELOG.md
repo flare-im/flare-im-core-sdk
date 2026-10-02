@@ -68,6 +68,10 @@
   只有 `ServerError`，监视器不动，状态停在 Ready、连接却已经死了，要等下一次发送把旧客户端拉起来。
 - 可靠队列：一次发送尝试没能发出去（未连接、写失败、发送超时）的消息，在长连接恢复时立即重发，
   不再等到发送超时（`ack_timeout_secs`，默认 10 s）。重试次数照旧累计。
+- 不经可靠队列的直发路径（存储不带 PendingSend 仓储时）没有暂时性重试，已在
+  `SendMessageCommand::execute` 与 `src/infrastructure/README.md` 注明：生产登录路径（SQLite、加密
+  SQLite、Web 的 IndexedDB）都带 PendingSend 仓储、走可靠队列，只有 `in_memory_empty_im_provider`、
+  运行时 `StorageKind::Memory` 与 `FlareAppClientBuilder` 在登录前的默认存储会走它。
 - 新增回环集成测试 `tests/single_reconnect_path.rs`：经本机 TCP 中继切断连接或注入非法帧，断言断线
   期间的发送不建连、只由监视器在退避后重连一次、全程最多一条连接，断线期间发出的消息在重连后立即被
   接收。服务端停机用例（`tests/server_shutdown_reconnect.rs`）现在也能单独验证监视器的停机暂停：

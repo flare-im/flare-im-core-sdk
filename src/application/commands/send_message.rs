@@ -20,6 +20,13 @@ impl SendMessageCommand {
     }
 
     /// 直接发送并落库（不走可靠队列，仅当未配置 PendingSend Reader/Writer 时使用）
+    ///
+    /// 这条路径没有暂时性重试：发出帧即落库返回，不等 SendAck，服务端的暂时性拒绝不会重发；
+    /// 长连接断开时 flare-core 客户端也不再自己重连，未连接、发送超时直接把错误还给调用方。
+    /// 生产登录路径（`LoginDbKind::Sqlite`、`EncryptedSqlite`、Web 的 `IndexedDb` 存储）都带
+    /// PendingSend 仓储，走 [`Self::execute_via_queue`]；只有不带它的 `StoreProvider`
+    /// （`in_memory_empty_im_provider`、运行时配置 `StorageKind::Memory`、`FlareAppClientBuilder`
+    /// 在 `prepare`/`login` 之前的默认存储）会走到这里，供联调与测试使用。
     pub async fn execute(
         self,
         sender: &Arc<PacketSender>,

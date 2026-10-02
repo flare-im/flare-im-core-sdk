@@ -120,6 +120,7 @@ impl MessageSendUseCase {
                 result: None,
             })
         } else {
+            // 存储不带 PendingSend 仓储时的直发：没有暂时性重试，见 SendMessageCommand::execute。
             SendMessageCommand::new(message)
                 .execute(&self.sender, self.store.as_ref(), &self.chain)
                 .await
