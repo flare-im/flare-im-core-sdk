@@ -49,6 +49,9 @@
         → MessageStore.update_after_ack(client_msg_id, &msg)   ← 原子：删旧行 + 插新行
         → 实现: persistence/sqlite/message_repo.rs (SqliteMessageRepo.update_after_ack)
         → EventBus MessageEvent::SendAck
+    没发出去(未连接/写失败/发送超时):
+        → 计一次尝试，留在发送中，按超时重发
+        → 长连接恢复时（引擎建连后 recover_pending_for_current_user）立即重发，不等超时
     发送失败(超时/重试耗尽):
         → core::reliable_queue::actor check_timeout / try_send_next
         → local_state = { sending: false, failed: true, is_local: true }

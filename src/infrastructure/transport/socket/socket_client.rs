@@ -104,7 +104,11 @@ impl SocketTransport {
             .with_device_info(device)
             .with_format(SerializationFormat::Protobuf)
             .with_tls(self.config.core_tls_config())
-            .with_connect_timeout(Duration::from_secs(self.config.connect_timeout_secs()));
+            .with_connect_timeout(Duration::from_secs(self.config.connect_timeout_secs()))
+            // 重连只走会话的重连监视器（新建 FlareClient）。flare-core 客户端默认会在断开后的下一次
+            // 发送时自己重连：两条路径并行时，旧客户端带着建连时的令牌连上，监视器又新建一个，同一
+            // 用户出现两条连接（网关按设备冲突处理），且旧客户端连上后没有重连后的同步。
+            .with_reconnect_on_send(false);
 
         if let Some(secs) = self.config.reconnect_interval_secs {
             builder = builder.with_reconnect_interval(Duration::from_secs(secs));

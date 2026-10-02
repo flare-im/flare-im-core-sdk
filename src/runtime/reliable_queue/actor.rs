@@ -109,6 +109,10 @@ struct QueueState {
 struct InFlightSend {
     entry: PendingSendVo,
     deadline_ms: u64,
+    /// 上一次发送尝试没能把帧交出去（未连接、写失败、发送超时）。连接恢复（
+    /// [`recover_pending_for_current_user`]）时立即重发，不必等到 `deadline_ms`：长连接断开后
+    /// 发送直接失败，不再由传输层自己重连，重连只走会话的重连监视器。
+    send_failed: bool,
 }
 
 struct AwaitingDurableAck {
@@ -556,6 +560,7 @@ fn dispatch_send_attempt(st: &mut QueueState, entry: PendingSendVo, retries: u32
         InFlightSend {
             entry: entry.clone(),
             deadline_ms: deadline_after(st.timeout_duration),
+            send_failed: false,
         },
     );
 
@@ -621,6 +626,7 @@ async fn handle_send_attempt_finished(
                 InFlightSend {
                     entry,
                     deadline_ms: deadline_after(st.timeout_duration),
+                    send_failed: true,
                 },
             );
         }
@@ -742,6 +748,24 @@ async fn recover_pending_for_current_user(st: &mut QueueState) -> Result<Vec<Str
     }
     affected.extend(orphan_ids);
 
+    // 上一次尝试没能发出去的消息：连接刚恢复，立即重发（重试次数照旧累计），不等到超时。
+    // 只按超时重发时，断线期间发出的消息要在重连之后再等一个完整的超时（默认 120 s）。
+    let unsent = st
+        .in_flight
+        .iter()
+        .filter(|(_, in_flight)| in_flight.send_failed)
+        .map(|(client_msg_id, _)| client_msg_id.clone())
+        .collect::<Vec<_>>();
+    if !unsent.is_empty() {
+        debug!(
+            count = unsent.len(),
+            "reliable queue: resending entries whose last attempt never left the client"
+        );
+        for client_msg_id in &unsent {
+            st.in_flight.remove(client_msg_id);
+        }
+    }
+
     affected.sort();
     affected.dedup();
     try_send_next(st).await?;
@@ -806,6 +830,7 @@ async fn check_timeout(st: &mut QueueState) -> Result<()> {
                 InFlightSend {
                     entry,
                     deadline_ms: in_flight.deadline_ms,
+                    send_failed: in_flight.send_failed,
                 },
             );
         }
@@ -912,6 +937,7 @@ async fn reconcile_in_flight_terminal_states(st: &mut QueueState) -> Result<bool
                     InFlightSend {
                         entry,
                         deadline_ms: in_flight.deadline_ms,
+                        send_failed: in_flight.send_failed,
                     },
                 );
             }
@@ -1135,6 +1161,7 @@ async fn try_send_next(st: &mut QueueState) -> Result<()> {
                             InFlightSend {
                                 entry,
                                 deadline_ms: deadline_after(st.timeout_duration),
+                                send_failed: false,
                             },
                         );
                     }
@@ -2061,5 +2088,82 @@ mod adaptive_window_tests {
         assert!(window.note_congestion());
         assert_eq!(window.current(), 1);
         assert!(!window.note_congestion());
+    }
+}
+
+#[cfg(test)]
+mod unsent_resend_tests {
+    use super::{ReliableSendQueue, ReliableSendQueueConfig};
+    use crate::infrastructure::persistence::in_memory_im_provider;
+    use crate::infrastructure::protocol::{Codec, PacketSender, ProtobufCodec};
+    use crate::kernel::event::EventBus;
+    use crate::model::IMMessage;
+    use crate::spi::metrics::MetricsRecorder;
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+    use tokio::sync::{Mutex, RwLock};
+
+    fn counter(metrics: &MetricsRecorder, key: &str) -> u64 {
+        metrics.snapshot().counters.get(key).copied().unwrap_or(0)
+    }
+
+    async fn wait_for_counter(metrics: &MetricsRecorder, key: &str, value: u64) {
+        let started = Instant::now();
+        while counter(metrics, key) < value {
+            assert!(
+                started.elapsed() < Duration::from_secs(2),
+                "{key} did not reach {value}: {:?}",
+                metrics.snapshot().counters
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+
+    /// 长连接断开时发送直接失败（传输层不再自己重连）：消息留在发送中，不立刻重试；连接恢复、
+    /// 恢复当前账号的队列时立即重发，不等到超时（默认 120 s，这里配 60 s）。
+    #[tokio::test]
+    async fn unsent_attempts_are_resent_as_soon_as_the_connection_is_back() {
+        let stores = in_memory_im_provider();
+        let (pending_reader, pending_writer) = stores.pending_sends().expect("pending sends");
+        let metrics = MetricsRecorder::enabled(None);
+        let queue = ReliableSendQueue::new(ReliableSendQueueConfig {
+            pending_reader,
+            pending_writer,
+            // 没有长连接客户端：每次发送尝试都立即以「未连接」失败
+            sender: Arc::new(PacketSender::new(
+                Arc::new(Mutex::new(None)),
+                Arc::new(ProtobufCodec) as Arc<dyn Codec>,
+            )),
+            message_store: stores.messages.clone(),
+            conversation_store: stores.conversations.clone(),
+            current_user_id: Arc::new(RwLock::new("u1".to_string())),
+            bus: EventBus::new(),
+            timeout_secs: Some(60),
+            max_retries: Some(3),
+            max_in_flight: Some(32),
+            metrics: metrics.clone(),
+        });
+        let mut message = IMMessage::new(flare_proto::common::Message::default());
+        message.client_msg_id = "client-offline-1".to_string();
+        message.conversation_id = "conv-offline".to_string();
+        message.sender_id = "u1".to_string();
+        queue.enqueue(message).await.expect("enqueue");
+
+        // 第一次尝试没发出去
+        wait_for_counter(&metrics, "reliable_queue.send_retry_total", 1).await;
+        let resend = "reliable_queue.send_attempt_total{retry=1}";
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert_eq!(
+            counter(&metrics, resend),
+            0,
+            "no busy retry while the connection is down"
+        );
+
+        // 连接恢复：引擎建连后恢复当前账号的队列
+        queue
+            .recover_pending_for_current_user()
+            .await
+            .expect("recover pending");
+        wait_for_counter(&metrics, resend, 1).await;
     }
 }

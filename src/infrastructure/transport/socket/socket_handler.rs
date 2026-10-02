@@ -23,6 +23,9 @@ use crate::infrastructure::protocol::{Codec, MAX_DOWNLINK_PAYLOAD_BYTES};
 use crate::kernel::event::{ConnectionEvent, SdkEvent};
 use crate::runtime::Dispatcher;
 
+/// 连接以错误终止时，SDK 上报的断开原因的前缀，后面是 flare-core 给出的错误。
+pub(crate) const TRANSPORT_ERROR_REASON_PREFIX: &str = "transport error: ";
+
 /// Socket 推送处理器 — 实现 flare-core `MessageListener`
 pub struct SocketHandler {
     dispatcher: Arc<Dispatcher>,
@@ -267,7 +270,15 @@ impl MessageListener for SocketHandler {
                 .bus()
                 .publish(SdkEvent::Connection(ConnectionEvent::ServerError {
                     code: -1,
-                    message: msg,
+                    message: msg.clone(),
+                }));
+            // flare-core 的连接错误是终止事件：连接已不可用，之后不会再补一个断开。SDK 关掉了
+            // flare-core 客户端发送前的自行重连，重连只走会话的重连监视器，这里按断开上报让它接手；
+            // 否则状态停在 Ready、连接却已经死了，下一次发送也只会失败。
+            self.dispatcher
+                .bus()
+                .publish(SdkEvent::Connection(ConnectionEvent::Disconnected {
+                    reason: format!("{TRANSPORT_ERROR_REASON_PREFIX}{msg}"),
                 }));
         }
         Ok(())
@@ -390,5 +401,63 @@ mod tests {
         handler.on_message(&frame).await.unwrap();
 
         assert!(kicked_off_reasons(&mut rx).await.is_empty());
+    }
+
+    async fn connection_events(
+        rx: &mut crate::kernel::event::EventReceiver,
+    ) -> Vec<ConnectionEvent> {
+        let mut events = Vec::new();
+        while let Ok(Ok(event)) =
+            tokio::time::timeout(std::time::Duration::from_millis(100), rx.recv()).await
+        {
+            if let SdkEvent::Connection(event) = event {
+                events.push(event);
+            }
+        }
+        events
+    }
+
+    /// 连接以错误终止（flare-core 的 `Error` 是终止事件，不会再补断开）：除了原有的 ServerError，
+    /// 还要报一次断开，会话的重连监视器才会接手。SDK 关掉了 flare-core 客户端发送前的自行重连，
+    /// 少了这一条，状态会停在 Ready、连接却已经死了。
+    #[tokio::test]
+    async fn transport_errors_are_reported_as_disconnects() {
+        let bus = EventBus::new();
+        let mut rx = bus.subscribe();
+        let handler = handler(&bus);
+
+        handler
+            .on_error("FlareError { code: ConnectionFailed, message: \"WebSocket protocol error: Encountered invalid opcode: 3\" }")
+            .await
+            .unwrap();
+        let events = connection_events(&mut rx).await;
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, ConnectionEvent::ServerError { .. })),
+            "{events:?}"
+        );
+        let reasons: Vec<&str> = events
+            .iter()
+            .filter_map(|event| match event {
+                ConnectionEvent::Disconnected { reason } => Some(reason.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(reasons.len(), 1, "{events:?}");
+        assert!(
+            reasons[0].starts_with(TRANSPORT_ERROR_REASON_PREFIX),
+            "{reasons:?}"
+        );
+
+        // 令牌过期仍按终局事件处理，不额外报断开
+        handler.on_error("token expired").await.unwrap();
+        let events = connection_events(&mut rx).await;
+        assert!(
+            events
+                .iter()
+                .all(|event| !matches!(event, ConnectionEvent::Disconnected { .. })),
+            "{events:?}"
+        );
     }
 }

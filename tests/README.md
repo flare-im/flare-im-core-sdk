@@ -16,6 +16,7 @@ rtk cargo test --workspace
 - `core_sdk_contract_test.rs`：当前 `IMClient::builder()` 装配合同、未登录写侧拒绝语义、内存 message/conversation store 对当前 `IMMessage` / `Conversation` 模型的保存与查询。
 - `transient_rejection_reconnect.rs`：本机回环（127.0.0.1）起 flare-core WebSocket 服务端，驱动 SDK 走完整的建连与重连循环：服务端暂时性拒绝（`SERVICE_UNAVAILABLE`）时退避重连直到放行，`TENANT_UNAVAILABLE` 时终止会话、不再重连；只经 builder 配置的重连间隔与次数同样作用于 SDK 的重连循环。
 - `server_shutdown_reconnect.rs`：同样的回环服务端停机（先下发 CLOSE(`SERVER_SHUTDOWN`)），SDK 看到带停机原因的断开，同一端口上的新实例起来后在 1–5 s 的随机等待后重连回到 Ready，而不是按 30 s 的重连间隔退避；会话不终止。
+- `single_reconnect_path.rs`：同样的回环服务端，SDK 经本机 TCP 中继连上；切断中继上的连接或注入非法帧：断线期间的发送不建连、只由会话的重连监视器在退避后重连一次、全程最多一条连接；断线期间发出的消息在重连后立即被接收；连接以错误终止时监视器同样接手。
 - `transient_send_rejection_retry.rs`：同样的回环服务端按脚本回 SendAck：暂时性拒绝（`UNAVAILABLE`）时 SDK 退避后用同一个 `client_msg_id` 重发直到接收，本地只有一条消息；次数以 `ack_max_retries` 为界；`TENANT_UNAVAILABLE` 立即判失败、不重发。
 - crate 内 `#[cfg(test)]` 单元测试：消息内容 oneof 映射、dispatcher、sync adapter、event applier、reliable queue、SQLite repository 等靠近领域和协议边界的行为。
 - `bindings/shared` crate test：binding contract route discovery 覆盖生成 API ids 与 vNext runtime routes。

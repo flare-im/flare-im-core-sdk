@@ -125,6 +125,23 @@ fn heartbeat_verdict_disconnects_schedule_reconnect() {
     ));
 }
 
+/// 连接以错误终止时 SocketHandler 报的断开：重连监视器要接手（flare-core 客户端不再自己重连）。
+#[test]
+fn transport_error_disconnects_schedule_reconnect() {
+    use crate::infrastructure::transport::socket::socket_handler::TRANSPORT_ERROR_REASON_PREFIX;
+    for error in [
+        "FlareError { code: ConnectionFailed, message: \"WebSocket protocol error: Encountered invalid opcode: 3\" }",
+        "FlareError { code: ProtocolError, message: \"QUIC connection closed by peer with a protocol error: PROTOCOL_VIOLATION\" }",
+        "connection lost: timed out",
+    ] {
+        let reason = format!("{TRANSPORT_ERROR_REASON_PREFIX}{error}");
+        assert!(
+            !should_skip_reconnect_for_disconnect_reason(&reason),
+            "{reason}"
+        );
+    }
+}
+
 #[test]
 fn generate_core_token_requires_explicit_signing_config() {
     let err = IMClient::generate_core_token(CoreTokenConfig {
