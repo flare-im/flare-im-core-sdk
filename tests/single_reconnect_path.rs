@@ -12,7 +12,8 @@
 //! 协议竞速（原生端、Tauri 的默认：同时配了 ws_url 与 quic_url）也要走到监视器：QUIC 不可达、
 //! WebSocket 胜出时，选中的连接以错误终止同样报断开。
 //!
-//! 断线期间不经可靠队列的操作（撤回、已读回执）立即以 `NOT_CONNECTED` 失败。
+//! 过期的断开事件（传输层其实连着）不让监视器报 Reconnecting；断线期间不经可靠队列的操作（撤回、
+//! 已读回执）立即以 `NOT_CONNECTED` 失败。
 
 #![cfg(not(target_arch = "wasm32"))]
 
@@ -601,6 +602,56 @@ async fn transport_error_hands_over_to_the_reconnect_watcher(case: &str, quic_ur
 
     // 重连后的连接可用
     let client_msg_id = send_text(&client, "after the reconnect").await;
+    wait_until("message accepted", Duration::from_secs(5), || async {
+        observed.accepted.lock().unwrap().contains(&client_msg_id)
+    })
+    .await;
+
+    let _ = client.disconnect().await;
+    relay.stop().await;
+    server.stop().await.expect("stop server");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// 过期的断开事件（它在队列里排着的时候，之前的一次重连已经成功）：传输层仍连着时，重连监视器不重连，
+/// 也不报 Reconnecting，状态停在 Ready。此前监视器照常报一次 Reconnecting，退避之后才发现已经连上，
+/// 界面上平白闪一次「重连中」。这里直接向会话总线发一条这样的断开事件来模拟。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_stale_disconnect_does_not_announce_a_reconnect() {
+    let gate = Arc::new(AdmitAll::default());
+    let ingest = Arc::new(AcceptAll::default());
+    let (server, server_address) = start_server(gate.clone(), ingest.clone()).await;
+    let relay = Relay::start(server_address).await;
+    let root = data_root("stale-disconnect");
+    let client = connected_client(&format!("ws://{}", relay.address), &root).await;
+    let (observed, _subscriptions) = Observed::record(&client);
+
+    client
+        .bus()
+        .await
+        .expect("session bus")
+        .publish(SdkEvent::Connection(ConnectionEvent::Disconnected {
+            reason: "transport error: left over from an earlier connection".to_string(),
+        }));
+    wait_until(
+        "the stale disconnect is delivered",
+        Duration::from_secs(2),
+        || async { observed.first_disconnect().is_some() },
+    )
+    .await;
+
+    // 重连间隔 2 s：第一次重连若会发生，在 1.6–2.4 s 之间
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    assert!(
+        observed.reconnecting().is_empty(),
+        "a stale disconnect must not announce a reconnect: {:?}",
+        observed.reconnecting()
+    );
+    assert_eq!(client.state(), SdkState::Ready);
+    assert_eq!(relay.accepted(), 1, "no reconnect");
+
+    // 连接照常可用
+    let client_msg_id = send_text(&client, "after a stale disconnect").await;
     wait_until("message accepted", Duration::from_secs(5), || async {
         observed.accepted.lock().unwrap().contains(&client_msg_id)
     })

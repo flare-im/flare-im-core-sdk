@@ -159,6 +159,27 @@ impl IMClient {
                 if should_skip_reconnect_for_disconnect_reason(&reason) {
                     continue;
                 }
+                // 过期的断开事件：它在队列里排着的时候，之前的一次重连已经成功（或网络切换的主动重连
+                // 已经连上）。传输层已连上、引擎处于 Connected/Ready 时不重连、也不先报 Reconnecting，
+                // 只把引擎状态重发一次（状态快照监视器刚按这条断开把快照置成了 Disconnected）。此前照常
+                // 报一次 Reconnecting，退避之后才发现已经连上，界面上平白闪一次「重连中」。
+                {
+                    let Some(stale_check_client) = client.upgrade() else {
+                        break;
+                    };
+                    if let Some(restored_state) = stale_check_client
+                        .restore_state_after_stale_reconnect(generation)
+                        .await
+                    {
+                        tracing::debug!(
+                            session_generation = generation,
+                            reason = %reason,
+                            ?restored_state,
+                            "ignored a stale disconnect because transport is already connected"
+                        );
+                        continue;
+                    }
+                }
                 // 服务端停机（CLOSE(SERVER_SHUTDOWN)、WebSocket 1001、QUIC 应用关闭带来的原因）：
                 // 第一次重连前短暂随机等待，而不是按错误的退避节奏。
                 let mut after_server_shutdown =
@@ -610,15 +631,17 @@ impl IMClient {
         self.load_session_generation_snapshot() == generation
     }
 
-    /// The transport may already be connected when the reconnect watcher wakes
-    /// from its backoff: the `Disconnected` it reacted to was stale (left in the
-    /// queue by an attempt that later succeeded), or another path reconnected
-    /// meanwhile (a network-change reconnect). The transport no longer
-    /// reconnects on its own before a send. In that race the watcher has already
-    /// published `Reconnecting`, but the engine is still authoritatively
-    /// `Connected`/`Ready`; simply leaving the loop strands every UI on the stale
-    /// reconnecting snapshot. Republish the engine state before leaving so
-    /// current and future subscribers converge on the usable session.
+    /// The transport may already be connected when the reconnect watcher looks
+    /// at a `Disconnected`: the event was stale (left in the queue by an attempt
+    /// that later succeeded), or another path reconnected meanwhile (a
+    /// network-change reconnect). The transport no longer reconnects on its own
+    /// before a send. The watcher checks this before announcing `Reconnecting`
+    /// and again after each backoff. Either way the state snapshot watcher has
+    /// already stored `Disconnected` for that event (and the watcher may have
+    /// published `Reconnecting`), while the engine is still authoritatively
+    /// `Connected`/`Ready`; simply ignoring the event strands every UI on the
+    /// stale snapshot. Republish the engine state so current and future
+    /// subscribers converge on the usable session.
     async fn restore_state_after_stale_reconnect(&self, generation: u64) -> Option<SdkState> {
         let g = self.inner.read().await;
         if g.session_generation != generation {
