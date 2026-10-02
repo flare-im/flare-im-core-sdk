@@ -311,9 +311,8 @@ async fn connect_client(ws_url: &str, quic_url: Option<String>, data_root: &Path
     config.ack_timeout_secs = Some(60);
     if let Some(quic_url) = quic_url {
         config.quic_url = Some(quic_url);
-        // 开了 quic 特性时，不可达的 QUIC 握手要等到连接超时；竞速收尾会等它，超过竞速时限（5 s）
-        // 整个竞速就失败，所以这里配得比竞速时限短。没开 quic 特性时 QUIC 立即失败。
-        config.connect_timeout_secs = Some(2);
+        // 连接超时用默认值（30 s）：开了 quic 特性时不可达的 QUIC 握手要等到连接超时，竞速不等它，
+        // WebSocket 一建好就胜出。没开 quic 特性时 QUIC 立即失败。
         assert!(
             config.effective_protocol_race_order().is_some(),
             "ws_url + quic_url under the default policy is a protocol race"
@@ -560,8 +559,9 @@ async fn transport_error_hands_over_to_the_reconnect_watcher(case: &str, quic_ur
     let relay = Relay::start(server_address).await;
     let root = data_root(case);
     let client = connect_client(&format!("ws://{}", relay.address), quic_url, &root).await;
-    // 一次建连经中继的连接数：单协议 1；竞速胜出的 WebSocket 客户端发 CONNECT 时还会重新拨号，为 2
+    // 一次建连经中继只拨一次：竞速胜出的 WebSocket 直接在竞速建好的连接上发 CONNECT，不重新拨号
     let dials_per_connect = relay.accepted();
+    assert_eq!(dials_per_connect, 1, "one dial per connect");
     let (observed, _subscriptions) = Observed::record(&client);
 
     let corrupted_at = Instant::now();
