@@ -66,6 +66,9 @@
 - 连接以错误终止时（flare-core 的连接错误是终止事件，例如读到非法帧、读写出错），SDK 除了原有的
   `ServerError` 还发一次 `Disconnected { reason: "transport error: …" }`，重连监视器据此重连。此前
   只有 `ServerError`，监视器不动，状态停在 Ready、连接却已经死了，要等下一次发送把旧客户端拉起来。
+  协议竞速（同时配了 `ws_url` 与 `quic_url`，原生端与 Tauri 的默认）下也一样，这需要不再按文本过滤
+  竞速错误的 flare-core：此前 flare-core 在竞速模式下把选中的 WebSocket 连接的协议错误当作关闭未选中
+  连接的正常错误吞掉，SDK 什么也收不到；发送前重连关掉之后，再没有别的路径把连接拉起来。
 - 可靠队列：一次发送尝试没能发出去（未连接、写失败、发送超时）的消息，在长连接恢复时立即重发，
   不再等到发送超时（`ack_timeout_secs`，默认 10 s）。重试次数照旧累计。
 - 不经可靠队列的直发路径（存储不带 PendingSend 仓储时）没有暂时性重试，已在
@@ -74,8 +77,9 @@
   运行时 `StorageKind::Memory` 与 `FlareAppClientBuilder` 在登录前的默认存储会走它。
 - 新增回环集成测试 `tests/single_reconnect_path.rs`：经本机 TCP 中继切断连接或注入非法帧，断言断线
   期间的发送不建连、只由监视器在退避后重连一次、全程最多一条连接，断线期间发出的消息在重连后立即被
-  接收。服务端停机用例（`tests/server_shutdown_reconnect.rs`）现在也能单独验证监视器的停机暂停：
-  此前旧客户端的惰性重连会先把连接恢复。
+  接收；协议竞速下（QUIC 不可达、WebSocket 胜出）连接以错误终止时同样由监视器重连。服务端停机用例
+  （`tests/server_shutdown_reconnect.rs`）现在也能单独验证监视器的停机暂停：此前旧客户端的惰性重连会
+  先把连接恢复。
 - `media.user_download_get_saved_path` 只返回仍在磁盘上的文件：用户删掉或挪走了保存的文件，
   它删掉这条下载记录并返回 `null`，客户端据此把「在文件夹中显示」换回「下载」。
 

@@ -8,6 +8,9 @@
 //! 连上后也没有重连后的同步。连接以错误终止时 SDK 只收到一个 ServerError，监视器不会动，只能等下一次
 //! 发送把旧客户端拉起来。现在断开后的发送直接失败，重连只由监视器发起；断线期间发出的消息在重连后
 //! 立即重发，不等发送超时。
+//!
+//! 协议竞速（原生端、Tauri 的默认：同时配了 ws_url 与 quic_url）也要走到监视器：QUIC 不可达、
+//! WebSocket 胜出时，选中的连接以错误终止同样报断开。
 
 #![cfg(not(target_arch = "wasm32"))]
 
@@ -252,25 +255,32 @@ impl Relay {
     }
 
     /// 连接以错误终止：停止向客户端转发，注入一个保留操作码的 WebSocket 帧（客户端判协议错误），
-    /// 再断开服务端一侧。客户端一侧的套接字不主动关，让客户端先读到这一帧。
+    /// 再断开服务端一侧。客户端一侧的套接字不主动关，让客户端先读到这一帧。已经结束的连接（例如竞速
+    /// 时建好又被客户端丢掉的那条）跳过。
     async fn corrupt(&self) -> Vec<Arc<tokio::sync::Mutex<OwnedWriteHalf>>> {
         let mut kept = Vec::new();
         for connection in self.connections.lock().await.drain(..) {
+            if connection.downstream.is_finished() {
+                connection.upstream.abort();
+                continue;
+            }
             connection.downstream.abort();
             let _ = connection.downstream.await;
-            {
+            let injected = {
                 let mut to_client = connection.to_client.lock().await;
                 // FIN + 操作码 3（保留的数据帧），服务端到客户端不加掩码，载荷长度 0
-                to_client
-                    .write_all(&[0x83, 0x00])
-                    .await
-                    .expect("inject a malformed frame");
-                to_client.flush().await.expect("flush the malformed frame");
-            }
+                to_client.write_all(&[0x83, 0x00]).await.is_ok() && to_client.flush().await.is_ok()
+            };
             tokio::time::sleep(Duration::from_millis(200)).await;
             connection.upstream.abort();
-            kept.push(connection.to_client);
+            if injected {
+                kept.push(connection.to_client);
+            }
         }
+        assert!(
+            !kept.is_empty(),
+            "no live connection to inject a malformed frame into"
+        );
         kept
     }
 
@@ -289,8 +299,23 @@ fn data_root(case: &str) -> PathBuf {
 
 /// 重连间隔 2 s：监视器第一次重连在断开后 1.6–2.4 s 之间；发送超时 60 s，远长于用例时长。
 async fn connected_client(ws_url: &str, data_root: &Path) -> IMClient {
+    connect_client(ws_url, None, data_root).await
+}
+
+/// `quic_url` 给了就走协议竞速，顺序取 SDK 默认（QUIC 第一、WebSocket 第二）。
+async fn connect_client(ws_url: &str, quic_url: Option<String>, data_root: &Path) -> IMClient {
     let mut config = SdkConfig::new(ws_url);
     config.ack_timeout_secs = Some(60);
+    if let Some(quic_url) = quic_url {
+        config.quic_url = Some(quic_url);
+        // 开了 quic 特性时，不可达的 QUIC 握手要等到连接超时；竞速收尾会等它，超过竞速时限（5 s）
+        // 整个竞速就失败，所以这里配得比竞速时限短。没开 quic 特性时 QUIC 立即失败。
+        config.connect_timeout_secs = Some(2);
+        assert!(
+            config.effective_protocol_race_order().is_some(),
+            "ws_url + quic_url under the default policy is a protocol race"
+        );
+    }
     let client = IMClient::builder()
         .config(config)
         .stores(in_memory_im_provider())
@@ -505,12 +530,35 @@ async fn a_send_during_an_outage_waits_for_the_reconnect_watcher() {
 /// 此前 SDK 只收到 ServerError，监视器不动，状态停在 Ready、连接却已经死了。
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_transport_error_hands_over_to_the_reconnect_watcher() {
+    transport_error_hands_over_to_the_reconnect_watcher("transport-error", None).await;
+}
+
+/// 协议竞速下 QUIC 不可达（UDP 端口上没有服务）、WebSocket 胜出，选中的连接以错误终止：同样交给监视器。
+/// 此前 flare-core 在竞速模式下按文本把这个错误当作关闭未选中连接的正常错误吞掉，SDK 什么也收不到，
+/// 停在 Ready、连接却已经死了；发送前重连关掉之后，再没有别的路径把它拉起来。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_transport_error_in_a_protocol_race_hands_over_to_the_reconnect_watcher() {
+    let unreachable_quic = std::net::UdpSocket::bind("127.0.0.1:0")
+        .expect("bind a probe UDP socket")
+        .local_addr()
+        .expect("probe address")
+        .port();
+    transport_error_hands_over_to_the_reconnect_watcher(
+        "race-transport-error",
+        Some(format!("quic://127.0.0.1:{unreachable_quic}")),
+    )
+    .await;
+}
+
+async fn transport_error_hands_over_to_the_reconnect_watcher(case: &str, quic_url: Option<String>) {
     let gate = Arc::new(AdmitAll::default());
     let ingest = Arc::new(AcceptAll::default());
     let (server, server_address) = start_server(gate.clone(), ingest.clone()).await;
     let relay = Relay::start(server_address).await;
-    let root = data_root("transport-error");
-    let client = connected_client(&format!("ws://{}", relay.address), &root).await;
+    let root = data_root(case);
+    let client = connect_client(&format!("ws://{}", relay.address), quic_url, &root).await;
+    // 一次建连经中继的连接数：单协议 1；竞速胜出的 WebSocket 客户端发 CONNECT 时还会重新拨号，为 2
+    let dials_per_connect = relay.accepted();
     let (observed, _subscriptions) = Observed::record(&client);
 
     let corrupted_at = Instant::now();
@@ -528,10 +576,10 @@ async fn a_transport_error_hands_over_to_the_reconnect_watcher() {
     );
 
     wait_until("Ready again", Duration::from_secs(10), || async {
-        relay.accepted() >= 2 && client.state() == SdkState::Ready
+        relay.accepted() >= 2 * dials_per_connect && client.state() == SdkState::Ready
     })
     .await;
-    let second = relay.accepted_at()[1];
+    let second = relay.accepted_at()[dials_per_connect];
     assert!(
         second.duration_since(corrupted_at) >= Duration::from_millis(1_500),
         "the watcher reconnects after its backoff: {:?}",
@@ -542,7 +590,11 @@ async fn a_transport_error_hands_over_to_the_reconnect_watcher() {
         Some(1)
     );
     tokio::time::sleep(Duration::from_millis(500)).await;
-    assert_eq!(relay.accepted(), 2, "exactly one reconnect");
+    assert_eq!(
+        relay.accepted(),
+        2 * dials_per_connect,
+        "exactly one reconnect"
+    );
     assert!(observed.kicked_off.lock().unwrap().is_empty());
 
     // 重连后的连接可用
