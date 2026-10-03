@@ -157,6 +157,12 @@ class JniNativeBridge(
                 descriptor.transport == "contract-invoke-json" && descriptor.cApi == "flare_sdk_invoke_json" -> {
                     nativeSdkInvokeJson(requireHandle(), descriptor.operation, encodeJson(request), contextId)
                 }
+                // `media.*` 的 JSON dispatch（缓存、签名地址、下载位置、保存到本机……）：JNI 层没有单独接
+                // flare_media_dispatch_json，走同一个 C 入口 flare_sdk_invoke_json —— 核心按 `media.` 前缀
+                // 路由到同一份媒体 dispatch。此前这里落到 else 返回 -1，Android 上所有媒体 dispatch 调用都失败。
+                descriptor.transport == "media-dispatch-json" && descriptor.cApi == "flare_media_dispatch_json" -> {
+                    nativeSdkInvokeJson(requireHandle(), descriptor.operation, encodeJson(request), contextId)
+                }
                 descriptor.transport == "dispatch-json" && descriptor.cApi == "flare_message_build_json" -> {
                     nativeMessageBuildJson(requireHandle(), encodeJson(request), contextId)
                 }
@@ -172,6 +178,19 @@ class JniNativeBridge(
                     stringField(request, "userId"),
                     stringField(request, "token"),
                     storeConfigJsonFromLogin(request),
+                    contextId,
+                )
+                // 热启动的两半：此前没接，落到 else 返回 -1，「本地先出图、后台再连」从来没成功过。
+                descriptor.cApi == "flare_sdk_prepare" -> nativeSdkPrepare(
+                    requireHandle(),
+                    stringField(request, "userId"),
+                    storeConfigJsonFromLogin(request),
+                    contextId,
+                )
+                descriptor.cApi == "flare_sdk_connect" -> nativeSdkConnect(
+                    requireHandle(),
+                    stringField(request, "userId"),
+                    stringField(request, "token"),
                     contextId,
                 )
                 descriptor.cApi == "flare_sdk_logout" -> nativeSdkLogout(requireHandle(), contextId)
@@ -219,6 +238,8 @@ class JniNativeBridge(
     private external fun nativeSdkInit(handle: Long, requestJson: String, contextId: Long): Int
     private external fun nativeSdkUninit(handle: Long, contextId: Long): Int
     private external fun nativeSdkLogin(handle: Long, userId: String, token: String, storeConfigJson: String, contextId: Long): Int
+    private external fun nativeSdkPrepare(handle: Long, userId: String, storeConfigJson: String, contextId: Long): Int
+    private external fun nativeSdkConnect(handle: Long, userId: String, token: String, contextId: Long): Int
     private external fun nativeSdkLogout(handle: Long, contextId: Long): Int
     private external fun nativeSdkUpdateAccessToken(handle: Long, accessToken: String, tenantId: String, contextId: Long): Int
     private external fun nativeSdkCurrentUserId(handle: Long, contextId: Long): Int
