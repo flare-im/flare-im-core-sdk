@@ -26,7 +26,17 @@ const REQUIRED_PATHS: &[&str] = &[
     "packages/flare-core-harmony-cangjie-sdk/cjpm.toml",
     "packages/flare-core-typescript-sdk/package.json",
     "packages/flare-core-typescript-sdk/tsconfig.json",
-    "packages/shared/contract-tests",
+    // 契约用例不在共享目录：golden 样例在 sdk-spec/golden，消费它们的用例跟着各包走
+    // （sdk-spec/README.md「Contract tests」）。原先点名的 packages/shared/contract-tests
+    // 只有一份「Planned structure」的 README，已删除并列入 RETIRED_PATHS。
+    "sdk-spec/golden/requests",
+    "sdk-spec/golden/responses",
+    "sdk-spec/golden/events",
+    "packages/flare-core-typescript-sdk/test/wire_codec_contract.test.ts",
+    "packages/flare-core-typescript-sdk/test/events_api_contract.test.ts",
+    "packages/flare-core-typescript-sdk/test/capabilities_api_contract.test.ts",
+    "packages/flare-core-flutter-sdk/test/wire_codec_message_test.dart",
+    "packages/flare-core-flutter-sdk/test/default_flare_im_client_direct_ffi_test.dart",
     "docs/client-api-reference.md",
     "docs/client-model-reference.md",
     "sdk-spec/GENERATED.md",
@@ -255,6 +265,7 @@ const RETIRED_PATHS: &[&str] = &[
     "packages/flare-core-typescript-sdk/src/callbacks.ts",
     "packages/flare-core-typescript-sdk/src/bridge/tauriNativeBridge.ts",
     "packages/flare-core-typescript-sdk/src/adapters/web/legacy",
+    "packages/shared/contract-tests",
 ];
 
 pub(crate) fn verify_structure(root: &Path) -> Result<()> {

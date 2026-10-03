@@ -86,6 +86,13 @@ pub(crate) fn verify_spec(root: &Path) -> Result<()> {
         "MediaCacheEntry",
         "MediaCacheStats",
         "MediaResolvedAccess",
+        // 下载位置与保存到本机的两个应答（`media.user_download_get_directory` /
+        // `user_download_set_directory` / `download_to_user_directory`）与上面的
+        // MediaCacheStats 同类：核心自有的值对象（`UserDownloadDirectoryVo`、
+        // `UserFileDownloadResultVo`）经 media-dispatch-json 原样交出，各端生成为不透明的
+        // JSON 对象。加这三个方法时没登记在这里，verify-spec 从那以后一直是红的。
+        "UserDownloadDirectory",
+        "UserFileDownloadResult",
         "SdkVersion",
         "UserPresence",
     ]
