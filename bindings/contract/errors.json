@@ -44,7 +44,7 @@
       {
         "name": "FLARE_ERR_NETWORK_ERROR",
         "code": 5,
-        "coreCodes": ["NetworkError"],
+        "coreCodes": ["NetworkError", "ConnectionFailed", "ConnectionClosed", "NetworkConnectionLost"],
         "meaning": "transport or network failure"
       },
       {
