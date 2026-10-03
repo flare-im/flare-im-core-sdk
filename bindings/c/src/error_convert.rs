@@ -76,6 +76,27 @@ mod tests {
         assert_eq!(c_code_of(&SdkError::system("no code")), FLARE_ERR_INTERNAL);
     }
 
+    /// 建连或网络层超时与操作超时同属超时：交给宿主时是 `FLARE_ERR_OPERATION_TIMEOUT`；连接被拒、
+    /// 网络不可达（HTTP 请求根本没发出去）与正在重连都是网络类失败，是 `FLARE_ERR_NETWORK_ERROR`。
+    /// 原先这五个核心码没有映射，落到 `FLARE_ERR_INTERNAL`。
+    #[test]
+    fn timeout_and_unreachable_errors_map_to_timeout_and_network_error() {
+        for err in [
+            SdkError::connection_timeout("negotiation timeout"),
+            SdkError::localized(ErrorCode::NetworkTimeout, "read timeout"),
+            SdkError::localized(ErrorCode::OperationTimeout, "operation timeout"),
+        ] {
+            assert_eq!(c_code_of(&err), FLARE_ERR_OPERATION_TIMEOUT, "{err:?}");
+        }
+        for err in [
+            SdkError::localized(ErrorCode::ConnectionRefused, "refused"),
+            SdkError::localized(ErrorCode::NetworkUnreachable, "offline"),
+            SdkError::localized(ErrorCode::ConnectionReconnecting, "reconnecting"),
+        ] {
+            assert_eq!(c_code_of(&err), FLARE_ERR_NETWORK_ERROR, "{err:?}");
+        }
+    }
+
     /// 生成的映射与 `contract/errors.json` 逐条一致：契约里每个 `coreCodes` 都是真实的错误码，
     /// 且 `error_code_to_c` 把它映射到所在条目的 C 码。改了契约却没重新生成会在这里失败。
     #[test]
@@ -101,6 +122,6 @@ mod tests {
                 checked += 1;
             }
         }
-        assert!(checked >= 15, "only {checked} core codes in the contract");
+        assert!(checked >= 22, "only {checked} core codes in the contract");
     }
 }

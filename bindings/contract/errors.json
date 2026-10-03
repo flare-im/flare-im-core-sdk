@@ -38,13 +38,13 @@
       {
         "name": "FLARE_ERR_OPERATION_TIMEOUT",
         "code": 4,
-        "coreCodes": ["OperationTimeout"],
+        "coreCodes": ["OperationTimeout", "ConnectionTimeout", "NetworkTimeout"],
         "meaning": "operation timed out"
       },
       {
         "name": "FLARE_ERR_NETWORK_ERROR",
         "code": 5,
-        "coreCodes": ["NetworkError", "ConnectionFailed", "ConnectionClosed", "NetworkConnectionLost"],
+        "coreCodes": ["NetworkError", "ConnectionFailed", "ConnectionClosed", "NetworkConnectionLost", "ConnectionRefused", "NetworkUnreachable", "ConnectionReconnecting"],
         "meaning": "transport or network failure"
       },
       {
