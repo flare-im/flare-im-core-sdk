@@ -5,6 +5,8 @@ use flare_im_core_sdk::prelude::*;
 mod dev_token;
 #[path = "common/diagnose.rs"]
 mod diagnose;
+#[path = "common/smoke_config.rs"]
+mod smoke_config;
 
 #[tokio::main]
 async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
@@ -17,7 +19,10 @@ async fn run() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let secret = dev_token::require()?;
     let client = IMClient::new();
     client
-        .init(Some("e2e-unread-regression".into()), None)
+        .init(
+            Some("e2e-unread-regression".into()),
+            smoke_config::overlay()?,
+        )
         .await?;
     let token = IMClient::generate_core_token(CoreTokenConfig {
         secret: secret.clone(),

@@ -5,6 +5,10 @@ use flare_im_core_sdk::prelude::*;
 mod dev_token;
 #[path = "common/diagnose.rs"]
 mod diagnose;
+#[path = "common/send_confirmation.rs"]
+mod send_confirmation;
+#[path = "common/smoke_config.rs"]
+mod smoke_config;
 
 #[tokio::main]
 async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
@@ -16,7 +20,9 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
 async fn run() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let secret = dev_token::require()?;
     let client = IMClient::new();
-    client.init(Some("e2e-message-ops".into()), None).await?;
+    client
+        .init(Some("e2e-message-ops".into()), smoke_config::overlay()?)
+        .await?;
     let token = IMClient::generate_core_token(CoreTokenConfig {
         secret: secret.clone(),
         issuer: "flare-im-core".to_string(),
@@ -42,8 +48,10 @@ async fn run() -> std::result::Result<(), Box<dyn std::error::Error>> {
             &[],
         )
         .await?;
-    let ack = apis.message_api.send_no_oss(message).await?;
-    println!("sent: {:?}", ack);
+    let confirmation =
+        send_confirmation::SendConfirmation::observe(&client, &message.client_msg_id)?;
+    apis.message_api.send_no_oss(message).await?;
+    println!("persisted: {:?}", confirmation.wait().await?);
 
     let list = apis
         .message_api

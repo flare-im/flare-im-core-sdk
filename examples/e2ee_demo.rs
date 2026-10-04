@@ -10,8 +10,8 @@
 //!
 //! 1. **发出去的是密文** —— 明文经 `ContentEncryptionInterceptor` 换成 Placeholder
 //!    信封，原文不出现在线格式里。
-//! 2. **服务端存的是密文** —— 从服务端把这条消息拉回来，打印它的落库形态：
-//!    类型是 Placeholder，载荷是密文，服务端无从解读。
+//! 2. **等待持久化回执** —— 真正收到 Persisted ACK 后检查 SDK 消息视图。
+//!    list 优先本地缓存，不能冒充服务端回读；Core 的容器 smoke 会独立查数据库。
 //! 3. **只有持钥方能还原** —— 用 Bob 的密钥解出原文；用第三方的密钥解不开。
 //!
 //! 密钥协商在这里是**手工**的（两端各自生成 X25519 密钥、直接交换公钥）。
@@ -27,6 +27,10 @@ use flare_im_core_sdk::prelude::*;
 mod dev_token;
 #[path = "common/diagnose.rs"]
 mod diagnose;
+#[path = "common/send_confirmation.rs"]
+mod send_confirmation;
+#[path = "common/smoke_config.rs"]
+mod smoke_config;
 
 const CONVERSATION_PEER: &str = "e2ee_bob";
 
@@ -60,7 +64,9 @@ async fn run() -> std::result::Result<(), Box<dyn std::error::Error>> {
         .stores(in_memory_im_provider())
         .conversation_encryption(resolver, alice_codec)
         .build()?;
-    client.init(Some("e2ee-demo".into()), None).await?;
+    client
+        .init(Some("e2ee-demo".into()), smoke_config::overlay()?)
+        .await?;
 
     let token = IMClient::generate_core_token(CoreTokenConfig {
         secret,
@@ -91,10 +97,13 @@ async fn run() -> std::result::Result<(), Box<dyn std::error::Error>> {
         .message_build_api
         .create_text(&conversation.conversation_id, plaintext, false, &[])
         .await?;
+    let confirmation =
+        send_confirmation::SendConfirmation::observe(&client, &message.client_msg_id)?;
     apis.message_api.send_no_oss(message).await?;
+    confirmation.wait().await?;
 
-    // ── 4. 从服务端拉回来，看它到底存了什么 ──────────────────────────────
-    // before_seq = 0 表示从最新开始取
+    // ── 4. 检查 ACK 后的 SDK 消息视图（优先本地缓存，并非独立服务端读） ──
+    // Core 的 smoke runner 另查真实 PostgreSQL，证明服务端实际只存密文。
     let stored = apis
         .message_api
         .list(&conversation.conversation_id, 0, 1)
@@ -106,11 +115,11 @@ async fn run() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let envelope =
         encrypted_content_envelope(&stored).ok_or("这条消息不是加密信封 —— 拦截器没有生效")?;
 
-    println!("服务端消息类型  : {:?}（不是 Text）", stored.message_type);
-    println!("服务端可读文本  : {:?}", stored.text_preview);
-    println!("服务端载荷      : {} 字节密文", envelope.ciphertext.len());
+    println!("ACK 后视图类型  : {:?}（不是 Text）", stored.message_type);
+    println!("ACK 后文本预览  : {:?}", stored.text_preview);
+    println!("ACK 后视图载荷  : {} 字节密文", envelope.ciphertext.len());
 
-    // 明文绝不能出现在服务端拿到的任何字节里
+    // 消息视图不含明文；服务端独立落盘核查由 Core 容器 smoke 完成。
     let leaked = envelope
         .ciphertext
         .windows(plaintext.len())
@@ -141,7 +150,9 @@ async fn run() -> std::result::Result<(), Box<dyn std::error::Error>> {
     if !readable.contains(plaintext) {
         return Err("Bob 解出的内容与原文不一致".into());
     }
-    println!("\n✅ E2EE 链路验证通过：服务端全程只见密文，仅持钥方可还原");
+    println!(
+        "\n✅ 已收到持久化 ACK，SDK 密文视图与持钥方解密验证通过；服务端独立核查须运行 Core 容器 smoke"
+    );
     Ok(())
 }
 

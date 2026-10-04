@@ -5,6 +5,8 @@ use std::time::Duration;
 mod dev_token;
 #[path = "common/diagnose.rs"]
 mod diagnose;
+#[path = "common/smoke_config.rs"]
+mod smoke_config;
 
 #[tokio::main]
 async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
@@ -17,7 +19,10 @@ async fn run() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let secret = dev_token::require()?;
     let client = IMClient::new();
     client
-        .init(Some("e2e-full-event-observer".into()), None)
+        .init(
+            Some("e2e-full-event-observer".into()),
+            smoke_config::overlay()?,
+        )
         .await?;
     let token = IMClient::generate_core_token(CoreTokenConfig {
         secret: secret.clone(),
@@ -39,6 +44,17 @@ async fn run() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let _any = client.on_any(|event| {
         println!("sdk event: {:?}", event);
     })?;
+    // An isolated Core-only fixture verifies zero discovered plugins before
+    // setting this explicit marker. N/A is not inferred from an auth/IO error.
+    // Do not put Cell private keys in this SDK or relax Capability's verification.
+    match std::env::var("FLARE_SMOKE_SFU_ABSENT").ok().as_deref() {
+        Some("true") => {
+            println!("sfu join: N/A — fixture explicitly has no SFU plugin; RTC not tested");
+            return Ok(());
+        }
+        Some(_) => return Err("FLARE_SMOKE_SFU_ABSENT must be true or unset".into()),
+        None => {}
+    }
     // media-control 侧把 call_id / room_id 当 UUID 解析，传 "call_full" / "room_a"
     // 会被直接拒。示例用固定 UUID 而不是随机值，好让重复运行落在同一个房间、
     // 结果可复现。
