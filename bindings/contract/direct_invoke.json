@@ -200,6 +200,41 @@
       "skip_client": true,
       "body": "\n            let api = session.media_api().await?;\n            let saved = api.download_to_user_directory(dispatch_support::build_user_download_request(request.clone())?).await?;\n        ",
       "json_expr": "saved"
+    },
+    {
+      "route": "sdk.update_push_token",
+      "result": "json",
+      "skip_client": true,
+      "body": "\nlet input = dispatch_support::from_value::<flare_im_core_sdk::client::push_lifecycle::PushTokenInput>(request.clone(), \"push token input\")?;\nlet response = session.client().update_push_token(input).await?;\n",
+      "json_expr": "response"
+    },
+    {
+      "route": "sdk.clear_push_token",
+      "result": "json",
+      "skip_client": true,
+      "body": "\nlet input = dispatch_support::from_value::<flare_im_core_sdk::client::push_lifecycle::ClearPushTokenRequest>(request.clone(), \"clear push token\")?;\nlet response = session.client().clear_push_token(&input.provider).await?;\n",
+      "json_expr": "response"
+    },
+    {
+      "route": "sdk.set_push_permission",
+      "result": "json",
+      "skip_client": true,
+      "body": "\nlet input = dispatch_support::from_value::<flare_im_core_sdk::client::push_lifecycle::SetPushPermissionRequest>(request.clone(), \"push permission\")?;\nlet response = session.client().set_push_permission(input.allowed).await?;\n",
+      "json_expr": "response"
+    },
+    {
+      "route": "sdk.reconcile_push",
+      "result": "json",
+      "skip_client": true,
+      "body": "\nlet response = session.client().reconcile_push().await?;\n",
+      "json_expr": "response"
+    },
+    {
+      "route": "sdk.push_status",
+      "result": "json",
+      "skip_client": true,
+      "body": "\nlet response = session.client().push_status();\n",
+      "json_expr": "response"
     }
   ]
 }

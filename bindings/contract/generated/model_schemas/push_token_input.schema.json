@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "platform": {
+      "description": "Native platform: android, ios or harmony.",
+      "type": "string"
+    },
+    "provider": {
+      "description": "OS delivery provider: fcm, apns or getui.",
+      "type": "string"
+    },
+    "token": {
+      "description": "OS-issued token. Never log or persist outside protected native storage.",
+      "type": "string"
+    }
+  },
+  "required": [
+    "provider",
+    "platform",
+    "token"
+  ],
+  "title": "PushTokenInput",
+  "type": "object",
+  "xFlareGeneratedBy": "flare-im-core-sdk-xtask",
+  "xFlareRustType": "PushTokenInput"
+}

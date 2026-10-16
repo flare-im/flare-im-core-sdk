@@ -56,6 +56,26 @@ struct CoreSchemaSpec {
 
 const CORE_SCHEMA_SPECS: &[CoreSchemaSpec] = &[
     CoreSchemaSpec {
+        group: "session",
+        file_name: "push_token_input.schema.json",
+        sdk_name: "PushTokenInput",
+    },
+    CoreSchemaSpec {
+        group: "session",
+        file_name: "clear_push_token_request.schema.json",
+        sdk_name: "ClearPushTokenRequest",
+    },
+    CoreSchemaSpec {
+        group: "session",
+        file_name: "set_push_permission_request.schema.json",
+        sdk_name: "SetPushPermissionRequest",
+    },
+    CoreSchemaSpec {
+        group: "session",
+        file_name: "push_lifecycle_status.schema.json",
+        sdk_name: "PushLifecycleStatus",
+    },
+    CoreSchemaSpec {
         group: "conversations",
         file_name: "conversation_type.schema.json",
         sdk_name: "ConversationType",

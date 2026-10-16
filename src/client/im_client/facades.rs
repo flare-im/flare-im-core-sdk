@@ -113,7 +113,9 @@ impl IMClient {
             let mut g = self.inner.write().await;
             g.connect_token = Some(token.clone());
         }
-        self.sync_gateway_http_context(tenant_id).await
+        self.sync_gateway_http_context(tenant_id).await?;
+        self.attach_push_session().await;
+        Ok(())
     }
 
     /// 获取消息 API 门面；未连接时返回 `NotConnected`。

@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "provider": {
+      "description": "Provider whose current desired OS token is invalidated.",
+      "type": "string"
+    }
+  },
+  "required": [
+    "provider"
+  ],
+  "title": "ClearPushTokenRequest",
+  "type": "object",
+  "xFlareGeneratedBy": "flare-im-core-sdk-xtask",
+  "xFlareRustType": "ClearPushTokenRequest"
+}

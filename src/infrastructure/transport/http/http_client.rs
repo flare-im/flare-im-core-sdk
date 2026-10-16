@@ -572,6 +572,9 @@ impl HttpClient {
         const HTTP_REQUEST_TIMEOUT_SECS: u64 = 30;
         let mut builder = reqwest::Client::builder()
             .no_proxy()
+            // Auth and revoke-only capabilities are endpoint-bound. Core APIs
+            // must return an explicit final response, never forward a write body.
+            .redirect(reqwest::redirect::Policy::none())
             .connect_timeout(Duration::from_secs(HTTP_CONNECT_TIMEOUT_SECS))
             .timeout(Duration::from_secs(HTTP_REQUEST_TIMEOUT_SECS));
         let mut tls_config_error = None;
@@ -680,6 +683,22 @@ impl HttpClient {
     pub fn with_core_bearer(mut self) -> Self {
         self.core_bearer = true;
         self
+    }
+
+    /// A lifecycle operation must never borrow the next account's mutable bearer.
+    pub(crate) async fn pinned_core_auth(&self, token: String, user: &str, app: &str) -> Self {
+        let mut client = self.clone();
+        let context = Arc::new(HttpRequestContext::new());
+        context.set_auth_context(token, None).await;
+        context.ensure_identity(user, app).await;
+        client.context = Some(context);
+        client.core_bearer = true;
+        client
+    }
+    pub(crate) fn anonymous_clone(&self) -> Self {
+        let mut client = self.clone();
+        client.context = None;
+        client
     }
 
     async fn headers_from(&self, context: &HttpRequestContext) -> HashMap<String, String> {

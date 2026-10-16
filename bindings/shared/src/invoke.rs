@@ -472,6 +472,46 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn native_push_routes_are_available_before_login_and_strictly_typed() {
+        let session = DirectOnlySession::new();
+        for (id, body, expected) in [
+            (
+                "sdk.update_push_token",
+                r#"{"provider":"fcm","platform":"android","token":"os-fixture"}"#,
+                "disabled",
+            ),
+            (
+                "sdk.set_push_permission",
+                r#"{"allowed":true}"#,
+                "waitingForSession",
+            ),
+            ("sdk.reconcile_push", "{}", "waitingForSession"),
+            (
+                "sdk.clear_push_token",
+                r#"{"provider":"fcm"}"#,
+                "waitingForSession",
+            ),
+            ("sdk.push_status", "{}", "waitingForSession"),
+        ] {
+            let response = invoke_api_id_json(&session, id, body).await.unwrap();
+            let value = binding_response_to_value(response);
+            assert_eq!(value["state"], expected);
+            assert_eq!(value["registeredProviders"], 0);
+            assert!(value.get("token").is_none());
+        }
+        for body in [
+            r#"{"allowed":"true"}"#,
+            r#"{"allowed":true,"userId":"other"}"#,
+        ] {
+            assert!(
+                invoke_api_id_json(&session, "sdk.set_push_permission", body)
+                    .await
+                    .is_err()
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn direct_connection_state_returns_canonical_enum_string() {
         let session = DirectOnlySession::new();
 

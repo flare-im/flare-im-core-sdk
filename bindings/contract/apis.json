@@ -159,6 +159,36 @@
           "core": "IMClient::disconnect",
           "c": "flare_sdk_disconnect",
           "tauri": null
+        },
+        {
+          "id": "sdk.update_push_token",
+          "core": "IMClient::update_push_token",
+          "c": "flare_sdk_invoke_json",
+          "tauri": null
+        },
+        {
+          "id": "sdk.clear_push_token",
+          "core": "IMClient::clear_push_token",
+          "c": "flare_sdk_invoke_json",
+          "tauri": null
+        },
+        {
+          "id": "sdk.set_push_permission",
+          "core": "IMClient::set_push_permission",
+          "c": "flare_sdk_invoke_json",
+          "tauri": null
+        },
+        {
+          "id": "sdk.reconcile_push",
+          "core": "IMClient::reconcile_push",
+          "c": "flare_sdk_invoke_json",
+          "tauri": null
+        },
+        {
+          "id": "sdk.push_status",
+          "core": "IMClient::push_status",
+          "c": "flare_sdk_invoke_json",
+          "tauri": null
         }
       ]
     },

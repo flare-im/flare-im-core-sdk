@@ -700,6 +700,10 @@ impl IMClient {
             let _ = engine.disconnect().await;
             return Err(session_ended_during_reconnect());
         }
+        drop(g);
+        if result.is_ok() {
+            self.attach_push_session().await;
+        }
         result
     }
 
@@ -753,6 +757,7 @@ impl IMClient {
         {
             tracing::warn!(%err, "disconnect after terminal event failed");
         }
+        self.reconcile_push_in_background();
         true
     }
 }

@@ -224,6 +224,35 @@ pub(crate) fn emit_platform_adapter_files(root: &Path, check: bool) -> Result<()
 
 fn platform_adapter_targets(root: &Path, spec: &Value) -> Vec<GeneratedTextTarget> {
     let mut targets = Vec::new();
+    // Root runtime composition is source-owned too. Keeping it in templates
+    // prevents generated SessionApi growth from leaving native clients abstract.
+    for (path, body) in [
+        (
+            "packages/flare-core-flutter-sdk/lib/src/adapter/default_flare_im_client.dart",
+            include_str!("../../templates/flutter-adapter/client.dart"),
+        ),
+        (
+            "packages/flare-core-android-sdk/src/main/kotlin/com/flare/im/adapter/DefaultFlareImClient.kt",
+            include_str!("../../templates/android-adapter/client.kt"),
+        ),
+        (
+            "packages/flare-core-apple-sdk/Sources/FlareCoreAppleSDK/Adapter/DefaultFlareImClient.swift",
+            include_str!("../../templates/apple-adapter/client.swift"),
+        ),
+        (
+            "packages/flare-core-harmony-arkts-sdk/src/main/ets/adapter/DefaultFlareImClient.ets",
+            include_str!("../../templates/harmony-arkts-adapter/client.ets"),
+        ),
+        (
+            "packages/flare-core-harmony-cangjie-sdk/src/adapter/DefaultFlareImClient.cj",
+            include_str!("../../templates/harmony-cangjie-adapter/client.cj"),
+        ),
+    ] {
+        targets.push(GeneratedTextTarget {
+            path: root.join(path),
+            body: body.to_string(),
+        });
+    }
     targets.extend(platform_wire_codec_targets(root));
     if let Some(builder) = emit_dart_adapter_message_builder(spec) {
         targets.push(GeneratedTextTarget {

@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "configuredProviders": {
+      "description": "Number of OS providers configured in memory.",
+      "format": "uint32",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "lastError": {
+      "description": "Fixed safe error category; no token, URL, bearer or driver detail.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "pendingRevocations": {
+      "description": "Unresolved revoke intents, including writes with an unknown result.",
+      "format": "uint32",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "registeredProviders": {
+      "description": "Providers confirmed for the current session, not vendor delivery.",
+      "format": "uint32",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "state": {
+      "description": "disabled, waitingForSession, waitingForToken, pending or registered.",
+      "type": "string"
+    }
+  },
+  "required": [
+    "state",
+    "configuredProviders",
+    "registeredProviders",
+    "pendingRevocations"
+  ],
+  "title": "PushLifecycleStatus",
+  "type": "object",
+  "xFlareGeneratedBy": "flare-im-core-sdk-xtask",
+  "xFlareRustType": "PushLifecycleStatus"
+}

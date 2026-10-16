@@ -5,7 +5,10 @@ use std::{
     path::Path,
 };
 
-use crate::{arr, emit_errors, fail, include_path, include_paths, load_json, spec_dir, str_field};
+use crate::{
+    all_spec_enums, all_spec_models, arr, emit_errors, fail, include_path, include_paths,
+    load_expanded_client_spec, load_json, spec_dir, str_field,
+};
 
 pub(crate) fn verify_spec(root: &Path) -> Result<()> {
     let mut errors = Vec::new();
@@ -39,6 +42,19 @@ pub(crate) fn verify_spec(root: &Path) -> Result<()> {
             enum_names.insert(str_field(enum_value, "name").to_string());
         }
     }
+    // Core-owned schema models are not duplicated in the handwritten overlay.
+    // Validate methods against the same resolved catalog used by every generator.
+    let resolved = load_expanded_client_spec(root)?;
+    model_names.extend(
+        all_spec_models(&resolved)
+            .into_iter()
+            .map(|v| str_field(v, "name").to_owned()),
+    );
+    enum_names.extend(
+        all_spec_enums(&resolved)
+            .into_iter()
+            .map(|v| str_field(v, "name").to_owned()),
+    );
     let known_model_types = model_names
         .union(&enum_names)
         .cloned()

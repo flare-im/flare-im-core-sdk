@@ -45,6 +45,11 @@ pub const DIRECT_INVOKE_ROUTES: &[&str] = &[
     "media.cancel_user_file_download",
     #[cfg(not(target_arch = "wasm32"))]
     "media.download_file_to_downloads",
+    "sdk.update_push_token",
+    "sdk.clear_push_token",
+    "sdk.set_push_permission",
+    "sdk.reconcile_push",
+    "sdk.push_status",
 ];
 
 pub fn is_direct_invoke_route(route: &str) -> bool {
@@ -84,6 +89,11 @@ pub fn is_direct_invoke_route(route: &str) -> bool {
         "media.cancel_user_file_download" => true,
         #[cfg(not(target_arch = "wasm32"))]
         "media.download_file_to_downloads" => true,
+        "sdk.update_push_token" => true,
+        "sdk.clear_push_token" => true,
+        "sdk.set_push_permission" => true,
+        "sdk.reconcile_push" => true,
+        "sdk.push_status" => true,
         _ => false,
     }
 }
@@ -414,6 +424,35 @@ pub async fn dispatch_direct(
                 )?)
                 .await?;
             dispatch_support::json(saved)
+        }
+        "sdk.update_push_token" => {
+            let input = dispatch_support::from_value::<
+                flare_im_core_sdk::client::push_lifecycle::PushTokenInput,
+            >(request.clone(), "push token input")?;
+            let response = session.client().update_push_token(input).await?;
+            dispatch_support::json(response)
+        }
+        "sdk.clear_push_token" => {
+            let input = dispatch_support::from_value::<
+                flare_im_core_sdk::client::push_lifecycle::ClearPushTokenRequest,
+            >(request.clone(), "clear push token")?;
+            let response = session.client().clear_push_token(&input.provider).await?;
+            dispatch_support::json(response)
+        }
+        "sdk.set_push_permission" => {
+            let input = dispatch_support::from_value::<
+                flare_im_core_sdk::client::push_lifecycle::SetPushPermissionRequest,
+            >(request.clone(), "push permission")?;
+            let response = session.client().set_push_permission(input.allowed).await?;
+            dispatch_support::json(response)
+        }
+        "sdk.reconcile_push" => {
+            let response = session.client().reconcile_push().await?;
+            dispatch_support::json(response)
+        }
+        "sdk.push_status" => {
+            let response = session.client().push_status();
+            dispatch_support::json(response)
         }
         _ => Err(crate::binding_operation_not_supported(route)),
     }

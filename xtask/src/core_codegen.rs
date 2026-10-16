@@ -2060,6 +2060,22 @@ struct SchemaCatalog {
 impl SchemaCatalog {
     fn new() -> Self {
         let artifacts = vec![
+            schema_artifact::<flare_im_core_sdk::client::push_lifecycle::PushTokenInput>(
+                "push_token_input.schema.json",
+                "PushTokenInput",
+            ),
+            schema_artifact::<flare_im_core_sdk::client::push_lifecycle::ClearPushTokenRequest>(
+                "clear_push_token_request.schema.json",
+                "ClearPushTokenRequest",
+            ),
+            schema_artifact::<flare_im_core_sdk::client::push_lifecycle::SetPushPermissionRequest>(
+                "set_push_permission_request.schema.json",
+                "SetPushPermissionRequest",
+            ),
+            schema_artifact::<flare_im_core_sdk::client::push_lifecycle::PushLifecycleStatus>(
+                "push_lifecycle_status.schema.json",
+                "PushLifecycleStatus",
+            ),
             schema_artifact::<SdkConversationType>(
                 "conversation_type.schema.json",
                 "ConversationType",

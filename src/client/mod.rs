@@ -10,6 +10,7 @@ pub mod events;
 pub mod im_client;
 pub mod lifecycle;
 pub mod profile_center;
+pub mod push_lifecycle;
 pub mod token_provider;
 
 pub use crate::extension::{

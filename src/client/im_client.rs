@@ -42,6 +42,7 @@ const HEARTBEAT_APP_STATE_BACKGROUND: u8 = 1;
 mod async_accessors;
 mod extension_lifecycle;
 mod facades;
+mod push_api;
 mod session_lifecycle;
 mod session_watchers;
 mod sync_api;
@@ -195,6 +196,7 @@ pub struct IMClient {
     network_reconnect_in_flight: Arc<AtomicBool>,
     startup_convergence_in_flight: Arc<AtomicBool>,
     session_end: Arc<SessionEndSignal>,
+    push_lifecycle: Arc<crate::client::push_lifecycle::PushLifecycle>,
 }
 
 #[derive(Clone)]
@@ -207,6 +209,7 @@ pub(crate) struct WeakIMClient {
     network_reconnect_in_flight: Weak<AtomicBool>,
     startup_convergence_in_flight: Weak<AtomicBool>,
     session_end: Weak<SessionEndSignal>,
+    push_lifecycle: Weak<crate::client::push_lifecycle::PushLifecycle>,
 }
 
 impl WeakIMClient {
@@ -220,6 +223,7 @@ impl WeakIMClient {
             network_reconnect_in_flight: self.network_reconnect_in_flight.upgrade()?,
             startup_convergence_in_flight: self.startup_convergence_in_flight.upgrade()?,
             session_end: self.session_end.upgrade()?,
+            push_lifecycle: self.push_lifecycle.upgrade()?,
         })
     }
 }
@@ -240,6 +244,7 @@ impl IMClient {
             network_reconnect_in_flight: Arc::new(AtomicBool::new(false)),
             startup_convergence_in_flight: Arc::new(AtomicBool::new(false)),
             session_end: Arc::new(SessionEndSignal::new()),
+            push_lifecycle: Arc::new(crate::client::push_lifecycle::PushLifecycle::default()),
         }
     }
 
@@ -264,6 +269,7 @@ impl IMClient {
             network_reconnect_in_flight: Arc::new(AtomicBool::new(false)),
             startup_convergence_in_flight: Arc::new(AtomicBool::new(false)),
             session_end: Arc::new(SessionEndSignal::new()),
+            push_lifecycle: Arc::new(crate::client::push_lifecycle::PushLifecycle::default()),
         }
     }
 
@@ -277,6 +283,7 @@ impl IMClient {
             network_reconnect_in_flight: Arc::downgrade(&self.network_reconnect_in_flight),
             startup_convergence_in_flight: Arc::downgrade(&self.startup_convergence_in_flight),
             session_end: Arc::downgrade(&self.session_end),
+            push_lifecycle: Arc::downgrade(&self.push_lifecycle),
         }
     }
 
@@ -363,6 +370,7 @@ impl IMClient {
     }
 
     fn clear_session_snapshot(&self) {
+        self.push_lifecycle.detach();
         self.session_snapshot.store(None);
     }
 
@@ -488,7 +496,7 @@ impl IMClient {
 
     /// 初始化运行环境与 SDK 配置快照。
     ///
-    /// - 仅更新本地配置，不建连；
+    /// - 更新本地配置，不建立 IM 连接；配置稳定设备和 Core HTTP 后可恢复旧推送撤销；
     /// - 若传入 `sdkConfig.dataUrl`，会解析为数据根；未传则使用 SDK 默认系统数据目录；
     /// - 会确保数据根存在，登录时按用户自动创建 SQLite 与媒体缓存目录；
     /// - 后续 [`Self::login`] 会基于该配置构建实际存储与连接参数。
@@ -497,6 +505,7 @@ impl IMClient {
         environment: Option<String>,
         sdk_config: Option<SdkConfigOverlay>,
     ) -> Result<()> {
+        self.push_lifecycle.detach();
         let mut g = self.inner.write().await;
         g.environment = environment;
         let data_root =
@@ -514,6 +523,9 @@ impl IMClient {
         })?;
         g.data_root = Some(data_root);
         g.sdk_config = sdk_config;
+        drop(g);
+        self.configure_push_transport().await;
+        self.reconcile_push_in_background();
         Ok(())
     }
 
@@ -536,6 +548,9 @@ impl IMClient {
         let mut g = self.inner.write().await;
         if let Some(id) = requested {
             g.sdk_config.get_or_insert_with(Default::default).device_id = Some(id.clone());
+            drop(g);
+            self.configure_push_transport().await;
+            self.reconcile_push_in_background();
             return Some(id);
         }
         g.sdk_config

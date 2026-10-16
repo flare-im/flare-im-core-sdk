@@ -48,6 +48,7 @@ impl IMClient {
                 .set_app_in_background(matches!(state, HeartbeatAppState::Background));
         }
         if matches!(state, HeartbeatAppState::Foreground) {
+            self.reconcile_push_in_background();
             let client = self.clone();
             let generation = self.load_session_generation_snapshot();
             spawn_im_background(async move {
@@ -116,6 +117,7 @@ impl IMClient {
             .await;
         self.finish_network_reconnect();
         reconnect_result?;
+        self.reconcile_push_in_background();
         Ok(true)
     }
 
@@ -174,6 +176,7 @@ impl IMClient {
         };
         self.clear_session_snapshot();
         self.store_state_snapshot(SdkState::Disconnected);
+        self.reconcile_push_in_background();
         if let Some(engine) = engine.as_ref() {
             engine.deactivate_local_session().await;
         }
@@ -248,6 +251,7 @@ impl IMClient {
         };
         self.clear_session_snapshot();
         self.store_state_snapshot(SdkState::Disconnected);
+        self.reconcile_push_in_background();
         if let Some(engine) = engine.as_ref() {
             engine.deactivate_local_session().await;
         }
@@ -524,6 +528,7 @@ impl IMClient {
             context.ensure_identity(user_id, &tenant_id).await;
         }
         self.notify_extension_connect_best_effort(user_id).await;
+        self.attach_push_session().await;
         if install_watcher {
             self.spawn_state_snapshot_watcher(current_generation, bus.clone());
             self.spawn_terminal_session_watcher(current_generation, bus.clone());
@@ -556,6 +561,7 @@ impl IMClient {
         };
         self.clear_session_snapshot();
         self.store_state_snapshot(SdkState::Disconnected);
+        self.reconcile_push_in_background();
         if let Some(context) = http_request_context.as_ref() {
             context.set_auth_context(String::new(), None).await;
             context.clear_gateway_context().await;

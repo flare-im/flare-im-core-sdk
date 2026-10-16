@@ -1,0 +1,472 @@
+use super::*;
+use base64::Engine;
+use serde_json::{Value, json};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+
+#[derive(Default)]
+struct Model {
+    id: String,
+    active: bool,
+    puts: usize,
+    revokes: usize,
+    auth: Vec<String>,
+    lost_reply: bool,
+    offline: bool,
+    hold: bool,
+    journal_root: Option<PathBuf>,
+}
+struct Fixture {
+    base: String,
+    model: Arc<Mutex<Model>>,
+    entered: Arc<tokio::sync::Notify>,
+    release: Arc<tokio::sync::Notify>,
+    task: tokio::task::JoinHandle<()>,
+    root: PathBuf,
+}
+impl Drop for Fixture {
+    fn drop(&mut self) {
+        self.task.abort();
+        let _ = std::fs::remove_dir_all(&self.root);
+    }
+}
+impl Fixture {
+    async fn new() -> Self {
+        let root = std::env::temp_dir().join(format!("flare-push-sdk-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&root).unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let model = Arc::new(Mutex::new(Model::default()));
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        let (m, e, r) = (model.clone(), entered.clone(), release.clone());
+        let task = tokio::spawn(async move {
+            loop {
+                let (socket, _) = listener.accept().await.unwrap();
+                let mut reader = BufReader::new(socket);
+                let mut line = String::new();
+                reader.read_line(&mut line).await.unwrap();
+                let method = line.split_whitespace().next().unwrap().to_owned();
+                let mut len = 0;
+                let mut auth = String::new();
+                loop {
+                    let mut header = String::new();
+                    reader.read_line(&mut header).await.unwrap();
+                    if header.trim().is_empty() {
+                        break;
+                    }
+                    let (name, value) = header.trim().split_once(':').unwrap();
+                    if name.eq_ignore_ascii_case("content-length") {
+                        len = value.trim().parse().unwrap();
+                    }
+                    if name.eq_ignore_ascii_case("authorization") {
+                        auth = value.trim().to_owned();
+                    }
+                }
+                assert!(len <= 16384);
+                let mut body = vec![0; len];
+                reader.read_exact(&mut body).await.unwrap();
+                let value: Value = if body.is_empty() {
+                    Value::Null
+                } else {
+                    serde_json::from_slice(&body).unwrap()
+                };
+                let (status, data, lost, hold) = {
+                    let mut m = m.lock().unwrap();
+                    m.auth.push(auth);
+                    if m.offline {
+                        (503, json!({}), false, false)
+                    } else if method == "PUT" {
+                        let intent = std::fs::read_to_string(
+                            m.journal_root
+                                .as_ref()
+                                .unwrap()
+                                .join("push-revocations.json"),
+                        )
+                        .unwrap();
+                        let intents: Vec<Intent> = serde_json::from_str(&intent).unwrap();
+                        assert!(
+                            intents
+                                .iter()
+                                .any(|i| digest(&i.revocation_token) == value["bindingId"])
+                        );
+                        assert!(!intent.contains("OS_PRIVATE") && !intent.contains("Bearer"));
+                        m.id = value["bindingId"].as_str().unwrap().into();
+                        m.active = true;
+                        m.puts += 1;
+                        let lost = std::mem::take(&mut m.lost_reply);
+                        (200, json!({"success":true,"bindingId":m.id}), lost, m.hold)
+                    } else if method == "GET" {
+                        (
+                            200,
+                            json!({"version":m.id,"currentBindingId":if m.active { m.id.clone() } else { String::new() },"state":if m.active {"active"}else{"absent"}}),
+                            false,
+                            false,
+                        )
+                    } else {
+                        assert_eq!(method, "POST");
+                        assert!(
+                            m.auth.last().unwrap().is_empty(),
+                            "revocation must not retain a login bearer"
+                        );
+                        m.revokes += 1;
+                        if digest(value["revocationToken"].as_str().unwrap()) == m.id {
+                            m.active = false;
+                        }
+                        (200, json!({"success":true}), false, false)
+                    }
+                };
+                if hold {
+                    e.notify_one();
+                    r.notified().await;
+                }
+                if lost {
+                    continue;
+                }
+                let body = json!({"code":0,"data":data}).to_string();
+                let response = format!(
+                    "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = reader.get_mut().write_all(response.as_bytes()).await;
+            }
+        });
+        Self {
+            base,
+            model,
+            entered,
+            release,
+            task,
+            root,
+        }
+    }
+    async fn attach(
+        &self,
+        lifecycle: &PushLifecycle,
+        user: &str,
+        generation: Arc<AtomicU64>,
+    ) -> Result<()> {
+        lifecycle
+            .attach(AttachPushSession {
+                epoch: generation.load(Ordering::Acquire),
+                generation,
+                user: user.into(),
+                app: "app".into(),
+                device: "device".into(),
+                http: HttpClient::new(&self.base),
+                token: jwt(user),
+                root: self.root.clone(),
+            })
+            .await?;
+        self.model.lock().unwrap().journal_root =
+            Some(lifecycle.lock().journal.as_ref().unwrap().root().to_owned());
+        Ok(())
+    }
+}
+fn jwt(user: &str) -> String {
+    format!(
+        "e30.{}.test",
+        base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(json!({"sub":user,"tenant_id":"app","device_id":"device"}).to_string())
+    )
+}
+fn token(value: &str) -> PushTokenInput {
+    PushTokenInput {
+        provider: "fcm".into(),
+        platform: "android".into(),
+        token: value.into(),
+    }
+}
+
+#[tokio::test]
+async fn unknown_put_readback_rotation_and_prelogin_restart_recovery() {
+    let f = Fixture::new().await;
+    let lifecycle = PushLifecycle::default();
+    lifecycle.update(token("OS_PRIVATE_1")).unwrap();
+    assert_eq!(lifecycle.reconcile().await.state, "disabled");
+    let epoch = Arc::new(AtomicU64::new(1));
+    f.attach(&lifecycle, "alice", epoch.clone()).await.unwrap();
+    assert_eq!(lifecycle.reconcile().await.state, "disabled");
+    lifecycle.permission(true);
+    f.model.lock().unwrap().lost_reply = true;
+    assert_eq!(lifecycle.reconcile().await.state, "pending");
+    assert_eq!(f.model.lock().unwrap().puts, 1);
+    assert_eq!(lifecycle.reconcile().await.state, "registered");
+    assert_eq!(
+        f.model.lock().unwrap().puts,
+        1,
+        "unknown PUT is inspected, not replayed"
+    );
+    lifecycle.update(token("OS_PRIVATE_2")).unwrap();
+    assert_eq!(lifecycle.reconcile().await.state, "registered");
+    assert_eq!(f.model.lock().unwrap().revokes, 1);
+    epoch.store(2, Ordering::Release);
+    assert_eq!(lifecycle.status().registered_providers, 0);
+    lifecycle.detach();
+    f.model.lock().unwrap().offline = true;
+    assert_eq!(lifecycle.reconcile().await.pending_revocations, 1);
+    drop(lifecycle);
+    f.model.lock().unwrap().offline = false;
+    let restarted = PushLifecycle::default();
+    restarted
+        .configure(HttpClient::new(&f.base), f.root.clone(), "device")
+        .await
+        .unwrap();
+    assert_eq!(restarted.reconcile().await.pending_revocations, 0);
+    assert!(
+        !f.model.lock().unwrap().active,
+        "restart can revoke from login page without JWT"
+    );
+    assert_eq!(f.model.lock().unwrap().puts, 2);
+}
+
+#[tokio::test]
+async fn permission_revoked_during_put_and_account_auth_is_pinned() {
+    let f = Fixture::new().await;
+    let lifecycle = Arc::new(PushLifecycle::default());
+    let epoch = Arc::new(AtomicU64::new(1));
+    f.attach(&lifecycle, "alice", epoch.clone()).await.unwrap();
+    lifecycle.update(token("OS_PRIVATE")).unwrap();
+    lifecycle.permission(true);
+    f.model.lock().unwrap().hold = true;
+    let owned = lifecycle.clone();
+    let work = tokio::spawn(async move { owned.reconcile().await });
+    f.entered.notified().await;
+    lifecycle.permission(false);
+    epoch.store(2, Ordering::Release);
+    lifecycle.detach();
+    f.model.lock().unwrap().hold = false;
+    f.release.notify_one();
+    assert_eq!(work.await.unwrap().registered_providers, 0);
+    lifecycle.reconcile().await;
+    assert!(!f.model.lock().unwrap().active);
+    f.attach(&lifecycle, "bob", epoch).await.unwrap();
+    lifecycle.permission(true);
+    assert_eq!(lifecycle.reconcile().await.state, "registered");
+    let m = f.model.lock().unwrap();
+    assert!(
+        m.auth
+            .iter()
+            .any(|a| a == &format!("Bearer {}", jwt("alice")))
+    );
+    assert!(
+        m.auth
+            .iter()
+            .any(|a| a == &format!("Bearer {}", jwt("bob")))
+    );
+}
+
+#[tokio::test]
+async fn cancelled_put_keeps_revoke_intent_after_server_effect() {
+    let f = Fixture::new().await;
+    let lifecycle = Arc::new(PushLifecycle::default());
+    f.attach(&lifecycle, "alice", Arc::new(AtomicU64::new(1)))
+        .await
+        .unwrap();
+    lifecycle.update(token("OS_PRIVATE")).unwrap();
+    lifecycle.permission(true);
+    f.model.lock().unwrap().hold = true;
+    let owned = lifecycle.clone();
+    let task = tokio::spawn(async move { owned.reconcile().await });
+    f.entered.notified().await;
+    task.abort();
+    assert!(task.await.unwrap_err().is_cancelled());
+    lifecycle.detach();
+    f.model.lock().unwrap().hold = false;
+    f.release.notify_one();
+    assert_eq!(lifecycle.reconcile().await.pending_revocations, 0);
+    assert!(!f.model.lock().unwrap().active);
+    assert_eq!(f.model.lock().unwrap().puts, 1);
+}
+
+#[tokio::test]
+async fn storage_lease_endpoint_fence_and_stale_session_fail_closed() {
+    let f = Fixture::new().await;
+    let lifecycle = PushLifecycle::default();
+    let epoch = Arc::new(AtomicU64::new(1));
+    f.attach(&lifecycle, "alice", epoch.clone()).await.unwrap();
+    let root = lifecycle.lock().journal.as_ref().unwrap().root().to_owned();
+    assert!(
+        Journal::open(root.clone()).is_err(),
+        "exclusive journal lease"
+    );
+    lifecycle.update(token("OS_PRIVATE")).unwrap();
+    lifecycle.permission(true);
+    assert_eq!(lifecycle.reconcile().await.state, "registered");
+    assert!(
+        lifecycle
+            .configure(
+                HttpClient::new("http://127.0.0.1:1"),
+                f.root.clone(),
+                "device"
+            )
+            .await
+            .is_err()
+    );
+    assert_eq!(f.model.lock().unwrap().puts, 1);
+    epoch.store(2, Ordering::Release);
+    let result = lifecycle
+        .attach(AttachPushSession {
+            epoch: 1,
+            generation: epoch,
+            user: "alice".into(),
+            app: "app".into(),
+            device: "device".into(),
+            http: HttpClient::new(&f.base),
+            token: jwt("alice"),
+            root: f.root.clone(),
+        })
+        .await;
+    assert!(result.is_err());
+    let bytes = std::fs::read_to_string(root.join("push-revocations.json")).unwrap();
+    assert!(
+        !bytes.contains("OS_PRIVATE") && !bytes.contains(&f.base) && !bytes.contains(&jwt("alice"))
+    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            std::fs::metadata(root.join("push-revocations.json"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+    }
+}
+
+#[test]
+fn validates_os_input_and_private_journal_bounds() {
+    assert!(validate(&token("OS_PRIVATE")).is_ok());
+    for bad in ["", "x y", "x\ny"] {
+        assert!(validate(&token(bad)).is_err());
+    }
+    assert_eq!(
+        path("a/b?c#d e%"),
+        "/api/v1/devices/a%2Fb%3Fc%23d%20e%25/push-token"
+    );
+    assert!(!format!("{:?}", token("OS_PRIVATE")).contains("OS_PRIVATE"));
+    let root = std::env::temp_dir().join(format!("flare-push-journal-{}", uuid::Uuid::new_v4()));
+    {
+        let mut j = Journal::open(root.clone()).unwrap();
+        for i in 0..64 {
+            j.add(Intent {
+                revocation_token: format!("{i:064x}"),
+                endpoint: "a".repeat(64),
+                provider: "fcm".into(),
+            })
+            .unwrap();
+        }
+        assert!(j.add(j.entries[0].clone()).is_err());
+    }
+    std::fs::write(root.join("push-revocations.json"), "x".repeat(65537)).unwrap();
+    assert!(Journal::open(root.clone()).is_err());
+    #[cfg(unix)]
+    {
+        std::fs::remove_file(root.join("push-revocations.json")).unwrap();
+        std::os::unix::fs::symlink("push-revocations.lock", root.join("push-revocations.json"))
+            .unwrap();
+        assert!(Journal::open(root.clone()).is_err());
+    }
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
+async fn normal_init_recovers_pending_revoke_before_login() {
+    let f = Fixture::new().await;
+    {
+        let old = PushLifecycle::default();
+        f.attach(&old, "alice", Arc::new(AtomicU64::new(1)))
+            .await
+            .unwrap();
+        old.update(token("OS_PRIVATE")).unwrap();
+        old.permission(true);
+        assert_eq!(old.reconcile().await.state, "registered");
+    }
+    let client = crate::client::IMClient::new();
+    client
+        .init(
+            None,
+            Some(crate::client::lifecycle::SdkConfigOverlay {
+                data_url: Some(f.root.to_str().unwrap().into()),
+                http_url: Some(f.base.clone()),
+                device_id: Some("device".into()),
+                ..Default::default()
+            }),
+        )
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            if f.model.lock().unwrap().revokes == 1 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(!f.model.lock().unwrap().active);
+    assert_eq!(f.model.lock().unwrap().puts, 1);
+}
+
+#[tokio::test]
+async fn public_reconcile_reopens_journal_after_old_instance_releases_lease() {
+    let f = Fixture::new().await;
+    let old = PushLifecycle::default();
+    f.attach(&old, "alice", Arc::new(AtomicU64::new(1)))
+        .await
+        .unwrap();
+    old.update(token("OS_PRIVATE")).unwrap();
+    old.permission(true);
+    assert_eq!(old.reconcile().await.state, "registered");
+    let client = crate::client::IMClient::new();
+    client
+        .init(
+            None,
+            Some(crate::client::lifecycle::SdkConfigOverlay {
+                data_url: Some(f.root.to_str().unwrap().into()),
+                http_url: Some(f.base.clone()),
+                device_id: Some("device".into()),
+                ..Default::default()
+            }),
+        )
+        .await
+        .unwrap();
+    assert!(
+        f.model.lock().unwrap().active,
+        "a competing journal lease cannot be bypassed"
+    );
+    drop(old);
+    assert_eq!(
+        client.reconcile_push().await.unwrap().pending_revocations,
+        0
+    );
+    assert!(!f.model.lock().unwrap().active);
+}
+
+#[tokio::test]
+async fn revoke_capability_is_not_forwarded_on_http_redirect() {
+    let trap = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let target = format!("http://{}/capture", trap.local_addr().unwrap());
+    let peer = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let mut bytes = [0; 4096];
+        let _ = socket.read(&mut bytes).await.unwrap();
+        socket.write_all(format!("HTTP/1.1 307 Temporary Redirect\r\nLocation: {target}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").as_bytes()).await.unwrap();
+    });
+    let result: Result<HttpApiResponse<Revoked>> = io(HttpClient::new(base).post(
+        "/api/v1/push/bindings/revoke",
+        &json!({"revocationToken":"a".repeat(64)}),
+    ))
+    .await;
+    assert!(result.is_err());
+    peer.await.unwrap();
+    assert!(
+        tokio::time::timeout(Duration::from_millis(50), trap.accept())
+            .await
+            .is_err()
+    );
+}

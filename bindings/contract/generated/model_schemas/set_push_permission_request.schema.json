@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "allowed": {
+      "description": "Current OS permission, including explicit denial or revocation.",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "allowed"
+  ],
+  "title": "SetPushPermissionRequest",
+  "type": "object",
+  "xFlareGeneratedBy": "flare-im-core-sdk-xtask",
+  "xFlareRustType": "SetPushPermissionRequest"
+}
