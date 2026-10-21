@@ -151,6 +151,9 @@ public final class DefaultEventsApi: EventsApiProtocol {
     public func onMessageUnpinned(_ listener: @escaping EventCallback<MessageMutationEvent>) -> any EventSubscription {
         registerTyped(listener)
     }
+    public func onMessagePluginStateChanged(_ listener: @escaping EventCallback<MessageMutationEvent>) -> any EventSubscription {
+        registerTyped(listener)
+    }
     public func onViewUpdated(_ listener: @escaping EventCallback<ViewUpdate>) -> any EventSubscription {
         registerTyped(listener)
     }
@@ -274,6 +277,8 @@ private func nativeEventFromCode(eventType: Int, payload: Any?) throws -> Any {
         return try messageMutationFromPayload(.marked, json)
     case EventCode.messageUnmarked:
         return try messageMutationFromPayload(.unmarked, json)
+    case EventCode.messagePluginStateChanged:
+        return try messageMutationFromPayload(.pluginStateChanged, json)
     case EventCode.messageRetentionScheduled:
         return try messageMutationFromPayload(.retentionScheduled, json)
     case EventCode.messageRetentionExpired:
@@ -658,6 +663,7 @@ private func dispatchToListener(_ listener: any FlareImEventListener, event: Any
         case .burned, .retentionExpired, .retentionPurged: listener.onMessageBurned(mutation)
         case .pinned: listener.onMessagePinned(mutation)
         case .unpinned: listener.onMessageUnpinned(mutation)
+        case .pluginStateChanged: listener.onMessagePluginStateChanged(mutation)
         case .received, .receivedBatch, .sendAck, .sendFailed, .capability,
              .typing, .typingAggregate, .reactionChanged, .readReceipt, .burnScheduled,
              .hardDeleted, .marked, .unmarked, .retentionScheduled,

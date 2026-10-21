@@ -178,6 +178,9 @@ class DefaultEventsApi(
     override fun onMessageUnpinned(listener: EventCallback<MessageMutationEvent>): EventSubscription =
         registerTyped(MessageMutationEvent::class.java, listener)
 
+    override fun onMessagePluginStateChanged(listener: EventCallback<MessageMutationEvent>): EventSubscription =
+        registerTyped(MessageMutationEvent::class.java, listener)
+
     override fun onViewUpdated(listener: EventCallback<ViewUpdate>): EventSubscription =
         registerTyped(ViewUpdate::class.java, listener)
 
@@ -290,6 +293,7 @@ class DefaultEventsApi(
                 MessageEventName.RETENTION_PURGED -> listener.onMessageBurned(event)
                 MessageEventName.PINNED -> listener.onMessagePinned(event)
                 MessageEventName.UNPINNED -> listener.onMessageUnpinned(event)
+                MessageEventName.PLUGIN_STATE_CHANGED -> listener.onMessagePluginStateChanged(event)
                 MessageEventName.RECEIVED,
                 MessageEventName.RECEIVED_BATCH,
                 MessageEventName.SEND_ACK,
@@ -401,6 +405,7 @@ private fun nativeEventFromCode(eventType: Int, payload: Map<String, Any?>): Any
         EventCode.MESSAGE_UNPINNED -> messageMutationFromPayload(MessageEventName.UNPINNED, payload)
         EventCode.MESSAGE_MARKED -> messageMutationFromPayload(MessageEventName.MARKED, payload)
         EventCode.MESSAGE_UNMARKED -> messageMutationFromPayload(MessageEventName.UNMARKED, payload)
+        EventCode.MESSAGE_PLUGIN_STATE_CHANGED -> messageMutationFromPayload(MessageEventName.PLUGIN_STATE_CHANGED, payload)
         EventCode.MESSAGE_RETENTION_SCHEDULED -> messageMutationFromPayload(MessageEventName.RETENTION_SCHEDULED, payload)
         EventCode.MESSAGE_RETENTION_EXPIRED -> messageMutationFromPayload(MessageEventName.RETENTION_EXPIRED, payload)
         EventCode.MESSAGE_RETENTION_PURGED -> messageMutationFromPayload(MessageEventName.RETENTION_PURGED, payload)

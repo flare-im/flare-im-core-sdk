@@ -167,6 +167,18 @@ pub fn sdk_event_payload(ev: &SdkEvent) -> Option<(&'static str, Value)> {
                 "serverMsgId": server_msg_id
             }),
         ),
+        SdkEvent::Message(MessageEvent::PluginStateChanged {
+            conversation_id,
+            message_id,
+            version,
+        }) => (
+            "message.plugin_state_changed",
+            json!({
+                "conversationId": conversation_id,
+                "messageId": message_id,
+                "version": version
+            }),
+        ),
         SdkEvent::Message(MessageEvent::ReactionChanged {
             conversation_id,
             server_msg_id,
@@ -457,6 +469,24 @@ mod tests {
         assert_eq!(payload["ack"]["success"], true);
         assert_eq!(payload["ack"]["errorMessage"], "");
         assert!(payload.get("ackId").is_none());
+    }
+
+    #[test]
+    fn plugin_state_changed_is_forwarded_as_a_message_update() {
+        let event = SdkEvent::Message(MessageEvent::PluginStateChanged {
+            conversation_id: "conversation-1".to_string(),
+            message_id: "server-1".to_string(),
+            version: 3,
+        });
+        let (channel, payload) =
+            sdk_event_channel_payload(&event).expect("plugin state should map to channel");
+
+        assert_eq!(channel, "im://message_plugin_state_changed");
+        assert_eq!(sdk_event_code(&event), 2022);
+        assert_eq!(
+            payload,
+            json!({"conversationId": "conversation-1", "messageId": "server-1", "version": 3})
+        );
     }
 
     #[test]

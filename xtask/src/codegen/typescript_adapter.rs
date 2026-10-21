@@ -671,6 +671,9 @@ fn ts_listener_predicate_expr(name: &str) -> Option<&'static str> {
         "onMessageBurned" => Some("eventNameIs(event, 'message', MessageEventName.Burned)"),
         "onMessagePinned" => Some("eventNameIs(event, 'message', MessageEventName.Pinned)"),
         "onMessageUnpinned" => Some("eventNameIs(event, 'message', MessageEventName.Unpinned)"),
+        "onMessagePluginStateChanged" => {
+            Some("eventNameIs(event, 'message', MessageEventName.PluginStateChanged)")
+        }
         "onViewUpdated" => Some("eventTypeIs(event, 'view')"),
         "onNewConversation" => {
             Some("eventNameIs(event, 'conversation', ConversationEventName.Created)")
@@ -753,6 +756,10 @@ fn ts_event_decoder_expr(entry: &TypescriptEventRegistryEntry) -> String {
         }
         "message.unpinned" => {
             "messageMutationEvent(MessageEventName.Unpinned, \"unpinned\", payload)".to_string()
+        }
+        "message.plugin_state_changed" => {
+            "messageMutationEvent(MessageEventName.PluginStateChanged, \"plugin_state_changed\", payload)"
+                .to_string()
         }
         "message.marked" => {
             "messageMutationEvent(MessageEventName.Marked, \"marked\", payload)".to_string()
@@ -1429,6 +1436,9 @@ fn emit_typescript_adapter_events_api(
         "          return;".to_string(),
         "        case MessageEventName.Unpinned:".to_string(),
         "          listener.onMessageUnpinned?.(event as MessageMutationEvent);".to_string(),
+        "          return;".to_string(),
+        "        case MessageEventName.PluginStateChanged:".to_string(),
+        "          listener.onMessagePluginStateChanged?.(event as MessageMutationEvent);".to_string(),
         "          return;".to_string(),
         "        default:".to_string(),
         "          return;".to_string(),

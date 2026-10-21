@@ -196,6 +196,7 @@ pub const EVENT_CODES: &[(&str, i32)] = &[
     ("message.unmarked", 2018),
     ("message.presence_changed", 2019),
     ("message.custom", 2020),
+    ("message.plugin_state_changed", 2022),
     ("conversation.synced", 3001),
     ("conversation.created", 3002),
     ("conversation.updated", 3003),

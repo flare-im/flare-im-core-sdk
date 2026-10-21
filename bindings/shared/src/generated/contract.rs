@@ -1790,6 +1790,12 @@ pub const EVENT_DESCRIPTORS: &[EventDescriptor] = &[
         tauri: Some("im://message_custom_event"),
     },
     EventDescriptor {
+        id: "message.plugin_state_changed",
+        c_code: 2022,
+        c_code_name: "FLARE_EVENT_MESSAGE_PLUGIN_STATE_CHANGED",
+        tauri: Some("im://message_plugin_state_changed"),
+    },
+    EventDescriptor {
         id: "conversation.synced",
         c_code: 3001,
         c_code_name: "FLARE_EVENT_CONVERSATION_SYNCED",

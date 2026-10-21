@@ -267,6 +267,14 @@
       "tauri": "im://message_custom_event"
     },
     {
+      "id": "message.plugin_state_changed",
+      "core": "SdkEvent::Message(MessageEvent::PluginStateChanged)",
+      "cCode": 2022,
+      "cCodeName": "FLARE_EVENT_MESSAGE_PLUGIN_STATE_CHANGED",
+      "cJson": { "type": "message", "event": "plugin_state_changed", "fields": ["conversationId", "messageId", "version"] },
+      "tauri": "im://message_plugin_state_changed"
+    },
+    {
       "id": "conversation.synced",
       "core": "SdkEvent::Conversation(ConversationEvent::Synced)",
       "cCode": 3001,

@@ -32,6 +32,7 @@ pub const CONTRACT_EVENT_IDS: &[&str] = &[
     "message.unmarked",
     "message.presence_changed",
     "message.custom",
+    "message.plugin_state_changed",
     "conversation.synced",
     "conversation.created",
     "conversation.updated",
@@ -87,6 +88,10 @@ pub const WEB_EVENT_ROUTES: &[(&str, &str)] = &[
     ("message.unmarked", "im://message_unmarked"),
     ("message.presence_changed", "im://presence_changed"),
     ("message.custom", "im://message_custom_event"),
+    (
+        "message.plugin_state_changed",
+        "im://message_plugin_state_changed",
+    ),
     ("conversation.synced", "im://conversations_synced"),
     ("conversation.created", "im://conversation_created"),
     ("conversation.updated", "im://conversation_updated"),

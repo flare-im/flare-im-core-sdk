@@ -52,6 +52,7 @@ pub enum BindingEventId {
     MessageUnmarked,
     MessagePresenceChanged,
     MessageCustom,
+    MessagePluginStateChanged,
     ConversationSynced,
     ConversationCreated,
     ConversationUpdated,

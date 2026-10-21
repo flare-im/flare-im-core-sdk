@@ -56,6 +56,11 @@ pub const EVENT_ROUTE_TABLE: &[(i32, &str, &str)] = &[
     (2018, "message.unmarked", "im://message_unmarked"),
     (2019, "message.presence_changed", "im://presence_changed"),
     (2020, "message.custom", "im://message_custom_event"),
+    (
+        2022,
+        "message.plugin_state_changed",
+        "im://message_plugin_state_changed",
+    ),
     (3001, "conversation.synced", "im://conversations_synced"),
     (3002, "conversation.created", "im://conversation_created"),
     (3003, "conversation.updated", "im://conversation_updated"),
