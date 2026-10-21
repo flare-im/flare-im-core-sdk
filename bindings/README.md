@@ -15,7 +15,7 @@ bindings/
   shared/           shared contract metadata, JSON dispatch, and session cache
   c/                universal C ABI boundary (platform glue only)
   tauri/            Tauri desktop command adapter
-  uniffi/           UniFFI contract skeleton + generated types
+  uniffi/           archived placeholder + generated contract metadata (not a production binding)
   wasm/             wasm binding with generated contract/runtime catalog
 storage/indexeddb/  browser IndexedDB-backed WASM storage adapter (outside bindings/)
 ```
@@ -50,7 +50,7 @@ uniffi/src/generated/{contract.rs,types.rs,invoke.rs}
 1. Edit `contract/direct_invoke.json`
 2. Run `cargo xtask core-codegen`
 
-Platform crates (`c/`, `tauri/`, `wasm/`, `uniffi/`) do **not** need new hand-written dispatch or invoke match arms.
+Production platform crates (`c/`, `tauri/`, `wasm/`) do **not** need new hand-written dispatch or invoke match arms.
 
 **Canonical cross-platform invoke** (preferred for new callers):
 
@@ -84,7 +84,7 @@ Do not edit generated files by hand.
 ```text
 L3 typed platform SDK
   -> L2 runtime adapter
-  -> L1 bindings/{c|tauri|wasm|uniffi}
+  -> L1 bindings/{c|tauri|wasm}
   -> bindings/shared (shared dispatch + contract)
   -> L0 flare-im-core-sdk/src
 ```
@@ -112,7 +112,7 @@ Per-binding checks use native Cargo package selection:
 | `bindings/wasm` | `cargo check -p flare-im-core-sdk-wasm --target wasm32-unknown-unknown` `cargo test -p flare-im-core-sdk-wasm` |
 | `bindings/c` | `cargo check -p flare-im-core-sdk-ffi` `cargo xtask build host` |
 | `bindings/tauri` | `cargo check -p flare-im-core-sdk-tauri` |
-| `bindings/uniffi` | `cargo check --manifest-path bindings/uniffi/Cargo.toml -p flare-im-core-sdk-uniffi` |
+| `bindings/uniffi` | Archived and excluded from the workspace. Generated metadata remains for a future explicit redesign; invoke is not implemented. |
 
 Examples:
 

@@ -51,7 +51,7 @@ cd flare-im-core-sdk && cargo check
 `flare-im-core-sdk` is Flare IM's unified client core. The Rust core owns the
 SDK lifecycle, local message/conversation projection, the sync-task entry
 points, the event system, media records, capability packs, and extension
-events; the C, Tauri, UniFFI, and Wasm bindings only translate the
+events; the C, Tauri, and Wasm bindings only translate the
 ABI / IPC / language boundary.
 
 ## Core boundaries
@@ -61,7 +61,7 @@ ABI / IPC / language boundary.
 | `flare-core` | Transport, connection, framing, negotiation, heartbeat, and other base communication primitives |
 | `flare-proto` | The single wire contract — `DataPacket`, `Message`, `SyncRes`, `CapabilityPacket`, etc. |
 | `flare-im-core-sdk` | Client IM behavior, offline local state, projection, the outbound queue, event routing, extension-capability entry points |
-| bindings | Boundary adapters for C/Tauri/UniFFI/Wasm — they never re-implement core semantics |
+| bindings | Boundary adapters for C/Tauri/Wasm — they never re-implement core semantics |
 
 ## Current production modules
 
@@ -205,7 +205,7 @@ call still returns `Ok`.
 | --- | --- | --- |
 | C ABI | `bindings/c` | `cargo check -p flare-im-core-sdk-ffi --all-targets` |
 | Tauri | `bindings/tauri` | `cargo check -p flare-im-core-sdk-tauri` |
-| UniFFI | `bindings/uniffi` | `cargo check --manifest-path bindings/uniffi/Cargo.toml`; `cargo test --manifest-path bindings/uniffi/Cargo.toml` |
+| Archived UniFFI placeholder | `bindings/uniffi` | Excluded from the workspace and production verification. Native clients use C ABI. |
 | Wasm | `bindings/wasm` | `cargo check -p flare-im-core-sdk-wasm --target wasm32-unknown-unknown` |
 
 ## Development verification
@@ -214,8 +214,6 @@ call still returns `Ok`.
 rtk cargo fmt --all -- --check
 rtk cargo check --workspace --all-features --all-targets
 rtk cargo test --workspace --all-features
-rtk cargo check --manifest-path bindings/uniffi/Cargo.toml --all-features --tests
-rtk cargo test --manifest-path bindings/uniffi/Cargo.toml --all-features
 rtk cargo check -p flare-im-core-sdk-wasm --target wasm32-unknown-unknown --all-features
 rtk cargo clippy --workspace --all-targets --all-features -- -D warnings
 ```
