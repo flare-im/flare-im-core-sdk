@@ -68,6 +68,31 @@ impl MessageApi {
         self.ensure_session_active().await?;
         self.send_use_case.send_with_media(message, None).await
     }
+    /// Native compositions can fence the build/send boundary against account
+    /// switches. The API holds the session's own current-user store; a retired
+    /// API cannot become the next session's sender.
+    pub async fn send_bound(
+        &self,
+        message: IMMessage,
+        expected_user_id: Option<&str>,
+    ) -> Result<SendAck> {
+        if expected_user_id.is_some_and(|expected| expected.is_empty()) {
+            return Err(FlareError::localized(
+                ErrorCode::NotConnected,
+                "sdk.message.session_changed",
+            ));
+        }
+        if let Some(expected) = expected_user_id {
+            let actual = self.current_user_id().await?;
+            if actual != expected {
+                return Err(FlareError::localized(
+                    ErrorCode::NotConnected,
+                    "sdk.message.session_changed",
+                ));
+            }
+        }
+        self.send(message).await
+    }
 
     /// 带上传进度回调的发送：检测到本地媒体路径时，回调会上报上传阶段与字节进度。
     pub async fn send_with_media_progress(

@@ -13,9 +13,9 @@ pub trait SdkCapabilityPlugin: Send + Sync {
     fn plugin_id(&self) -> &'static str;
     fn capability_namespaces(&self) -> &'static [&'static str];
 
-    fn manifest(&self) -> SdkPluginManifest {
-        SdkPluginManifest::builtin(self.plugin_id(), self.capability_namespaces())
-    }
+    /// An explicit operation declaration is required; an empty manifest cannot
+    /// implicitly grant every operation under a namespace.
+    fn manifest(&self) -> SdkPluginManifest;
 
     async fn invoke(
         &self,

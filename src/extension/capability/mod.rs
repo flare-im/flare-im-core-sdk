@@ -12,6 +12,9 @@ mod manifest;
 mod plugin;
 mod registry;
 pub mod rtc_ids;
+/// Shared safe data-only UI evaluation; every binding uses the same contract.
+pub mod ui;
+pub use flare_plugin_protocol::ui as ui_contract;
 
 mod plugins;
 

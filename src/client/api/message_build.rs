@@ -17,6 +17,56 @@ use crate::model::message::IMMessage;
 use crate::shared::error::{ErrorCode, FlareError, Result};
 use flare_proto::common::ImageInfo;
 
+#[cfg(test)]
+mod plugin_message_tests {
+    use super::*;
+    #[tokio::test]
+    async fn generic_plugin_card_preserves_inert_envelope_and_rejects_invalid_input() {
+        let api = MessageBuildApi::new(
+            Arc::new(tokio::sync::RwLock::new("sender".into())),
+            Arc::new(crate::infrastructure::persistence::memory_im::MemoryConversationStore::new()),
+        );
+        let envelope = serde_json::json!({"pluginId":"example.poll","contributionId":"example.poll.card","schemaVersion":1,"summary":"Poll","payload":{"pollId":"one"}});
+        let message = api
+            .create_plugin_message("group-1", envelope.clone())
+            .await
+            .unwrap();
+        assert_eq!(
+            message.message_type,
+            crate::model::MessageType::AppCard as i32
+        );
+        let roundtrip: IMMessage =
+            serde_json::from_value(serde_json::to_value(&message).unwrap()).unwrap();
+        assert!(roundtrip.encoded_content.is_empty());
+        let Some(flare_proto::common::message_content::Content::AppCard(card)) =
+            roundtrip.to_proto().content.unwrap().content
+        else {
+            panic!("JSON binding must retain APP_CARD wire content");
+        };
+        assert_eq!(card.app_id, "example.poll");
+        assert_eq!(card.card_type, "flare.plugin.message.v1");
+        assert_eq!(card.payload_schema, "flare.plugin.message/v1");
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&card.payload).unwrap(),
+            envelope
+        );
+        let crate::content::message_elem::Elem::Custom(content) = message.content.unwrap() else {
+            panic!("generic custom view required");
+        };
+        assert_eq!(content.r#type, "flare.plugin.message.v1");
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&content.payload).unwrap(),
+            envelope
+        );
+        let mut invalid = envelope.clone();
+        invalid["schemaVersion"] = 99.into();
+        assert!(api.create_plugin_message("group-1", invalid).await.is_err());
+        let mut invalid = envelope;
+        invalid["payload"] = serde_json::json!({"large":"x".repeat(65536)});
+        assert!(api.create_plugin_message("group-1", invalid).await.is_err());
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct CreateLocationRequest {
     pub conversation_id: String,
@@ -311,6 +361,40 @@ impl MessageBuildApi {
             &sources,
         )?;
         self.apply_conversation_routing(conversation_id, msg).await
+    }
+
+    /// Generic plugin content uses the existing APP_CARD transport and reliable
+    /// message pipeline. Historical actions never come from this payload.
+    pub async fn create_plugin_message(
+        &self,
+        conversation_id: &str,
+        payload: serde_json::Value,
+    ) -> Result<IMMessage> {
+        let message: flare_plugin_protocol::ui::PluginMessage = serde_json::from_value(payload)
+            .map_err(|_| {
+                FlareError::localized(ErrorCode::InvalidParameter, "sdk.plugin.invalid_message")
+            })?;
+        message.validate().map_err(|_| {
+            FlareError::localized(ErrorCode::InvalidParameter, "sdk.plugin.invalid_message")
+        })?;
+        let payload = serde_json::to_vec(&message)
+            .map_err(|_| FlareError::system("plugin message encoding"))?;
+        let content = BuiltContent::new(
+            flare_proto::common::MessageType::AppCard,
+            flare_proto::common::MessageContent {
+                content: Some(flare_proto::common::message_content::Content::AppCard(
+                    flare_proto::common::AppCardContent {
+                        app_id: message.plugin_id,
+                        card_type: "flare.plugin.message.v1".into(),
+                        summary: message.summary,
+                        payload_schema: "flare.plugin.message/v1".into(),
+                        payload,
+                        ..Default::default()
+                    },
+                )),
+            },
+        );
+        self.create_with_content(conversation_id, content).await
     }
 
     pub async fn create_with_content(

@@ -90,7 +90,11 @@ impl SdkCapabilityRegistry {
             .write()
             .map_err(|_| registry_lock_failed())?;
         for ns in &namespaces {
-            if index.contains_key(ns) {
+            if index.keys().any(|existing| {
+                existing == ns
+                    || existing.starts_with(&format!("{ns}."))
+                    || ns.starts_with(&format!("{existing}."))
+            }) {
                 return Err(FlareError::localized(
                     ErrorCode::OperationNotSupported,
                     format!("sdk.capability.namespace_already_registered:{ns}"),
@@ -105,46 +109,6 @@ impl SdkCapabilityRegistry {
         for ns in &namespaces {
             index.insert(ns.clone(), plugin_id.clone());
         }
-        plugins.insert(plugin_id.clone(), plugin);
-        states.insert(
-            plugin_id,
-            PluginRuntimeState {
-                manifest,
-                enabled: true,
-            },
-        );
-        Ok(())
-    }
-
-    /// 注册插件并允许覆盖已有命名空间映射（用于私有发行注入商业插件）。
-    ///
-    /// 注意：该接口不会移除被覆盖插件实例，仅会替换命名空间路由。
-    pub fn register_with_namespace_override(
-        &self,
-        plugin: Arc<dyn SdkCapabilityPlugin>,
-    ) -> Result<()> {
-        let plugin_id = plugin.plugin_id().to_string();
-        let namespaces = plugin_namespaces(plugin.as_ref());
-        let manifest = plugin.manifest();
-        manifest.validate(&plugin_id, &namespaces)?;
-
-        let mut plugins = self.plugins.write().map_err(|_| registry_lock_failed())?;
-        let mut index = self.namespace_index.write().map_err(|_| {
-            FlareError::localized(
-                ErrorCode::InternalError,
-                "sdk.capability.registry_lock_failed",
-            )
-        })?;
-
-        index.retain(|_, v| v != &plugin_id);
-        for ns in &namespaces {
-            index.insert(ns.clone(), plugin_id.clone());
-        }
-
-        let mut states = self
-            .plugin_states
-            .write()
-            .map_err(|_| registry_lock_failed())?;
         plugins.insert(plugin_id.clone(), plugin);
         states.insert(
             plugin_id,
@@ -218,16 +182,18 @@ impl SdkCapabilityRegistry {
         &self,
         capability_id: &str,
     ) -> Option<Arc<dyn SdkCapabilityPlugin>> {
-        let namespace = capability_id.split('.').next().unwrap_or_default();
-        let plugin_id = self
-            .namespace_index
-            .read()
-            .ok()
-            .and_then(|idx| idx.get(namespace).cloned())?;
+        let plugin_id = self.namespace_index.read().ok().and_then(|index| {
+            index
+                .iter()
+                .find(|(ns, _)| {
+                    capability_id == ns.as_str() || capability_id.starts_with(&format!("{ns}."))
+                })
+                .map(|(_, id)| id.clone())
+        })?;
         self.get_plugin(plugin_id.as_str())
     }
 
-    /// 按 `capability_id` 首段命名空间解析插件并 `invoke`（推荐宿主调用扩展能力的主入口）。
+    /// 按完整命名空间解析插件并 `invoke`（推荐宿主调用扩展能力的主入口）。
     pub async fn invoke(
         &self,
         capability_id: &str,
@@ -361,6 +327,13 @@ mod tests {
 
         fn capability_namespaces(&self) -> &'static [&'static str] {
             &["test"]
+        }
+
+        fn manifest(&self) -> SdkPluginManifest {
+            let mut manifest =
+                SdkPluginManifest::builtin(self.plugin_id(), self.capability_namespaces());
+            manifest.operations = vec![SdkPluginOperationManifest::new("test.echo")];
+            manifest
         }
 
         async fn invoke(
@@ -509,6 +482,26 @@ mod tests {
             }))
             .expect_err("namespace mismatch must reject registration");
         assert_eq!(err.code(), Some(ErrorCode::ConfigurationError));
+    }
+
+    #[test]
+    fn empty_operations_do_not_grant_the_entire_namespace() {
+        let registry = SdkCapabilityRegistry::new();
+        let manifest = SdkPluginManifest::builtin("manifest.plugin", &["manifest"]);
+        assert!(!manifest.owns_capability("manifest.anything"));
+        assert!(
+            registry
+                .register(Arc::new(ManifestPlugin {
+                    manifest,
+                    invoke_calls: Arc::new(AtomicUsize::new(0)),
+                }))
+                .is_err()
+        );
+        assert!(
+            registry
+                .resolve_by_capability("manifest.anything")
+                .is_none()
+        );
     }
 
     #[test]

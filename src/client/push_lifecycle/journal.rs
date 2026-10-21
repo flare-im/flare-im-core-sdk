@@ -1,5 +1,7 @@
 //! Revoke-only write-ahead journal. No bearer, OS token, message or remote URL.
-use super::{ErrorCode, Result, digest, failure, hex_id};
+#[cfg(not(target_arch = "wasm32"))]
+use super::hex_id;
+use super::{ErrorCode, Result, digest, failure};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 #[derive(Clone, Serialize, Deserialize)]

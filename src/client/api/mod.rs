@@ -7,6 +7,7 @@ mod conversation;
 mod media;
 mod message;
 mod message_build;
+mod plugin_command;
 // Presence goes through the Core API gateway on every target: the Online
 // service is internal and only accepts gateway-signed context.
 #[path = "presence/http.rs"]

@@ -21,25 +21,29 @@ use tonic::metadata::MetadataValue;
 #[cfg(not(target_arch = "wasm32"))]
 use tonic::transport::{Channel, Endpoint};
 
-#[cfg(not(target_arch = "wasm32"))]
 use super::session_guard::SessionGuard;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::extension::capability::rtc_ids;
 use crate::infrastructure::transport::http::http_client::HttpRequestContext;
+use crate::infrastructure::transport::http::{HttpApiResponse, HttpClient, unwrap_api_response};
 use crate::shared::error::{ErrorCode, FlareError, Result};
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "capability_ui_tests.rs"]
+mod ui_tests;
 
 #[derive(Clone)]
 pub struct CapabilityApi {
-    #[cfg(not(target_arch = "wasm32"))]
-    session_guard: SessionGuard,
+    pub(super) plugin_commands: Option<Arc<dyn crate::domain::PluginCommandStore>>,
+    http: Option<HttpClient>,
+    pub(super) session_guard: SessionGuard,
     #[cfg(not(target_arch = "wasm32"))]
     endpoint: String,
     #[cfg(not(target_arch = "wasm32"))]
     channel: Arc<Mutex<Option<Channel>>>,
     #[cfg(not(target_arch = "wasm32"))]
     current_user_id: Arc<RwLock<String>>,
-    #[cfg(not(target_arch = "wasm32"))]
-    default_tenant_id: String,
+    pub(super) default_tenant_id: String,
     #[cfg(not(target_arch = "wasm32"))]
     http_request_context: Arc<HttpRequestContext>,
 }
@@ -65,24 +69,83 @@ impl CapabilityApi {
         http_request_context: Arc<HttpRequestContext>,
     ) -> Self {
         #[cfg(target_arch = "wasm32")]
-        {
-            let _ = (
-                grpc_endpoint.into(),
-                current_user_id,
-                default_tenant_id.into(),
-                http_request_context,
-            );
-            Self {}
-        }
-        #[cfg(not(target_arch = "wasm32"))]
+        let _ = (grpc_endpoint.into(), http_request_context);
         Self {
+            plugin_commands: None,
+            http: None,
             session_guard: SessionGuard::new(current_user_id.clone(), "capability"),
+            #[cfg(not(target_arch = "wasm32"))]
             endpoint: grpc_endpoint.into(),
+            #[cfg(not(target_arch = "wasm32"))]
             channel: Arc::new(Mutex::new(None)),
+            #[cfg(not(target_arch = "wasm32"))]
             current_user_id,
             default_tenant_id: crate::shared::util::normalize_tenant_id(default_tenant_id.into()),
+            #[cfg(not(target_arch = "wasm32"))]
             http_request_context,
         }
+    }
+    pub fn with_plugin_command_store(
+        mut self,
+        store: Option<Arc<dyn crate::domain::PluginCommandStore>>,
+    ) -> Self {
+        self.plugin_commands = store;
+        self
+    }
+    pub fn with_http_transport(mut self, http: HttpClient) -> Self {
+        self.http = Some(http);
+        self
+    }
+    async fn dispatch_http(
+        &self,
+        capability_id: &str,
+        payload: Value,
+        conversation_id: Option<&str>,
+        tenant_id: Option<&str>,
+        user_id: Option<&str>,
+    ) -> Result<CapabilityDispatchResult> {
+        let request_id = uuid::Uuid::new_v4().to_string();
+        let expected_request_id = request_id.clone();
+        let http = self.http.as_ref().ok_or_else(|| {
+            FlareError::localized(
+                ErrorCode::OperationNotSupported,
+                "sdk.capability.http_unavailable",
+            )
+        })?;
+        let result: CapabilityDispatchResult = self
+            .session_guard
+            .run_with_user(|identity| async move {
+                let user = identity.ok_or_else(|| {
+                    FlareError::localized(
+                        ErrorCode::NotConnected,
+                        "sdk.capability.session_required",
+                    )
+                })?;
+                if tenant_id.is_some_and(|tenant| tenant != self.default_tenant_id)
+                    || user_id.is_some_and(|expected| expected != user)
+                {
+                    return Err(FlareError::localized(
+                        ErrorCode::InvalidParameter,
+                        "sdk.capability.identity_override_denied",
+                    ));
+                }
+                let body: HttpApiResponse<CapabilityDispatchResult> = http
+                    .post(
+                        "/api/v1/capabilities/dispatch",
+                        &serde_json::json!({
+                            "capabilityId": capability_id, "payload": payload,
+                            "conversationId": conversation_id, "requestId": request_id,
+                            "expectedTenantId": self.default_tenant_id, "expectedUserId": user,
+                        }),
+                    )
+                    .await?;
+                unwrap_api_response(body, "capability dispatch")
+            })
+            .await?;
+        if result.request_id != expected_request_id || result.capability_id != capability_id {
+            return Err(FlareError::system("capability response identity mismatch"));
+        }
+        Ok(result)
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -136,6 +199,75 @@ impl CapabilityApi {
             .filter(|s| !s.is_empty())
             .map(crate::shared::util::normalize_tenant_id)
             .unwrap_or_else(|| crate::shared::util::normalize_tenant_id(&self.default_tenant_id))
+    }
+
+    pub async fn resolve_plugin_message(&self, request: Value) -> Result<Value> {
+        self.session_guard
+            .run(async {
+                crate::extension::capability::ui::resolve(&self.default_tenant_id, request)
+            })
+            .await
+    }
+    pub async fn plugin_ui_action(&self, request: Value) -> Result<Value> {
+        self.session_guard
+            .run(async {
+                crate::extension::capability::ui::action(&self.default_tenant_id, request)
+            })
+            .await
+    }
+    /// Native/Web hosts render the same Rust-evaluated presentation. No positive
+    /// grant cache is kept between calls, and logout fences pending work.
+    pub async fn present_plugin_message(&self, request: Value) -> Result<Value> {
+        use crate::extension::capability::ui;
+        let request = ui::parse_present(request)?;
+        self.session_guard.run_with_user(|viewer| async move {
+            let catalog=self.plugin_ui_catalog().await?;
+            ui::resolve(&self.default_tenant_id,serde_json::json!({"catalog":catalog,"message":request.message,"platform":request.platform,"locale":request.locale,"kind":request.kind,"viewer":viewer.unwrap_or_default()}))
+        }).await
+    }
+    /// Refresh authorization, bind declared action input, then dispatch through
+    /// the normal capability policy. Native/page targets return an explicit
+    /// host instruction; only the application's allowlisted bridge executes it.
+    pub async fn invoke_plugin_action(&self, request: Value) -> Result<Value> {
+        use crate::extension::capability::ui;
+        use flare_plugin_protocol::ui::UiActionTarget;
+        let request = ui::parse_invoke(request)?;
+        self.session_guard.run_with_user(|user_id| async move {
+            let catalog=self.plugin_ui_catalog().await?;
+            let prepared=ui::action(&self.default_tenant_id,serde_json::json!({"catalog":catalog,"platform":request.platform,"pluginId":request.message.plugin_id,"contributionId":request.message.contribution_id,"actionId":request.action_id,"userGesture":request.user_gesture,"nativeAllowlist":request.native_allowlist,"payload":request.message.payload}))?;
+            let target:UiActionTarget=serde_json::from_value(prepared["target"].clone()).map_err(|_|FlareError::system("invalid plugin action target"))?;
+            let payload=prepared["payload"].clone();
+            match target {
+                UiActionTarget::Operation{operation}=>{
+                    let response=self.dispatch(&operation,payload,request.conversation_id.as_deref(),Some(&self.default_tenant_id),user_id.as_deref()).await?;
+                    Ok(serde_json::json!({"kind":"operation","response":response}))
+                }
+                target=>Ok(serde_json::json!({"kind":"host","target":target,"payload":payload})),
+            }
+        }).await
+    }
+    /// Refresh on login, tenant change and plugin state change. The returned
+    /// catalog expires; callers must drop it on logout and never persist secrets.
+    pub async fn plugin_ui_catalog(&self) -> Result<Value> {
+        let result = self
+            .dispatch(
+                flare_plugin_protocol::ui::UI_CATALOG_OPERATION,
+                Value::Null,
+                None,
+                None,
+                None,
+            )
+            .await?;
+        if !result.success {
+            return Err(FlareError::system("plugin UI catalog unavailable"));
+        }
+        let catalog: flare_plugin_protocol::ui::UiCatalog =
+            serde_json::from_value(result.data.clone())
+                .map_err(|_| FlareError::system("invalid plugin UI catalog"))?;
+        if catalog.plugins.len() > 128 {
+            return Err(FlareError::system("plugin UI catalog limit"));
+        }
+        Ok(result.data)
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -258,6 +390,11 @@ impl CapabilityApi {
         tenant_id: Option<&str>,
         user_id: Option<&str>,
     ) -> Result<CapabilityDispatchResult> {
+        if self.http.is_some() {
+            return self
+                .dispatch_http(capability_id, payload, conversation_id, tenant_id, user_id)
+                .await;
+        }
         let api = self.clone();
         let capability_id = capability_id.to_string();
         let conversation_id = conversation_id.map(str::to_string);
@@ -265,10 +402,19 @@ impl CapabilityApi {
         let user_id = user_id.map(str::to_string);
         self.session_guard
             .run_with_user(move |session_user_id| async move {
-                let tenant = api.effective_tenant_id(tenant_id.as_deref());
-                let user = user_id
-                    .or(session_user_id)
+                let user = session_user_id
                     .ok_or_else(|| FlareError::localized(ErrorCode::NotConnected, "未连接"))?;
+                if tenant_id
+                    .as_deref()
+                    .is_some_and(|id| id != api.default_tenant_id)
+                    || user_id.as_deref().is_some_and(|id| id != user)
+                {
+                    return Err(FlareError::localized(
+                        ErrorCode::InvalidParameter,
+                        "sdk.capability.identity_override_denied",
+                    ));
+                }
+                let tenant = api.default_tenant_id.clone();
                 let payload_json = if payload.is_null() {
                     String::new()
                 } else {
@@ -283,7 +429,7 @@ impl CapabilityApi {
                     user_id: user,
                     conversation_id: conversation_id.unwrap_or_default(),
                     payload_json,
-                    request_id: String::new(),
+                    request_id: uuid::Uuid::new_v4().to_string(),
                 });
                 api.enrich_metadata(&mut req).await?;
                 let resp = client
@@ -319,16 +465,14 @@ impl CapabilityApi {
     #[cfg(target_arch = "wasm32")]
     pub async fn dispatch(
         &self,
-        _capability_id: &str,
-        _payload: Value,
-        _conversation_id: Option<&str>,
-        _tenant_id: Option<&str>,
-        _user_id: Option<&str>,
+        capability_id: &str,
+        payload: Value,
+        conversation_id: Option<&str>,
+        tenant_id: Option<&str>,
+        user_id: Option<&str>,
     ) -> Result<CapabilityDispatchResult> {
-        Err(FlareError::localized(
-            ErrorCode::OperationNotSupported,
-            "sdk.capability.wasm_not_supported",
-        ))
+        self.dispatch_http(capability_id, payload, conversation_id, tenant_id, user_id)
+            .await
     }
 
     #[cfg(not(target_arch = "wasm32"))]

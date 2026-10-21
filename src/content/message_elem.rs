@@ -1377,6 +1377,30 @@ fn elem_to_proto_content(elem: &Elem) -> ProtoContent {
             set_app_card_json_payload(&mut card, json!({ "pinned": a.pinned }));
             ProtoContent::AppCard(card)
         }
+        // APP_CARD is projected as a CustomElem for renderer composition. JSON
+        // bindings omit encoded_content; restore this generic envelope before
+        // sending/forwarding so message_type and wire oneof remain consistent.
+        Elem::Custom(c) if c.r#type == "flare.plugin.message.v1" && c.payload.len() <= 65536 => {
+            let envelope =
+                serde_json::from_slice::<flare_plugin_protocol::ui::PluginMessage>(&c.payload)
+                    .ok()
+                    .filter(|message| message.validate().is_ok());
+            if let Some(envelope) = envelope {
+                let mut card = app_card_content(envelope.plugin_id, "flare.plugin.message.v1", "");
+                card.summary = envelope.summary;
+                card.payload_schema = "flare.plugin.message/v1".into();
+                card.payload = c.payload.clone();
+                card.attributes = c.metadata.clone();
+                ProtoContent::AppCard(card)
+            } else {
+                ProtoContent::Custom(flare_proto::common::CustomContent {
+                    r#type: c.r#type.clone(),
+                    payload: c.payload.clone(),
+                    description: c.description.clone(),
+                    attributes: c.metadata.clone(),
+                })
+            }
+        }
         Elem::Custom(c) => ProtoContent::Custom(flare_proto::common::CustomContent {
             r#type: c.r#type.clone(),
             payload: c.payload.clone(),

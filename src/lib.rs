@@ -55,6 +55,9 @@ pub mod plugin {
         SdkPluginManifest, SdkPluginOperationManifest, SdkPluginPermissionManifest,
         SdkPluginUiKitManifest,
     };
+    /// Shared platform Manifest, permission/grant and lifecycle contract. Client
+    /// composition manifests below remain build-time SDK package declarations.
+    pub use flare_plugin_protocol as platform;
 }
 
 /// Storage adapter facade for core-owned persistence implementations.

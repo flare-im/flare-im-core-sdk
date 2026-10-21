@@ -525,10 +525,10 @@ fn hex_id(s: &str) -> bool {
 async fn io<T>(future: impl std::future::Future<Output = Result<T>>) -> Result<T> {
     let request = std::pin::pin!(future);
     let deadline = std::pin::pin!(crate::shared::util::delay(Duration::from_secs(5)));
-    match futures_util::future::select(request, deadline).await {
-        futures_util::future::Either::Left((result, _)) => {
+    match futures::future::select(request, deadline).await {
+        futures::future::Either::Left((result, _)) => {
             result.map_err(|_| failure(ErrorCode::InternalError))
         }
-        futures_util::future::Either::Right(_) => Err(failure(ErrorCode::OperationTimeout)),
+        futures::future::Either::Right(_) => Err(failure(ErrorCode::OperationTimeout)),
     }
 }

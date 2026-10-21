@@ -59,7 +59,6 @@ pub(crate) struct IMClientExtensionComponents {
     conversation_projection_sources: Vec<Arc<dyn ConversationProjectionSource>>,
     content_codecs: Vec<Arc<dyn ContentCodec>>,
     extension_migrations: Vec<Arc<dyn ExtensionMigration>>,
-    allow_capability_namespace_override: bool,
 }
 
 impl IMClientExtensionComponents {
@@ -95,7 +94,6 @@ impl IMClientExtensionComponents {
         builder
             .extension_migrations
             .extend(self.extension_migrations.iter().cloned());
-        builder.allow_capability_namespace_override = self.allow_capability_namespace_override;
         builder
     }
 }
@@ -170,7 +168,6 @@ pub struct IMClientBuilder {
     content_codecs: Vec<Arc<dyn ContentCodec>>,
     extension_migrations: Vec<Arc<dyn ExtensionMigration>>,
     metrics_sink: Option<Arc<dyn MetricsSink>>,
-    allow_capability_namespace_override: bool,
     builder_errors: Vec<FlareError>,
 }
 
@@ -195,7 +192,6 @@ impl IMClientBuilder {
             content_codecs: Vec::new(),
             extension_migrations: Vec::new(),
             metrics_sink: None,
-            allow_capability_namespace_override: false,
             builder_errors: Vec::new(),
         }
     }
@@ -275,13 +271,11 @@ impl IMClientBuilder {
         self
     }
 
-    /// 注册自定义能力插件（开源核心与商业扩展统一入口）。
+    /// 注册自定义能力插件。
     ///
     /// 插件命名空间由 manifest 声明，注册表负责所有权冲突校验。
     ///
-    /// 默认策略下，插件不得覆盖已注册命名空间；若确需在私有发行中替换某个
-    /// 官方插件，请显式调用
-    /// [`Self::allow_capability_namespace_override_for_private_distribution`]。
+    /// 每个命名空间只能有一个插件所有者；冲突会使 SDK 构建失败。
     pub fn add_capability_plugin(mut self, plugin: impl SdkCapabilityPlugin + 'static) -> Self {
         self.capability_plugins.push(Arc::new(plugin));
         self
@@ -382,17 +376,6 @@ impl IMClientBuilder {
         self
     }
 
-    /// 私有发行开关：允许外部插件覆盖已注册命名空间。
-    ///
-    /// 开源默认应保持关闭，避免官方插件路由被意外替换。
-    pub fn allow_capability_namespace_override_for_private_distribution(
-        mut self,
-        enabled: bool,
-    ) -> Self {
-        self.allow_capability_namespace_override = enabled;
-        self
-    }
-
     /// 构建 [`IMClient`] 并装配引擎、API 门面和默认同步任务。
     ///
     /// 该方法只完成组装，不会自动登录或建连。
@@ -415,7 +398,6 @@ impl IMClientBuilder {
             conversation_projection_sources: self.conversation_projection_sources.clone(),
             content_codecs: self.content_codecs.clone(),
             extension_migrations: self.extension_migrations.clone(),
-            allow_capability_namespace_override: self.allow_capability_namespace_override,
         };
         let codec: Arc<dyn Codec> = self.codec.unwrap_or_else(|| Arc::new(ProtobufCodec));
         let (stores, transport, runtime_media_service) = match self.runtime {
@@ -610,6 +592,7 @@ impl IMClientBuilder {
                 );
         // Presence talks to the same Core API gateway with the same trust and bearer.
         let presence_http_client = media_http_client.clone();
+        let capability_http_client = media_http_client.clone();
         let default_media_service: Arc<dyn MediaServicePort> = Arc::new(MediaService::new(
             media_http_client,
             current_user_id.clone(),
@@ -645,12 +628,16 @@ impl IMClientBuilder {
             media_service,
             current_user_id.clone(),
         ));
-        let capability_api = Arc::new(CapabilityApi::new(
-            capability_base_url,
-            current_user_id.clone(),
-            tenant_id.clone(),
-            http_request_context.clone(),
-        ));
+        let capability_api = Arc::new(
+            CapabilityApi::new(
+                capability_base_url,
+                current_user_id.clone(),
+                tenant_id.clone(),
+                http_request_context.clone(),
+            )
+            .with_http_transport(capability_http_client)
+            .with_plugin_command_store(store_ref.plugin_commands.clone()),
+        );
         let presence_api = Arc::new(PresenceApi::new(
             presence_http_client,
             current_user_id.clone(),
@@ -678,24 +665,15 @@ impl IMClientBuilder {
         });
         for plugin in self.capability_plugins {
             let plugin_id = plugin.plugin_id();
-            let register_result = if self.allow_capability_namespace_override {
-                tracing::warn!(
-                    target = "flare_sdk.capability",
-                    plugin_id = plugin_id,
-                    namespaces = ?plugin.capability_namespaces(),
-                    "register plugin with namespace override (private distribution)"
-                );
-                capability_registry.register_with_namespace_override(plugin.clone())
-            } else {
-                capability_registry.register(plugin.clone())
-            };
+            let register_result = capability_registry.register(plugin.clone());
             if let Err(err) = register_result {
                 tracing::warn!(
                     target = "flare_sdk.capability",
                     plugin_id = plugin_id,
                     error = %err,
-                    "register capability plugin failed"
+                    "capability plugin registration rejected"
                 );
+                return Err(err);
             }
         }
         let conversation_command_use_case = Arc::new(ConversationCommandUseCase::new(

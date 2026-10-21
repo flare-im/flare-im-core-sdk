@@ -15,7 +15,7 @@ pub struct SdkPluginManifest {
     pub version: String,
     pub display_name: String,
     pub namespaces: Vec<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[schemars(length(min = 1, max = 256))]
     pub operations: Vec<SdkPluginOperationManifest>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub events: Vec<SdkPluginEventManifest>,
@@ -131,6 +131,9 @@ impl SdkPluginManifest {
         }
 
         let permissions = self.permission_ids();
+        if self.operations.is_empty() || self.operations.len() > 256 {
+            return invalid_manifest(plugin_id, "operations_required");
+        }
         let mut operations = HashSet::new();
         for operation in &self.operations {
             if operation.op.trim().is_empty() {
@@ -161,12 +164,12 @@ impl SdkPluginManifest {
     }
 
     pub fn owns_capability(&self, capability_id: &str) -> bool {
-        let namespace = capability_id.split('.').next().unwrap_or_default();
-        if !self.namespaces.iter().any(|ns| ns == namespace) {
+        if !self
+            .namespaces
+            .iter()
+            .any(|ns| capability_id == ns || capability_id.starts_with(&format!("{ns}.")))
+        {
             return false;
-        }
-        if self.operations.is_empty() {
-            return true;
         }
         self.operations
             .iter()
@@ -273,7 +276,7 @@ mod tests {
             version: "0.2.0".to_string(),
             display_name: "Test Plugin".to_string(),
             namespaces: vec!["test".to_string()],
-            operations: Vec::new(),
+            operations: vec![SdkPluginOperationManifest::new("test.echo")],
             events: vec![SdkPluginEventManifest {
                 id: "test.event.ready".to_string(),
                 description: Some("Ready event.".to_string()),
@@ -293,6 +296,22 @@ mod tests {
             min_sdk_version: None,
             platforms: Vec::new(),
             ui_kits: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn dotted_namespaces_match_complete_segments_and_declared_operations() {
+        let mut manifest = valid_manifest();
+        manifest.namespaces = vec!["flare.redpacket".into()];
+        manifest.operations = vec![SdkPluginOperationManifest::new("create")];
+        assert!(manifest.owns_capability("flare.redpacket.create"));
+        for capability in [
+            "flare.create",
+            "flare.redpacketx.create",
+            "other.redpacket.create",
+            "flare.redpacket.claim",
+        ] {
+            assert!(!manifest.owns_capability(capability));
         }
     }
 
