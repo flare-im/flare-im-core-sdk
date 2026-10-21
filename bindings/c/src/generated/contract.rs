@@ -55,11 +55,33 @@ pub const C_API_SYMBOLS: &[&str] = &[
 ];
 
 pub const C_DISPATCH_OPS: &[(&str, &str)] = &[
+    (
+        "capability.acknowledge_plugin_command",
+        "acknowledge_plugin_command",
+    ),
     ("capability.dispatch", "capability_dispatch"),
     ("capability.grant", "capability_grant"),
     ("capability.list", "capability_list"),
     ("capability.list_user", "capability_list_user"),
+    (
+        "capability.pending_plugin_command",
+        "pending_plugin_command",
+    ),
+    ("capability.plugin_ui_action", "plugin_ui_action"),
+    ("capability.plugin_ui_catalog", "plugin_ui_catalog"),
+    ("capability.plugin_ui_invoke", "plugin_ui_invoke"),
+    ("capability.plugin_ui_present", "plugin_ui_present"),
+    ("capability.plugin_ui_resolve", "plugin_ui_resolve"),
+    (
+        "capability.prepare_plugin_command",
+        "prepare_plugin_command",
+    ),
+    (
+        "capability.reconcile_plugin_command",
+        "reconcile_plugin_command",
+    ),
     ("capability.revoke", "capability_revoke"),
+    ("capability.submit_plugin_command", "submit_plugin_command"),
     ("media.cache_remote", "cache_remote"),
     ("media.cache_stats", "cache_stats"),
     ("media.clear_cache", "clear_cache"),
@@ -123,6 +145,10 @@ pub const C_DISPATCH_OPS: &[(&str, &str)] = &[
     ("message_builder.create_mini_program", "create_mini_program"),
     ("message_builder.create_notification", "create_notification"),
     ("message_builder.create_placeholder", "create_placeholder"),
+    (
+        "message_builder.create_plugin_message",
+        "create_plugin_message",
+    ),
     ("message_builder.create_quote", "create_quote"),
     ("message_builder.create_rich_doc", "create_rich_doc"),
     ("message_builder.create_schedule", "create_schedule"),

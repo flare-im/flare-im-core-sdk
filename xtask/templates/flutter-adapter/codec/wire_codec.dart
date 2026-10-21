@@ -4,6 +4,14 @@ import 'dart:developer' as developer;
 
 import '../../model/model.dart';
 
+Map<String, Object?> pluginUiEvaluationRequestToMap(PluginUiEvaluationRequest request) {
+  return {'payload': request.payload};
+}
+
+Map<String, Object?> pluginCommandRequestToMap(PluginCommandRequest request) {
+  return {'payload': request.payload};
+}
+
 Map<String, Object?> conversationListQueryToMap(ConversationListQuery query) {
   return {
     if (query.keyword != null) 'keyword': query.keyword!,
@@ -172,7 +180,7 @@ RuntimeHealthResponse runtimeHealthResponseFromJson(Object? value) {
 }
 
 Map<String, Object?> sendMessageRequestToMap(SendMessageRequest request) {
-  return {'message': messageToWireMap(request.message)};
+  return {'message': messageToWireMap(request.message), if(request.expectedUserId != null) 'expectedUserId':request.expectedUserId};
 }
 
 Map<String, Object?> messageToWireMap(Message message) {

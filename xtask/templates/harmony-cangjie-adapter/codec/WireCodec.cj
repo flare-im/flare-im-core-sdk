@@ -30,6 +30,25 @@ public func jsonPutRaw(json: CjJsonObject, key: String, raw: String): Unit {
     json.put(key, jsonValueFromRaw(raw))
 }
 
+public func pluginUiEvaluationRequestToJson(request: PluginUiEvaluationRequest): String {
+    let json = CjJsonObject()
+    jsonPutRaw(json, "payload", request.payload)
+    return json.toJsonString()
+}
+
+public func pluginCommandRequestToJson(request: PluginCommandRequest): String {
+    let json = CjJsonObject()
+    jsonPutRaw(json, "payload", request.payload)
+    return json.toJsonString()
+}
+
+public func buildPluginMessageRequestToJson(request: BuildPluginMessageRequest): String {
+    let json = CjJsonObject()
+    jsonPutString(json, "conversationId", request.conversationId)
+    jsonPutRaw(json, "payload", request.payload)
+    return json.toJsonString()
+}
+
 public func jsonPutString(json: CjJsonObject, key: String, value: String): Unit {
     json.put(key, CjJsonString(value))
 }
@@ -1246,6 +1265,10 @@ public func createTextMessageRequestFromObject(object: CjJsonObject): CreateText
 public func sendMessageRequestToJson(request: SendMessageRequest): String {
     let json = CjJsonObject()
     jsonPutRaw(json, "message", messageToJson(request.message))
+    match (request.expectedUserId) {
+        case Some(value) => jsonPutString(json, "expectedUserId", value)
+        case None => ()
+    }
     return json.toJsonString()
 }
 

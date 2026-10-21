@@ -879,6 +879,61 @@ final class _DefaultCapabilitiesApi implements CapabilitiesApi {
   final NativeBridge _bridge;
 
   @override
+  Future<Map<String, Object?>> preparePluginCommand(PluginCommandRequest request) {
+    return _bridge.invoke<Map<String, Object?>>(NativeCallMap.capabilityPreparePluginCommand, pluginCommandRequestToMap(request));
+  }
+
+  @override
+  Future<Map<String, Object?>> pendingPluginCommand(PluginCommandRequest request) {
+    return _bridge.invoke<Map<String, Object?>>(NativeCallMap.capabilityPendingPluginCommand, pluginCommandRequestToMap(request));
+  }
+
+  @override
+  Future<Map<String, Object?>> submitPluginCommand(PluginCommandRequest request) {
+    return _bridge.invoke<Map<String, Object?>>(NativeCallMap.capabilitySubmitPluginCommand, pluginCommandRequestToMap(request));
+  }
+
+  @override
+  Future<Map<String, Object?>> reconcilePluginCommand(PluginCommandRequest request) {
+    return _bridge.invoke<Map<String, Object?>>(NativeCallMap.capabilityReconcilePluginCommand, pluginCommandRequestToMap(request));
+  }
+
+  @override
+  Future<Map<String, Object?>> acknowledgePluginCommand(PluginCommandRequest request) {
+    return _bridge.invoke<Map<String, Object?>>(NativeCallMap.capabilityAcknowledgePluginCommand, pluginCommandRequestToMap(request));
+  }
+
+  @override
+  Future<Map<String, Object?>> presentPluginMessage(PluginUiEvaluationRequest request) {
+    return _bridge.invoke<Map<String, Object?>>(
+        NativeCallMap.capabilityPluginUiPresent, pluginUiEvaluationRequestToMap(request));
+  }
+
+  @override
+  Future<Map<String, Object?>> invokePluginAction(PluginUiEvaluationRequest request) {
+    return _bridge.invoke<Map<String, Object?>>(
+        NativeCallMap.capabilityPluginUiInvoke, pluginUiEvaluationRequestToMap(request));
+  }
+
+  @override
+  Future<Map<String, Object?>> pluginUiAction(PluginUiEvaluationRequest request) {
+    return _bridge.invoke<Map<String, Object?>>(
+        NativeCallMap.capabilityPluginUiAction, pluginUiEvaluationRequestToMap(request));
+  }
+
+  @override
+  Future<Map<String, Object?>> resolvePluginMessage(PluginUiEvaluationRequest request) {
+    return _bridge.invoke<Map<String, Object?>>(
+        NativeCallMap.capabilityPluginUiResolve, pluginUiEvaluationRequestToMap(request));
+  }
+
+  @override
+  Future<Map<String, Object?>> pluginUiCatalog(Map<String, Object?> request) {
+    return _bridge.invoke<Map<String, Object?>>(
+        NativeCallMap.capabilityPluginUiCatalog, request);
+  }
+
+  @override
   Future<Map<String, Object?>> listCapabilities(Map<String, Object?> request) {
     return _bridge.invoke<Map<String, Object?>>(
         NativeCallMap.capabilityList, request);

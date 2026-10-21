@@ -84,6 +84,10 @@ public final class FfiNativeBridge: NativeBridgeProtocol, @unchecked Sendable {
             return try await call0(bindings.sdkUninit)
         case "sdk.login":
             return try await login(FfiJson.asMap(request?.value))
+        case "sdk.prepare":
+            return try await prepare(FfiJson.asMap(request?.value))
+        case "sdk.connect":
+            return try await connect(FfiJson.asMap(request?.value))
         case "sdk.update_access_token":
             return try await updateAccessToken(FfiJson.asMap(request?.value))
         case "sdk.logout":
@@ -252,6 +256,34 @@ public final class FfiNativeBridge: NativeBridgeProtocol, @unchecked Sendable {
             FfiStringCodec.withCString(FfiFields.string(request, "accessToken")) { accessToken in
                 FfiStringCodec.withCString(FfiFields.string(request, "tenantId")) { tenantId in
                     bindings.sdkUpdateAccessToken(handle, accessToken, tenantId, context, FfiNativeCallbacks.result)
+                }
+            }
+        }
+    }
+
+    private func prepare(_ request: [String: Any]) async throws -> Any? {
+        let handle = try requireHandle()
+        let id = FfiCallbackRouter.shared.reserveContextId()
+        return try await FfiCallbackRouter.shared.wait(for: id, operation: "sdk.prepare") { context in
+            FfiFields.string(request, "userId").withCString { userId in
+                let storeConfig = FfiFields.string(request, "storeConfigJson")
+                if storeConfig.isEmpty {
+                    return bindings.sdkPrepare(handle, userId, nil, context, FfiNativeCallbacks.result)
+                }
+                return storeConfig.withCString { store in
+                    bindings.sdkPrepare(handle, userId, store, context, FfiNativeCallbacks.result)
+                }
+            }
+        }
+    }
+
+    private func connect(_ request: [String: Any]) async throws -> Any? {
+        let handle = try requireHandle()
+        let id = FfiCallbackRouter.shared.reserveContextId()
+        return try await FfiCallbackRouter.shared.wait(for: id, operation: "sdk.connect") { context in
+            FfiFields.string(request, "userId").withCString { userId in
+                FfiFields.string(request, "token").withCString { token in
+                    bindings.sdkConnect(handle, userId, token, context, FfiNativeCallbacks.result)
                 }
             }
         }

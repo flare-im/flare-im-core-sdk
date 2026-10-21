@@ -1,5 +1,17 @@
 import Foundation
 
+func buildPluginMessageRequestToMap(_ request: BuildPluginMessageRequest) -> [String: AnySendable] {
+    ["conversationId": wrapSendable(request.conversationId), "payload": wrapSendable(request.payload)]
+}
+
+func pluginUiEvaluationRequestToMap(_ request: PluginUiEvaluationRequest) -> [String: AnySendable] {
+    ["payload": wrapSendable(request.payload)]
+}
+
+func pluginCommandRequestToMap(_ request: PluginCommandRequest) -> [String: AnySendable] {
+    ["payload": wrapSendable(request.payload)]
+}
+
 /// GENERATED. Do not edit by hand.
 
 func unwrapRequest(_ value: AnySendable) -> [String: AnySendable]? {
@@ -919,7 +931,9 @@ func capabilityEventToMap(_ request: CapabilityEvent) -> [String: AnySendable] {
 }
 
 func sendMessageRequestToMap(_ request: SendMessageRequest) -> [String: AnySendable] {
-    ["message": AnySendable(messageToWireMap(request.message))]
+    var result: [String: AnySendable] = ["message": AnySendable(messageToWireMap(request.message))]
+    if let expected = request.expectedUserId { result["expectedUserId"] = AnySendable(expected) }
+    return result
 }
 
 func messageContentToWireMap(_ content: MessageContent) -> [String: AnySendable] {

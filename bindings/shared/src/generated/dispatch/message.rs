@@ -82,7 +82,13 @@ pub async fn dispatch_message(
             let messages = api.list(&conversation_id_s, before_seq_v, limit_v).await?;
             json(serde_json::json!({ "messages": messages }))
         }
-        "send" => json_send_ack(api.send(message_from_params(&params)?).await?),
+        "send" => {
+            let expected_user_id_o = optional_string(&params, "expectedUserId");
+            json_send_ack(
+                api.send_bound(message_from_params(&params)?, expected_user_id_o.as_deref())
+                    .await?,
+            )
+        }
         "send_no_oss" => json_send_ack(api.send_no_oss(message_from_params(&params)?).await?),
         "recall" => {
             let message_id_s = json_string(&params, "messageId")?;
@@ -252,7 +258,6 @@ pub async fn dispatch_message_json(
             let messages = api.search_by_query(bound_value).await?;
             json(serde_json::json!({ "messages": messages }))
         }
-        "send" => json_send_ack(api.send(message_from_json_str(params_json)?).await?),
         "send_no_oss" => json_send_ack(api.send_no_oss(message_from_json_str(params_json)?).await?),
         "edit_rich_doc_by_message_id" => {
             api.edit_rich_doc_by_message_id(

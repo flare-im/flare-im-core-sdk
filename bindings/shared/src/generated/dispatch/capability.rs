@@ -13,6 +13,16 @@ use flare_im_core_sdk::serde_json::{self, Value};
 use std::sync::Arc;
 
 pub const CAPABILITY_DISPATCH_OPERATIONS: &[&str] = &[
+    "prepare_plugin_command",
+    "pending_plugin_command",
+    "reconcile_plugin_command",
+    "submit_plugin_command",
+    "acknowledge_plugin_command",
+    "plugin_ui_invoke",
+    "plugin_ui_present",
+    "plugin_ui_action",
+    "plugin_ui_resolve",
+    "plugin_ui_catalog",
     "capability_list",
     "capability_list_user",
     "capability_dispatch",
@@ -31,6 +41,88 @@ pub async fn dispatch_capability(
     params: Value,
 ) -> Result<BindingResponse> {
     match operation {
+        "prepare_plugin_command" => json(
+            api.prepare_plugin_command(
+                params
+                    .get("payload")
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null),
+            )
+            .await?,
+        ),
+        "pending_plugin_command" => json(
+            api.pending_plugin_command(
+                params
+                    .get("payload")
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null),
+            )
+            .await?,
+        ),
+        "reconcile_plugin_command" => json(
+            api.reconcile_plugin_command(
+                params
+                    .get("payload")
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null),
+            )
+            .await?,
+        ),
+        "submit_plugin_command" => json(
+            api.submit_plugin_command(
+                params
+                    .get("payload")
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null),
+            )
+            .await?,
+        ),
+        "acknowledge_plugin_command" => json(
+            api.acknowledge_plugin_command(
+                params
+                    .get("payload")
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null),
+            )
+            .await?,
+        ),
+        "plugin_ui_invoke" => json(
+            api.invoke_plugin_action(
+                params
+                    .get("payload")
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null),
+            )
+            .await?,
+        ),
+        "plugin_ui_present" => json(
+            api.present_plugin_message(
+                params
+                    .get("payload")
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null),
+            )
+            .await?,
+        ),
+        "plugin_ui_action" => json(
+            api.plugin_ui_action(
+                params
+                    .get("payload")
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null),
+            )
+            .await?,
+        ),
+        "plugin_ui_resolve" => json(
+            api.resolve_plugin_message(
+                params
+                    .get("payload")
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null),
+            )
+            .await?,
+        ),
+        "plugin_ui_catalog" => json(api.plugin_ui_catalog().await?),
         "capability_list" => json(api.list_capabilities().await?),
         "capability_list_user" => {
             let tenant_id_o = optional_string(&params, "tenantId");

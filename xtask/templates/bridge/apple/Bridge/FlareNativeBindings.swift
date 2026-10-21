@@ -34,6 +34,8 @@ public final class FlareNativeBindings: @unchecked Sendable {
     public private(set) var sdkInit: AsyncJsonFn!
     public private(set) var sdkUninit: Async0Fn!
     public private(set) var sdkLogin: AsyncLoginFn!
+    public private(set) var sdkPrepare: Async2StringFn!
+    public private(set) var sdkConnect: Async2StringFn!
     public private(set) var sdkUpdateAccessToken: Async2StringFn!
     public private(set) var sdkLogout: Async0Fn!
     public private(set) var sdkCurrentUserId: Async0Fn!
@@ -80,6 +82,8 @@ public final class FlareNativeBindings: @unchecked Sendable {
         sdkInit = load("flare_sdk_init")
         sdkUninit = load("flare_sdk_uninit")
         sdkLogin = load("flare_sdk_login")
+        sdkPrepare = load("flare_sdk_prepare")
+        sdkConnect = load("flare_sdk_connect")
         sdkUpdateAccessToken = load("flare_sdk_update_access_token")
         sdkLogout = load("flare_sdk_logout")
         sdkCurrentUserId = load("flare_sdk_current_user_id")

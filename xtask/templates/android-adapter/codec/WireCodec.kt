@@ -25,6 +25,15 @@ import com.flare.im.model.media.*
 import com.flare.im.model.query.*
 import com.flare.im.model.response.*
 
+fun pluginUiEvaluationRequestToMap(request: PluginUiEvaluationRequest): Map<String, Any?> =
+    mapOf("payload" to request.payload)
+
+fun pluginCommandRequestToMap(request: PluginCommandRequest): Map<String, Any?> =
+    mapOf("payload" to request.payload)
+
+fun buildPluginMessageRequestToMap(request: BuildPluginMessageRequest): Map<String, Any?> =
+    mapOf("conversationId" to request.conversationId, "payload" to request.payload)
+
 @Suppress("UNCHECKED_CAST")
 
 
@@ -733,7 +742,7 @@ fun capabilityEventToMap(request: CapabilityEvent): Map<String, Any?> = buildMap
 
 
 fun sendMessageRequestToMap(request: SendMessageRequest): Map<String, Any?> =
-    mapOf("message" to messageToWireMap(request.message))
+    buildMap { put("message", messageToWireMap(request.message)); request.expectedUserId?.let { put("expectedUserId", it) } }
 
 fun messageToWireMap(message: Message): Map<String, Any?> = buildMap {
     put("serverId", message.serverId)

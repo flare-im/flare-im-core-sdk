@@ -122,27 +122,27 @@ class DefaultFlareImClient(
     }
     override suspend fun updatePushToken(request: PushTokenInput): PushLifecycleStatus {
         val raw = invokeMap(bridge, NativeCallMap.SDK_UPDATE_PUSH_TOKEN, mapOf("provider" to request.provider, "platform" to request.platform, "token" to request.token))
-        return PushLifecycleStatus(configuredProviders = intValue(raw["configuredProviders"]), pendingRevocations = intValue(raw["pendingRevocations"]), registeredProviders = intValue(raw["registeredProviders"]), state = raw["state"] as String, lastError = raw["lastError"] as? String)
+        return PushLifecycleStatus(configuredProviders = java.lang.Math.toIntExact(intValue(raw["configuredProviders"])), pendingRevocations = java.lang.Math.toIntExact(intValue(raw["pendingRevocations"])), registeredProviders = java.lang.Math.toIntExact(intValue(raw["registeredProviders"])), state = raw["state"] as String, lastError = raw["lastError"] as? String)
     }
 
     override suspend fun clearPushToken(request: ClearPushTokenRequest): PushLifecycleStatus {
         val raw = invokeMap(bridge, NativeCallMap.SDK_CLEAR_PUSH_TOKEN, mapOf("provider" to request.provider))
-        return PushLifecycleStatus(configuredProviders = intValue(raw["configuredProviders"]), pendingRevocations = intValue(raw["pendingRevocations"]), registeredProviders = intValue(raw["registeredProviders"]), state = raw["state"] as String, lastError = raw["lastError"] as? String)
+        return PushLifecycleStatus(configuredProviders = java.lang.Math.toIntExact(intValue(raw["configuredProviders"])), pendingRevocations = java.lang.Math.toIntExact(intValue(raw["pendingRevocations"])), registeredProviders = java.lang.Math.toIntExact(intValue(raw["registeredProviders"])), state = raw["state"] as String, lastError = raw["lastError"] as? String)
     }
 
     override suspend fun setPushPermission(request: SetPushPermissionRequest): PushLifecycleStatus {
         val raw = invokeMap(bridge, NativeCallMap.SDK_SET_PUSH_PERMISSION, mapOf("allowed" to request.allowed))
-        return PushLifecycleStatus(configuredProviders = intValue(raw["configuredProviders"]), pendingRevocations = intValue(raw["pendingRevocations"]), registeredProviders = intValue(raw["registeredProviders"]), state = raw["state"] as String, lastError = raw["lastError"] as? String)
+        return PushLifecycleStatus(configuredProviders = java.lang.Math.toIntExact(intValue(raw["configuredProviders"])), pendingRevocations = java.lang.Math.toIntExact(intValue(raw["pendingRevocations"])), registeredProviders = java.lang.Math.toIntExact(intValue(raw["registeredProviders"])), state = raw["state"] as String, lastError = raw["lastError"] as? String)
     }
 
     override suspend fun reconcilePush(): PushLifecycleStatus {
         val raw = invokeMap(bridge, NativeCallMap.SDK_RECONCILE_PUSH)
-        return PushLifecycleStatus(configuredProviders = intValue(raw["configuredProviders"]), pendingRevocations = intValue(raw["pendingRevocations"]), registeredProviders = intValue(raw["registeredProviders"]), state = raw["state"] as String, lastError = raw["lastError"] as? String)
+        return PushLifecycleStatus(configuredProviders = java.lang.Math.toIntExact(intValue(raw["configuredProviders"])), pendingRevocations = java.lang.Math.toIntExact(intValue(raw["pendingRevocations"])), registeredProviders = java.lang.Math.toIntExact(intValue(raw["registeredProviders"])), state = raw["state"] as String, lastError = raw["lastError"] as? String)
     }
 
     override suspend fun pushStatus(): PushLifecycleStatus {
         val raw = invokeMap(bridge, NativeCallMap.SDK_PUSH_STATUS)
-        return PushLifecycleStatus(configuredProviders = intValue(raw["configuredProviders"]), pendingRevocations = intValue(raw["pendingRevocations"]), registeredProviders = intValue(raw["registeredProviders"]), state = raw["state"] as String, lastError = raw["lastError"] as? String)
+        return PushLifecycleStatus(configuredProviders = java.lang.Math.toIntExact(intValue(raw["configuredProviders"])), pendingRevocations = java.lang.Math.toIntExact(intValue(raw["pendingRevocations"])), registeredProviders = java.lang.Math.toIntExact(intValue(raw["registeredProviders"])), state = raw["state"] as String, lastError = raw["lastError"] as? String)
     }
 
     override suspend fun logout(): Unit {

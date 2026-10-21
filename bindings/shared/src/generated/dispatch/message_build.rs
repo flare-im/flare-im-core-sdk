@@ -37,6 +37,7 @@ pub const MESSAGE_BUILD_OPERATIONS: &[&str] = &[
     "create_custom",
     "create_placeholder",
     "create_with_content",
+    "create_plugin_message",
 ];
 
 pub fn is_message_build_operation(operation: &str) -> bool {
@@ -318,6 +319,19 @@ pub async fn dispatch_message_build(
             json(
                 api.create_with_content(&conversation_id_s, built_content_from_value(content)?)
                     .await?,
+            )
+        }
+        "create_plugin_message" => {
+            let conversation_id_s = conversation_id(&request)?;
+            json(
+                api.create_plugin_message(
+                    &conversation_id_s,
+                    request
+                        .get("payload")
+                        .cloned()
+                        .unwrap_or(serde_json::Value::Null),
+                )
+                .await?,
             )
         }
         _ => Err(binding_operation_not_supported(operation)),

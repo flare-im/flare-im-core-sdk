@@ -349,7 +349,14 @@ fn platform_wire_codec_targets(root: &Path) -> Vec<GeneratedTextTarget> {
 }
 
 fn platform_map_adapter_module_keys() -> &'static [&'static str] {
-    &["diagnostics", "presence", "media", "capabilities", "views"]
+    &[
+        "diagnostics",
+        "presence",
+        "media",
+        "capabilities",
+        "views",
+        "message_builder",
+    ]
 }
 
 fn find_module<'a>(spec: &'a Value, key: &str) -> Option<&'a Value> {
@@ -558,6 +565,12 @@ fn emit_kotlin_map_adapter(spec: &Value, module: &Value) -> String {
         lines.push(String::new());
         lines.push(format!("    override suspend fun {name}({arg}): {res} {{"));
         match res.as_str() {
+            "ListMessageBuildCatalogResponse" => lines.push("        return ListMessageBuildCatalogResponse(entries = MESSAGE_BUILD_CATALOG)".into()),
+            "Message" => lines.extend([
+                format!("        val raw = invokeMap(bridge, NativeCallMap.{descriptor}{req})"),
+                "        return messageFromJson(raw[\"message\"] ?: raw)".into(),
+            ]),
+            "RichDocV2Normalized" => lines.push(format!("        return richDocV2NormalizedFromJson(invokeMap(bridge, NativeCallMap.{descriptor}{req}))")),
             "Unit" => lines.push(format!(
                 "        invokeUnit(bridge, NativeCallMap.{descriptor}{req})"
             )),
@@ -609,6 +622,11 @@ fn emit_swift_map_adapter(spec: &Value, module: &Value) -> String {
             "    public func {name}({arg}) async throws -> {res} {{"
         ));
         match res.as_str() {
+            "ListMessageBuildCatalogResponse" => lines.push("        return ListMessageBuildCatalogResponse(entries: messageBuildCatalog)".into()),
+            "Message" | "RichDocV2Normalized" => lines.extend([
+                format!("        let raw = try await invokeMap(bridge, descriptor: NativeCallMap.{descriptor}, request: {})",swift_adapter_map_request(method,spec)),
+                if res == "Message" { "        return try messageFromJson(raw[\"message\"] ?? raw)".into() } else { "        return try richDocV2NormalizedFromJson(raw)".into() },
+            ]),
             "Void" => lines.push(format!(
                 "        try await invokeVoid(bridge, descriptor: NativeCallMap.{descriptor}, request: {})",
                 swift_adapter_void_request(method, spec)
@@ -674,7 +692,11 @@ fn emit_arkts_map_adapter(spec: &Value, module: &Value) -> String {
         .collect::<BTreeSet<_>>();
     for method in child_arr(module, "methods") {
         match str_field(method, "response") {
-            "ViewOpenResponse" | "ViewLoadOlderResponse" | "CloseViewResponse" => {
+            "ViewOpenResponse"
+            | "ViewLoadOlderResponse"
+            | "CloseViewResponse"
+            | "Message"
+            | "RichDocV2Normalized" => {
                 wire_imports.insert(ts_model_from_json_fn(str_field(method, "response")));
             }
             _ => {}
@@ -702,6 +724,10 @@ fn emit_arkts_map_adapter(spec: &Value, module: &Value) -> String {
         "import { NativeBridge, NativeCallMap } from '../../contract/BridgeContract';".to_string(),
         format!("import type {{ {iface} }} from '../../api/modules/{key}';"),
     ];
+    if ts_api_module_key(module) == "message_builder" {
+        lines
+            .push("import { MESSAGE_BUILD_CATALOG } from '../catalog/MessageBuildCatalog';".into());
+    }
     if !model_types.is_empty() {
         lines.push(format!(
             "import type {{ {} }} from '../../model';",
@@ -732,6 +758,19 @@ fn emit_arkts_map_adapter(spec: &Value, module: &Value) -> String {
         lines.push(String::new());
         lines.push(format!("  async {name}({arg}): Promise<{res}> {{"));
         match res.as_str() {
+            "ListMessageBuildCatalogResponse" => {
+                lines.push("    return { entries: MESSAGE_BUILD_CATALOG };".into())
+            }
+            "Message" | "RichDocV2Normalized" => lines.extend([
+                format!(
+                    "    const raw = await invokeMap(this.bridge, NativeCallMap.{descriptor}{req});"
+                ),
+                if res == "Message" {
+                    "    return messageFromJson(raw['message'] ?? raw);".into()
+                } else {
+                    "    return richDocV2NormalizedFromJson(raw);".into()
+                },
+            ]),
             "void" => lines.push(format!(
                 "    await invokeVoid(this.bridge, NativeCallMap.{descriptor}{req});"
             )),
@@ -792,6 +831,11 @@ fn emit_cangjie_map_adapter(spec: &Value, module: &Value) -> String {
         lines.push(String::new());
         lines.push(format!("    public func {name}({arg}): {res} {{"));
         match res.as_str() {
+            "ListMessageBuildCatalogResponse" => lines.push("        return ListMessageBuildCatalogResponse(entries: MESSAGE_BUILD_CATALOG_ENTRIES_JSON)".into()),
+            "Message" | "RichDocV2Normalized" => lines.extend([
+                format!("        let raw = bridge.invoke(descriptor: NativeCallMap.{descriptor}, requestJson: {request})"),
+                if res == "Message" { "        return messageFromEnvelopeJson(raw)".into() } else { "        return richDocV2NormalizedFromJson(raw)".into() },
+            ]),
             "Unit" => lines.push(format!(
                 "        let _ignored = bridge.invoke(descriptor: NativeCallMap.{descriptor}, requestJson: {request})"
             )),
@@ -1194,4 +1238,44 @@ fn emit_cangjie_adapter_message_build_catalog_json(spec: &Value) -> String {
 
 fn wire_lines_len(model: &Value) -> usize {
     dart_build_request_wire_lines(model).len()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn dart_capability_template_covers_the_source_spec() {
+        let root = crate::context::workspace_root().unwrap();
+        let spec = load_expanded_client_spec(&root).unwrap();
+        let module = find_module(&spec, "capabilities").unwrap();
+        let template = include_str!("../../templates/flutter-adapter/client.dart");
+        for method in child_arr(module, "methods") {
+            let name = str_field(method, "name");
+            assert!(
+                template.contains(&format!(" {name}(")),
+                "Dart runtime adapter is missing {name}"
+            );
+        }
+    }
+    #[test]
+    fn native_message_builder_adapters_cover_every_contract_method() {
+        let root = crate::context::workspace_root().unwrap();
+        let spec = load_expanded_client_spec(&root).unwrap();
+        let module = find_module(&spec, "message_builder").unwrap();
+        let targets = platform_map_adapter_targets(&root, &spec, module);
+        assert_eq!(targets.len(), 4);
+        for target in targets {
+            for method in child_arr(module, "methods") {
+                assert!(
+                    target
+                        .body
+                        .contains(&format!("{}(", str_field(method, "name"))),
+                    "{} missing {}",
+                    target.path.display(),
+                    str_field(method, "name")
+                );
+            }
+            assert!(target.body.contains("buildPluginMessageRequestTo"));
+        }
+    }
 }

@@ -1,5 +1,8 @@
 // GENERATED. Do not edit by hand.
 import {
+  BuildPluginMessageRequest,
+  PluginUiEvaluationRequest,
+  PluginCommandRequest,
   CloseViewRequest,
   CloseViewResponse,
   ConversationVersion,
@@ -30,6 +33,18 @@ import {
   ViewSnapshot,
   ViewUpdate,
 } from '../model';
+
+export function pluginUiEvaluationRequestToMap(request: PluginUiEvaluationRequest): Record<string, Object> {
+  return { payload: request.payload };
+}
+
+export function pluginCommandRequestToMap(request: PluginCommandRequest): Record<string, Object> {
+  return { payload: request.payload };
+}
+
+export function buildPluginMessageRequestToMap(request: BuildPluginMessageRequest): Record<string, Object> {
+  return { conversationId: request.conversationId, payload: request.payload };
+}
 
 export function enumWireIndex<T>(order: ReadonlyArray<T>, value: T): number {
   const index = order.indexOf(value);
@@ -851,7 +866,9 @@ export function capabilityEventToMap(request: CapabilityEvent): Record<string, O
 
 
 export function sendMessageRequestToMap(request: SendMessageRequest): Record<string, Object> {
-  return { message: messageToWireMap(request.message) };
+  const result: Record<string, Object> = { message: messageToWireMap(request.message) };
+  if (request.expectedUserId !== undefined) result.expectedUserId = request.expectedUserId;
+  return result;
 }
 
 export function messageToWireMap(message: Message): Record<string, Object> {

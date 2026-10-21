@@ -103,11 +103,15 @@
         },
         {
           "op": "send",
-          "method": "send",
+          "method": "send_bound",
           "args": [
             [
               "message",
               "im_message"
+            ],
+            [
+              "expected_user_id",
+              "optional_str_ref"
             ]
           ],
           "result": "send_ack"
@@ -973,6 +977,21 @@
             ]
           ],
           "result": "json"
+        },
+        {
+          "op": "create_plugin_message",
+          "method": "create_plugin_message",
+          "args": [
+            [
+              "conversation_id",
+              "conversation_id"
+            ],
+            [
+              "payload",
+              "json_null_default"
+            ]
+          ],
+          "result": "json"
         }
       ]
     },
@@ -1543,6 +1562,111 @@
       "is_fn": "is_capability_operation",
       "ops_const": "CAPABILITY_DISPATCH_OPERATIONS",
       "operations": [
+        {
+          "op": "prepare_plugin_command",
+          "method": "prepare_plugin_command",
+          "args": [
+            [
+              "request",
+              "json_null_default"
+            ]
+          ],
+          "result": "json"
+        },
+        {
+          "op": "pending_plugin_command",
+          "method": "pending_plugin_command",
+          "args": [
+            [
+              "request",
+              "json_null_default"
+            ]
+          ],
+          "result": "json"
+        },
+        {
+          "op": "reconcile_plugin_command",
+          "method": "reconcile_plugin_command",
+          "args": [
+            [
+              "request",
+              "json_null_default"
+            ]
+          ],
+          "result": "json"
+        },
+        {
+          "op": "submit_plugin_command",
+          "method": "submit_plugin_command",
+          "args": [
+            [
+              "request",
+              "json_null_default"
+            ]
+          ],
+          "result": "json"
+        },
+        {
+          "op": "acknowledge_plugin_command",
+          "method": "acknowledge_plugin_command",
+          "args": [
+            [
+              "request",
+              "json_null_default"
+            ]
+          ],
+          "result": "json"
+        },
+        {
+          "op": "plugin_ui_invoke",
+          "method": "invoke_plugin_action",
+          "args": [
+            [
+              "request",
+              "json_null_default"
+            ]
+          ],
+          "result": "json"
+        },
+        {
+          "op": "plugin_ui_present",
+          "method": "present_plugin_message",
+          "args": [
+            [
+              "request",
+              "json_null_default"
+            ]
+          ],
+          "result": "json"
+        },
+        {
+          "op": "plugin_ui_action",
+          "method": "plugin_ui_action",
+          "args": [
+            [
+              "request",
+              "json_null_default"
+            ]
+          ],
+          "result": "json"
+        },
+        {
+          "op": "plugin_ui_resolve",
+          "method": "resolve_plugin_message",
+          "args": [
+            [
+              "request",
+              "json_null_default"
+            ]
+          ],
+          "result": "json"
+        },
+        {
+          "op": "plugin_ui_catalog",
+          "method": "plugin_ui_catalog",
+          "args": [],
+          "result": "json"
+        },
         {
           "op": "capability_list",
           "method": "list_capabilities",

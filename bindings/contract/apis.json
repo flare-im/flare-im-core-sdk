@@ -425,6 +425,12 @@
           "core": "MessageBuildApi::create_with_content",
           "c": "flare_message_build_json:create_with_content",
           "tauri": "sdk_message_build_json"
+        },
+        {
+          "id": "message_builder.create_plugin_message",
+          "core": "MessageBuildApi::create_plugin_message",
+          "c": "flare_message_build_json:create_plugin_message",
+          "tauri": "sdk_message_build_json"
         }
       ]
     },
@@ -439,7 +445,7 @@
         },
         {
           "id": "message.send",
-          "core": "MessageApi::send",
+          "core": "MessageApi::send_bound",
           "c": [
             "flare_message_dispatch_json:send",
             "flare_message_send"
@@ -833,6 +839,66 @@
     {
       "id": "capability",
       "methods": [
+        {
+          "id": "capability.prepare_plugin_command",
+          "core": "CapabilityApi::prepare_plugin_command",
+          "c": "flare_capability_dispatch_json:prepare_plugin_command",
+          "tauri": "sdk_message_dispatch_json"
+        },
+        {
+          "id": "capability.pending_plugin_command",
+          "core": "CapabilityApi::pending_plugin_command",
+          "c": "flare_capability_dispatch_json:pending_plugin_command",
+          "tauri": "sdk_message_dispatch_json"
+        },
+        {
+          "id": "capability.reconcile_plugin_command",
+          "core": "CapabilityApi::reconcile_plugin_command",
+          "c": "flare_capability_dispatch_json:reconcile_plugin_command",
+          "tauri": "sdk_message_dispatch_json"
+        },
+        {
+          "id": "capability.submit_plugin_command",
+          "core": "CapabilityApi::submit_plugin_command",
+          "c": "flare_capability_dispatch_json:submit_plugin_command",
+          "tauri": "sdk_message_dispatch_json"
+        },
+        {
+          "id": "capability.acknowledge_plugin_command",
+          "core": "CapabilityApi::acknowledge_plugin_command",
+          "c": "flare_capability_dispatch_json:acknowledge_plugin_command",
+          "tauri": "sdk_message_dispatch_json"
+        },
+        {
+          "id": "capability.plugin_ui_invoke",
+          "core": "CapabilityApi::invoke_plugin_action",
+          "c": "flare_capability_dispatch_json:plugin_ui_invoke",
+          "tauri": "sdk_message_dispatch_json"
+        },
+        {
+          "id": "capability.plugin_ui_present",
+          "core": "CapabilityApi::present_plugin_message",
+          "c": "flare_capability_dispatch_json:plugin_ui_present",
+          "tauri": "sdk_message_dispatch_json"
+        },
+        {
+          "id": "capability.plugin_ui_action",
+          "core": "CapabilityApi::plugin_ui_action",
+          "c": "flare_capability_dispatch_json:plugin_ui_action",
+          "tauri": "sdk_message_dispatch_json"
+        },
+        {
+          "id": "capability.plugin_ui_resolve",
+          "core": "CapabilityApi::resolve_plugin_message",
+          "c": "flare_capability_dispatch_json:plugin_ui_resolve",
+          "tauri": "sdk_message_dispatch_json"
+        },
+        {
+          "id": "capability.plugin_ui_catalog",
+          "core": "CapabilityApi::plugin_ui_catalog",
+          "c": "flare_capability_dispatch_json:plugin_ui_catalog",
+          "tauri": "sdk_message_dispatch_json"
+        },
         {
           "id": "capability.list",
           "core": "CapabilityApi::list_capabilities",

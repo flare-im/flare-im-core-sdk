@@ -901,7 +901,7 @@ export function capabilityEventToMap(request: CapabilityEvent): Record<string, u
 
 
 export function sendMessageRequestToMap(request: SendMessageRequest): Record<string, unknown> {
-  return { message: messageToWireMap(request.message) };
+  return { message: messageToWireMap(request.message), ...(request.expectedUserId === undefined ? {} : { expectedUserId: request.expectedUserId }) };
 }
 
 export function messageToWireMap(message: Message): Record<string, unknown> {
