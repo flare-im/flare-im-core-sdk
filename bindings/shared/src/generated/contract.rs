@@ -1283,6 +1283,15 @@ pub const API_OPERATIONS: &[ApiOperation] = &[
         dev_only: false,
     },
     ApiOperation {
+        id: "capability.plugin_composer_actions",
+        module: "capability",
+        core: Some("CapabilityApi::plugin_composer_actions"),
+        c_symbol: Some("flare_capability_dispatch_json"),
+        c_dispatch_op: Some("plugin_composer_actions"),
+        tauri: Some("sdk_message_dispatch_json"),
+        dev_only: false,
+    },
+    ApiOperation {
         id: "capability.list",
         module: "capability",
         core: Some("CapabilityApi::list_capabilities"),

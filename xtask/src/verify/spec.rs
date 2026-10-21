@@ -87,6 +87,8 @@ pub(crate) fn verify_spec(root: &Path) -> Result<()> {
         "BooleanResponse",
         "ConnectionStateResponse",
         "JsonValue",
+        // Plugin command and plugin UI results: the shared protocol owns their shape.
+        "JsonObject",
         "CreateClientRequest",
         "CreateClientResponse",
         "SdkConfig",

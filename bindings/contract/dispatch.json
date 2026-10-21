@@ -1668,6 +1668,17 @@
           "result": "json"
         },
         {
+          "op": "plugin_composer_actions",
+          "method": "plugin_composer_actions",
+          "args": [
+            [
+              "request",
+              "json_null_default"
+            ]
+          ],
+          "result": "json"
+        },
+        {
           "op": "capability_list",
           "method": "list_capabilities",
           "args": [],

@@ -146,6 +146,7 @@ pub const WASM_CANONICAL_OPERATIONS: &[&str] = &[
     "capability.plugin_ui_action",
     "capability.plugin_ui_resolve",
     "capability.plugin_ui_catalog",
+    "capability.plugin_composer_actions",
     "capability.list",
     "capability.list_user",
     "capability.dispatch",

@@ -23,6 +23,7 @@ pub const CAPABILITY_DISPATCH_OPERATIONS: &[&str] = &[
     "plugin_ui_action",
     "plugin_ui_resolve",
     "plugin_ui_catalog",
+    "plugin_composer_actions",
     "capability_list",
     "capability_list_user",
     "capability_dispatch",
@@ -123,6 +124,15 @@ pub async fn dispatch_capability(
             .await?,
         ),
         "plugin_ui_catalog" => json(api.plugin_ui_catalog().await?),
+        "plugin_composer_actions" => json(
+            api.plugin_composer_actions(
+                params
+                    .get("payload")
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null),
+            )
+            .await?,
+        ),
         "capability_list" => json(api.list_capabilities().await?),
         "capability_list_user" => {
             let tenant_id_o = optional_string(&params, "tenantId");

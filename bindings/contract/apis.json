@@ -900,6 +900,12 @@
           "tauri": "sdk_message_dispatch_json"
         },
         {
+          "id": "capability.plugin_composer_actions",
+          "core": "CapabilityApi::plugin_composer_actions",
+          "c": "flare_capability_dispatch_json:plugin_composer_actions",
+          "tauri": "sdk_message_dispatch_json"
+        },
+        {
           "id": "capability.list",
           "core": "CapabilityApi::list_capabilities",
           "c": "flare_capability_dispatch_json:capability_list",

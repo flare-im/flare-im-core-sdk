@@ -67,6 +67,10 @@ pub const C_DISPATCH_OPS: &[(&str, &str)] = &[
         "capability.pending_plugin_command",
         "pending_plugin_command",
     ),
+    (
+        "capability.plugin_composer_actions",
+        "plugin_composer_actions",
+    ),
     ("capability.plugin_ui_action", "plugin_ui_action"),
     ("capability.plugin_ui_catalog", "plugin_ui_catalog"),
     ("capability.plugin_ui_invoke", "plugin_ui_invoke"),
