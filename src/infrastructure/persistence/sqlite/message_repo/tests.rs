@@ -1410,3 +1410,90 @@ async fn an_older_database_gains_the_upload_columns() {
     assert!(!stored.local_state.uploading);
     assert_eq!(stored.local_state.upload_progress, 0);
 }
+
+fn plugin_state(version: u64, status: &str) -> flare_plugin_protocol::ui::PluginMessageState {
+    serde_json::from_value(serde_json::json!({"version": version, "values": {"status": status}}))
+        .unwrap()
+}
+
+fn plugin_status(message: &IMMessage) -> Option<(u64, String)> {
+    let state = message.plugin_message_state()?;
+    Some((state.version, state.values["status"].as_str()?.to_string()))
+}
+
+#[tokio::test]
+async fn plugin_message_state_is_monotonic_and_survives_ack_sync_and_edit() {
+    let repo = make_repo().await;
+    let mut pending = text_message("client-plugin-1", "conv-plugin", "u1", 0, 1_000, "card");
+    pending.client_msg_id = "client-plugin-1".to_string();
+    pending.status = MessageStatus::Created as i32;
+    pending.local_state.sending = true;
+    pending.local_state.is_local = true;
+    repo.save_batch(&[pending.clone()]).await.unwrap();
+
+    assert_eq!(
+        repo.apply_plugin_message_state("missing", &plugin_state(1, "open"))
+            .await
+            .unwrap(),
+        OperationApplyResult::NotFound
+    );
+    assert_eq!(
+        repo.apply_plugin_message_state("client-plugin-1", &plugin_state(2, "open"))
+            .await
+            .unwrap(),
+        OperationApplyResult::Applied
+    );
+
+    // The ACK replaces the optimistic row and does not carry the keys itself.
+    let mut acked = pending;
+    acked.server_id = "server-plugin-1".to_string();
+    acked.conversation_seq = 5;
+    acked.status = MessageStatus::Persisted as i32;
+    acked.attributes.clear();
+    repo.update_after_ack("client-plugin-1", &acked)
+        .await
+        .unwrap();
+    let stored = repo.get("server-plugin-1").await.unwrap().unwrap();
+    assert_eq!(plugin_status(&stored), Some((2, "open".to_string())));
+
+    assert_eq!(
+        repo.apply_plugin_message_state("server-plugin-1", &plugin_state(1, "stale"))
+            .await
+            .unwrap(),
+        OperationApplyResult::IgnoredStale
+    );
+    assert_eq!(
+        repo.apply_plugin_message_state("server-plugin-1", &plugin_state(2, "claimed"))
+            .await
+            .unwrap(),
+        OperationApplyResult::Applied,
+        "the same version is replaced by the later result"
+    );
+    let older_copy = repo.get("server-plugin-1").await.unwrap().unwrap();
+    assert_eq!(
+        repo.apply_plugin_message_state("client-plugin-1", &plugin_state(3, "completed"))
+            .await
+            .unwrap(),
+        OperationApplyResult::Applied,
+        "the client id still addresses the acknowledged row"
+    );
+
+    // A sync snapshot without the keys and a re-save of an older local copy keep the newer state.
+    let mut synced = acked.clone();
+    synced.updated_at = 50;
+    repo.save_batch(&[synced, older_copy]).await.unwrap();
+    repo.update_content("server-plugin-1", acked.encoded_content.clone())
+        .await
+        .unwrap();
+    let after = repo.get("server-plugin-1").await.unwrap().unwrap();
+    assert_eq!(plugin_status(&after), Some((3, "completed".to_string())));
+
+    let invalid: flare_plugin_protocol::ui::PluginMessageState =
+        serde_json::from_value(serde_json::json!({"version": 9, "values": {"nested": {"a": 1}}}))
+            .unwrap();
+    assert!(
+        repo.apply_plugin_message_state("server-plugin-1", &invalid)
+            .await
+            .is_err()
+    );
+}

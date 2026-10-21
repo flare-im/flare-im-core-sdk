@@ -15,8 +15,9 @@ use tracing::debug;
 use crate::content::message_elem::{TextElem, elem_preview_storage_payload};
 use crate::domain::{
     EditApplyResult, MessageDeliveryService, MessageReader, MessageStore, MessageWriter,
-    OperationApplyResult, local_cleared_through_seq, merge_message_event_attributes,
-    message_visible_after_clear,
+    OperationApplyResult, carry_plugin_message_state, encode_plugin_message_state,
+    local_cleared_through_seq, merge_message_event_attributes, message_visible_after_clear,
+    write_plugin_message_state,
 };
 use crate::model::conversation::ConversationType;
 use crate::model::message::{
@@ -30,6 +31,7 @@ use crate::model::{
 };
 use crate::shared::error::{ErrorCode, FlareError, Result};
 use crate::shared::util::time::now_millis;
+use flare_plugin_protocol::ui::PluginMessageState;
 use flare_proto::common::{ContentVisibility, MessageStatus, MessageType};
 
 use super::identity_repair;

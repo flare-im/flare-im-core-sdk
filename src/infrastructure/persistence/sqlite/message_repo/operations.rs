@@ -393,6 +393,54 @@ impl MessageStore for SqliteMessageRepo {
         .await
     }
 
+    async fn apply_plugin_message_state(
+        &self,
+        message_id: &str,
+        state: &PluginMessageState,
+    ) -> Result<OperationApplyResult> {
+        let values_json = encode_plugin_message_state(state)?;
+        let message_id = message_id.trim();
+        if message_id.is_empty() {
+            return Ok(OperationApplyResult::NotFound);
+        }
+        // 版本比较与 UPDATE 同事务，避免两个并发动作结果交错时旧版本覆盖新版本。
+        let mut tx = self.pool.begin().await.map_err(sqlx_err)?;
+        let rows = sqlx::query(
+            r#"SELECT server_id, attributes FROM messages
+               WHERE server_id = ? OR client_msg_id = ?"#,
+        )
+        .bind(message_id)
+        .bind(message_id)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(sqlx_err)?;
+        if rows.is_empty() {
+            return Ok(OperationApplyResult::NotFound);
+        }
+        let mut applied_any = false;
+        for row in rows {
+            let server_id: String = row.try_get("server_id").map_err(sqlx_err)?;
+            let extra_raw: Option<String> = row.try_get("attributes").map_err(sqlx_err)?;
+            let mut attributes = parse_extra(extra_raw.as_deref());
+            if !write_plugin_message_state(&mut attributes, state.version, &values_json) {
+                continue;
+            }
+            sqlx::query("UPDATE messages SET attributes = ? WHERE server_id = ?")
+                .bind(extra_to_json(&attributes))
+                .bind(server_id)
+                .execute(&mut *tx)
+                .await
+                .map_err(sqlx_err)?;
+            applied_any = true;
+        }
+        tx.commit().await.map_err(sqlx_err)?;
+        Ok(if applied_any {
+            OperationApplyResult::Applied
+        } else {
+            OperationApplyResult::IgnoredStale
+        })
+    }
+
     async fn apply_retention_scheduled_event(
         &self,
         message_id: &str,

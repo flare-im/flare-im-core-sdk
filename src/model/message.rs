@@ -47,6 +47,17 @@ fn is_edited_from_attributes(attributes: &HashMap<String, String>) -> bool {
 
 const REACTIONS_JSON_KEY: &str = "reactionsJson";
 
+/// 插件卡片状态（`MessageStore::apply_plugin_message_state` 写入）：校验后的 `values` 与版本号。
+/// 只属于本机消息库，收发两个方向都不经过 wire，避免对端伪造一个极大版本把后续状态全部挡住。
+pub(crate) const PLUGIN_STATE_JSON_KEY: &str = "pluginStateJson";
+pub(crate) const PLUGIN_STATE_VERSION_KEY: &str = "pluginStateVersion";
+const PLUGIN_MESSAGE_CARD_TYPE: &str = "flare.plugin.message.v1";
+
+fn strip_plugin_message_state(attributes: &mut HashMap<String, String>) {
+    attributes.remove(PLUGIN_STATE_JSON_KEY);
+    attributes.remove(PLUGIN_STATE_VERSION_KEY);
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct ReactionEntry {
@@ -321,6 +332,7 @@ impl IMMessage {
             .map(|decoded| decoded.text_preview())
             .unwrap_or_default();
         let mut attributes = message.attributes.clone();
+        strip_plugin_message_state(&mut attributes);
         if content.is_none()
             && let Some(ref decoded) = decoded_opt
         {
@@ -489,9 +501,53 @@ impl IMMessage {
             retention_policy: self.retention_policy.clone(),
             retention_state: self.retention_state.clone(),
             offline_push_info: self.offline_push_info.clone(),
-            attributes: self.attributes.clone(),
+            attributes: {
+                let mut attributes = self.attributes.clone();
+                strip_plugin_message_state(&mut attributes);
+                attributes
+            },
             extensions: self.extensions.clone(),
         }
+    }
+
+    /// 通用插件消息信封（APP_CARD `flare.plugin.message.v1`）；不是插件消息或信封无效时为 `None`。
+    pub fn plugin_message(&self) -> Option<flare_plugin_protocol::ui::PluginMessage> {
+        let payload = match self.content.as_ref() {
+            Some(Elem::Custom(custom)) if custom.r#type == PLUGIN_MESSAGE_CARD_TYPE => {
+                custom.payload.clone()
+            }
+            _ => match MessageContent::decode(self.encoded_content.as_slice())
+                .ok()?
+                .content?
+            {
+                flare_proto::common::message_content::Content::AppCard(card)
+                    if card.card_type == PLUGIN_MESSAGE_CARD_TYPE =>
+                {
+                    card.payload
+                }
+                _ => return None,
+            },
+        };
+        if payload.len() > 65536 {
+            return None;
+        }
+        serde_json::from_slice::<flare_plugin_protocol::ui::PluginMessage>(&payload)
+            .ok()
+            .filter(|message| message.validate().is_ok())
+    }
+
+    /// 本机保存的插件卡片状态；缺失、损坏或超出协议边界时为 `None`。
+    pub fn plugin_message_state(&self) -> Option<flare_plugin_protocol::ui::PluginMessageState> {
+        let state = flare_plugin_protocol::ui::PluginMessageState {
+            version: self
+                .attributes
+                .get(PLUGIN_STATE_VERSION_KEY)?
+                .parse()
+                .ok()?,
+            values: serde_json::from_str(self.attributes.get(PLUGIN_STATE_JSON_KEY)?).ok()?,
+        };
+        state.validate().ok()?;
+        Some(state)
     }
 
     pub fn conversation_id(&self) -> &str {
@@ -717,6 +773,73 @@ mod tests {
             created_at: created_at as i64,
             ..Default::default()
         })
+    }
+
+    #[test]
+    fn plugin_card_state_never_crosses_the_wire() {
+        let envelope = serde_json::json!({
+            "pluginId": "example.poll",
+            "contributionId": "example.poll.card",
+            "schemaVersion": 1,
+            "summary": "Poll",
+            "payload": {"pollId": "poll-1"}
+        });
+        let mut attributes = HashMap::new();
+        attributes.insert(super::PLUGIN_STATE_JSON_KEY.to_string(), "{}".to_string());
+        attributes.insert(
+            super::PLUGIN_STATE_VERSION_KEY.to_string(),
+            u64::MAX.to_string(),
+        );
+        attributes.insert("other".to_string(), "kept".to_string());
+        let inbound = IMMessage::new(ProtoMessage {
+            server_id: "server-1".to_string(),
+            attributes,
+            content: Some(flare_proto::common::MessageContent {
+                content: Some(flare_proto::common::message_content::Content::AppCard(
+                    flare_proto::common::AppCardContent {
+                        app_id: "example.poll".to_string(),
+                        card_type: "flare.plugin.message.v1".to_string(),
+                        payload: serde_json::to_vec(&envelope).unwrap(),
+                        ..Default::default()
+                    },
+                )),
+            }),
+            ..Default::default()
+        });
+        assert!(inbound.plugin_message_state().is_none());
+        assert_eq!(
+            inbound.attributes.len(),
+            1,
+            "a sender cannot preset card state"
+        );
+        assert_eq!(
+            inbound
+                .plugin_message()
+                .map(|message| message.contribution_id),
+            Some("example.poll.card".to_string())
+        );
+        let mut without_cache = inbound.clone();
+        without_cache.encoded_content.clear();
+        assert!(without_cache.plugin_message().is_some());
+
+        let mut local = inbound;
+        local.attributes.insert(
+            super::PLUGIN_STATE_JSON_KEY.to_string(),
+            r#"{"status":"claimed"}"#.to_string(),
+        );
+        local
+            .attributes
+            .insert(super::PLUGIN_STATE_VERSION_KEY.to_string(), "4".to_string());
+        assert_eq!(
+            local.plugin_message_state().map(|state| state.version),
+            Some(4)
+        );
+        assert!(
+            !local
+                .to_proto()
+                .attributes
+                .contains_key(super::PLUGIN_STATE_JSON_KEY)
+        );
     }
 
     #[test]

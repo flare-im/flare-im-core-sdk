@@ -287,6 +287,29 @@ impl MessageWriter for SqliteMessageRepo {
             .begin()
             .await
             .map_err(|e| FlareError::localized(ErrorCode::DatabaseError, e.to_string()))?;
+        // 下面整行替换乐观写入行（以及可能已同步落库的同 server_id 行）；本地插件卡片状态随行带过去。
+        let mut lookup_ids = vec![
+            message.server_id.trim().to_string(),
+            ack_client_msg_id.to_string(),
+            message.client_msg_id.trim().to_string(),
+        ];
+        lookup_ids.retain(|id| !id.is_empty());
+        lookup_ids.dedup();
+        for lookup_id in &lookup_ids {
+            let rows = sqlx::query(
+                r#"SELECT attributes FROM messages
+                   WHERE server_id = ? OR client_msg_id = ?"#,
+            )
+            .bind(lookup_id)
+            .bind(lookup_id)
+            .fetch_all(&mut *tx)
+            .await
+            .map_err(sqlx_err)?;
+            for row in rows {
+                let raw: Option<String> = row.try_get("attributes").map_err(sqlx_err)?;
+                carry_plugin_message_state(&mut message.attributes, &parse_extra(raw.as_deref()));
+            }
+        }
         remove_conflicting_client_msg_rows_tx(
             &mut tx,
             ack_client_msg_id,

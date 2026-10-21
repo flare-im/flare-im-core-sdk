@@ -2,9 +2,11 @@ use async_trait::async_trait;
 use flare_proto::common::{MessageRetentionPolicy, MessageRetentionState};
 use std::collections::HashMap;
 
-use crate::model::message::ReactionEntry;
+use flare_plugin_protocol::ui::PluginMessageState;
+
+use crate::model::message::{PLUGIN_STATE_JSON_KEY, PLUGIN_STATE_VERSION_KEY, ReactionEntry};
 use crate::model::{IMMessage, MessageSearchQuery};
-use crate::shared::error::Result;
+use crate::shared::error::{ErrorCode, FlareError, Result};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EditApplyResult {
@@ -25,6 +27,56 @@ pub(crate) fn message_attribute_seq(attributes: &HashMap<String, String>, key: &
         .get(key)
         .and_then(|value| value.parse::<u64>().ok())
         .unwrap_or(0)
+}
+
+/// 插件卡片状态只由 `apply_plugin_message_state` 写入：同步、编辑、回执等整行覆盖时保留
+/// 版本更大（相同则保留已存）的那一份。
+pub(crate) fn carry_plugin_message_state(
+    incoming: &mut HashMap<String, String>,
+    existing: &HashMap<String, String>,
+) {
+    let Some(values) = existing.get(PLUGIN_STATE_JSON_KEY) else {
+        return;
+    };
+    let existing_version = message_attribute_seq(existing, PLUGIN_STATE_VERSION_KEY);
+    if incoming.contains_key(PLUGIN_STATE_JSON_KEY)
+        && message_attribute_seq(incoming, PLUGIN_STATE_VERSION_KEY) > existing_version
+    {
+        return;
+    }
+    incoming.insert(PLUGIN_STATE_JSON_KEY.to_string(), values.clone());
+    incoming.insert(
+        PLUGIN_STATE_VERSION_KEY.to_string(),
+        existing_version.to_string(),
+    );
+}
+
+/// 序列化一份待写入的插件卡片状态；不满足协议边界时拒绝。
+pub(crate) fn encode_plugin_message_state(state: &PluginMessageState) -> Result<String> {
+    let invalid = || {
+        FlareError::localized(
+            ErrorCode::InvalidParameter,
+            "sdk.plugin.invalid_message_state",
+        )
+    };
+    state.validate().map_err(|_| invalid())?;
+    serde_json::to_string(&state.values).map_err(|_| invalid())
+}
+
+/// 按版本单调写入：更旧的版本返回 `false`，相同版本以后到者为准。
+pub(crate) fn write_plugin_message_state(
+    attributes: &mut HashMap<String, String>,
+    version: u64,
+    values_json: &str,
+) -> bool {
+    if attributes.contains_key(PLUGIN_STATE_JSON_KEY)
+        && version < message_attribute_seq(attributes, PLUGIN_STATE_VERSION_KEY)
+    {
+        return false;
+    }
+    attributes.insert(PLUGIN_STATE_JSON_KEY.to_string(), values_json.to_string());
+    attributes.insert(PLUGIN_STATE_VERSION_KEY.to_string(), version.to_string());
+    true
 }
 
 fn preserve_attribute_if_missing(
@@ -105,6 +157,8 @@ pub(crate) fn merge_message_event_attributes(
     preserve_attribute_if_missing(&mut incoming, &existing, "retention_event");
     preserve_attribute_if_missing(&mut incoming, &existing, "retention_expired_at");
     preserve_attribute_if_missing(&mut incoming, &existing, "retention_purged_at");
+
+    carry_plugin_message_state(&mut incoming, &existing);
 
     incoming
 }
@@ -253,6 +307,17 @@ pub trait MessageStore: MessageReader + MessageWriter {
         Ok(OperationApplyResult::Applied)
     }
 
+    /// 写入插件卡片状态（`attributes.pluginStateJson` / `pluginStateVersion`），`message_id` 接受
+    /// server_id 或 client_msg_id。只接受不小于当前的版本（相同版本以后到者为准），更旧返回
+    /// `IgnoredStale`，找不到消息返回 `NotFound`。
+    async fn apply_plugin_message_state(
+        &self,
+        _message_id: &str,
+        _state: &PluginMessageState,
+    ) -> Result<OperationApplyResult> {
+        Ok(OperationApplyResult::NotFound)
+    }
+
     /// 应用 retention「已安排」事件到存储层；实现可基于 `conversation_seq` 防旧事件回放覆盖新状态。
     async fn apply_retention_scheduled_event(
         &self,
@@ -391,5 +456,48 @@ pub trait MessageStore: MessageReader + MessageWriter {
         _pending_client_msg_ids: &[String],
     ) -> Result<Vec<String>> {
         Ok(Vec::new())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn attributes(pairs: &[(&str, &str)]) -> HashMap<String, String> {
+        pairs
+            .iter()
+            .map(|(key, value)| (key.to_string(), value.to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn event_merge_keeps_the_newer_plugin_card_state() {
+        let stored = attributes(&[
+            (PLUGIN_STATE_JSON_KEY, r#"{"status":"completed"}"#),
+            (PLUGIN_STATE_VERSION_KEY, "3"),
+        ]);
+        let merged = merge_message_event_attributes(attributes(&[("x", "1")]), stored.clone());
+        assert_eq!(merged[PLUGIN_STATE_VERSION_KEY], "3");
+        assert_eq!(merged["x"], "1");
+
+        let older = attributes(&[
+            (PLUGIN_STATE_JSON_KEY, r#"{"status":"open"}"#),
+            (PLUGIN_STATE_VERSION_KEY, "3"),
+        ]);
+        let merged = merge_message_event_attributes(older, stored.clone());
+        assert_eq!(merged[PLUGIN_STATE_JSON_KEY], r#"{"status":"completed"}"#);
+
+        let newer = attributes(&[
+            (PLUGIN_STATE_JSON_KEY, r#"{"status":"refunded"}"#),
+            (PLUGIN_STATE_VERSION_KEY, "4"),
+        ]);
+        let merged = merge_message_event_attributes(newer, stored);
+        assert_eq!(merged[PLUGIN_STATE_JSON_KEY], r#"{"status":"refunded"}"#);
+
+        let mut target = HashMap::new();
+        assert!(write_plugin_message_state(&mut target, 2, "{}"));
+        assert!(!write_plugin_message_state(&mut target, 1, r#"{"a":1}"#));
+        assert!(write_plugin_message_state(&mut target, 2, r#"{"a":2}"#));
+        assert_eq!(target[PLUGIN_STATE_JSON_KEY], r#"{"a":2}"#);
     }
 }

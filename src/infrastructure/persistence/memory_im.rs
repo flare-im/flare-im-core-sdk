@@ -11,14 +11,16 @@ use super::empty_stores::MemorySyncCursorStore;
 use super::memory::{MemoryPendingSendStore, MemoryUserProfileStore};
 use crate::domain::{
     ConversationReader, ConversationWriter, MessageReader, MessageStore, MessageWriter,
-    OperationApplyResult, merge_incoming_conversation_summary, merge_message_event_attributes,
-    message_attribute_seq,
+    OperationApplyResult, carry_plugin_message_state, encode_plugin_message_state,
+    merge_incoming_conversation_summary, merge_message_event_attributes, message_attribute_seq,
+    write_plugin_message_state,
 };
 use crate::model::Conversation;
 use crate::model::IMMessage;
 use crate::model::message::ReactionEntry;
 use crate::model::{decode_content_bytes, decoded_content_to_elem};
 use crate::shared::error::{ErrorCode, FlareError, Result};
+use flare_plugin_protocol::ui::PluginMessageState;
 use flare_proto::common::MessageStatus;
 
 pub struct MemoryMessageStore {
@@ -364,6 +366,17 @@ impl MessageWriter for MemoryMessageStore {
             message.client_msg_id = ack_client_msg_id.to_string();
         }
         let key = Self::storage_key(&message);
+        // 整行替换乐观写入行；本地插件卡片状态随行带过去。
+        let matches_id = |stored_id: &str, id: &str| !id.is_empty() && stored_id == id;
+        let client_msg_id = message.client_msg_id.trim().to_string();
+        for stored in data.values().filter(|stored| {
+            matches_id(&stored.server_id, &key)
+                || matches_id(&stored.server_id, ack_client_msg_id)
+                || matches_id(&stored.client_msg_id, ack_client_msg_id)
+                || matches_id(&stored.client_msg_id, &client_msg_id)
+        }) {
+            carry_plugin_message_state(&mut message.attributes, &stored.attributes);
+        }
         Self::remove_conflicting_client_msg_rows(&mut data, ack_client_msg_id, &key);
         Self::remove_conflicting_client_msg_rows(&mut data, &message.client_msg_id, &key);
         data.retain(|stored_key, _| stored_key == &key || stored_key != ack_client_msg_id);
@@ -532,6 +545,29 @@ impl MessageStore for MemoryMessageStore {
             if enabled { "true" } else { "false" }.to_string(),
         );
         Ok(OperationApplyResult::Applied)
+    }
+
+    async fn apply_plugin_message_state(
+        &self,
+        message_id: &str,
+        state: &PluginMessageState,
+    ) -> Result<OperationApplyResult> {
+        let values_json = encode_plugin_message_state(state)?;
+        let target = message_id.trim();
+        if target.is_empty() {
+            return Ok(OperationApplyResult::NotFound);
+        }
+        let mut data = self.data.write().await;
+        let Some(message) = Self::get_mut_by_any_message_id(&mut data, target) else {
+            return Ok(OperationApplyResult::NotFound);
+        };
+        Ok(
+            if write_plugin_message_state(&mut message.attributes, state.version, &values_json) {
+                OperationApplyResult::Applied
+            } else {
+                OperationApplyResult::IgnoredStale
+            },
+        )
     }
 }
 
@@ -1422,5 +1458,66 @@ mod tests {
         assert_eq!(loaded.last_sender_id.as_deref(), Some("u2"));
         assert_eq!(loaded.last_message_at, Some(12_345));
         assert_eq!(loaded.last_message_preview.as_deref(), Some("111"));
+    }
+
+    #[tokio::test]
+    async fn plugin_message_state_is_monotonic_and_survives_ack_and_sync() {
+        let state = |version: u64, status: &str| {
+            serde_json::from_value::<flare_plugin_protocol::ui::PluginMessageState>(
+                serde_json::json!({"version": version, "values": {"status": status}}),
+            )
+            .unwrap()
+        };
+        let status = |message: &IMMessage| {
+            let state = message.plugin_message_state()?;
+            Some((state.version, state.values["status"].as_str()?.to_string()))
+        };
+        let store = MemoryMessageStore::new();
+        let pending = local_message("", "client-plugin-1");
+        store.save_one(&pending).await.unwrap();
+        assert_eq!(
+            store
+                .apply_plugin_message_state("missing", &state(1, "open"))
+                .await
+                .unwrap(),
+            OperationApplyResult::NotFound
+        );
+        assert_eq!(
+            store
+                .apply_plugin_message_state("client-plugin-1", &state(2, "open"))
+                .await
+                .unwrap(),
+            OperationApplyResult::Applied
+        );
+
+        let mut acked = pending;
+        acked.server_id = "server-plugin-1".to_string();
+        acked.local_state.sending = false;
+        acked.local_state.is_local = false;
+        store
+            .update_after_ack("client-plugin-1", &acked)
+            .await
+            .unwrap();
+        let stored = store.get("server-plugin-1").await.unwrap().unwrap();
+        assert_eq!(status(&stored), Some((2, "open".to_string())));
+
+        assert_eq!(
+            store
+                .apply_plugin_message_state("server-plugin-1", &state(1, "stale"))
+                .await
+                .unwrap(),
+            OperationApplyResult::IgnoredStale
+        );
+        assert_eq!(
+            store
+                .apply_plugin_message_state("client-plugin-1", &state(2, "claimed"))
+                .await
+                .unwrap(),
+            OperationApplyResult::Applied
+        );
+        store.save_one(&acked).await.unwrap();
+        store.save_one(&stored).await.unwrap();
+        let after_sync = store.get("server-plugin-1").await.unwrap().unwrap();
+        assert_eq!(status(&after_sync), Some((2, "claimed".to_string())));
     }
 }

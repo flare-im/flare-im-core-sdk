@@ -9,6 +9,7 @@ use flare_im_core_sdk::model::Conversation;
 use flare_im_core_sdk::model::IMMessage;
 use flare_im_core_sdk::model::MessagePreviewElem;
 use flare_im_core_sdk::model::message::ReactionEntry;
+use flare_im_core_sdk::plugin::platform::ui::PluginMessageState;
 use flare_im_core_sdk::storage::{
     ConversationReader, ConversationWriter, MessageReader, MessageStore, MessageWriter,
     OperationApplyResult, PendingSendReader, PendingSendVo, PendingSendWriter, SyncCursorReader,
@@ -463,9 +464,18 @@ impl MessageWriter for PersistingMessageStore {
 
     async fn update_after_ack(&self, client_msg_id: &str, message: &IMMessage) -> Result<()> {
         self.inner.update_after_ack(client_msg_id, message).await?;
+        // Persist the merged row so local-only attributes (plugin card state) survive the ACK.
+        let lookup_id = if message.server_id.trim().is_empty() {
+            client_msg_id.trim()
+        } else {
+            message.server_id.trim()
+        };
+        let message = self
+            .get_by_any_message_id(lookup_id)
+            .await?
+            .unwrap_or_else(|| message.clone());
         let user_id = self.user_id.clone();
         let client_msg_id = client_msg_id.to_string();
-        let message = message.clone();
         spawn_persist(async move {
             let _ = delete_message(&user_id, &client_msg_id).await;
             let _ = persist_message(&user_id, &message).await;
@@ -550,6 +560,23 @@ impl MessageStore for PersistingMessageStore {
         let applied = self
             .inner
             .apply_pin_event(message_id, enabled, event_seq)
+            .await?;
+        if applied == OperationApplyResult::Applied
+            && let Some(message) = self.get_by_any_message_id(message_id).await?
+        {
+            self.persist_message_spawn(message);
+        }
+        Ok(applied)
+    }
+
+    async fn apply_plugin_message_state(
+        &self,
+        message_id: &str,
+        state: &PluginMessageState,
+    ) -> Result<OperationApplyResult> {
+        let applied = self
+            .inner
+            .apply_plugin_message_state(message_id, state)
             .await?;
         if applied == OperationApplyResult::Applied
             && let Some(message) = self.get_by_any_message_id(message_id).await?
