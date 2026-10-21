@@ -98,6 +98,9 @@ pub async fn open_sqlite_store_provider_with_security(
         (None, None)
     };
     Ok(StoreProvider {
+        plugin_commands: Some(Arc::new(
+            crate::infrastructure::persistence::sqlite::SqlitePluginCommandRepo::new(pool.clone()),
+        )),
         messages: Arc::new(SqliteMessageRepo::new(pool.clone())),
         conversations: Arc::new(SqliteConversationRepo::new(pool.clone())),
         conversation_participants: Some(Arc::new(SqliteConversationParticipantRepo::new(

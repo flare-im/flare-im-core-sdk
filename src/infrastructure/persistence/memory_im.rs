@@ -827,6 +827,7 @@ pub fn in_memory_im_provider() -> StoreProvider {
     let pending = Arc::new(MemoryPendingSendStore::new());
     let user_profiles = Arc::new(MemoryUserProfileStore::new());
     StoreProvider {
+        plugin_commands: None,
         messages: Arc::new(MemoryMessageStore::new()),
         conversations: Arc::new(MemoryConversationStore::new()),
         conversation_participants: None,

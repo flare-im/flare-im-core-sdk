@@ -700,6 +700,7 @@ mod tests {
     fn stores() -> (Arc<MemoryConversationStore>, StoreProvider) {
         let conversations = Arc::new(MemoryConversationStore::new());
         let store_provider = StoreProvider {
+            plugin_commands: None,
             messages: Arc::new(NoopMessageStore),
             conversations: conversations.clone(),
             conversation_participants: None,

@@ -5,6 +5,9 @@
 //! infrastructure, or storage internals.
 
 pub mod metrics;
+pub use crate::domain::{
+    PluginCommand, PluginCommandRecord, PluginCommandScope, PluginCommandStore,
+};
 
 pub use crate::application::{
     InboundNotificationView, LocalConversationClearResult, LocalConversationVisibility,

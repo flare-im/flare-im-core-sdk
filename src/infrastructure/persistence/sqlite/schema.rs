@@ -287,6 +287,7 @@ async fn run_migrations(pool: &SqlitePool) -> Result<()> {
 
 /// 创建所有仓储所需表（messages / conversations / pending_sends / user_profiles / sync_cursors / sync_conversation_cursors）
 pub async fn init_schema(pool: &SqlitePool) -> Result<()> {
+    super::plugin_command_repo::init_schema(pool).await?;
     sqlx::query(
         r#"CREATE TABLE IF NOT EXISTS messages (
             server_id TEXT PRIMARY KEY,

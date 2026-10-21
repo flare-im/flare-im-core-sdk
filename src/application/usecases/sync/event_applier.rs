@@ -706,6 +706,7 @@ mod tests {
         let bus = EventBus::new();
         let applier = SyncEventApplier::new(
             StoreProvider {
+                plugin_commands: None,
                 messages: message_repo.clone(),
                 conversations: Arc::new(NoopConversationStore),
                 conversation_participants: None,

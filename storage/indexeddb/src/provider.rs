@@ -887,6 +887,7 @@ pub async fn build_web_store_provider(user_id: &str) -> StoreProvider {
     let user_profiles = Arc::new(MemoryUserProfileStore::new());
 
     StoreProvider {
+        plugin_commands: None,
         messages: Arc::new(PersistingMessageStore::new(
             user_id.clone(),
             messages.clone(),

@@ -17,6 +17,8 @@ mod identity_repair;
 mod media_cache_repo;
 mod message_repo;
 mod pending_send_repo;
+mod plugin_command_repo;
+pub use plugin_command_repo::SqlitePluginCommandRepo;
 mod schema;
 mod upload_manifest_repo;
 mod user_file_download_repo;

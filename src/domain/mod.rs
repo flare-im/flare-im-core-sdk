@@ -25,6 +25,7 @@ pub use media_cache::{
 pub use media_progressive::{MediaProgressiveEvent, MediaProgressiveStage, MediaProgressiveState};
 pub use message::*;
 pub use pending_send::PendingSendVo;
+pub(crate) use repository::plugin_command_repository::{command_error, valid_key};
 pub use repository::*;
 pub use sync::*;
 pub use sync_cursor::SyncCursorVo;

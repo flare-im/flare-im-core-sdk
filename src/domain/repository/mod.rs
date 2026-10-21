@@ -4,6 +4,10 @@ mod media_cache_admin;
 mod media_cache_repository;
 mod message_repository;
 mod pending_send_repository;
+pub(crate) mod plugin_command_repository;
+pub use plugin_command_repository::{
+    PluginCommand, PluginCommandRecord, PluginCommandScope, PluginCommandStore,
+};
 mod sync_cursor_repository;
 mod upload_manifest_repository;
 mod user_file_download_repository;
