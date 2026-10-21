@@ -231,6 +231,7 @@ pub enum MessageEventType {
     Capability,
     Custom,
     CustomNamed(CustomEventSelector),
+    PluginStateChanged,
 }
 
 impl MessageEventType {
@@ -255,7 +256,8 @@ impl MessageEventType {
             | (Self::Unmarked, MessageEvent::Unmarked { .. })
             | (Self::PresenceChanged, MessageEvent::PresenceChanged { .. })
             | (Self::Capability, MessageEvent::Capability { .. })
-            | (Self::Custom, MessageEvent::Custom { .. }) => true,
+            | (Self::Custom, MessageEvent::Custom { .. })
+            | (Self::PluginStateChanged, MessageEvent::PluginStateChanged { .. }) => true,
             (Self::CustomNamed(selector), MessageEvent::Custom { event, .. }) => {
                 selector.matches(event)
             }
@@ -597,6 +599,9 @@ impl SdkEvent {
             }
             Self::Message(MessageEvent::Capability { .. }) => {
                 SdkEventType::Message(MessageEventType::Capability)
+            }
+            Self::Message(MessageEvent::PluginStateChanged { .. }) => {
+                SdkEventType::Message(MessageEventType::PluginStateChanged)
             }
             Self::Message(MessageEvent::Custom { event, .. }) => {
                 SdkEventType::Message(MessageEventType::CustomNamed(

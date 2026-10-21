@@ -35,6 +35,9 @@ mod ui_tests;
 #[derive(Clone)]
 pub struct CapabilityApi {
     pub(super) plugin_commands: Option<Arc<dyn crate::domain::PluginCommandStore>>,
+    /// Local message store and bus for plugin card state (`messageId` requests).
+    messages: Option<Arc<dyn crate::domain::MessageStore>>,
+    bus: Option<crate::kernel::event::EventBus>,
     http: Option<HttpClient>,
     pub(super) session_guard: SessionGuard,
     #[cfg(not(target_arch = "wasm32"))]
@@ -72,6 +75,8 @@ impl CapabilityApi {
         let _ = (grpc_endpoint.into(), http_request_context);
         Self {
             plugin_commands: None,
+            messages: None,
+            bus: None,
             http: None,
             session_guard: SessionGuard::new(current_user_id.clone(), "capability"),
             #[cfg(not(target_arch = "wasm32"))]
@@ -90,6 +95,18 @@ impl CapabilityApi {
         store: Option<Arc<dyn crate::domain::PluginCommandStore>>,
     ) -> Self {
         self.plugin_commands = store;
+        self
+    }
+    /// Enables plugin card state: present overlays the state stored on `messageId`,
+    /// invoke writes a successful action's `data.messageState` back and publishes
+    /// `MessageEvent::PluginStateChanged`.
+    pub fn with_message_state(
+        mut self,
+        messages: Arc<dyn crate::domain::MessageStore>,
+        bus: crate::kernel::event::EventBus,
+    ) -> Self {
+        self.messages = Some(messages);
+        self.bus = Some(bus);
         self
     }
     pub fn with_http_transport(mut self, http: HttpClient) -> Self {
@@ -217,17 +234,141 @@ impl CapabilityApi {
     }
     /// Native/Web hosts render the same Rust-evaluated presentation. No positive
     /// grant cache is kept between calls, and logout fences pending work.
+    ///
+    /// With `messageId`, the state stored on that message is overlaid on the
+    /// payload first, so `hiddenWhen` and fields see it. The result adds `data`
+    /// (the overlaid payload, only when `available`) and `stateVersion` (0 when
+    /// the message has no state).
     pub async fn present_plugin_message(&self, request: Value) -> Result<Value> {
         use crate::extension::capability::ui;
-        let request = ui::parse_present(request)?;
+        let mut request = ui::parse_present(request)?;
         self.session_guard.run_with_user(|viewer| async move {
+            let state = match request.message_id.as_deref() {
+                Some(message_id) => self
+                    .stored_plugin_message(message_id, &request.message)
+                    .await
+                    .and_then(|stored| stored.plugin_message_state()),
+                None => None,
+            };
+            if let Some(state) = &state {
+                request.message.payload = state.merge_into(&request.message.payload);
+            }
             let catalog=self.plugin_ui_catalog().await?;
-            ui::resolve(&self.default_tenant_id,serde_json::json!({"catalog":catalog,"message":request.message,"platform":request.platform,"locale":request.locale,"kind":request.kind,"viewer":viewer.unwrap_or_default()}))
+            let mut view = ui::resolve(&self.default_tenant_id,serde_json::json!({"catalog":catalog,"message":request.message,"platform":request.platform,"locale":request.locale,"kind":request.kind,"viewer":viewer.unwrap_or_default()}))?;
+            if let Some(view) = view.as_object_mut() {
+                if view.get("available").and_then(Value::as_bool) == Some(true) {
+                    view.insert("data".into(), request.message.payload);
+                }
+                view.insert(
+                    "stateVersion".into(),
+                    Value::from(state.map_or(0, |state| state.version)),
+                );
+            }
+            Ok(view)
         }).await
+    }
+    /// The stored message for `message_id` (server id or client message id), only
+    /// when it carries the same plugin card. Read failures degrade to no state.
+    async fn stored_plugin_message(
+        &self,
+        message_id: &str,
+        message: &flare_plugin_protocol::ui::PluginMessage,
+    ) -> Option<crate::model::IMMessage> {
+        let store = self.messages.as_ref()?;
+        let stored = match store.get(message_id).await {
+            Ok(Some(stored)) => Some(stored),
+            Ok(None) => store.get_by_client_msg_id(message_id).await.unwrap_or_else(|error| {
+                tracing::warn!(target = "flare_sdk.plugin", %error, "read plugin message failed");
+                None
+            }),
+            Err(error) => {
+                tracing::warn!(target = "flare_sdk.plugin", %error, "read plugin message failed");
+                None
+            }
+        }?;
+        stored
+            .plugin_message()
+            .is_some_and(|envelope| {
+                envelope.plugin_id == message.plugin_id
+                    && envelope.contribution_id == message.contribution_id
+            })
+            .then_some(stored)
+    }
+    /// Best effort: a successful action from a message card may return
+    /// `data.messageState`. It is validated, written monotonically by version
+    /// and announced as `PluginStateChanged`; failures are logged only.
+    async fn write_plugin_message_state(
+        &self,
+        message_id: &str,
+        message: &flare_plugin_protocol::ui::PluginMessage,
+        response: &CapabilityDispatchResult,
+    ) {
+        use crate::domain::OperationApplyResult;
+        let Some(raw) = response
+            .data
+            .get("messageState")
+            .filter(|_| response.success)
+        else {
+            return;
+        };
+        let state = match serde_json::from_value::<flare_plugin_protocol::ui::PluginMessageState>(
+            raw.clone(),
+        ) {
+            Ok(state) if state.validate().is_ok() => state,
+            _ => {
+                tracing::warn!(
+                    target = "flare_sdk.plugin",
+                    plugin_id = %message.plugin_id,
+                    "plugin returned an invalid message state"
+                );
+                return;
+            }
+        };
+        let (Some(store), Some(stored)) = (
+            self.messages.as_ref(),
+            self.stored_plugin_message(message_id, message).await,
+        ) else {
+            tracing::debug!(
+                target = "flare_sdk.plugin",
+                "plugin message state skipped: no matching local message"
+            );
+            return;
+        };
+        match store.apply_plugin_message_state(message_id, &state).await {
+            Ok(OperationApplyResult::Applied) => {
+                if let Some(bus) = &self.bus {
+                    let message_id = if stored.server_id.trim().is_empty() {
+                        stored.client_msg_id
+                    } else {
+                        stored.server_id
+                    };
+                    bus.publish(crate::kernel::event::SdkEvent::Message(
+                        crate::kernel::event::MessageEvent::PluginStateChanged {
+                            conversation_id: stored.conversation_id,
+                            message_id,
+                            version: state.version,
+                        },
+                    ));
+                }
+            }
+            Ok(result) => tracing::debug!(
+                target = "flare_sdk.plugin",
+                ?result,
+                version = state.version,
+                "plugin message state not applied"
+            ),
+            Err(error) => tracing::warn!(
+                target = "flare_sdk.plugin",
+                %error,
+                "write plugin message state failed"
+            ),
+        }
     }
     /// Refresh authorization, bind declared action input, then dispatch through
     /// the normal capability policy. Native/page targets return an explicit
     /// host instruction; only the application's allowlisted bridge executes it.
+    /// With `messageId`, a successful operation's `data.messageState` is stored on
+    /// that message; calls not made from a message ignore it.
     pub async fn invoke_plugin_action(&self, request: Value) -> Result<Value> {
         use crate::extension::capability::ui;
         use flare_plugin_protocol::ui::UiActionTarget;
@@ -240,6 +381,9 @@ impl CapabilityApi {
             match target {
                 UiActionTarget::Operation{operation}=>{
                     let response=self.dispatch(&operation,payload,request.conversation_id.as_deref(),Some(&self.default_tenant_id),user_id.as_deref()).await?;
+                    if let Some(message_id) = request.message_id.as_deref() {
+                        self.write_plugin_message_state(message_id, &request.message, &response).await;
+                    }
                     Ok(serde_json::json!({"kind":"operation","response":response}))
                 }
                 target=>Ok(serde_json::json!({"kind":"host","target":target,"payload":payload})),

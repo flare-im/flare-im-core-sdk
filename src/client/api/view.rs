@@ -833,6 +833,9 @@ fn message_refresh_target(event: &MessageEvent) -> ViewRefreshTarget {
         }
         | MessageEvent::Custom {
             conversation_id, ..
+        }
+        | MessageEvent::PluginStateChanged {
+            conversation_id, ..
         } => insert_non_empty(&mut ids, conversation_id),
         MessageEvent::SendFailed { .. } => return ViewRefreshTarget::All,
     }
@@ -1353,6 +1356,42 @@ mod tests {
         assert_eq!(ops[0].key, "client:m2");
         assert_eq!(ops[0].index, 1);
         assert!(ops[0].item.is_some());
+    }
+
+    #[test]
+    fn plugin_state_change_reloads_its_timeline_and_updates_the_card_row() {
+        let event = SdkEvent::Message(MessageEvent::PluginStateChanged {
+            conversation_id: "c1".into(),
+            message_id: "m1".into(),
+            version: 2,
+        });
+        let plan = view_refresh_plan(&event).expect("plugin state refreshes views");
+        let target = plan.timeline_query.expect("timeline is reloaded");
+        assert!(target.matches_timeline("c1"));
+        assert!(!target.matches_timeline("c2"));
+
+        let card = message("c1", "m1", 1);
+        let mut with_state = card.clone();
+        with_state
+            .attributes
+            .insert("pluginStateVersion".into(), "2".into());
+        let snapshot = |messages| ConversationTimelineSnapshot {
+            conversation: None,
+            messages,
+            has_more: false,
+        };
+        let update = timeline_view_update(
+            "timeline:1",
+            &snapshot(vec![card, message("c1", "m2", 2)]),
+            &snapshot(vec![with_state, message("c1", "m2", 2)]),
+        )
+        .expect("an attribute-only change still updates the row");
+        let Some(ViewDelta::Timeline { ops, .. }) = update.delta else {
+            panic!("timeline delta expected");
+        };
+        assert_eq!(ops.len(), 1);
+        assert_eq!(ops[0].op, ViewDeltaKind::Update);
+        assert_eq!(ops[0].key, "client:m1");
     }
 
     #[test]

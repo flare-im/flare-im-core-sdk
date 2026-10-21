@@ -527,7 +527,8 @@ impl EventBus {
                 | MessageEvent::Marked { .. }
                 | MessageEvent::Unmarked { .. }
                 | MessageEvent::PresenceChanged { .. }
-                | MessageEvent::Custom { .. } => {}
+                | MessageEvent::Custom { .. }
+                | MessageEvent::PluginStateChanged { .. } => {}
             },
             SdkEvent::Notification(NotificationEvent::Received { message }) => {
                 dispatched += dispatch_callbacks_with(

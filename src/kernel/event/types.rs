@@ -147,6 +147,13 @@ pub enum MessageEvent {
         conversation_id: String,
         event: CustomEvent,
     },
+    /// 插件卡片状态已写入本地消息（插件动作结果的 `messageState`）；宿主按一次消息更新重新呈现该条消息。
+    /// `message_id` 是写入时使用的消息 ID（server_id 优先）。
+    PluginStateChanged {
+        conversation_id: String,
+        message_id: String,
+        version: u64,
+    },
 }
 
 /// 会话域事件：新会话、会话信息变更、未读数变化、会话删除、列表同步完成

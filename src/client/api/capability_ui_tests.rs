@@ -21,6 +21,7 @@ struct Fixture {
     drop_next: Arc<AtomicBool>,
     business_error: Arc<SyncMutex<Option<String>>>,
     observation: Arc<SyncMutex<Option<Value>>>,
+    vote_result: Arc<SyncMutex<Value>>,
     server: tokio::task::JoinHandle<()>,
 }
 impl Drop for Fixture {
@@ -58,6 +59,8 @@ impl Fixture {
         let next_error = business_error.clone();
         let observation = Arc::new(SyncMutex::new(None::<Value>));
         let observed = observation.clone();
+        let vote_result = Arc::new(SyncMutex::new(json!({"status":"recorded"})));
+        let voted = vote_result.clone();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let base = format!("http://{}", listener.local_addr().unwrap());
         let (c, q, h, e, r) = (
@@ -116,7 +119,7 @@ impl Fixture {
                     assert_eq!(body["capabilityId"], "example.poll.vote");
                     assert_eq!(body["conversationId"], "conversation-1");
                     assert_eq!(body["payload"], json!({"pollId":"poll-1"}));
-                    json!({"status":"recorded"})
+                    voted.lock().unwrap().clone()
                 };
                 let error_code = next_error.lock().unwrap().take();
                 let result = CapabilityDispatchResult {
@@ -156,6 +159,7 @@ impl Fixture {
             drop_next,
             business_error,
             observation,
+            vote_result,
             server,
         }
     }
@@ -584,4 +588,155 @@ async fn plugin_command_query_observation_is_persisted_without_second_mutation()
             .is_err()
     );
     f.api.acknowledge_plugin_command(request).await.unwrap();
+}
+
+fn plugin_card(server_id: &str, client_msg_id: &str, envelope: Value) -> crate::model::IMMessage {
+    let mut card = crate::model::IMMessage::new(flare_proto::common::Message::default());
+    card.server_id = server_id.into();
+    card.client_msg_id = client_msg_id.into();
+    card.conversation_id = "conversation-1".into();
+    card.content = Some(crate::model::Elem::Custom(
+        crate::content::message_elem::CustomElem {
+            r#type: "flare.plugin.message.v1".into(),
+            payload: serde_json::to_vec(&envelope).unwrap(),
+            description: String::new(),
+            metadata: Default::default(),
+        },
+    ));
+    card
+}
+#[tokio::test]
+async fn plugin_message_state_is_written_from_card_actions_and_overlaid_on_present() {
+    use crate::domain::{MessageReader, MessageWriter};
+    use crate::kernel::event::{EventBus, MessageEvent, SdkEvent};
+    let mut f = Fixture::new().await;
+    let store = Arc::new(crate::infrastructure::persistence::memory_im::MemoryMessageStore::new());
+    store
+        .save_one(&plugin_card("server-1", "client-1", message()))
+        .await
+        .unwrap();
+    let mut other_card = message();
+    other_card["contributionId"] = json!("example.poll.other");
+    store
+        .save_one(&plugin_card("server-2", "client-2", other_card))
+        .await
+        .unwrap();
+    let bus = EventBus::new();
+    let mut events = bus.subscribe();
+    f.api = f.api.clone().with_message_state(store.clone(), bus);
+    let present = |message_id: &str| json!({"message":message(),"platform":"ios","locale":"en-US","messageId":message_id});
+
+    let fresh = f
+        .api
+        .present_plugin_message(present("server-1"))
+        .await
+        .unwrap();
+    assert_eq!(fresh["available"], true);
+    assert_eq!(fresh["stateVersion"], 0);
+    assert_eq!(fresh["data"], message()["payload"]);
+
+    *f.vote_result.lock().unwrap() = json!({"status":"recorded","messageState":{"version":2,"values":{"status":"closed","question":null}}});
+    let mut from_card = invoke("ios");
+    from_card["messageId"] = json!("client-1");
+    let result = f.api.invoke_plugin_action(from_card).await.unwrap();
+    assert_eq!(
+        result["response"]["data"]["messageState"]["version"], 2,
+        "the action result is returned unchanged"
+    );
+    match events.try_recv().expect("state change is announced") {
+        SdkEvent::Message(MessageEvent::PluginStateChanged {
+            conversation_id,
+            message_id,
+            version,
+        }) => {
+            assert_eq!(conversation_id, "conversation-1");
+            assert_eq!(message_id, "server-1", "the server id is preferred");
+            assert_eq!(version, 2);
+        }
+        other => panic!("unexpected event {other:?}"),
+    }
+    let presented = f
+        .api
+        .present_plugin_message(present("server-1"))
+        .await
+        .unwrap();
+    assert_eq!(presented["stateVersion"], 2);
+    assert_eq!(presented["data"]["status"], "closed");
+    assert!(
+        presented["data"].get("question").is_none(),
+        "null removes a key"
+    );
+    let fields = presented["fields"].as_array().unwrap();
+    assert!(fields.iter().any(|field| field["value"] == "closed"));
+    assert!(fields.iter().all(|field| field["value"] != "Question"));
+
+    // Stale, malformed, non-card, other-card and unknown-message results change nothing.
+    for (state, message_id) in [
+        (
+            json!({"version":1,"values":{"status":"stale"}}),
+            Some("server-1"),
+        ),
+        (
+            json!({"version":9,"values":{"nested":{"a":1}}}),
+            Some("server-1"),
+        ),
+        (json!({"version":9,"values":{"status":"ignored"}}), None),
+        (
+            json!({"version":9,"values":{"status":"other"}}),
+            Some("server-2"),
+        ),
+        (
+            json!({"version":9,"values":{"status":"missing"}}),
+            Some("missing"),
+        ),
+    ] {
+        *f.vote_result.lock().unwrap() = json!({"status":"recorded","messageState":state});
+        let mut request = invoke("ios");
+        if let Some(message_id) = message_id {
+            request["messageId"] = json!(message_id);
+        }
+        f.api.invoke_plugin_action(request).await.unwrap();
+    }
+    assert!(events.try_recv().is_err());
+    let stored = store.get("server-1").await.unwrap().unwrap();
+    assert_eq!(stored.plugin_message_state().unwrap().version, 2);
+    assert!(
+        store
+            .get("server-2")
+            .await
+            .unwrap()
+            .unwrap()
+            .plugin_message_state()
+            .is_none()
+    );
+
+    // A different card never borrows this message's state.
+    let mut foreign = present("server-1");
+    foreign["message"]["contributionId"] = json!("example.poll.other");
+    assert_eq!(
+        f.api
+            .present_plugin_message(present("server-2"))
+            .await
+            .unwrap()["stateVersion"],
+        0
+    );
+    assert_eq!(
+        f.api.present_plugin_message(foreign).await.unwrap()["stateVersion"],
+        0
+    );
+    assert!(
+        f.api
+            .present_plugin_message(present("bad id"))
+            .await
+            .is_err()
+    );
+    f.catalog.lock().unwrap().plugins.clear();
+    let unavailable = f
+        .api
+        .present_plugin_message(present("server-1"))
+        .await
+        .unwrap();
+    assert_eq!(unavailable["available"], false);
+    assert!(unavailable.get("data").is_none());
+    assert_eq!(unavailable["stateVersion"], 2);
 }

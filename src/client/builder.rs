@@ -636,7 +636,8 @@ impl IMClientBuilder {
                 http_request_context.clone(),
             )
             .with_http_transport(capability_http_client)
-            .with_plugin_command_store(store_ref.plugin_commands.clone()),
+            .with_plugin_command_store(store_ref.plugin_commands.clone())
+            .with_message_state(store_ref.messages.clone(), bus.clone()),
         );
         let presence_api = Arc::new(PresenceApi::new(
             presence_http_client,

@@ -57,6 +57,10 @@ pub(crate) struct PresentRequest {
     pub locale: String,
     #[serde(default)]
     pub kind: Option<UiContributionKind>,
+    /// Message the card belongs to (server id or client message id). Its stored
+    /// plugin state is overlaid on the payload before resolving.
+    #[serde(default)]
+    pub message_id: Option<String>,
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -69,11 +73,25 @@ pub(crate) struct InvokeRequest {
     pub native_allowlist: BTreeSet<NativeCapability>,
     #[serde(default)]
     pub conversation_id: Option<String>,
+    /// Message the action came from. Only then is a returned `data.messageState`
+    /// written back to that message.
+    #[serde(default)]
+    pub message_id: Option<String>,
+}
+fn valid_message_id(id: &Option<String>) -> bool {
+    id.as_deref().is_none_or(|id| {
+        !id.is_empty()
+            && id.len() <= 256
+            && !id.chars().any(|c| c.is_control() || c.is_whitespace())
+    })
 }
 pub(crate) fn parse_present(request: Value) -> Result<PresentRequest> {
     bounded(&request)?;
     let parsed: PresentRequest = serde_json::from_value(request).map_err(|_| invalid())?;
     parsed.message.validate().map_err(|_| invalid())?;
+    if !valid_message_id(&parsed.message_id) {
+        return Err(invalid());
+    }
     Ok(parsed)
 }
 pub(crate) fn parse_invoke(request: Value) -> Result<InvokeRequest> {
@@ -84,6 +102,7 @@ pub(crate) fn parse_invoke(request: Value) -> Result<InvokeRequest> {
         .conversation_id
         .as_ref()
         .is_some_and(|id| !flare_plugin_protocol::resource::valid_resource_id(id))
+        || !valid_message_id(&parsed.message_id)
     {
         return Err(invalid());
     }
