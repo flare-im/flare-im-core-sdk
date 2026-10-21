@@ -390,9 +390,43 @@ impl CapabilityApi {
             }
         }).await
     }
+    /// Composer ("+" panel) entries of the plugins the current user may use on
+    /// `platform`, titles in `locale`, sorted by order then title. Reads a fresh
+    /// catalog each call; no further grant check, the server already trimmed it.
+    pub async fn composer_actions(
+        &self,
+        platform: flare_plugin_protocol::manifest::ClientPlatform,
+        locale: &str,
+    ) -> Result<Vec<crate::extension::capability::ui::PluginComposerAction>> {
+        self.session_guard
+            .run(async {
+                let (_, catalog) = self.fetch_plugin_ui_catalog().await?;
+                Ok(crate::extension::capability::ui::composer_actions(
+                    &self.default_tenant_id,
+                    &catalog,
+                    platform,
+                    locale,
+                ))
+            })
+            .await
+    }
+    /// Binding form of [`Self::composer_actions`]: `{platform, locale}` in,
+    /// `{actions: [{pluginId, contributionId, title, icon?, order}]}` out.
+    pub async fn plugin_composer_actions(&self, request: Value) -> Result<Value> {
+        let request = crate::extension::capability::ui::parse_composer_actions(request)?;
+        let actions = self
+            .composer_actions(request.platform, &request.locale)
+            .await?;
+        Ok(serde_json::json!({ "actions": actions }))
+    }
     /// Refresh on login, tenant change and plugin state change. The returned
     /// catalog expires; callers must drop it on logout and never persist secrets.
     pub async fn plugin_ui_catalog(&self) -> Result<Value> {
+        Ok(self.fetch_plugin_ui_catalog().await?.0)
+    }
+    async fn fetch_plugin_ui_catalog(
+        &self,
+    ) -> Result<(Value, flare_plugin_protocol::ui::UiCatalog)> {
         let result = self
             .dispatch(
                 flare_plugin_protocol::ui::UI_CATALOG_OPERATION,
@@ -411,7 +445,7 @@ impl CapabilityApi {
         if catalog.plugins.len() > 128 {
             return Err(FlareError::system("plugin UI catalog limit"));
         }
-        Ok(result.data)
+        Ok((result.data, catalog))
     }
 
     #[cfg(not(target_arch = "wasm32"))]

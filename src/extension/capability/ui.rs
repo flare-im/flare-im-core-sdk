@@ -2,10 +2,10 @@
 //! design kit and execute only a returned target after explicit host consent.
 use crate::shared::error::{ErrorCode, FlareError, Result};
 use flare_plugin_protocol::{
-    manifest::{ClientPlatform, UiContributionKind},
+    manifest::{ClientPlatform, UiContributionKind, is_ui_icon_name},
     ui::{NativeCapability, PluginMessage, UiCatalog},
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeSet;
 #[derive(Deserialize)]
@@ -107,6 +107,76 @@ pub(crate) fn parse_invoke(request: Value) -> Result<InvokeRequest> {
         return Err(invalid());
     }
     Ok(parsed)
+}
+/// A "+" panel entry declared by an authorized plugin (`composer-action`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginComposerAction {
+    pub plugin_id: String,
+    pub contribution_id: String,
+    /// Contribution title in the requested locale (exact tag, then language).
+    pub title: String,
+    /// Kit icon name; absent when undeclared or malformed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
+    pub order: i32,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct ComposerActionsRequest {
+    pub platform: ClientPlatform,
+    #[serde(default)]
+    pub locale: String,
+}
+pub(crate) fn parse_composer_actions(request: Value) -> Result<ComposerActionsRequest> {
+    bounded(&request)?;
+    let parsed: ComposerActionsRequest = serde_json::from_value(request).map_err(|_| invalid())?;
+    if parsed.locale.len() > 32 || parsed.locale.chars().any(char::is_control) {
+        return Err(invalid());
+    }
+    Ok(parsed)
+}
+/// Composer actions of `catalog` for `platform`, by order then title. The
+/// server already trimmed the catalog by grant, capability policy and user
+/// consent, so this only drops what a client cannot render: another tenant's
+/// or an expired catalog, other platforms, unknown schema versions and invalid
+/// documents.
+pub(crate) fn composer_actions(
+    tenant: &str,
+    catalog: &UiCatalog,
+    platform: ClientPlatform,
+    locale: &str,
+) -> Vec<PluginComposerAction> {
+    if catalog.tenant_id != tenant || catalog.valid_until_ms <= now_ms() {
+        return Vec::new();
+    }
+    let mut actions: Vec<_> = catalog
+        .plugins
+        .iter()
+        .filter(|plugin| plugin.extensions.platforms.contains(&platform))
+        .flat_map(|plugin| {
+            plugin
+                .extensions
+                .contributions
+                .iter()
+                .filter(|c| {
+                    c.kind == UiContributionKind::ComposerAction
+                        && c.schema_version == 1
+                        && c.schema.validate().is_ok()
+                })
+                .map(|c| PluginComposerAction {
+                    plugin_id: plugin.plugin_id.clone(),
+                    contribution_id: c.id.clone(),
+                    title: c.schema.localized_title(locale).to_owned(),
+                    icon: c.icon.clone().filter(|icon| is_ui_icon_name(icon)),
+                    order: c.order,
+                })
+        })
+        .collect();
+    actions.sort_by(|a, b| {
+        (a.order, &a.title, &a.contribution_id).cmp(&(b.order, &b.title, &b.contribution_id))
+    });
+    actions
 }
 pub(crate) fn resolve(tenant: &str, request: Value) -> Result<Value> {
     bounded(&request)?;

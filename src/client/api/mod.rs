@@ -17,6 +17,7 @@ mod presence_wire;
 pub(crate) mod session_guard;
 mod view;
 
+pub use crate::extension::capability::ui::PluginComposerAction;
 pub use capability::{
     CapabilityApi, CapabilityDescriptorDto, CapabilityDispatchResult, RtcSfuSubscriptionRequest,
     UserCapabilityGrantDto,

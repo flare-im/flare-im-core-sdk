@@ -740,3 +740,125 @@ async fn plugin_message_state_is_written_from_card_actions_and_overlaid_on_prese
     assert!(unavailable.get("data").is_none());
     assert_eq!(unavailable["stateVersion"], 2);
 }
+
+fn composer_contribution(
+    id: &str,
+    title: &str,
+    extra: Value,
+) -> flare_plugin_protocol::manifest::UiContribution {
+    let mut raw = json!({
+        "id": id, "kind": "composer-action", "schemaVersion": 1, "requiredPermissions": [],
+        "schema": {"title": title, "translations": {"en-US": {"title": format!("{title} (en)"), "fields": [], "actions": {}}}}
+    });
+    for (key, value) in extra.as_object().unwrap() {
+        raw[key] = value.clone();
+    }
+    serde_json::from_value(raw).unwrap()
+}
+#[tokio::test]
+async fn composer_actions_list_authorized_entries_for_the_platform_in_order() {
+    use flare_plugin_protocol::manifest::ClientPlatform;
+    let f = Fixture::new().await;
+    {
+        let mut catalog = f.catalog.lock().unwrap();
+        let contributions = &mut catalog.plugins[0].extensions.contributions;
+        contributions.push(composer_contribution(
+            "example.poll.later",
+            "以后",
+            json!({}),
+        ));
+        contributions.push(composer_contribution(
+            "example.poll.create",
+            "投票",
+            json!({"icon": "poll", "order": 100}),
+        ));
+        // Older catalogs or a hand-made projection: the bad icon is dropped, not the entry.
+        let mut odd = composer_contribution("example.poll.odd", "问卷", json!({"order": 100}));
+        odd.icon = Some("Not An Icon".into());
+        contributions.push(odd);
+        let mut future = composer_contribution("example.poll.v2", "新版", json!({}));
+        future.schema_version = 2;
+        contributions.push(future);
+        let mut web_only = catalog.plugins[0].clone();
+        web_only.plugin_id = "example.webonly".into();
+        web_only.extensions.platforms = vec![ClientPlatform::Web];
+        web_only.extensions.contributions = vec![composer_contribution(
+            "example.webonly.open",
+            "网页",
+            json!({"icon": "globe", "order": 1}),
+        )];
+        catalog.plugins.push(web_only);
+    }
+    let ios = f
+        .api
+        .composer_actions(ClientPlatform::Ios, "zh-CN")
+        .await
+        .unwrap();
+    let listed: Vec<_> = ios
+        .iter()
+        .map(|a| {
+            (
+                a.contribution_id.as_str(),
+                a.title.as_str(),
+                a.icon.as_deref(),
+                a.order,
+            )
+        })
+        .collect();
+    assert_eq!(
+        listed,
+        [
+            ("example.poll.create", "投票", Some("poll"), 100),
+            ("example.poll.odd", "问卷", None, 100),
+            ("example.poll.later", "以后", None, 1000),
+        ],
+        "composer actions only, by order then title; message cards and unknown versions are not entries"
+    );
+    let web = f
+        .api
+        .composer_actions(ClientPlatform::Web, "en-GB")
+        .await
+        .unwrap();
+    assert_eq!(web[0].plugin_id, "example.webonly");
+    assert_eq!(web[1].title, "投票 (en)", "language fallback for the title");
+
+    let bound = f
+        .api
+        .plugin_composer_actions(json!({"platform": "android", "locale": "en-US"}))
+        .await
+        .unwrap();
+    assert_eq!(
+        bound["actions"][0],
+        json!({"pluginId":"example.poll","contributionId":"example.poll.create","title":"投票 (en)","icon":"poll","order":100})
+    );
+    assert!(bound["actions"][1].get("icon").is_none());
+    for bad in [
+        json!({}),
+        json!({"platform": "desktop"}),
+        json!({"platform": "ios", "tenantId": "202"}),
+        json!({"platform": "ios", "locale": "x".repeat(33)}),
+    ] {
+        assert!(f.api.plugin_composer_actions(bad).await.is_err());
+    }
+    f.catalog.lock().unwrap().tenant_id = "202".into();
+    assert!(
+        f.api
+            .composer_actions(ClientPlatform::Ios, "")
+            .await
+            .unwrap()
+            .is_empty(),
+        "another tenant's catalog lists nothing"
+    );
+    let calls = f.calls.lock().unwrap();
+    assert!(
+        calls
+            .iter()
+            .all(|c| c["capabilityId"] == flare_plugin_protocol::ui::UI_CATALOG_OPERATION),
+        "listing reads the catalog only"
+    );
+    assert_eq!(
+        calls.len(),
+        4,
+        "every listing fetches a fresh catalog; bad requests fetch none"
+    );
+}
