@@ -29,6 +29,17 @@ pub trait ConnectTokenRefresher: Send + Sync {
     async fn refresh_connect_token(&self) -> Option<String>;
 }
 
+/// The same host refresher renews the Core HTTP bearer after Core reports it expired.
+pub(crate) struct ConnectTokenRenewal(pub(crate) std::sync::Arc<dyn ConnectTokenRefresher>);
+
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+impl crate::infrastructure::transport::http::CoreBearerRenewal for ConnectTokenRenewal {
+    async fn renew(&self) -> Option<String> {
+        self.0.refresh_connect_token().await
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct IssuedAccessToken {

@@ -93,7 +93,18 @@ impl IMClient {
         &self,
         refresher: Option<Arc<dyn crate::client::token_provider::ConnectTokenRefresher>>,
     ) {
-        self.inner.write().await.connect_token_refresher = refresher;
+        let http = {
+            let mut g = self.inner.write().await;
+            g.connect_token_refresher = refresher.clone();
+            g.http_request_context.clone()
+        };
+        if let Some(http) = http {
+            let renewal = refresher.map(|r| {
+                Arc::new(crate::client::token_provider::ConnectTokenRenewal(r))
+                    as Arc<dyn crate::infrastructure::transport::http::CoreBearerRenewal>
+            });
+            http.set_core_bearer_renewal(renewal).await;
+        }
     }
 
     /// 更新 access token 并同步到共享 HTTP 上下文（token 刷新后调用）。
