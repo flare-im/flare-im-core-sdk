@@ -3,10 +3,11 @@ use std::time::Duration;
 
 use flare_proto::common::{
     ConversationParticipantsSync, ConversationUserSettingsSync, ConversationsSync,
-    ConversationsSyncRes, EnsureConversationSync, GetSyncCursorSync, MultiConversationSync,
+    ConversationsSyncRes, EnsureConversationSync, Event, GetSyncCursorSync, MultiConversationSync,
     QueryEventsSync, SingleConversationSync, Sync as SyncWire, SyncRes, SyncSnapshotSync,
-    SyncSnapshotSyncRes, UpdateSyncCursorSync, sync::Payload as SyncPayload,
-    sync_res::Payload as SyncResPayload,
+    SyncSnapshotSyncRes, UpdateSyncCursorSync, event::Payload as EventPayload,
+    sync::Payload as SyncPayload, sync_res::Payload as SyncResPayload,
+    sync_slice_item::Payload as SyncSliceItemPayload,
 };
 
 use crate::domain::{
@@ -214,5 +215,92 @@ impl SyncRequestUseCase {
                 "unexpected conversations sync response".to_string(),
             )),
         }
+    }
+}
+
+/// 按会话序号读一条消息：严格小于 `seq + 1` 的最近 1 条，即翻历史的回溯页，只取 `seq` 上那条。
+/// 插件卡片补读共享层用（Reader 读回的消息 extra 带着最新共享层）。
+impl crate::application::services::RemoteMessageLookup for SyncRequestUseCase {
+    fn message_at_seq<'a>(
+        &'a self,
+        conversation_id: &'a str,
+        seq: u64,
+    ) -> crate::application::services::plugin_state_refetch::BoxFuture<
+        'a,
+        Result<Option<crate::model::IMMessage>>,
+    > {
+        Box::pin(async move {
+            let response = self
+                .request_backfill_page(conversation_id, seq.saturating_add(1), 1)
+                .await?;
+            let Some(SyncResPayload::SingleConversation(page)) = response.payload else {
+                return Ok(None);
+            };
+            Ok(message_at_seq(page.items, seq))
+        })
+    }
+}
+
+/// The message at `seq` in a page: a message item, or an event item carrying one.
+fn message_at_seq(
+    items: Vec<flare_proto::common::SyncSliceItem>,
+    seq: u64,
+) -> Option<crate::model::IMMessage> {
+    items.into_iter().find_map(|item| {
+        let message = match item.payload? {
+            SyncSliceItemPayload::Message(message) => message,
+            SyncSliceItemPayload::Event(Event {
+                payload: Some(EventPayload::Message(message)),
+                ..
+            }) => message,
+            _ => return None,
+        };
+        (message.conversation_seq == seq || item.conversation_seq == seq)
+            .then(|| crate::model::IMMessage::new(message))
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use flare_proto::common::{Message, SyncSkipItem, SyncSliceItem};
+
+    fn message(server_id: &str, seq: u64) -> Message {
+        Message {
+            server_id: server_id.into(),
+            conversation_seq: seq,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn the_message_at_the_seq_is_picked_from_message_or_event_items() {
+        let page = vec![
+            SyncSliceItem {
+                conversation_seq: 6,
+                payload: Some(SyncSliceItemPayload::Skip(SyncSkipItem::default())),
+                ..Default::default()
+            },
+            SyncSliceItem {
+                conversation_seq: 7,
+                payload: Some(SyncSliceItemPayload::Message(message("m7", 7))),
+                ..Default::default()
+            },
+        ];
+        assert_eq!(message_at_seq(page.clone(), 7).unwrap().server_id, "m7");
+        assert!(
+            message_at_seq(page, 6).is_none(),
+            "a skipped seq has no message"
+        );
+        let event = vec![SyncSliceItem {
+            conversation_seq: 9,
+            payload: Some(SyncSliceItemPayload::Event(Event {
+                payload: Some(EventPayload::Message(message("m9", 0))),
+                ..Default::default()
+            })),
+            ..Default::default()
+        }];
+        assert_eq!(message_at_seq(event.clone(), 9).unwrap().server_id, "m9");
+        assert!(message_at_seq(event, 8).is_none());
     }
 }

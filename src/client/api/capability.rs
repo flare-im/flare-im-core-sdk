@@ -41,6 +41,8 @@ pub struct CapabilityApi {
     /// Local message store and bus for plugin card state (`messageId` requests).
     messages: Option<Arc<dyn crate::domain::MessageStore>>,
     bus: Option<crate::kernel::event::EventBus>,
+    /// Background read of a presented card's shared layer when its message has none.
+    plugin_state_refetch: Option<Arc<crate::application::services::PluginStateRefetch>>,
     http: Option<HttpClient>,
     pub(super) session_guard: SessionGuard,
     #[cfg(not(target_arch = "wasm32"))]
@@ -80,6 +82,7 @@ impl CapabilityApi {
             plugin_commands: None,
             messages: None,
             bus: None,
+            plugin_state_refetch: None,
             http: None,
             session_guard: SessionGuard::new(current_user_id.clone(), "capability"),
             #[cfg(not(target_arch = "wasm32"))]
@@ -110,6 +113,16 @@ impl CapabilityApi {
     ) -> Self {
         self.messages = Some(messages);
         self.bus = Some(bus);
+        self
+    }
+    /// Heals a card cached before the client knew shared state: presenting a card
+    /// whose message has no shared layer reads that message back once
+    /// ([`crate::application::services::PluginStateRefetch`]).
+    pub(crate) fn with_plugin_state_refetch(
+        mut self,
+        refetch: Arc<crate::application::services::PluginStateRefetch>,
+    ) -> Self {
+        self.plugin_state_refetch = Some(refetch);
         self
     }
     pub fn with_http_transport(mut self, http: HttpClient) -> Self {
@@ -246,6 +259,12 @@ impl CapabilityApi {
     /// document declares them) plus `data` (the merged data, only when
     /// `available`), `stateVersion` (local layer, 0 when none) and
     /// `sharedStateVersion` (shared layer, 0 when none).
+    ///
+    /// A card of an entity (`entityPath`) whose stored message has no shared
+    /// layer, such as one cached before the client knew shared state, is read
+    /// back from the server once in the background; a layer found there is
+    /// stored and announced with `PluginStateChanged`, so the host presents
+    /// the card again.
     pub async fn present_plugin_message(&self, request: Value) -> Result<Value> {
         use crate::extension::capability::ui;
         let request = ui::parse_present(request)?;
@@ -266,6 +285,11 @@ impl CapabilityApi {
                     .and_then(|contribution| contribution.entity_of(&request.message.payload));
                 let state = ui::CardState::of(stored.as_ref(), entity.as_deref());
                 let viewer = viewer.unwrap_or_default();
+                if let (Some(refetch), Some(stored), Some(entity)) =
+                    (&self.plugin_state_refetch, &stored, entity.as_deref())
+                {
+                    refetch.on_present(stored, entity, &viewer);
+                }
                 let mut view = ui::present_card(
                     &catalog,
                     &request.message,

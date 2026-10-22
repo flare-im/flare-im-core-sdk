@@ -8,13 +8,14 @@ use crate::application::notification::{
 };
 use crate::application::services::EventDeduper;
 use crate::application::services::MessageDeduper;
+use crate::application::services::PluginStateRefetch;
 use crate::application::sync_task::{
     ConversationSettingsSyncTask, ConversationsSyncTask, KeyEventsSyncTask, MessagesSyncTask,
     ReadStatesSyncTask,
 };
 use crate::application::usecases::{
     ConversationCommandUseCase, ConversationViewAssembler, MessageMutationUseCase,
-    MessageSendUseCase, MessageViewAssembler,
+    MessageSendUseCase, MessageViewAssembler, sync_request::SyncRequestUseCase,
 };
 use crate::client::api::{
     CapabilityApi, ConversationApi, MediaApi, MessageApi, MessageBuildApi, PresenceApi, ViewApi,
@@ -612,6 +613,10 @@ impl IMClientBuilder {
             media_service.clone(),
             bus.clone(),
         ));
+        let plugin_state_lookup = Arc::new(SyncRequestUseCase::new(
+            sender.clone(),
+            self.config.effective_device_id(),
+        ));
         let message_mutation_use_case = Arc::new(MessageMutationUseCase::new(
             sender,
             store_ref.messages.clone(),
@@ -637,7 +642,13 @@ impl IMClientBuilder {
             )
             .with_http_transport(capability_http_client)
             .with_plugin_command_store(store_ref.plugin_commands.clone())
-            .with_message_state(store_ref.messages.clone(), bus.clone()),
+            .with_message_state(store_ref.messages.clone(), bus.clone())
+            .with_plugin_state_refetch(Arc::new(PluginStateRefetch::new(
+                plugin_state_lookup,
+                store_ref.messages.clone(),
+                bus.clone(),
+                current_user_id.clone(),
+            ))),
         );
         let presence_api = Arc::new(PresenceApi::new(
             presence_http_client,

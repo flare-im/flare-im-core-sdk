@@ -6,6 +6,7 @@ pub(crate) mod local_identity_repair;
 pub mod message_builder;
 pub(crate) mod message_deduper;
 pub(crate) mod plugin_shared_state;
+pub(crate) mod plugin_state_refetch;
 
 pub(crate) use event_deduper::{EventDedupeKey, EventDeduper};
 pub(crate) use incoming_message_converger::IncomingMessageConverger;
@@ -16,3 +17,4 @@ pub use message_builder::{
 };
 pub(crate) use message_deduper::MessageDeduper;
 pub(crate) use plugin_shared_state::{PluginSharedStateOutcome, apply_plugin_shared_state};
+pub(crate) use plugin_state_refetch::{PluginStateRefetch, RemoteMessageLookup};

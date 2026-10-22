@@ -27,6 +27,7 @@ struct Fixture {
     /// Capability ids, or page keys as in `pages`, that answer `success: false`.
     failing: Arc<SyncMutex<Vec<String>>>,
     store: Arc<MemoryMessageStore>,
+    bus: EventBus,
     events: EventReceiver,
     server: tokio::task::JoinHandle<()>,
 }
@@ -155,7 +156,7 @@ impl Fixture {
             Arc::new(HttpRequestContext::new()),
         )
         .with_http_transport(HttpClient::new(base))
-        .with_message_state(store.clone(), bus);
+        .with_message_state(store.clone(), bus.clone());
         Self {
             api,
             catalog,
@@ -164,6 +165,7 @@ impl Fixture {
             pages,
             failing,
             store,
+            bus,
             events,
             server,
         }
@@ -1048,4 +1050,97 @@ async fn detail_refresh_reads_a_bounded_number_of_pages() {
         format!("c{MAX_DETAIL_REFRESH_PAGES}"),
         "the rest loads on demand"
     );
+}
+
+/// Serves one card back with the shared layer Reader attaches, counting the reads.
+struct ServedCard {
+    remote: crate::model::IMMessage,
+    calls: std::sync::atomic::AtomicUsize,
+}
+impl crate::application::services::RemoteMessageLookup for ServedCard {
+    fn message_at_seq<'a>(
+        &'a self,
+        _conversation_id: &'a str,
+        seq: u64,
+    ) -> crate::application::services::plugin_state_refetch::BoxFuture<
+        'a,
+        crate::shared::error::Result<Option<crate::model::IMMessage>>,
+    > {
+        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Box::pin(
+            async move { Ok((self.remote.conversation_seq == seq).then(|| self.remote.clone())) },
+        )
+    }
+}
+
+/// A card cached before the client knew shared state has no shared layer on its message and
+/// missed the events. Presenting it reads the message back once; the layer found is stored and
+/// announced, and the next presentation shows it. Only cards of an entity are read back.
+#[tokio::test]
+async fn presenting_a_card_without_its_shared_layer_reads_it_back_once() {
+    use crate::model::message::{
+        PLUGIN_SHARED_ENTITY_KEY, PLUGIN_SHARED_STATE_JSON_KEY, PLUGIN_SHARED_STATE_VERSION_KEY,
+    };
+    use std::sync::atomic::Ordering;
+    let mut f = Fixture::new().await;
+    let mut cached = card("server-1", &poll());
+    cached.conversation_seq = 7;
+    let mut remote = cached.clone();
+    remote.attributes.extend([
+        (
+            PLUGIN_SHARED_STATE_JSON_KEY.to_string(),
+            r#"{"counts":[2,1],"voterCount":3}"#.to_string(),
+        ),
+        (PLUGIN_SHARED_STATE_VERSION_KEY.to_string(), "5".to_string()),
+        (PLUGIN_SHARED_ENTITY_KEY.to_string(), "poll-1".to_string()),
+    ]);
+    let lookup = Arc::new(ServedCard {
+        remote,
+        calls: Default::default(),
+    });
+    f.api = f.api.clone().with_plugin_state_refetch(Arc::new(
+        crate::application::services::PluginStateRefetch::new(
+            lookup.clone(),
+            f.store.clone(),
+            f.bus.clone(),
+            Arc::new(RwLock::new("u1".into())),
+        ),
+    ));
+    f.store.save_one(&cached).await.unwrap();
+
+    let stale = f
+        .api
+        .present_plugin_message(present("server-1"))
+        .await
+        .unwrap();
+    assert_eq!(stale["sharedStateVersion"], 0);
+    let mut announced = Vec::new();
+    for _ in 0..200 {
+        announced = f.state_changes();
+        if !announced.is_empty() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+    assert_eq!(announced, vec![5]);
+    let healed = f
+        .api
+        .present_plugin_message(present("client-server-1"))
+        .await
+        .unwrap();
+    assert_eq!(healed["sharedStateVersion"], 5);
+    assert_eq!(healed["data"]["counts"], json!([2, 1]));
+    assert_eq!(lookup.calls.load(Ordering::SeqCst), 1);
+
+    // A card without an entity has no shared layer to heal.
+    contribution_mut(&mut f.catalog.lock().unwrap(), "example.poll.card").entity_path = None;
+    let mut plain = card("server-2", &poll());
+    plain.conversation_seq = 8;
+    f.store.save_one(&plain).await.unwrap();
+    f.api
+        .present_plugin_message(present("server-2"))
+        .await
+        .unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    assert_eq!(lookup.calls.load(Ordering::SeqCst), 1);
 }
