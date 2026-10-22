@@ -6,7 +6,8 @@ use flare_plugin_protocol::{
     state::SharedState,
     ui::{
         ClientPlugin, NativeCapability, PluginMessage, PluginMessageState, ResolvedPluginView,
-        UiActionTarget, UiAudience, UiCatalog, UiFormError, UiRenderContext, UiStateLayers,
+        ResolvedUiBlock, UiActionTarget, UiAudience, UiCatalog, UiDetail, UiFormError,
+        UiRenderContext, UiStateLayers,
     },
 };
 use serde::{Deserialize, Serialize};
@@ -94,6 +95,8 @@ pub(crate) struct InvokeRequest {
 /// A paged detail (`cursorPath`) takes the next page with `cursor`, the
 /// `nextCursor` of the view shown so far, and `previous`, that view itself:
 /// the page is appended to it here, so hosts never merge pages themselves.
+/// `refresh` with `previous` re-reads the shown view from its first page and
+/// keeps the pages it had loaded ([`MAX_DETAIL_REFRESH_PAGES`]).
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct DetailRequest {
@@ -111,12 +114,21 @@ pub(crate) struct DetailRequest {
     /// the first page.
     #[serde(default)]
     pub cursor: Option<String>,
-    /// The view shown so far, exactly as an earlier call returned it; the
-    /// page is appended to it. Only with `cursor`; without it only the page
-    /// comes back.
+    /// The view shown so far, exactly as an earlier call returned it. With
+    /// `cursor` the page is appended to it; with `refresh` it is the view to
+    /// bring up to date. Without either only the page comes back.
     #[serde(default)]
     pub previous: Option<ResolvedPluginView>,
+    /// Re-read `previous` (required) from the first page, following the
+    /// cursors until the entries are at least as many as `previous` showed,
+    /// the detail has no next page, or [`MAX_DETAIL_REFRESH_PAGES`] pages were
+    /// read; the merged view replaces `previous`. Not with `cursor`.
+    #[serde(default)]
+    pub refresh: bool,
 }
+/// Pages one detail refresh reads at most, the first included: a sheet that
+/// had loaded more comes back with `nextCursor` to load the rest on demand.
+pub(crate) const MAX_DETAIL_REFRESH_PAGES: usize = 10;
 fn valid_locale(locale: &str) -> bool {
     locale.len() <= 32 && !locale.chars().any(char::is_control)
 }
@@ -149,8 +161,10 @@ pub(crate) fn parse_detail(request: Value) -> Result<DetailRequest> {
             .conversation_id
             .as_ref()
             .is_some_and(|id| !flare_plugin_protocol::resource::valid_resource_id(id))
-        // A page is appended to the view it follows, never to nothing.
-        || (parsed.previous.is_some() && parsed.cursor.is_none())
+        // A page is appended to the view it follows, never to nothing; a
+        // refresh re-reads a shown view from its first page.
+        || (parsed.previous.is_some() && parsed.cursor.is_none() && !parsed.refresh)
+        || (parsed.refresh && (parsed.previous.is_none() || parsed.cursor.is_some()))
     {
         return Err(invalid());
     }
@@ -492,15 +506,38 @@ pub(crate) fn prepare_action(
     })
 }
 
-/// The detail operation of a card and its input, bound over the merged card
-/// data; with `cursor`, the input of the page after it
-/// ([`flare_plugin_protocol::ui::UiDetail::page_input`]).
+/// The detail of a card, ready to request page by page.
+pub(crate) struct PreparedDetail {
+    detail: UiDetail,
+    /// The first page's input, bound over the merged card data.
+    first: Value,
+}
+impl PreparedDetail {
+    pub fn operation(&self) -> &str {
+        &self.detail.operation
+    }
+    /// The operation input of the first page, or with `cursor` of the page
+    /// after it ([`UiDetail::page_input`]): refused for a detail without
+    /// `cursorPath` and for a malformed cursor.
+    pub fn input(&self, cursor: Option<&str>) -> Result<Value> {
+        match cursor {
+            None => Ok(self.first.clone()),
+            Some(cursor) => self
+                .detail
+                .page_input(self.first.clone(), cursor)
+                .map_err(|_| invalid()),
+        }
+    }
+}
+
+/// The detail operation of a card and its first page's input, bound over the
+/// merged card data.
 pub(crate) fn prepare_detail(
     tenant: &str,
     catalog: &UiCatalog,
     request: &DetailRequest,
     stored: Option<&crate::model::IMMessage>,
-) -> Result<(String, Value)> {
+) -> Result<PreparedDetail> {
     let message = &request.message;
     let detail = catalog
         .detail(
@@ -522,31 +559,47 @@ pub(crate) fn prepare_detail(
     let data = CardState::of(stored, contribution.entity_of(&message.payload).as_deref())
         .layers()
         .merge(contribution, &message.payload);
-    let mut input = detail.bind_input(&data).map_err(|_| invalid())?;
-    if let Some(cursor) = request.cursor.as_deref() {
-        // Refused for a detail without `cursorPath` and for a malformed cursor.
-        input = detail.page_input(input, cursor).map_err(|_| invalid())?;
-    }
-    Ok((detail.operation, input))
+    let first = detail.bind_input(&data).map_err(|_| invalid())?;
+    Ok(PreparedDetail { detail, first })
 }
 
-/// The detail document of a card resolved against the detail operation's data
-/// (one page of it for a paged detail, with `nextCursor`), appended to
-/// `previous` when given ([`ResolvedPluginView::append_page`]).
-pub(crate) fn present_detail(
+/// One page of a card's detail: the detail document resolved against the
+/// detail operation's data, with `nextCursor` while a paged detail has more.
+pub(crate) fn detail_page(
     catalog: &UiCatalog,
     message: &PluginMessage,
     data: &Value,
     presentation: &CardPresentation<'_>,
-    previous: Option<ResolvedPluginView>,
-) -> Result<Value> {
-    let page = catalog.resolve_detail(message, data, presentation.context());
-    let view = match previous {
-        Some(mut view) => {
-            view.append_page(page);
-            view
-        }
-        None => page,
-    };
+) -> ResolvedPluginView {
+    catalog.resolve_detail(message, data, presentation.context())
+}
+
+/// Entries a view shows, over all of its entries blocks: how far a refresh
+/// reads to keep the pages the host had loaded.
+pub(crate) fn detail_entries(view: &ResolvedPluginView) -> usize {
+    view.blocks
+        .iter()
+        .map(|block| match block {
+            ResolvedUiBlock::Entries(entries) => entries.items.len(),
+            _ => 0,
+        })
+        .sum()
+}
+
+/// The cursor of the page a refresh reads next, while the view is short of
+/// the `wanted` entries, has a next page, and fewer than
+/// [`MAX_DETAIL_REFRESH_PAGES`] pages were read.
+pub(crate) fn detail_refresh_continues(
+    view: &ResolvedPluginView,
+    wanted: usize,
+    pages: usize,
+) -> Option<&str> {
+    (pages < MAX_DETAIL_REFRESH_PAGES && detail_entries(view) < wanted)
+        .then_some(view.next_cursor.as_deref())
+        .flatten()
+}
+
+/// A detail view as the bindings return it.
+pub(crate) fn detail_view(view: &ResolvedPluginView) -> Result<Value> {
     serde_json::to_value(view).map_err(|_| invalid())
 }

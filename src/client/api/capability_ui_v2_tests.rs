@@ -21,7 +21,10 @@ struct Fixture {
     calls: Arc<SyncMutex<Vec<Value>>>,
     /// `data` returned per capability id; a missing entry answers `{}`.
     results: Arc<SyncMutex<HashMap<String, Value>>>,
-    /// Capability ids that answer `success: false`.
+    /// `data` per page, keyed `<capability id>#<payload cursor>` (`#` alone for the first
+    /// page); takes precedence over `results`.
+    pages: Arc<SyncMutex<HashMap<String, Value>>>,
+    /// Capability ids, or page keys as in `pages`, that answer `success: false`.
     failing: Arc<SyncMutex<Vec<String>>>,
     store: Arc<MemoryMessageStore>,
     events: EventReceiver,
@@ -71,13 +74,15 @@ impl Fixture {
         }));
         let calls = Arc::new(SyncMutex::new(Vec::new()));
         let results = Arc::new(SyncMutex::new(HashMap::<String, Value>::new()));
+        let pages = Arc::new(SyncMutex::new(HashMap::<String, Value>::new()));
         let failing = Arc::new(SyncMutex::new(Vec::<String>::new()));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let base = format!("http://{}", listener.local_addr().unwrap());
-        let (c, q, r, x) = (
+        let (c, q, r, p, x) = (
             catalog.clone(),
             calls.clone(),
             results.clone(),
+            pages.clone(),
             failing.clone(),
         );
         let server = tokio::spawn(async move {
@@ -103,8 +108,14 @@ impl Fixture {
                 let body: Value = serde_json::from_slice(&bytes).unwrap();
                 q.lock().unwrap().push(body.clone());
                 let capability = body["capabilityId"].as_str().unwrap().to_string();
+                let page = format!(
+                    "{capability}#{}",
+                    body["payload"]["cursor"].as_str().unwrap_or_default()
+                );
                 let data = if capability == flare_plugin_protocol::ui::UI_CATALOG_OPERATION {
                     serde_json::to_value(c.lock().unwrap().clone()).unwrap()
+                } else if let Some(data) = p.lock().unwrap().get(&page).cloned() {
+                    data
                 } else {
                     r.lock()
                         .unwrap()
@@ -112,9 +123,13 @@ impl Fixture {
                         .cloned()
                         .unwrap_or_else(|| json!({}))
                 };
+                let failed = {
+                    let failing = x.lock().unwrap();
+                    failing.contains(&capability) || failing.contains(&page)
+                };
                 let result = CapabilityDispatchResult {
                     request_id: body["requestId"].as_str().unwrap().into(),
-                    success: !x.lock().unwrap().contains(&capability),
+                    success: !failed,
                     plugin_id: "example.poll".into(),
                     capability_id: capability,
                     data,
@@ -146,6 +161,7 @@ impl Fixture {
             catalog,
             calls,
             results,
+            pages,
             failing,
             store,
             events,
@@ -838,5 +854,198 @@ async fn detail_pages_are_requested_with_the_cursor_and_appended_by_core() {
         f.business_calls().len(),
         calls,
         "refused pages send nothing"
+    );
+}
+
+fn voters(entries: &[(&str, &str)], next: Option<&str>) -> Value {
+    let mut data = json!({
+        "voters": entries
+            .iter()
+            .map(|(option, user)| json!({"option": option, "userId": user}))
+            .collect::<Vec<_>>()
+    });
+    if let Some(next) = next {
+        data["nextCursor"] = json!(next);
+    }
+    data
+}
+
+fn entry_texts(view: &Value) -> Vec<(u64, String)> {
+    block(view, "entries")["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|item| {
+            (
+                item["index"].as_u64().unwrap(),
+                format!(
+                    "{}:{}",
+                    item["text"].as_str().unwrap(),
+                    item["userId"].as_str().unwrap()
+                ),
+            )
+        })
+        .collect()
+}
+
+/// A host re-reading a shown sheet after a state change: `refresh` with the shown view re-reads
+/// the first page and follows the cursors until the sheet holds as many entries as before, so
+/// the pages the viewer had loaded stay open.
+#[tokio::test]
+async fn detail_refresh_rereads_as_many_pages_as_the_sheet_had_loaded() {
+    let f = Fixture::new().await;
+    contribution_mut(&mut f.catalog.lock().unwrap(), "example.poll.card")
+        .detail
+        .as_mut()
+        .unwrap()
+        .cursor_path = Some("/nextCursor".into());
+    let serve = |pages: &[(&str, Value)]| {
+        let mut served = f.pages.lock().unwrap();
+        served.clear();
+        for (cursor, data) in pages {
+            served.insert(format!("example.poll.details#{cursor}"), data.clone());
+        }
+    };
+    serve(&[
+        ("", voters(&[("Rice", "u2")], Some("page-2"))),
+        ("page-2", voters(&[("Noodles", "u3")], Some("page-3"))),
+        ("page-3", voters(&[("Rice", "u4")], None)),
+    ]);
+    let request = json!({"message": poll(), "platform": "web", "locale": "en-US", "userGesture": true,
+        "conversationId": "group-1"});
+    // The viewer opened the sheet and loaded one more page.
+    let first = f.api.plugin_detail(request.clone()).await.unwrap();
+    let mut more = request.clone();
+    more["cursor"] = json!("page-2");
+    more["previous"] = first;
+    let shown = f.api.plugin_detail(more).await.unwrap();
+    assert_eq!(shown["nextCursor"], "page-3");
+
+    // A new vote lands at the top; every page shifts by one.
+    serve(&[
+        ("", voters(&[("Noodles", "u5")], Some("page-2"))),
+        ("page-2", voters(&[("Rice", "u2")], Some("page-3"))),
+        ("page-3", voters(&[("Noodles", "u3")], Some("page-4"))),
+        ("page-4", voters(&[("Rice", "u4")], None)),
+    ]);
+    let sent = f.business_calls().len();
+    let mut refresh = request.clone();
+    refresh["refresh"] = json!(true);
+    refresh["previous"] = shown.clone();
+    let view = f.api.plugin_detail(refresh.clone()).await.unwrap();
+    assert_eq!(
+        entry_texts(&view),
+        vec![(1, "Noodles:u5".into()), (2, "Rice:u2".into())],
+        "the fresh first page, then pages until the sheet is as long as before"
+    );
+    assert_eq!(
+        view["nextCursor"], "page-3",
+        "the rest still loads on demand"
+    );
+    assert_eq!(view["title"], shown["title"]);
+    let calls = f.business_calls();
+    assert_eq!(
+        calls[sent..]
+            .iter()
+            .map(|call| call["payload"].clone())
+            .collect::<Vec<_>>(),
+        vec![
+            json!({"pollId": "poll-1"}),
+            json!({"pollId": "poll-1", "cursor": "page-2"})
+        ],
+        "from the first page, the bound input plus each cursor"
+    );
+
+    // Fewer entries than shown (a vote withdrawn): read to the last page and stop there.
+    serve(&[("", voters(&[("Rice", "u2")], None))]);
+    let sent = f.business_calls().len();
+    let shrunk = f.api.plugin_detail(refresh.clone()).await.unwrap();
+    assert_eq!(entry_texts(&shrunk), vec![(1, "Rice:u2".into())]);
+    assert!(shrunk.get("nextCursor").is_none());
+    assert_eq!(f.business_calls().len(), sent + 1);
+
+    // A page failing fails the refresh; the host keeps the sheet it shows.
+    serve(&[
+        ("", voters(&[("Rice", "u2")], Some("page-2"))),
+        ("page-2", voters(&[("Noodles", "u3")], None)),
+    ]);
+    f.failing
+        .lock()
+        .unwrap()
+        .push("example.poll.details#page-2".into());
+    assert!(f.api.plugin_detail(refresh.clone()).await.is_err());
+    f.failing.lock().unwrap().clear();
+
+    // Refresh is of a shown sheet, from its first page.
+    let sent = f.business_calls().len();
+    let mut orphan = request.clone();
+    orphan["refresh"] = json!(true);
+    assert!(
+        f.api.plugin_detail(orphan).await.is_err(),
+        "refresh needs the shown view"
+    );
+    let mut paged = refresh.clone();
+    paged["cursor"] = json!("page-2");
+    assert!(
+        f.api.plugin_detail(paged).await.is_err(),
+        "refresh starts from the first page, never from a cursor"
+    );
+    assert_eq!(
+        f.business_calls().len(),
+        sent,
+        "refused refreshes send nothing"
+    );
+}
+
+/// A refresh reads at most `MAX_DETAIL_REFRESH_PAGES` pages, however long the shown sheet was;
+/// the view it returns keeps `nextCursor` for the rest.
+#[tokio::test]
+async fn detail_refresh_reads_a_bounded_number_of_pages() {
+    use crate::extension::capability::ui::MAX_DETAIL_REFRESH_PAGES;
+    let f = Fixture::new().await;
+    contribution_mut(&mut f.catalog.lock().unwrap(), "example.poll.card")
+        .detail
+        .as_mut()
+        .unwrap()
+        .cursor_path = Some("/nextCursor".into());
+    {
+        let mut served = f.pages.lock().unwrap();
+        for page in 0..(MAX_DETAIL_REFRESH_PAGES + 5) {
+            let cursor = if page == 0 {
+                String::new()
+            } else {
+                format!("c{page}")
+            };
+            served.insert(
+                format!("example.poll.details#{cursor}"),
+                voters(&[("Rice", "u2")], Some(&format!("c{}", page + 1))),
+            );
+        }
+    }
+    let request = json!({"message": poll(), "platform": "web", "locale": "en-US", "userGesture": true,
+        "conversationId": "group-1"});
+    // A sheet the viewer had scrolled far into.
+    let mut shown = f.api.plugin_detail(request.clone()).await.unwrap();
+    shown["blocks"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|block| block["kind"] == "entries")
+        .unwrap()["items"] = Value::Array(
+        (1..=200)
+            .map(|index| json!({"index": index, "text": "Rice", "userId": "u2"}))
+            .collect(),
+    );
+    let sent = f.business_calls().len();
+    let mut refresh = request.clone();
+    refresh["refresh"] = json!(true);
+    refresh["previous"] = shown;
+    let view = f.api.plugin_detail(refresh).await.unwrap();
+    assert_eq!(f.business_calls().len() - sent, MAX_DETAIL_REFRESH_PAGES);
+    assert_eq!(entry_texts(&view).len(), MAX_DETAIL_REFRESH_PAGES);
+    assert_eq!(
+        view["nextCursor"],
+        format!("c{MAX_DETAIL_REFRESH_PAGES}"),
+        "the rest loads on demand"
     );
 }

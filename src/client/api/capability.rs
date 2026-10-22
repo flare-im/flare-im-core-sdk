@@ -509,6 +509,14 @@ impl CapabilityApi {
     /// as on the first page, `nextCursor` is the new page's). Without
     /// `previous` only the page is returned. A `cursor` on a detail that does
     /// not page, or a malformed one, is an invalid request.
+    ///
+    /// Refresh: `refresh` with `previous` (the shown view) re-reads the detail
+    /// from its first page and follows the cursors until the entries are at
+    /// least as many as `previous` showed, there is no next page, or
+    /// [`ui::MAX_DETAIL_REFRESH_PAGES`] pages were read, so a host that
+    /// re-reads a sheet after a state change keeps the pages it had loaded.
+    /// The merged view replaces `previous`; any page failing fails the call,
+    /// and the host keeps showing `previous`.
     pub async fn plugin_detail(&self, request: Value) -> Result<Value> {
         use crate::extension::capability::ui;
         let mut request = ui::parse_detail(request)?;
@@ -523,38 +531,76 @@ impl CapabilityApi {
                     }
                     None => None,
                 };
-                let (operation, input) = ui::prepare_detail(
+                let detail = ui::prepare_detail(
                     &self.default_tenant_id,
                     &catalog,
                     &request,
                     stored.as_ref(),
                 )?;
-                let response = self
-                    .dispatch(
-                        &operation,
-                        input,
-                        request.conversation_id.as_deref(),
-                        Some(&self.default_tenant_id),
-                        user_id.as_deref(),
-                    )
-                    .await?
-                    .fail_if_unsuccessful()?;
-                let viewer = user_id.unwrap_or_default();
-                ui::present_detail(
-                    &catalog,
-                    &request.message,
-                    &response.data,
-                    &ui::CardPresentation {
-                        tenant: &self.default_tenant_id,
-                        platform: request.platform,
-                        kind: flare_plugin_protocol::manifest::UiContributionKind::MessageContent,
-                        locale: &request.locale,
-                        viewer: &viewer,
-                    },
-                    previous,
-                )
+                // A malformed cursor is refused before anything is sent.
+                let input = detail.input(request.cursor.as_deref())?;
+                let user_id = user_id.as_deref();
+                let mut view = self
+                    .detail_page(&catalog, &request, &detail, input, user_id)
+                    .await?;
+                match previous {
+                    Some(previous) if request.refresh => {
+                        let wanted = ui::detail_entries(&previous);
+                        let mut pages = 1;
+                        while let Some(cursor) =
+                            ui::detail_refresh_continues(&view, wanted, pages).map(str::to_owned)
+                        {
+                            let input = detail.input(Some(&cursor))?;
+                            let page = self
+                                .detail_page(&catalog, &request, &detail, input, user_id)
+                                .await?;
+                            view.append_page(page);
+                            pages += 1;
+                        }
+                    }
+                    Some(mut previous) => {
+                        previous.append_page(view);
+                        view = previous;
+                    }
+                    None => {}
+                }
+                ui::detail_view(&view)
             })
             .await
+    }
+    /// One page of a card's detail: the detail operation with `input`, its
+    /// result resolved against the detail document.
+    async fn detail_page(
+        &self,
+        catalog: &flare_plugin_protocol::ui::UiCatalog,
+        request: &crate::extension::capability::ui::DetailRequest,
+        detail: &crate::extension::capability::ui::PreparedDetail,
+        input: Value,
+        user_id: Option<&str>,
+    ) -> Result<flare_plugin_protocol::ui::ResolvedPluginView> {
+        use crate::extension::capability::ui;
+        let response = self
+            .dispatch(
+                detail.operation(),
+                input,
+                request.conversation_id.as_deref(),
+                Some(&self.default_tenant_id),
+                user_id,
+            )
+            .await?
+            .fail_if_unsuccessful()?;
+        Ok(ui::detail_page(
+            catalog,
+            &request.message,
+            &response.data,
+            &ui::CardPresentation {
+                tenant: &self.default_tenant_id,
+                platform: request.platform,
+                kind: flare_plugin_protocol::manifest::UiContributionKind::MessageContent,
+                locale: &request.locale,
+                viewer: user_id.unwrap_or_default(),
+            },
+        ))
     }
     /// Whether a plugin card offers "forward": only when the current catalog's
     /// message-content contribution declares `forwardable`. Plugin cards are
