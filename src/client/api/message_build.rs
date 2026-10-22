@@ -486,6 +486,9 @@ impl MessageBuildApi {
         self.apply_conversation_routing(&conversation_id, msg).await
     }
 
+    /// A card message. `attributes` become the card elem's `extra`
+    /// (`CardContent.attributes`), such as a shared person's `referrerId`.
+    #[allow(clippy::too_many_arguments)]
     pub async fn create_card(
         &self,
         conversation_id: &str,
@@ -494,6 +497,7 @@ impl MessageBuildApi {
         title: Option<&str>,
         subtitle: Option<&str>,
         avatar: Option<&str>,
+        attributes: Option<std::collections::HashMap<String, String>>,
     ) -> Result<IMMessage> {
         let sender_id = self.current_sender_id().await?;
         let ct = match card_type {
@@ -509,6 +513,7 @@ impl MessageBuildApi {
             subtitle: subtitle.unwrap_or("").to_string(),
             avatar: avatar.unwrap_or("").to_string(),
             channel_id: None,
+            attributes,
         })?;
         self.apply_conversation_routing(conversation_id, msg).await
     }

@@ -52,6 +52,9 @@ pub struct BuildCardRequest {
     pub subtitle: String,
     pub avatar: String,
     pub channel_id: Option<String>,
+    /// `CardContent.attributes`, the card elem's `extra` (such as a shared
+    /// person's `referrerId`); blank keys are dropped.
+    pub attributes: Option<std::collections::HashMap<String, String>>,
 }
 
 #[derive(Clone, Debug)]
@@ -391,6 +394,7 @@ impl MessageBuilderService {
                 .title(request.title)
                 .subtitle(request.subtitle)
                 .avatar(request.avatar)
+                .card_extend_attributes(request.attributes.unwrap_or_default())
                 .build(),
             request.channel_id.as_deref(),
         )
@@ -978,6 +982,7 @@ mod tests {
                     subtitle: "Engineer".to_string(),
                     avatar: "https://flare.test/avatar.png".to_string(),
                     channel_id: None,
+                    attributes: None,
                 })
                 .expect("card"),
             ),
@@ -1173,6 +1178,56 @@ mod tests {
             "thread reply preview should include typed text: {}",
             message.text_preview
         );
+    }
+
+    #[test]
+    fn build_card_writes_attributes_to_the_card_extra() {
+        let card = |attributes| {
+            MessageBuilderService::build_card(BuildCardRequest {
+                conversation_id: "conv-1".to_string(),
+                sender_id: "sender-1".to_string(),
+                id: "user-7".to_string(),
+                card_type: "user".to_string(),
+                title: "Ann".to_string(),
+                subtitle: String::new(),
+                avatar: String::new(),
+                channel_id: None,
+                attributes,
+            })
+            .expect("card")
+        };
+        let shared = card(Some(
+            [
+                ("cardType", "user"),
+                ("referrerId", "user-9"),
+                ("  ", "blank key"),
+                (" spaced ", "kept"),
+            ]
+            .into_iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect(),
+        ));
+        let Some(Elem::Card(elem)) = shared.content.as_ref() else {
+            panic!("card elem expected");
+        };
+        assert_eq!(
+            elem.extra,
+            [
+                ("cardType", "user"),
+                ("referrerId", "user-9"),
+                ("spaced", "kept")
+            ]
+            .into_iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect::<std::collections::HashMap<_, _>>(),
+            "blank keys dropped, keys trimmed"
+        );
+        let value = serde_json::to_value(&shared).expect("serialize card");
+        assert_eq!(value["content"]["extra"]["referrerId"], "user-9");
+        let Some(Elem::Card(plain)) = card(None).content else {
+            panic!("card elem expected");
+        };
+        assert!(plain.extra.is_empty());
     }
 
     #[test]

@@ -459,6 +459,25 @@ impl ContentBuilder {
         self
     }
 
+    /// 合并 `CardContent.attributes`（名片 elem 的 `extra`，跳过空 key）。
+    pub fn card_extend_attributes(
+        mut self,
+        entries: std::collections::HashMap<String, String>,
+    ) -> Self {
+        if let Some(ref mut c) = self.content
+            && let Some(flare_proto::common::message_content::Content::Card(ref mut card)) =
+                c.content
+        {
+            for (k, v) in entries {
+                let k = k.trim().to_string();
+                if !k.is_empty() {
+                    card.attributes.insert(k, v);
+                }
+            }
+        }
+        self
+    }
+
     pub fn subtitle(mut self, s: impl Into<String>) -> Self {
         if let Some(ref mut c) = self.content
             && let Some(flare_proto::common::message_content::Content::Card(ref mut card)) =
