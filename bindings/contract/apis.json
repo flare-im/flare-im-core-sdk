@@ -906,6 +906,12 @@
           "tauri": "sdk_message_dispatch_json"
         },
         {
+          "id": "capability.plugin_detail",
+          "core": "CapabilityApi::plugin_detail",
+          "c": "flare_capability_dispatch_json:plugin_detail",
+          "tauri": "sdk_message_dispatch_json"
+        },
+        {
           "id": "capability.list",
           "core": "CapabilityApi::list_capabilities",
           "c": "flare_capability_dispatch_json:capability_list",

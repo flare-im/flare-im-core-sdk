@@ -745,6 +745,10 @@
             [
               "avatar",
               "optional_str_ref"
+            ],
+            [
+              "attributes",
+              "optional_hashmap_string"
             ]
           ],
           "result": "json"
@@ -1670,6 +1674,17 @@
         {
           "op": "plugin_composer_actions",
           "method": "plugin_composer_actions",
+          "args": [
+            [
+              "request",
+              "json_null_default"
+            ]
+          ],
+          "result": "json"
+        },
+        {
+          "op": "plugin_detail",
+          "method": "plugin_detail",
           "args": [
             [
               "request",

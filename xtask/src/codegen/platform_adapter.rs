@@ -60,6 +60,16 @@ fn dart_build_request_wire_lines(model: &Value) -> Vec<String> {
                 }
             }
             "JsonObject" => lines.push(format!("      '{wire}': request.{name},")),
+            // Card attributes, mini program extra: sent as is, absent when unset.
+            "StringMap" => {
+                if required {
+                    lines.push(format!("      '{wire}': request.{name},"));
+                } else {
+                    lines.push(format!(
+                        "      if (request.{name} != null) '{wire}': request.{name}!"
+                    ));
+                }
+            }
             "MessageContent" => lines.push(format!(
                 "      '{wire}': messageContentToWireMap(request.{name}),"
             )),

@@ -71,6 +71,7 @@ pub const C_DISPATCH_OPS: &[(&str, &str)] = &[
         "capability.plugin_composer_actions",
         "plugin_composer_actions",
     ),
+    ("capability.plugin_detail", "plugin_detail"),
     ("capability.plugin_ui_action", "plugin_ui_action"),
     ("capability.plugin_ui_catalog", "plugin_ui_catalog"),
     ("capability.plugin_ui_invoke", "plugin_ui_invoke"),

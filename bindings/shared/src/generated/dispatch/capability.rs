@@ -24,6 +24,7 @@ pub const CAPABILITY_DISPATCH_OPERATIONS: &[&str] = &[
     "plugin_ui_resolve",
     "plugin_ui_catalog",
     "plugin_composer_actions",
+    "plugin_detail",
     "capability_list",
     "capability_list_user",
     "capability_dispatch",
@@ -126,6 +127,15 @@ pub async fn dispatch_capability(
         "plugin_ui_catalog" => json(api.plugin_ui_catalog().await?),
         "plugin_composer_actions" => json(
             api.plugin_composer_actions(
+                params
+                    .get("payload")
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null),
+            )
+            .await?,
+        ),
+        "plugin_detail" => json(
+            api.plugin_detail(
                 params
                     .get("payload")
                     .cloned()

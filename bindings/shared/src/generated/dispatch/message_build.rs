@@ -177,6 +177,10 @@ pub async fn dispatch_message_build(
             let title_o = optional_string(&request, "title");
             let subtitle_o = optional_string(&request, "subtitle");
             let avatar_o = optional_string(&request, "avatar");
+            let attributes_v = optional_value::<std::collections::HashMap<String, String>>(
+                &request,
+                "attributes",
+            )?;
             json(
                 api.create_card(
                     &conversation_id_s,
@@ -185,6 +189,7 @@ pub async fn dispatch_message_build(
                     title_o.as_deref(),
                     subtitle_o.as_deref(),
                     avatar_o.as_deref(),
+                    attributes_v,
                 )
                 .await?,
             )

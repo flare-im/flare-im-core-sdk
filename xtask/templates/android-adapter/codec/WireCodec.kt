@@ -514,6 +514,7 @@ fun buildCardMessageRequestToMap(request: BuildCardMessageRequest): Map<String, 
     request.title?.let { put("title", it) }
     request.subtitle?.let { put("subtitle", it) }
     request.avatar?.let { put("avatar", it) }
+    request.attributes?.let { put("attributes", it) }
 }
 
 fun buildMiniProgramMessageRequestToMap(request: BuildMiniProgramMessageRequest): Map<String, Any?> = buildMap {

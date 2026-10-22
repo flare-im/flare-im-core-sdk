@@ -596,6 +596,7 @@ export function buildCardMessageRequestToMap(request: BuildCardMessageRequest): 
   ...(request.title !== undefined ? { title: request.title } : {}),
   ...(request.subtitle !== undefined ? { subtitle: request.subtitle } : {}),
   ...(request.avatar !== undefined ? { avatar: request.avatar } : {}),
+  ...(request.attributes !== undefined ? { attributes: request.attributes } : {}),
   };
 }
 

@@ -2312,6 +2312,10 @@ public func buildCardMessageRequestToJson(request: BuildCardMessageRequest): Str
         case Some(value) => jsonPutString(json, "avatar", value)
         case None => ()
     }
+    match (request.attributes) {
+        case Some(value) => jsonPutRaw(json, "attributes", value)
+        case None => ()
+    }
     return json.toJsonString()
 }
 
@@ -2326,13 +2330,15 @@ public func buildCardMessageRequestFromObject(object: CjJsonObject): BuildCardMe
     let title: ?String = jsonOptionalStringField(object, "title")
     let subtitle: ?String = jsonOptionalStringField(object, "subtitle")
     let avatar: ?String = jsonOptionalStringField(object, "avatar")
+    let attributes: ?String = jsonOptionalRawField(object, "attributes")
     return BuildCardMessageRequest(
         conversationId: conversationId,
         id: id,
         cardType: cardType,
         title: title,
         subtitle: subtitle,
-        avatar: avatar
+        avatar: avatar,
+        attributes: attributes
     )
 }
 

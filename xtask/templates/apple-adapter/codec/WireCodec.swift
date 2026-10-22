@@ -674,6 +674,7 @@ func buildCardMessageRequestToMap(_ request: BuildCardMessageRequest) -> [String
         "title": wrapSendable(request.title),
         "subtitle": wrapSendable(request.subtitle),
         "avatar": wrapSendable(request.avatar),
+        "attributes": wrapSendable(request.attributes),
     ]
 }
 func buildMiniProgramMessageRequestToMap(_ request: BuildMiniProgramMessageRequest) -> [String: AnySendable] {
