@@ -47,6 +47,7 @@ impl Fixture {
                 grant_revision: 1,
                 extensions: manifest.client_extensions,
                 operations: ["example.poll.vote".into(), "example.poll.details".into()].into(),
+                configuration: Default::default(),
             }],
         }));
         let calls = Arc::new(SyncMutex::new(Vec::new()));

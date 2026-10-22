@@ -35,6 +35,8 @@ pub struct MessageApi {
     mutation_use_case: Arc<MessageMutationUseCase>,
     view_assembler: Arc<MessageViewAssembler>,
     current_user_id: CurrentUserIdStore,
+    /// Plugin card rules that need the authorized catalog (forwardability).
+    plugin_cards: Option<Arc<super::CapabilityApi>>,
 }
 
 impl MessageApi {
@@ -49,7 +51,16 @@ impl MessageApi {
             mutation_use_case,
             view_assembler,
             current_user_id,
+            plugin_cards: None,
         }
+    }
+
+    /// Lets [`Self::action_availability`] offer "forward" on a plugin card only
+    /// when its contribution declares `forwardable`. Without it, plugin cards
+    /// never offer forward.
+    pub fn with_plugin_cards(mut self, capability: Arc<super::CapabilityApi>) -> Self {
+        self.plugin_cards = Some(capability);
+        self
     }
 
     async fn ensure_session_active(&self) -> Result<()> {
@@ -373,6 +384,11 @@ impl MessageApi {
         let Some(message) = self.get(message_id).await? else {
             return Ok(serde_json::json!({}));
         };
+        // Plugin cards are bound to their conversation unless the catalog says otherwise.
+        let plugin_forwardable = match (message.plugin_message(), &self.plugin_cards) {
+            (Some(card), Some(plugin_cards)) => plugin_cards.plugin_card_forwardable(&card).await,
+            _ => false,
+        };
         let ctx = crate::domain::message_actions::MessageActionContext {
             current_user_id: self.current_user_id().await.unwrap_or_default(),
             is_connected,
@@ -380,6 +396,7 @@ impl MessageApi {
             is_pending,
             is_failed,
             is_pinned,
+            plugin_forwardable,
         };
         let availability =
             crate::domain::message_actions::message_action_availability(&message, &ctx);

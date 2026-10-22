@@ -708,12 +708,15 @@ impl IMClientBuilder {
             configured_ws_url: configured_ws_url.clone(),
             configured_config: Some(configured_config),
             engine: Some(engine),
-            message_api: Some(MessageApi::new(
-                message_send_use_case,
-                message_mutation_use_case,
-                message_view_assembler,
-                current_user_id,
-            )),
+            message_api: Some(
+                MessageApi::new(
+                    message_send_use_case,
+                    message_mutation_use_case,
+                    message_view_assembler,
+                    current_user_id,
+                )
+                .with_plugin_cards(capability_api.clone()),
+            ),
             media_api: Some(media_api),
             capability_api: Some(capability_api),
             presence_api: Some(presence_api),

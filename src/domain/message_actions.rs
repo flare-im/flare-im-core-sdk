@@ -24,6 +24,9 @@ pub struct MessageActionContext {
     /// 发送失败。
     pub is_failed: bool,
     pub is_pinned: bool,
+    /// 插件卡片（`flare.plugin.message.v1`）声明了 `forwardable`。插件卡片默认绑定在所在会话里，
+    /// 不能转发；只有当前目录里它的 message-content 贡献声明可转发时，调用方才置 true。
+    pub plugin_forwardable: bool,
 }
 
 /// 一条消息此刻可用的动作。
@@ -73,10 +76,11 @@ pub fn message_action_availability(
     let editable_type = message.message_type == TYPE_TEXT || message.message_type == TYPE_RICH_TEXT;
     let media_type = MEDIA_TYPES.contains(&message.message_type);
     let single = !ctx.multi_select_mode;
+    let forwardable = ctx.plugin_forwardable || message.plugin_message().is_none();
 
     MessageActionAvailability {
         can_reply: single && active,
-        can_forward: active && !ctx.is_pending,
+        can_forward: active && !ctx.is_pending && forwardable,
         // 复制看的是"有没有可复制的正文"，而不是消息类型：
         // 一条没有文字的图片消息，复制什么都不会发生，不该给这个入口。
         can_copy: active
@@ -295,6 +299,7 @@ pub fn action_availability_vectors() -> serde_json::Value {
             is_pinned: pinned,
             is_failed: failed,
             multi_select_mode: multi,
+            plugin_forwardable: false,
         };
         let a = message_action_availability(&m, &ctx);
         let delivery = message_delivery_state(&m, &ctx);
@@ -442,6 +447,41 @@ mod tests {
         let a = message_action_availability(&message("me", TYPE_TEXT, 3), &multi);
         assert!(!a.can_reply && !a.can_edit && !a.can_recall);
         assert!(a.can_forward, "多选下转发仍然成立（批量转发）");
+    }
+
+    #[test]
+    fn plugin_cards_forward_only_when_their_contribution_allows_it() {
+        let envelope = serde_json::json!({
+            "pluginId": "example.poll", "contributionId": "example.poll.card",
+            "schemaVersion": 1, "summary": "Poll", "payload": {"pollId": "poll-1"}
+        });
+        let mut card = message("other", 21, 3);
+        card.content = Some(crate::model::Elem::Custom(
+            crate::content::message_elem::CustomElem {
+                r#type: "flare.plugin.message.v1".into(),
+                payload: serde_json::to_vec(&envelope).unwrap(),
+                description: String::new(),
+                metadata: Default::default(),
+            },
+        ));
+        let hidden = message_action_availability(&card, &ctx());
+        assert!(
+            !hidden.can_forward,
+            "plugin cards stay in their conversation"
+        );
+        assert!(
+            hidden.can_reply && hidden.can_react,
+            "only forward is affected"
+        );
+        let allowed = MessageActionContext {
+            plugin_forwardable: true,
+            ..ctx()
+        };
+        assert!(message_action_availability(&card, &allowed).can_forward);
+        assert!(
+            message_action_availability(&message("other", TYPE_TEXT, 3), &ctx()).can_forward,
+            "other messages are unaffected"
+        );
     }
 
     /// 把向量写到仓库，供各端一致性用例消费。

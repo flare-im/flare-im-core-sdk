@@ -2,11 +2,15 @@
 //! design kit and execute only a returned target after explicit host consent.
 use crate::shared::error::{ErrorCode, FlareError, Result};
 use flare_plugin_protocol::{
-    manifest::{ClientPlatform, UiContributionKind, is_ui_icon_name},
-    ui::{NativeCapability, PluginMessage, UiCatalog},
+    manifest::{ClientPlatform, UiContribution, UiContributionKind, is_ui_icon_name},
+    state::SharedState,
+    ui::{
+        ClientPlugin, NativeCapability, PluginMessage, PluginMessageState, ResolvedPluginView,
+        UiActionTarget, UiAudience, UiCatalog, UiFormError, UiRenderContext, UiStateLayers,
+    },
 };
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Map, Value};
 use std::collections::BTreeSet;
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -77,6 +81,44 @@ pub(crate) struct InvokeRequest {
     /// written back to that message.
     #[serde(default)]
     pub message_id: Option<String>,
+    /// Values of the action's `form`, keyed by input id; validated before any
+    /// request is sent.
+    #[serde(default)]
+    pub form_values: Option<Value>,
+    /// Option indices chosen in the choices block that owns the action.
+    #[serde(default)]
+    pub selection: Option<Vec<u32>>,
+}
+/// "View all" of a message card: the contribution's detail operation, bound
+/// from the card data, then its detail document resolved against the result.
+/// A paged detail (`cursorPath`) takes the next page with `cursor`, the
+/// `nextCursor` of the view shown so far, and `previous`, that view itself:
+/// the page is appended to it here, so hosts never merge pages themselves.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct DetailRequest {
+    pub message: PluginMessage,
+    pub platform: ClientPlatform,
+    #[serde(default)]
+    pub locale: String,
+    pub user_gesture: bool,
+    #[serde(default)]
+    pub conversation_id: Option<String>,
+    /// Message the card belongs to; its state layers feed the detail input.
+    #[serde(default)]
+    pub message_id: Option<String>,
+    /// The page after this cursor (the shown view's `nextCursor`); absent for
+    /// the first page.
+    #[serde(default)]
+    pub cursor: Option<String>,
+    /// The view shown so far, exactly as an earlier call returned it; the
+    /// page is appended to it. Only with `cursor`; without it only the page
+    /// comes back.
+    #[serde(default)]
+    pub previous: Option<ResolvedPluginView>,
+}
+fn valid_locale(locale: &str) -> bool {
+    locale.len() <= 32 && !locale.chars().any(char::is_control)
 }
 fn valid_message_id(id: &Option<String>) -> bool {
     id.as_deref().is_none_or(|id| {
@@ -89,7 +131,27 @@ pub(crate) fn parse_present(request: Value) -> Result<PresentRequest> {
     bounded(&request)?;
     let parsed: PresentRequest = serde_json::from_value(request).map_err(|_| invalid())?;
     parsed.message.validate().map_err(|_| invalid())?;
-    if !valid_message_id(&parsed.message_id) {
+    if !valid_message_id(&parsed.message_id)
+        || !valid_locale(&parsed.locale)
+        || parsed.kind.is_some_and(|kind| !kind.is_client_surface())
+    {
+        return Err(invalid());
+    }
+    Ok(parsed)
+}
+pub(crate) fn parse_detail(request: Value) -> Result<DetailRequest> {
+    bounded(&request)?;
+    let parsed: DetailRequest = serde_json::from_value(request).map_err(|_| invalid())?;
+    parsed.message.validate().map_err(|_| invalid())?;
+    if !valid_message_id(&parsed.message_id)
+        || !valid_locale(&parsed.locale)
+        || parsed
+            .conversation_id
+            .as_ref()
+            .is_some_and(|id| !flare_plugin_protocol::resource::valid_resource_id(id))
+        // A page is appended to the view it follows, never to nothing.
+        || (parsed.previous.is_some() && parsed.cursor.is_none())
+    {
         return Err(invalid());
     }
     Ok(parsed)
@@ -109,7 +171,7 @@ pub(crate) fn parse_invoke(request: Value) -> Result<InvokeRequest> {
     Ok(parsed)
 }
 /// A "+" panel entry declared by an authorized plugin (`composer-action`).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PluginComposerAction {
     pub plugin_id: String,
@@ -120,6 +182,10 @@ pub struct PluginComposerAction {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub icon: Option<String>,
     pub order: i32,
+    /// Who sees the entry (conversation types, group roles); absent: everyone.
+    /// Hosts filter with the open conversation; presentation only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audience: Option<UiAudience>,
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -131,7 +197,7 @@ pub(crate) struct ComposerActionsRequest {
 pub(crate) fn parse_composer_actions(request: Value) -> Result<ComposerActionsRequest> {
     bounded(&request)?;
     let parsed: ComposerActionsRequest = serde_json::from_value(request).map_err(|_| invalid())?;
-    if parsed.locale.len() > 32 || parsed.locale.chars().any(char::is_control) {
+    if !valid_locale(&parsed.locale) {
         return Err(invalid());
     }
     Ok(parsed)
@@ -163,6 +229,8 @@ pub(crate) fn composer_actions(
                     c.kind == UiContributionKind::ComposerAction
                         && c.schema_version == 1
                         && c.schema.validate().is_ok()
+                        // A malformed audience hides the entry rather than showing it to everyone.
+                        && c.audience.as_ref().is_none_or(|a| a.validate().is_ok())
                 })
                 .map(|c| PluginComposerAction {
                     plugin_id: plugin.plugin_id.clone(),
@@ -170,6 +238,7 @@ pub(crate) fn composer_actions(
                     title: c.schema.localized_title(locale).to_owned(),
                     icon: c.icon.clone().filter(|icon| is_ui_icon_name(icon)),
                     order: c.order,
+                    audience: c.audience.clone().filter(|a| *a != UiAudience::default()),
                 })
         })
         .collect();
@@ -231,4 +300,253 @@ pub(crate) fn action(tenant: &str, request: Value) -> Result<Value> {
     let payload = flare_plugin_protocol::ui::bind_action_input(action, &request.payload)
         .map_err(|_| invalid())?;
     Ok(serde_json::json!({"target":target,"payload":payload}))
+}
+
+/// The contribution a card of `message` resolves through, on a client surface.
+pub(crate) fn contribution_of<'a>(
+    catalog: &'a UiCatalog,
+    message: &PluginMessage,
+    kind: Option<UiContributionKind>,
+) -> Option<&'a UiContribution> {
+    plugin_contribution_of(catalog, message, kind).map(|(_, contribution)| contribution)
+}
+
+/// [`contribution_of`] with the plugin that declares it, whose
+/// [`ClientPlugin::document_data`] is the data the document is resolved,
+/// validated and bound against.
+pub(crate) fn plugin_contribution_of<'a>(
+    catalog: &'a UiCatalog,
+    message: &PluginMessage,
+    kind: Option<UiContributionKind>,
+) -> Option<(&'a ClientPlugin, &'a UiContribution)> {
+    let plugin = catalog
+        .plugins
+        .iter()
+        .find(|p| p.plugin_id == message.plugin_id)?;
+    let contribution = plugin.extensions.contributions.iter().find(|c| {
+        c.id == message.contribution_id
+            && c.schema_version == message.schema_version
+            && c.kind.is_client_surface()
+            && kind.is_none_or(|kind| c.kind == kind)
+    })?;
+    Some((plugin, contribution))
+}
+
+/// The two state layers stored on a card's message: the shared layer from Core
+/// and the viewer's local layer. The shared layer's entity defaults to the
+/// card's own (history carries values and version only).
+#[derive(Default)]
+pub(crate) struct CardState {
+    pub shared: Option<SharedState>,
+    pub local: Option<PluginMessageState>,
+}
+impl CardState {
+    pub fn of(stored: Option<&crate::model::IMMessage>, entity: Option<&str>) -> Self {
+        Self {
+            shared: stored.and_then(|m| m.plugin_shared_state(entity)),
+            local: stored.and_then(crate::model::IMMessage::plugin_message_state),
+        }
+    }
+    pub fn layers(&self) -> UiStateLayers<'_> {
+        UiStateLayers {
+            shared: self.shared.as_ref(),
+            local: self.local.as_ref(),
+        }
+    }
+}
+
+pub(crate) struct CardPresentation<'a> {
+    pub tenant: &'a str,
+    pub platform: ClientPlatform,
+    pub kind: UiContributionKind,
+    pub locale: &'a str,
+    pub viewer: &'a str,
+}
+impl CardPresentation<'_> {
+    fn context(&self) -> UiRenderContext<'_> {
+        UiRenderContext {
+            tenant: self.tenant,
+            platform: self.platform,
+            kind: self.kind,
+            locale: self.locale,
+            viewer: self.viewer,
+            now_ms: now_ms(),
+        }
+    }
+}
+
+/// The v2 view of a card over its state layers (`payload ← shared ← local`),
+/// plus `data`, the data it was resolved against, while the view is available:
+/// the merged card data, or `{"config": ...}` for a composer-action form
+/// ([`ClientPlugin::document_data`]).
+pub(crate) fn present_card(
+    catalog: &UiCatalog,
+    message: &PluginMessage,
+    state: &CardState,
+    presentation: &CardPresentation<'_>,
+) -> Result<Value> {
+    let view = catalog.resolve_with_state(message, state.layers(), presentation.context());
+    let available = view.available;
+    let mut view = serde_json::to_value(view).map_err(|_| invalid())?;
+    if available
+        && let Some((plugin, contribution)) =
+            plugin_contribution_of(catalog, message, Some(presentation.kind))
+        && let Some(object) = view.as_object_mut()
+    {
+        object.insert(
+            "data".into(),
+            plugin.document_data(contribution, &message.payload, state.layers()),
+        );
+    }
+    Ok(view)
+}
+
+/// A card action ready to run, or the problems with its form.
+pub(crate) enum PreparedAction {
+    FormErrors(Vec<UiFormError>),
+    Ready {
+        target: UiActionTarget,
+        /// The action input: declared bindings over the merged card data, plus
+        /// the validated form values and the choices selection.
+        payload: Value,
+        /// The card's entity (`entityPath`), for the result's `sharedState`.
+        entity: Option<String>,
+    },
+}
+
+/// Check the action against the catalog (declaration, platform, gesture, host
+/// consent), validate its form, read the choices selection, and bind the input,
+/// all over the document's data ([`ClientPlugin::document_data`]): the merged
+/// card data, or `{"config": ...}` for a composer-action form, so its inputs'
+/// `maxPath` and `defaultPath` apply as the host rendered them. Nothing is
+/// sent from here.
+pub(crate) fn prepare_action(
+    tenant: &str,
+    catalog: &UiCatalog,
+    request: &InvokeRequest,
+    stored: Option<&crate::model::IMMessage>,
+) -> Result<PreparedAction> {
+    let message = &request.message;
+    let target = catalog
+        .action(
+            tenant,
+            &message.plugin_id,
+            &message.contribution_id,
+            &request.action_id,
+            request.platform,
+            &request.native_allowlist,
+            request.user_gesture,
+            now_ms(),
+        )
+        .map_err(|_| {
+            FlareError::localized(
+                ErrorCode::OperationNotSupported,
+                "sdk.plugin.ui_action_unavailable",
+            )
+        })?;
+    let (plugin, contribution) =
+        plugin_contribution_of(catalog, message, None).ok_or_else(invalid)?;
+    let action = contribution
+        .schema
+        .actions
+        .iter()
+        .find(|a| a.id == request.action_id)
+        .ok_or_else(invalid)?;
+    let entity = contribution.entity_of(&message.payload);
+    let data = plugin.document_data(
+        contribution,
+        &message.payload,
+        CardState::of(stored, entity.as_deref()).layers(),
+    );
+    let mut extra = Map::new();
+    if !action.form.is_empty() || request.form_values.is_some() {
+        let values = request.form_values.as_ref().unwrap_or(&Value::Null);
+        match contribution
+            .schema
+            .validate_form_over(action, &data, values)
+        {
+            Ok(values) => extra.extend(values),
+            Err(errors) => return Ok(PreparedAction::FormErrors(errors)),
+        }
+    }
+    match (
+        contribution.schema.choices_for(&action.id),
+        request.selection.as_deref(),
+    ) {
+        (Some(choices), Some(selection)) => {
+            let (name, value) = choices
+                .selection_input(&data, selection)
+                .map_err(|_| invalid())?;
+            extra.insert(name, value);
+        }
+        (None, None) => {}
+        // A choices action needs a selection; a selection needs a choices action.
+        _ => return Err(invalid()),
+    }
+    let payload = flare_plugin_protocol::ui::bind_action_input_with(action, &data, extra)
+        .map_err(|_| invalid())?;
+    Ok(PreparedAction::Ready {
+        target,
+        payload,
+        entity,
+    })
+}
+
+/// The detail operation of a card and its input, bound over the merged card
+/// data; with `cursor`, the input of the page after it
+/// ([`flare_plugin_protocol::ui::UiDetail::page_input`]).
+pub(crate) fn prepare_detail(
+    tenant: &str,
+    catalog: &UiCatalog,
+    request: &DetailRequest,
+    stored: Option<&crate::model::IMMessage>,
+) -> Result<(String, Value)> {
+    let message = &request.message;
+    let detail = catalog
+        .detail(
+            tenant,
+            &message.plugin_id,
+            &message.contribution_id,
+            request.platform,
+            request.user_gesture,
+            now_ms(),
+        )
+        .map_err(|_| {
+            FlareError::localized(
+                ErrorCode::OperationNotSupported,
+                "sdk.plugin.ui_action_unavailable",
+            )
+        })?;
+    let contribution = contribution_of(catalog, message, Some(UiContributionKind::MessageContent))
+        .ok_or_else(invalid)?;
+    let data = CardState::of(stored, contribution.entity_of(&message.payload).as_deref())
+        .layers()
+        .merge(contribution, &message.payload);
+    let mut input = detail.bind_input(&data).map_err(|_| invalid())?;
+    if let Some(cursor) = request.cursor.as_deref() {
+        // Refused for a detail without `cursorPath` and for a malformed cursor.
+        input = detail.page_input(input, cursor).map_err(|_| invalid())?;
+    }
+    Ok((detail.operation, input))
+}
+
+/// The detail document of a card resolved against the detail operation's data
+/// (one page of it for a paged detail, with `nextCursor`), appended to
+/// `previous` when given ([`ResolvedPluginView::append_page`]).
+pub(crate) fn present_detail(
+    catalog: &UiCatalog,
+    message: &PluginMessage,
+    data: &Value,
+    presentation: &CardPresentation<'_>,
+    previous: Option<ResolvedPluginView>,
+) -> Result<Value> {
+    let page = catalog.resolve_detail(message, data, presentation.context());
+    let view = match previous {
+        Some(mut view) => {
+            view.append_page(page);
+            view
+        }
+        None => page,
+    };
+    serde_json::to_value(view).map_err(|_| invalid())
 }

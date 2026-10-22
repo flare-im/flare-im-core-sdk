@@ -31,6 +31,9 @@ use crate::shared::error::{ErrorCode, FlareError, Result};
 #[cfg(all(test, not(target_arch = "wasm32")))]
 #[path = "capability_ui_tests.rs"]
 mod ui_tests;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "capability_ui_v2_tests.rs"]
+mod ui_v2_tests;
 
 #[derive(Clone)]
 pub struct CapabilityApi {
@@ -235,37 +238,59 @@ impl CapabilityApi {
     /// Native/Web hosts render the same Rust-evaluated presentation. No positive
     /// grant cache is kept between calls, and logout fences pending work.
     ///
-    /// With `messageId`, the state stored on that message is overlaid on the
-    /// payload first, so `hiddenWhen` and fields see it. The result adds `data`
-    /// (the overlaid payload, only when `available`) and `stateVersion` (0 when
-    /// the message has no state).
+    /// With `messageId`, the card is resolved over the state layers stored on
+    /// that message, `payload ← shared ← local`: the shared layer is the entity
+    /// state Core published (events and history), the local layer the viewer's
+    /// own `data.messageState`. `hiddenWhen`, fields and blocks see the merged
+    /// data. The result is the v2 view (`blocks`, `inputs`, `detail` when the
+    /// document declares them) plus `data` (the merged data, only when
+    /// `available`), `stateVersion` (local layer, 0 when none) and
+    /// `sharedStateVersion` (shared layer, 0 when none).
     pub async fn present_plugin_message(&self, request: Value) -> Result<Value> {
         use crate::extension::capability::ui;
-        let mut request = ui::parse_present(request)?;
-        self.session_guard.run_with_user(|viewer| async move {
-            let state = match request.message_id.as_deref() {
-                Some(message_id) => self
-                    .stored_plugin_message(message_id, &request.message)
-                    .await
-                    .and_then(|stored| stored.plugin_message_state()),
-                None => None,
-            };
-            if let Some(state) = &state {
-                request.message.payload = state.merge_into(&request.message.payload);
-            }
-            let catalog=self.plugin_ui_catalog().await?;
-            let mut view = ui::resolve(&self.default_tenant_id,serde_json::json!({"catalog":catalog,"message":request.message,"platform":request.platform,"locale":request.locale,"kind":request.kind,"viewer":viewer.unwrap_or_default()}))?;
-            if let Some(view) = view.as_object_mut() {
-                if view.get("available").and_then(Value::as_bool) == Some(true) {
-                    view.insert("data".into(), request.message.payload);
+        let request = ui::parse_present(request)?;
+        self.session_guard
+            .run_with_user(|viewer| async move {
+                let (_, catalog) = self.fetch_plugin_ui_catalog().await?;
+                let stored = match request.message_id.as_deref() {
+                    Some(message_id) => {
+                        self.stored_plugin_message(message_id, &request.message)
+                            .await
+                    }
+                    None => None,
+                };
+                let kind = request
+                    .kind
+                    .unwrap_or(flare_plugin_protocol::manifest::UiContributionKind::MessageContent);
+                let entity = ui::contribution_of(&catalog, &request.message, Some(kind))
+                    .and_then(|contribution| contribution.entity_of(&request.message.payload));
+                let state = ui::CardState::of(stored.as_ref(), entity.as_deref());
+                let viewer = viewer.unwrap_or_default();
+                let mut view = ui::present_card(
+                    &catalog,
+                    &request.message,
+                    &state,
+                    &ui::CardPresentation {
+                        tenant: &self.default_tenant_id,
+                        platform: request.platform,
+                        kind,
+                        locale: &request.locale,
+                        viewer: &viewer,
+                    },
+                )?;
+                if let Some(view) = view.as_object_mut() {
+                    view.insert(
+                        "stateVersion".into(),
+                        Value::from(state.local.as_ref().map_or(0, |state| state.version)),
+                    );
+                    view.insert(
+                        "sharedStateVersion".into(),
+                        Value::from(state.shared.as_ref().map_or(0, |state| state.version)),
+                    );
                 }
-                view.insert(
-                    "stateVersion".into(),
-                    Value::from(state.map_or(0, |state| state.version)),
-                );
-            }
-            Ok(view)
-        }).await
+                Ok(view)
+            })
+            .await
     }
     /// The stored message for `message_id` (server id or client message id), only
     /// when it carries the same plugin card. Read failures degrade to no state.
@@ -294,36 +319,57 @@ impl CapabilityApi {
             })
             .then_some(stored)
     }
-    /// Best effort: a successful action from a message card may return
-    /// `data.messageState`. It is validated, written monotonically by version
-    /// and announced as `PluginStateChanged`; failures are logged only.
+    /// Best effort, after a successful action from a message card:
+    /// - `data.sharedState` of the card's own entity is applied at once as the
+    ///   shared layer (newer versions only), so the caller does not wait for
+    ///   Core's broadcast; that broadcast of the same version is then a duplicate.
+    /// - `data.messageState` is validated and stored as the local layer by version.
+    ///
+    /// One `PluginStateChanged` announces whatever changed (its version is the
+    /// local layer's when that changed, the shared layer's otherwise). Failures
+    /// are logged only; they never change the action result.
     async fn write_plugin_message_state(
         &self,
         message_id: &str,
         message: &flare_plugin_protocol::ui::PluginMessage,
+        entity: Option<&str>,
         response: &CapabilityDispatchResult,
     ) {
         use crate::domain::OperationApplyResult;
-        let Some(raw) = response
-            .data
-            .get("messageState")
-            .filter(|_| response.success)
-        else {
+        if !response.success {
             return;
-        };
-        let state = match serde_json::from_value::<flare_plugin_protocol::ui::PluginMessageState>(
-            raw.clone(),
-        ) {
-            Ok(state) if state.validate().is_ok() => state,
-            _ => {
+        }
+        let local =
+            response.data.get("messageState").and_then(|raw| {
+                match serde_json::from_value::<flare_plugin_protocol::ui::PluginMessageState>(
+                    raw.clone(),
+                ) {
+                    Ok(state) if state.validate().is_ok() => Some(state),
+                    _ => {
+                        tracing::warn!(
+                            target = "flare_sdk.plugin",
+                            plugin_id = %message.plugin_id,
+                            "plugin returned an invalid message state"
+                        );
+                        None
+                    }
+                }
+            });
+        let shared = match flare_plugin_protocol::state::SharedState::from_result(&response.data) {
+            Ok(Some(state)) if entity == Some(state.entity.as_str()) => Some(state),
+            Ok(None) => None,
+            Ok(Some(_)) | Err(_) => {
                 tracing::warn!(
                     target = "flare_sdk.plugin",
                     plugin_id = %message.plugin_id,
-                    "plugin returned an invalid message state"
+                    "plugin returned a shared state that is invalid or not this card's entity"
                 );
-                return;
+                None
             }
         };
+        if local.is_none() && shared.is_none() {
+            return;
+        }
         let (Some(store), Some(stored)) = (
             self.messages.as_ref(),
             self.stored_plugin_message(message_id, message).await,
@@ -334,61 +380,202 @@ impl CapabilityApi {
             );
             return;
         };
-        match store.apply_plugin_message_state(message_id, &state).await {
-            Ok(OperationApplyResult::Applied) => {
-                if let Some(bus) = &self.bus {
-                    let message_id = if stored.server_id.trim().is_empty() {
-                        stored.client_msg_id
-                    } else {
-                        stored.server_id
-                    };
-                    bus.publish(crate::kernel::event::SdkEvent::Message(
-                        crate::kernel::event::MessageEvent::PluginStateChanged {
-                            conversation_id: stored.conversation_id,
-                            message_id,
-                            version: state.version,
-                        },
-                    ));
-                }
+        let mut changed = None;
+        if let Some(state) = &shared {
+            match store.apply_plugin_shared_state(message_id, state).await {
+                Ok(OperationApplyResult::Applied) => changed = Some(state.version),
+                Ok(result) => tracing::debug!(
+                    target = "flare_sdk.plugin",
+                    ?result,
+                    version = state.version,
+                    "plugin shared state not applied"
+                ),
+                Err(error) => tracing::warn!(
+                    target = "flare_sdk.plugin",
+                    %error,
+                    "write plugin shared state failed"
+                ),
             }
-            Ok(result) => tracing::debug!(
-                target = "flare_sdk.plugin",
-                ?result,
-                version = state.version,
-                "plugin message state not applied"
-            ),
-            Err(error) => tracing::warn!(
-                target = "flare_sdk.plugin",
-                %error,
-                "write plugin message state failed"
-            ),
+        }
+        if let Some(state) = &local {
+            match store.apply_plugin_message_state(message_id, state).await {
+                Ok(OperationApplyResult::Applied) => changed = Some(state.version),
+                Ok(result) => tracing::debug!(
+                    target = "flare_sdk.plugin",
+                    ?result,
+                    version = state.version,
+                    "plugin message state not applied"
+                ),
+                Err(error) => tracing::warn!(
+                    target = "flare_sdk.plugin",
+                    %error,
+                    "write plugin message state failed"
+                ),
+            }
+        }
+        if let (Some(version), Some(bus)) = (changed, &self.bus) {
+            let message_id = if stored.server_id.trim().is_empty() {
+                stored.client_msg_id
+            } else {
+                stored.server_id
+            };
+            bus.publish(crate::kernel::event::SdkEvent::Message(
+                crate::kernel::event::MessageEvent::PluginStateChanged {
+                    conversation_id: stored.conversation_id,
+                    message_id,
+                    version,
+                },
+            ));
         }
     }
     /// Refresh authorization, bind declared action input, then dispatch through
     /// the normal capability policy. Native/page targets return an explicit
     /// host instruction; only the application's allowlisted bridge executes it.
-    /// With `messageId`, a successful operation's `data.messageState` is stored on
-    /// that message; calls not made from a message ignore it.
+    ///
+    /// The input is bound over the merged card data. An action with a `form`
+    /// takes `formValues`, validated first: problems come back as
+    /// `{kind: "formErrors", errors: [{input, issue}]}` and nothing is sent. An
+    /// action owned by a choices block takes `selection` (option indices).
+    /// With `messageId`, a successful operation's `data.sharedState` (this
+    /// card's entity) and `data.messageState` are stored on that message; calls
+    /// not made from a message ignore them.
     pub async fn invoke_plugin_action(&self, request: Value) -> Result<Value> {
         use crate::extension::capability::ui;
         use flare_plugin_protocol::ui::UiActionTarget;
         let request = ui::parse_invoke(request)?;
-        self.session_guard.run_with_user(|user_id| async move {
-            let catalog=self.plugin_ui_catalog().await?;
-            let prepared=ui::action(&self.default_tenant_id,serde_json::json!({"catalog":catalog,"platform":request.platform,"pluginId":request.message.plugin_id,"contributionId":request.message.contribution_id,"actionId":request.action_id,"userGesture":request.user_gesture,"nativeAllowlist":request.native_allowlist,"payload":request.message.payload}))?;
-            let target:UiActionTarget=serde_json::from_value(prepared["target"].clone()).map_err(|_|FlareError::system("invalid plugin action target"))?;
-            let payload=prepared["payload"].clone();
-            match target {
-                UiActionTarget::Operation{operation}=>{
-                    let response=self.dispatch(&operation,payload,request.conversation_id.as_deref(),Some(&self.default_tenant_id),user_id.as_deref()).await?;
-                    if let Some(message_id) = request.message_id.as_deref() {
-                        self.write_plugin_message_state(message_id, &request.message, &response).await;
+        self.session_guard
+            .run_with_user(|user_id| async move {
+                let (_, catalog) = self.fetch_plugin_ui_catalog().await?;
+                let stored = match request.message_id.as_deref() {
+                    Some(message_id) => {
+                        self.stored_plugin_message(message_id, &request.message)
+                            .await
                     }
-                    Ok(serde_json::json!({"kind":"operation","response":response}))
+                    None => None,
+                };
+                match ui::prepare_action(
+                    &self.default_tenant_id,
+                    &catalog,
+                    &request,
+                    stored.as_ref(),
+                )? {
+                    ui::PreparedAction::FormErrors(errors) => {
+                        Ok(serde_json::json!({"kind":"formErrors","errors":errors}))
+                    }
+                    ui::PreparedAction::Ready {
+                        target: UiActionTarget::Operation { operation },
+                        payload,
+                        entity,
+                    } => {
+                        let response = self
+                            .dispatch(
+                                &operation,
+                                payload,
+                                request.conversation_id.as_deref(),
+                                Some(&self.default_tenant_id),
+                                user_id.as_deref(),
+                            )
+                            .await?;
+                        if let Some(message_id) = request.message_id.as_deref() {
+                            self.write_plugin_message_state(
+                                message_id,
+                                &request.message,
+                                entity.as_deref(),
+                                &response,
+                            )
+                            .await;
+                        }
+                        Ok(serde_json::json!({"kind":"operation","response":response}))
+                    }
+                    ui::PreparedAction::Ready {
+                        target, payload, ..
+                    } => Ok(serde_json::json!({"kind":"host","target":target,"payload":payload})),
                 }
-                target=>Ok(serde_json::json!({"kind":"host","target":target,"payload":payload})),
+            })
+            .await
+    }
+    /// "View all" of a message card: invokes the contribution's detail operation
+    /// with its input bound over the merged card data (`messageId` adds the
+    /// stored state layers), then resolves the detail document against the
+    /// result `data`. Returns that v2 view (`available`, `title`, `fields`,
+    /// `actions`, `blocks?`, `inputs?`, and `nextCursor` while a paged detail
+    /// has more). A plugin failure is an error; a card without a detail, or one
+    /// the catalog no longer offers, is `sdk.plugin.ui_action_unavailable`.
+    ///
+    /// Paging: the next page is requested with `cursor` (the view's
+    /// `nextCursor`) and `previous` (that view, as returned); the operation
+    /// gets the first page's input plus `cursor`, and the page comes back
+    /// appended to `previous` (entries continue in order, everything else stays
+    /// as on the first page, `nextCursor` is the new page's). Without
+    /// `previous` only the page is returned. A `cursor` on a detail that does
+    /// not page, or a malformed one, is an invalid request.
+    pub async fn plugin_detail(&self, request: Value) -> Result<Value> {
+        use crate::extension::capability::ui;
+        let mut request = ui::parse_detail(request)?;
+        let previous = request.previous.take();
+        self.session_guard
+            .run_with_user(|user_id| async move {
+                let (_, catalog) = self.fetch_plugin_ui_catalog().await?;
+                let stored = match request.message_id.as_deref() {
+                    Some(message_id) => {
+                        self.stored_plugin_message(message_id, &request.message)
+                            .await
+                    }
+                    None => None,
+                };
+                let (operation, input) = ui::prepare_detail(
+                    &self.default_tenant_id,
+                    &catalog,
+                    &request,
+                    stored.as_ref(),
+                )?;
+                let response = self
+                    .dispatch(
+                        &operation,
+                        input,
+                        request.conversation_id.as_deref(),
+                        Some(&self.default_tenant_id),
+                        user_id.as_deref(),
+                    )
+                    .await?
+                    .fail_if_unsuccessful()?;
+                let viewer = user_id.unwrap_or_default();
+                ui::present_detail(
+                    &catalog,
+                    &request.message,
+                    &response.data,
+                    &ui::CardPresentation {
+                        tenant: &self.default_tenant_id,
+                        platform: request.platform,
+                        kind: flare_plugin_protocol::manifest::UiContributionKind::MessageContent,
+                        locale: &request.locale,
+                        viewer: &viewer,
+                    },
+                    previous,
+                )
+            })
+            .await
+    }
+    /// Whether a plugin card offers "forward": only when the current catalog's
+    /// message-content contribution declares `forwardable`. Plugin cards are
+    /// bound to their conversation by default, so an unknown card, an
+    /// unreadable catalog or a signed-out session all answer `false`.
+    pub async fn plugin_card_forwardable(
+        &self,
+        message: &flare_plugin_protocol::ui::PluginMessage,
+    ) -> bool {
+        match self.fetch_plugin_ui_catalog().await {
+            Ok((_, catalog)) => crate::extension::capability::ui::contribution_of(
+                &catalog,
+                message,
+                Some(flare_plugin_protocol::manifest::UiContributionKind::MessageContent),
+            )
+            .is_some_and(|contribution| contribution.forwardable),
+            Err(error) => {
+                tracing::debug!(target = "flare_sdk.plugin", %error, "plugin catalog unavailable; forward hidden");
+                false
             }
-        }).await
+        }
     }
     /// Composer ("+" panel) entries of the plugins the current user may use on
     /// `platform`, titles in `locale`, sorted by order then title. Reads a fresh
@@ -411,7 +598,9 @@ impl CapabilityApi {
             .await
     }
     /// Binding form of [`Self::composer_actions`]: `{platform, locale}` in,
-    /// `{actions: [{pluginId, contributionId, title, icon?, order}]}` out.
+    /// `{actions: [{pluginId, contributionId, title, icon?, order, audience?}]}`
+    /// out. `audience` (`{conversationTypes?, groupRoles?}`) is for the host to
+    /// filter by the open conversation and the viewer's role in it.
     pub async fn plugin_composer_actions(&self, request: Value) -> Result<Value> {
         let request = crate::extension::capability::ui::parse_composer_actions(request)?;
         let actions = self
@@ -421,6 +610,9 @@ impl CapabilityApi {
     }
     /// Refresh on login, tenant change and plugin state change. The returned
     /// catalog expires; callers must drop it on logout and never persist secrets.
+    /// Each plugin carries `configuration`: the client-visible subset of its
+    /// tenant configuration (keys marked `x-flare-client-visible`), absent when
+    /// empty.
     pub async fn plugin_ui_catalog(&self) -> Result<Value> {
         Ok(self.fetch_plugin_ui_catalog().await?.0)
     }
