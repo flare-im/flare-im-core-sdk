@@ -457,6 +457,35 @@ impl SyncEventApplier {
             self.publish_extension_if_needed(event, mode, false);
             return Ok(true);
         }
+        if let Some(DomainEventPayload::PluginState(plugin_state)) = &event.payload {
+            use crate::application::services::{
+                PluginSharedStateOutcome, apply_plugin_shared_state,
+            };
+            match apply_plugin_shared_state(self.stores.messages.as_ref(), plugin_state).await? {
+                PluginSharedStateOutcome::Applied {
+                    conversation_id,
+                    message_id,
+                    version,
+                } => {
+                    self.bus
+                        .publish(SdkEvent::Message(MessageEvent::PluginStateChanged {
+                            conversation_id: if event.conversation_id.trim().is_empty() {
+                                conversation_id
+                            } else {
+                                event.conversation_id.clone()
+                            },
+                            message_id,
+                            version,
+                        }));
+                }
+                PluginSharedStateOutcome::Ignored | PluginSharedStateOutcome::Rejected => {}
+                PluginSharedStateOutcome::NotFound => {
+                    return self.missing_target_is_already_covered(user_id, event).await;
+                }
+            }
+            self.publish_extension_if_needed(event, mode, false);
+            return Ok(true);
+        }
         if let Some(DomainEventPayload::Custom(custom)) = &event.payload {
             self.bus.publish(SdkEvent::Message(MessageEvent::Custom {
                 conversation_id: event.conversation_id.clone(),
@@ -760,6 +789,102 @@ mod tests {
             flare_proto::common::MessageStatus::Sent as i32
         );
         assert!(updated.is_read);
+    }
+
+    #[tokio::test]
+    async fn replay_plugin_state_waits_for_its_card_then_applies_newer_versions_only() {
+        use crate::kernel::event::{MessageEvent, SdkEvent};
+        use flare_proto::common::event::Payload;
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        sqlite_init_schema(&pool).await.unwrap();
+        let message_repo = Arc::new(SqliteMessageRepo::new(pool));
+        let bus = EventBus::new();
+        let mut events = bus.subscribe();
+        let applier = SyncEventApplier::new(
+            StoreProvider {
+                plugin_commands: None,
+                messages: message_repo.clone(),
+                conversations: Arc::new(NoopConversationStore),
+                conversation_participants: None,
+                cursors: Arc::new(NoopSyncCursorStore),
+                pending_send_reader: None,
+                pending_send_writer: None,
+                upload_manifest_store: None,
+                media_cache_store: None,
+                media_cache_admin: None,
+                user_file_download_store: None,
+                user_profiles_reader: None,
+                user_profiles_writer: None,
+            },
+            bus,
+            EventDeduper::new(Some(32)),
+        );
+        let event = |id: &str, seq: u64, version: u64, values: &str| flare_proto::common::Event {
+            event_id: id.to_string(),
+            conversation_id: "conv-1".to_string(),
+            conversation_seq: seq,
+            r#type: flare_proto::common::EventType::EventMessagePluginState as i32,
+            payload: Some(Payload::PluginState(
+                flare_proto::common::PluginStateEvent {
+                    server_msg_id: "server-card-1".to_string(),
+                    plugin_id: "example.poll".to_string(),
+                    entity: "poll-1".to_string(),
+                    version,
+                    values_json: values.to_string(),
+                },
+            )),
+            ..Default::default()
+        };
+        let newer = event("e-2", 9, 2, r#"{"counts":[1,0]}"#);
+        assert_eq!(
+            applier
+                .apply_events(
+                    "u1",
+                    std::slice::from_ref(&newer),
+                    ReplayMode::CriticalEvents
+                )
+                .await,
+            [false],
+            "the card is not stored yet: the event stays outside the cursor"
+        );
+
+        let envelope = serde_json::json!({
+            "pluginId": "example.poll", "contributionId": "example.poll.card", "schemaVersion": 1,
+            "summary": "Poll", "payload": {"pollId": "poll-1"}
+        });
+        let mut card = crate::model::IMMessage::new(flare_proto::common::Message::default());
+        card.server_id = "server-card-1".to_string();
+        card.client_msg_id = "client-card-1".to_string();
+        card.conversation_id = "conv-1".to_string();
+        card.conversation_seq = 8;
+        card.content = Some(crate::model::Elem::Custom(
+            crate::content::message_elem::CustomElem {
+                r#type: "flare.plugin.message.v1".into(),
+                payload: serde_json::to_vec(&envelope).unwrap(),
+                description: String::new(),
+                metadata: Default::default(),
+            },
+        ));
+        card.materialize_encoded_content_from_elem();
+        message_repo.save_batch(&[card]).await.unwrap();
+        let older = event("e-1", 7, 1, r#"{"counts":[0,0]}"#);
+        assert_eq!(
+            applier
+                .apply_events("u1", &[newer, older], ReplayMode::CriticalEvents)
+                .await,
+            [true, true]
+        );
+        let mut announced = Vec::new();
+        while let Ok(event) = events.try_recv() {
+            if let SdkEvent::Message(MessageEvent::PluginStateChanged { version, .. }) = event {
+                announced.push(version);
+            }
+        }
+        assert_eq!(announced, [2], "only the newer version is announced");
+        let stored = message_repo.get("server-card-1").await.unwrap().unwrap();
+        let shared = stored.plugin_shared_state(None).unwrap();
+        assert_eq!(shared.version, 2);
+        assert_eq!(shared.values["counts"], serde_json::json!([1, 0]));
     }
 }
 

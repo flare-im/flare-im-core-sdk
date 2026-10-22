@@ -58,6 +58,20 @@ fn strip_plugin_message_state(attributes: &mut HashMap<String, String>) {
     attributes.remove(PLUGIN_STATE_VERSION_KEY);
 }
 
+/// 插件实体的共享状态（共享层）：`values` 快照、版本与实体 id。来自 Core（`EVENT_MESSAGE_PLUGIN_STATE`
+/// 事件，以及历史与同步时 Core 挂在消息 extra 上的同名键），可信；只按版本前进（见
+/// `MessageStore::apply_plugin_shared_state`）。客户端从不写给对端：发送时剥离。
+pub(crate) const PLUGIN_SHARED_STATE_JSON_KEY: &str = "pluginSharedStateJson";
+pub(crate) const PLUGIN_SHARED_STATE_VERSION_KEY: &str = "pluginSharedStateVersion";
+/// 实体 id 由事件写入；历史 extra 不带它时，呈现时取卡片载荷 `entityPath` 处的值。
+pub(crate) const PLUGIN_SHARED_ENTITY_KEY: &str = "pluginSharedEntity";
+
+fn strip_plugin_shared_state(attributes: &mut HashMap<String, String>) {
+    attributes.remove(PLUGIN_SHARED_STATE_JSON_KEY);
+    attributes.remove(PLUGIN_SHARED_STATE_VERSION_KEY);
+    attributes.remove(PLUGIN_SHARED_ENTITY_KEY);
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct ReactionEntry {
@@ -504,6 +518,7 @@ impl IMMessage {
             attributes: {
                 let mut attributes = self.attributes.clone();
                 strip_plugin_message_state(&mut attributes);
+                strip_plugin_shared_state(&mut attributes);
                 attributes
             },
             extensions: self.extensions.clone(),
@@ -548,6 +563,37 @@ impl IMMessage {
         };
         state.validate().ok()?;
         Some(state)
+    }
+
+    /// 共享层版本；没有共享状态时为 0。
+    pub fn plugin_shared_state_version(&self) -> u64 {
+        self.attributes
+            .get(PLUGIN_SHARED_STATE_JSON_KEY)
+            .and(self.attributes.get(PLUGIN_SHARED_STATE_VERSION_KEY))
+            .and_then(|version| version.parse().ok())
+            .unwrap_or(0)
+    }
+
+    /// 本机保存的共享层；缺失、损坏或超出协议边界时为 `None`。实体 id 没有存下（只来自历史
+    /// extra）时用 `payload_entity`，即卡片载荷 `entityPath` 处的值。
+    pub fn plugin_shared_state(
+        &self,
+        payload_entity: Option<&str>,
+    ) -> Option<flare_plugin_protocol::state::SharedState> {
+        let entity = self
+            .attributes
+            .get(PLUGIN_SHARED_ENTITY_KEY)
+            .map(String::as_str)
+            .or(payload_entity)?;
+        flare_plugin_protocol::state::SharedState::from_parts(
+            entity,
+            self.attributes
+                .get(PLUGIN_SHARED_STATE_VERSION_KEY)?
+                .parse()
+                .ok()?,
+            self.attributes.get(PLUGIN_SHARED_STATE_JSON_KEY)?,
+        )
+        .ok()
     }
 
     pub fn conversation_id(&self) -> &str {
@@ -840,6 +886,62 @@ mod tests {
                 .attributes
                 .contains_key(super::PLUGIN_STATE_JSON_KEY)
         );
+    }
+
+    #[test]
+    fn plugin_shared_state_comes_from_the_wire_and_never_goes_back() {
+        let mut attributes = HashMap::new();
+        attributes.insert(
+            super::PLUGIN_SHARED_STATE_JSON_KEY.to_string(),
+            r#"{"counts":[2,1]}"#.to_string(),
+        );
+        attributes.insert(
+            super::PLUGIN_SHARED_STATE_VERSION_KEY.to_string(),
+            "7".to_string(),
+        );
+        let inbound = IMMessage::new(ProtoMessage {
+            server_id: "server-1".to_string(),
+            attributes,
+            ..Default::default()
+        });
+        assert_eq!(inbound.plugin_shared_state_version(), 7);
+        assert!(
+            inbound.plugin_shared_state(None).is_none(),
+            "history carries no entity: the card's own entity is needed"
+        );
+        let state = inbound
+            .plugin_shared_state(Some("poll-1"))
+            .expect("Core's snapshot is kept");
+        assert_eq!((state.entity.as_str(), state.version), ("poll-1", 7));
+
+        let mut stored = inbound.clone();
+        stored.attributes.insert(
+            super::PLUGIN_SHARED_ENTITY_KEY.to_string(),
+            "poll-1".to_string(),
+        );
+        assert_eq!(
+            stored.plugin_shared_state(Some("other")).unwrap().entity,
+            "poll-1",
+            "the stored entity wins; the view then drops a mismatching layer"
+        );
+        let outbound = stored.to_proto();
+        assert!(
+            [
+                super::PLUGIN_SHARED_STATE_JSON_KEY,
+                super::PLUGIN_SHARED_STATE_VERSION_KEY,
+                super::PLUGIN_SHARED_ENTITY_KEY
+            ]
+            .iter()
+            .all(|key| !outbound.attributes.contains_key(*key)),
+            "a client never authors shared state"
+        );
+
+        let mut corrupt = inbound;
+        corrupt.attributes.insert(
+            super::PLUGIN_SHARED_STATE_JSON_KEY.to_string(),
+            r#"{"nested":{"a":1}}"#.to_string(),
+        );
+        assert!(corrupt.plugin_shared_state(Some("poll-1")).is_none());
     }
 
     #[test]

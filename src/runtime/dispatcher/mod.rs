@@ -537,6 +537,8 @@ fn now_ms() -> u64 {
 
 mod applied_events;
 mod dispatch;
+#[cfg(test)]
+mod plugin_state_tests;
 mod seq_repair;
 #[cfg(test)]
 mod tests;

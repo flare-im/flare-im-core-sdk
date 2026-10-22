@@ -2,9 +2,13 @@ use async_trait::async_trait;
 use flare_proto::common::{MessageRetentionPolicy, MessageRetentionState};
 use std::collections::HashMap;
 
+use flare_plugin_protocol::state::{SharedState, SharedStateOrder};
 use flare_plugin_protocol::ui::PluginMessageState;
 
-use crate::model::message::{PLUGIN_STATE_JSON_KEY, PLUGIN_STATE_VERSION_KEY, ReactionEntry};
+use crate::model::message::{
+    PLUGIN_SHARED_ENTITY_KEY, PLUGIN_SHARED_STATE_JSON_KEY, PLUGIN_SHARED_STATE_VERSION_KEY,
+    PLUGIN_STATE_JSON_KEY, PLUGIN_STATE_VERSION_KEY, ReactionEntry,
+};
 use crate::model::{IMMessage, MessageSearchQuery};
 use crate::shared::error::{ErrorCode, FlareError, Result};
 
@@ -30,11 +34,12 @@ pub(crate) fn message_attribute_seq(attributes: &HashMap<String, String>, key: &
 }
 
 /// 插件卡片状态只由 `apply_plugin_message_state` 写入：同步、编辑、回执等整行覆盖时保留
-/// 版本更大（相同则保留已存）的那一份。
+/// 版本更大（相同则保留已存）的那一份。共享层一并按版本带过去（见 [`carry_plugin_shared_state`]）。
 pub(crate) fn carry_plugin_message_state(
     incoming: &mut HashMap<String, String>,
     existing: &HashMap<String, String>,
 ) {
+    carry_plugin_shared_state(incoming, existing);
     let Some(values) = existing.get(PLUGIN_STATE_JSON_KEY) else {
         return;
     };
@@ -77,6 +82,75 @@ pub(crate) fn write_plugin_message_state(
     attributes.insert(PLUGIN_STATE_JSON_KEY.to_string(), values_json.to_string());
     attributes.insert(PLUGIN_STATE_VERSION_KEY.to_string(), version.to_string());
     true
+}
+
+/// 共享层的已存版本：值与版本都在、版本合法时才算有。
+fn plugin_shared_state_version(attributes: &HashMap<String, String>) -> Option<u64> {
+    attributes.get(PLUGIN_SHARED_STATE_JSON_KEY)?;
+    attributes
+        .get(PLUGIN_SHARED_STATE_VERSION_KEY)?
+        .parse()
+        .ok()
+        .filter(|version| *version > 0)
+}
+
+/// 整行覆盖（同步、ACK、编辑、回执）时的共享层：保留版本更大的一份，相同版本保留已存的。
+/// 共享层可以随 wire 到达（Core 在历史与同步的 extra 上带最新快照），所以要比较两边；
+/// 实体 id 对一条消息不变，incoming 没带时沿用已存的。
+pub(crate) fn carry_plugin_shared_state(
+    incoming: &mut HashMap<String, String>,
+    existing: &HashMap<String, String>,
+) {
+    if !incoming.contains_key(PLUGIN_SHARED_ENTITY_KEY)
+        && let Some(entity) = existing.get(PLUGIN_SHARED_ENTITY_KEY)
+    {
+        incoming.insert(PLUGIN_SHARED_ENTITY_KEY.to_string(), entity.clone());
+    }
+    let Some(existing_version) = plugin_shared_state_version(existing) else {
+        return;
+    };
+    if plugin_shared_state_version(incoming).is_some_and(|incoming| incoming > existing_version) {
+        return;
+    }
+    for key in [
+        PLUGIN_SHARED_STATE_JSON_KEY,
+        PLUGIN_SHARED_STATE_VERSION_KEY,
+    ] {
+        if let Some(value) = existing.get(key) {
+            incoming.insert(key.to_string(), value.clone());
+        }
+    }
+}
+
+/// 按版本单调写入共享层：只有更新的版本落盘（[`SharedStateOrder::Newer`]），相同版本是重复、
+/// 更旧的是乱序，都不改动。调用方先校验 `state`。
+pub(crate) fn write_plugin_shared_state(
+    attributes: &mut HashMap<String, String>,
+    state: &SharedState,
+) -> SharedStateOrder {
+    let order = state.order_against(plugin_shared_state_version(attributes));
+    if order == SharedStateOrder::Newer {
+        attributes.insert(
+            PLUGIN_SHARED_STATE_JSON_KEY.to_string(),
+            state.values_json(),
+        );
+        attributes.insert(
+            PLUGIN_SHARED_STATE_VERSION_KEY.to_string(),
+            state.version.to_string(),
+        );
+        attributes.insert(PLUGIN_SHARED_ENTITY_KEY.to_string(), state.entity.clone());
+    }
+    order
+}
+
+/// 校验一份待写入的共享层；不满足协议边界时拒绝。
+pub(crate) fn validate_plugin_shared_state(state: &SharedState) -> Result<()> {
+    state.validate().map_err(|_| {
+        FlareError::localized(
+            ErrorCode::InvalidParameter,
+            "sdk.plugin.invalid_shared_state",
+        )
+    })
 }
 
 fn preserve_attribute_if_missing(
@@ -318,6 +392,18 @@ pub trait MessageStore: MessageReader + MessageWriter {
         Ok(OperationApplyResult::NotFound)
     }
 
+    /// 写入插件实体的共享层（`attributes.pluginSharedStateJson` / `pluginSharedStateVersion` /
+    /// `pluginSharedEntity`），`message_id` 接受 server_id 或 client_msg_id。只接受更新的版本：
+    /// 相同版本是重复、更旧的是乱序，都返回 `IgnoredStale`；找不到消息返回 `NotFound`（事件先于
+    /// 消息到达，调用方回滚去重键等重放）。
+    async fn apply_plugin_shared_state(
+        &self,
+        _message_id: &str,
+        _state: &SharedState,
+    ) -> Result<OperationApplyResult> {
+        Ok(OperationApplyResult::NotFound)
+    }
+
     /// 应用 retention「已安排」事件到存储层；实现可基于 `conversation_seq` 防旧事件回放覆盖新状态。
     async fn apply_retention_scheduled_event(
         &self,
@@ -499,5 +585,54 @@ mod tests {
         assert!(!write_plugin_message_state(&mut target, 1, r#"{"a":1}"#));
         assert!(write_plugin_message_state(&mut target, 2, r#"{"a":2}"#));
         assert_eq!(target[PLUGIN_STATE_JSON_KEY], r#"{"a":2}"#);
+    }
+
+    #[test]
+    fn plugin_shared_state_keeps_the_higher_version_across_overwrites() {
+        let state = |version: u64| SharedState {
+            entity: "poll-1".into(),
+            version,
+            values: serde_json::json!({"n": version})
+                .as_object()
+                .unwrap()
+                .clone(),
+        };
+        let mut stored = HashMap::new();
+        assert_eq!(
+            write_plugin_shared_state(&mut stored, &state(3)),
+            SharedStateOrder::Newer
+        );
+        assert_eq!(
+            write_plugin_shared_state(&mut stored, &state(3)),
+            SharedStateOrder::Same
+        );
+        assert_eq!(
+            write_plugin_shared_state(&mut stored, &state(2)),
+            SharedStateOrder::Older
+        );
+        assert_eq!(stored[PLUGIN_SHARED_STATE_JSON_KEY], r#"{"n":3}"#);
+
+        // A row without the layer (an edit, a receipt) keeps the stored one, entity included.
+        let merged = merge_message_event_attributes(attributes(&[("x", "1")]), stored.clone());
+        assert_eq!(merged[PLUGIN_SHARED_STATE_VERSION_KEY], "3");
+        assert_eq!(merged[PLUGIN_SHARED_ENTITY_KEY], "poll-1");
+        // History with the same or an older version keeps the stored one.
+        for version in ["3", "1"] {
+            let wire = attributes(&[
+                (PLUGIN_SHARED_STATE_JSON_KEY, r#"{"n":0}"#),
+                (PLUGIN_SHARED_STATE_VERSION_KEY, version),
+            ]);
+            let merged = merge_message_event_attributes(wire, stored.clone());
+            assert_eq!(merged[PLUGIN_SHARED_STATE_JSON_KEY], r#"{"n":3}"#);
+            assert_eq!(merged[PLUGIN_SHARED_STATE_VERSION_KEY], "3");
+        }
+        // A newer snapshot from history replaces it.
+        let wire = attributes(&[
+            (PLUGIN_SHARED_STATE_JSON_KEY, r#"{"n":5}"#),
+            (PLUGIN_SHARED_STATE_VERSION_KEY, "5"),
+        ]);
+        let merged = merge_message_event_attributes(wire, stored);
+        assert_eq!(merged[PLUGIN_SHARED_STATE_JSON_KEY], r#"{"n":5}"#);
+        assert_eq!(merged[PLUGIN_SHARED_ENTITY_KEY], "poll-1");
     }
 }

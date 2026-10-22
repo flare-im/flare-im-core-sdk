@@ -905,6 +905,46 @@ impl Dispatcher {
                         }));
                     }
                 }
+                EventPayload::PluginState(plugin_state) => {
+                    use crate::application::services::{
+                        PluginSharedStateOutcome, apply_plugin_shared_state,
+                    };
+                    let Some(ref stores) = self.stores else {
+                        return;
+                    };
+                    match apply_plugin_shared_state(stores.messages.as_ref(), plugin_state).await {
+                        Ok(PluginSharedStateOutcome::Applied {
+                            conversation_id: stored_conversation_id,
+                            message_id,
+                            version,
+                        }) => {
+                            let conversation_id = if conversation_id.is_empty() {
+                                stored_conversation_id
+                            } else {
+                                conversation_id.to_string()
+                            };
+                            self.bus
+                                .publish(SdkEvent::Message(MessageEvent::PluginStateChanged {
+                                    conversation_id,
+                                    message_id,
+                                    version,
+                                }));
+                        }
+                        Ok(PluginSharedStateOutcome::Ignored)
+                        | Ok(PluginSharedStateOutcome::Rejected) => {}
+                        Ok(PluginSharedStateOutcome::NotFound) => {
+                            warn!(
+                                server_msg_id = %plugin_state.server_msg_id,
+                                "Event PluginState: no local row matched; event will be retried after message sync"
+                            );
+                            self.rollback_applied_event(ev).await;
+                        }
+                        Err(error) => {
+                            warn!(error = %error, server_msg_id = %plugin_state.server_msg_id, "Event PluginState apply failed");
+                            self.rollback_applied_event(ev).await;
+                        }
+                    }
+                }
                 EventPayload::Custom(custom) => {
                     self.bus.publish(SdkEvent::Message(MessageEvent::Custom {
                         conversation_id: conversation_id.to_string(),

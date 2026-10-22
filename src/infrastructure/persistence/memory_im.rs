@@ -13,13 +13,14 @@ use crate::domain::{
     ConversationReader, ConversationWriter, MessageReader, MessageStore, MessageWriter,
     OperationApplyResult, carry_plugin_message_state, encode_plugin_message_state,
     merge_incoming_conversation_summary, merge_message_event_attributes, message_attribute_seq,
-    write_plugin_message_state,
+    validate_plugin_shared_state, write_plugin_message_state, write_plugin_shared_state,
 };
 use crate::model::Conversation;
 use crate::model::IMMessage;
 use crate::model::message::ReactionEntry;
 use crate::model::{decode_content_bytes, decoded_content_to_elem};
 use crate::shared::error::{ErrorCode, FlareError, Result};
+use flare_plugin_protocol::state::{SharedState, SharedStateOrder};
 use flare_plugin_protocol::ui::PluginMessageState;
 use flare_proto::common::MessageStatus;
 
@@ -566,6 +567,30 @@ impl MessageStore for MemoryMessageStore {
                 OperationApplyResult::Applied
             } else {
                 OperationApplyResult::IgnoredStale
+            },
+        )
+    }
+
+    async fn apply_plugin_shared_state(
+        &self,
+        message_id: &str,
+        state: &SharedState,
+    ) -> Result<OperationApplyResult> {
+        validate_plugin_shared_state(state)?;
+        let target = message_id.trim();
+        if target.is_empty() {
+            return Ok(OperationApplyResult::NotFound);
+        }
+        let mut data = self.data.write().await;
+        let Some(message) = Self::get_mut_by_any_message_id(&mut data, target) else {
+            return Ok(OperationApplyResult::NotFound);
+        };
+        Ok(
+            match write_plugin_shared_state(&mut message.attributes, state) {
+                SharedStateOrder::Newer => OperationApplyResult::Applied,
+                SharedStateOrder::Same | SharedStateOrder::Older => {
+                    OperationApplyResult::IgnoredStale
+                }
             },
         )
     }
@@ -1519,5 +1544,90 @@ mod tests {
         store.save_one(&stored).await.unwrap();
         let after_sync = store.get("server-plugin-1").await.unwrap().unwrap();
         assert_eq!(status(&after_sync), Some((2, "claimed".to_string())));
+    }
+
+    #[tokio::test]
+    async fn plugin_shared_state_moves_forward_only_and_survives_ack_and_sync() {
+        let shared = |version: u64, count: u64| flare_plugin_protocol::state::SharedState {
+            entity: "poll-1".into(),
+            version,
+            values: serde_json::json!({"voterCount": count})
+                .as_object()
+                .unwrap()
+                .clone(),
+        };
+        let voters = |message: &IMMessage| {
+            let state = message.plugin_shared_state(None)?;
+            Some((state.version, state.values["voterCount"].as_u64()?))
+        };
+        let store = MemoryMessageStore::new();
+        let pending = local_message("", "client-shared-1");
+        store.save_one(&pending).await.unwrap();
+        assert_eq!(
+            store
+                .apply_plugin_shared_state("missing", &shared(1, 1))
+                .await
+                .unwrap(),
+            OperationApplyResult::NotFound
+        );
+        assert_eq!(
+            store
+                .apply_plugin_shared_state("client-shared-1", &shared(2, 3))
+                .await
+                .unwrap(),
+            OperationApplyResult::Applied
+        );
+        for stale in [shared(2, 9), shared(1, 9)] {
+            assert_eq!(
+                store
+                    .apply_plugin_shared_state("client-shared-1", &stale)
+                    .await
+                    .unwrap(),
+                OperationApplyResult::IgnoredStale,
+                "a duplicate or older version changes nothing"
+            );
+        }
+        let mut invalid = shared(3, 1);
+        invalid.entity = "bad entity".into();
+        assert!(
+            store
+                .apply_plugin_shared_state("client-shared-1", &invalid)
+                .await
+                .is_err()
+        );
+
+        let mut acked = pending;
+        acked.server_id = "server-shared-1".to_string();
+        acked.local_state.sending = false;
+        acked.local_state.is_local = false;
+        store
+            .update_after_ack("client-shared-1", &acked)
+            .await
+            .unwrap();
+        let stored = store.get("server-shared-1").await.unwrap().unwrap();
+        assert_eq!(voters(&stored), Some((2, 3)));
+
+        // History carries an older snapshot (no entity): the stored, newer one wins.
+        let mut synced = acked.clone();
+        synced
+            .attributes
+            .insert("pluginSharedStateJson".into(), r#"{"voterCount":1}"#.into());
+        synced
+            .attributes
+            .insert("pluginSharedStateVersion".into(), "1".into());
+        store.save_one(&synced).await.unwrap();
+        let after_sync = store.get("server-shared-1").await.unwrap().unwrap();
+        assert_eq!(voters(&after_sync), Some((2, 3)));
+        // A newer snapshot from history replaces it; the entity stays with the message.
+        synced
+            .attributes
+            .insert("pluginSharedStateJson".into(), r#"{"voterCount":5}"#.into());
+        synced
+            .attributes
+            .insert("pluginSharedStateVersion".into(), "4".into());
+        store.save_one(&synced).await.unwrap();
+        let newer = store.get("server-shared-1").await.unwrap().unwrap();
+        assert_eq!(voters(&newer), Some((4, 5)));
+        assert_eq!(newer.attributes["pluginSharedEntity"], "poll-1");
     }
 }

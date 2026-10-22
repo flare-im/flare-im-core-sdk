@@ -9,6 +9,7 @@ use flare_im_core_sdk::model::Conversation;
 use flare_im_core_sdk::model::IMMessage;
 use flare_im_core_sdk::model::MessagePreviewElem;
 use flare_im_core_sdk::model::message::ReactionEntry;
+use flare_im_core_sdk::plugin::platform::state::SharedState;
 use flare_im_core_sdk::plugin::platform::ui::PluginMessageState;
 use flare_im_core_sdk::storage::{
     ConversationReader, ConversationWriter, MessageReader, MessageStore, MessageWriter,
@@ -577,6 +578,23 @@ impl MessageStore for PersistingMessageStore {
         let applied = self
             .inner
             .apply_plugin_message_state(message_id, state)
+            .await?;
+        if applied == OperationApplyResult::Applied
+            && let Some(message) = self.get_by_any_message_id(message_id).await?
+        {
+            self.persist_message_spawn(message);
+        }
+        Ok(applied)
+    }
+
+    async fn apply_plugin_shared_state(
+        &self,
+        message_id: &str,
+        state: &SharedState,
+    ) -> Result<OperationApplyResult> {
+        let applied = self
+            .inner
+            .apply_plugin_shared_state(message_id, state)
             .await?;
         if applied == OperationApplyResult::Applied
             && let Some(message) = self.get_by_any_message_id(message_id).await?

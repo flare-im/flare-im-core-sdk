@@ -20,6 +20,8 @@ impl SyncPolicy {
                 EventType::EventUnpin as i32,
                 EventType::EventMark as i32,
                 EventType::EventUnmark as i32,
+                // 插件实体共享状态：离线期间别人投的票、接龙条目，重连后靠它收敛。
+                EventType::EventMessagePluginState as i32,
             ],
         }
     }
@@ -94,6 +96,12 @@ mod tests {
         assert!(event_types.contains(&(EventType::EventMessageRetentionScheduled as i32)));
         assert!(event_types.contains(&(EventType::EventMessageRetentionExpired as i32)));
         assert!(event_types.contains(&(EventType::EventMessageRetentionPurged as i32)));
+    }
+
+    #[test]
+    fn critical_event_query_plan_includes_plugin_shared_state() {
+        let event_types = SyncPolicy::critical_event_query_plan().event_types;
+        assert!(event_types.contains(&(EventType::EventMessagePluginState as i32)));
     }
 
     #[test]

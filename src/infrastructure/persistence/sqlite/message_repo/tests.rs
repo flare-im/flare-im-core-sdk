@@ -1497,3 +1497,88 @@ async fn plugin_message_state_is_monotonic_and_survives_ack_sync_and_edit() {
             .is_err()
     );
 }
+
+fn shared_state(version: u64, voters: u64) -> flare_plugin_protocol::state::SharedState {
+    serde_json::from_value(serde_json::json!({
+        "entity": "poll-1", "version": version, "values": {"voterCount": voters}
+    }))
+    .unwrap()
+}
+
+fn shared_voters(message: &IMMessage) -> Option<(u64, u64)> {
+    let state = message.plugin_shared_state(None)?;
+    Some((state.version, state.values["voterCount"].as_u64()?))
+}
+
+#[tokio::test]
+async fn plugin_shared_state_moves_forward_only_and_keeps_the_newer_of_wire_and_local() {
+    let repo = make_repo().await;
+    let mut pending = text_message("client-shared-1", "conv-plugin", "u1", 0, 1_000, "card");
+    pending.client_msg_id = "client-shared-1".to_string();
+    pending.status = MessageStatus::Created as i32;
+    pending.local_state.sending = true;
+    pending.local_state.is_local = true;
+    repo.save_batch(&[pending.clone()]).await.unwrap();
+
+    assert_eq!(
+        repo.apply_plugin_shared_state("missing", &shared_state(1, 1))
+            .await
+            .unwrap(),
+        OperationApplyResult::NotFound
+    );
+    assert_eq!(
+        repo.apply_plugin_shared_state("client-shared-1", &shared_state(2, 3))
+            .await
+            .unwrap(),
+        OperationApplyResult::Applied
+    );
+    for stale in [shared_state(2, 9), shared_state(1, 9)] {
+        assert_eq!(
+            repo.apply_plugin_shared_state("client-shared-1", &stale)
+                .await
+                .unwrap(),
+            OperationApplyResult::IgnoredStale
+        );
+    }
+
+    // The ACK replaces the optimistic row; the shared layer goes with it.
+    let mut acked = pending;
+    acked.server_id = "server-shared-1".to_string();
+    acked.conversation_seq = 5;
+    acked.status = MessageStatus::Persisted as i32;
+    acked.attributes.clear();
+    repo.update_after_ack("client-shared-1", &acked)
+        .await
+        .unwrap();
+    let stored = repo.get("server-shared-1").await.unwrap().unwrap();
+    assert_eq!(shared_voters(&stored), Some((2, 3)));
+
+    // An older snapshot from history loses; a newer one wins and keeps the stored entity.
+    let mut synced = acked.clone();
+    synced
+        .attributes
+        .insert("pluginSharedStateJson".into(), r#"{"voterCount":1}"#.into());
+    synced
+        .attributes
+        .insert("pluginSharedStateVersion".into(), "1".into());
+    repo.save_batch(&[synced.clone()]).await.unwrap();
+    let after = repo.get("server-shared-1").await.unwrap().unwrap();
+    assert_eq!(shared_voters(&after), Some((2, 3)));
+    synced
+        .attributes
+        .insert("pluginSharedStateJson".into(), r#"{"voterCount":7}"#.into());
+    synced
+        .attributes
+        .insert("pluginSharedStateVersion".into(), "6".into());
+    repo.save_batch(&[synced]).await.unwrap();
+    let newer = repo.get("server-shared-1").await.unwrap().unwrap();
+    assert_eq!(shared_voters(&newer), Some((6, 7)));
+    assert_eq!(newer.attributes["pluginSharedEntity"], "poll-1");
+    assert_eq!(
+        repo.apply_plugin_shared_state("server-shared-1", &shared_state(5, 0))
+            .await
+            .unwrap(),
+        OperationApplyResult::IgnoredStale,
+        "a version older than the one history delivered is dropped"
+    );
+}

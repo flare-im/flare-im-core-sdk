@@ -22,7 +22,8 @@ pub use message_repository::{
 };
 pub(crate) use message_repository::{
     carry_plugin_message_state, encode_plugin_message_state, merge_message_event_attributes,
-    message_attribute_seq, write_plugin_message_state,
+    message_attribute_seq, validate_plugin_shared_state, write_plugin_message_state,
+    write_plugin_shared_state,
 };
 pub use pending_send_repository::{PendingSendReader, PendingSendWriter};
 pub use sync_cursor_repository::{SyncCursorReader, SyncCursorStore, SyncCursorWriter};
