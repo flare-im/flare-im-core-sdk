@@ -17,6 +17,10 @@ import {
   MessageContentType,
   MessageLocalState,
   MessagePreview,
+  MessageReadReceiptMembersRequest,
+  MessageReadSummary,
+  MessageReceiptStatus,
+  MessageReceiptView,
   NetworkChangeRequest,
   NetworkChangeResponse,
   OpenConversationListViewRequest,
@@ -35,6 +39,10 @@ import {
 } from '../model';
 
 export function pluginUiEvaluationRequestToMap(request: PluginUiEvaluationRequest): Record<string, Object> {
+  return { payload: request.payload };
+}
+
+export function messageReadReceiptMembersRequestToMap(request: MessageReadReceiptMembersRequest): Record<string, Object> {
   return { payload: request.payload };
 }
 
@@ -1010,6 +1018,36 @@ export function messageLocalStateFromJson(value: Object | undefined): MessageLoc
   };
 }
 
+/** The core's receipt projection; undefined when absent or malformed (an older core). */
+export function messageReceiptViewFromJson(value: Object | undefined): MessageReceiptView | undefined {
+  const json = recordValue(value);
+  const raw = field(json, 'status');
+  const statuses: MessageReceiptStatus[] = [
+    MessageReceiptStatus.Pending,
+    MessageReceiptStatus.Sending,
+    MessageReceiptStatus.Sent,
+    MessageReceiptStatus.Read,
+    MessageReceiptStatus.Failed,
+  ];
+  const status = statuses.find((candidate) => candidate === raw);
+  if (status === undefined) {
+    return undefined;
+  }
+  const summary = recordValue(field(json, 'readSummary'));
+  const count = (key: string): number | undefined => {
+    const value = field(summary, key);
+    return typeof value === 'number' && Number.isInteger(value) && value >= 0 ? value : undefined;
+  };
+  const readCount = count('readCount');
+  const unreadCount = count('unreadCount');
+  const total = count('total');
+  if (readCount === undefined || unreadCount === undefined || total === undefined || total === 0) {
+    return { status };
+  }
+  const readSummary: MessageReadSummary = { readCount, unreadCount, total };
+  return { status, readSummary };
+}
+
 export function messagePreviewFromJson(value: Object | undefined): MessagePreview | undefined {
   const json = recordValue(value);
   if (Object.keys(json).length === 0) {
@@ -1112,6 +1150,7 @@ export function messageFromJson(value: Object | undefined): Message {
     version: intValue(field(json, 'version')),
     timelineKey: String(field(json, 'timelineKey') ?? ''),
     timelineSortTs: intValue(field(json, 'timelineSortTs')),
+    ...(messageReceiptViewFromJson(field(json, 'receipt')) !== undefined ? { receipt: messageReceiptViewFromJson(field(json, 'receipt')) } : {}),
   };
 }
 

@@ -59,10 +59,7 @@ fn catalog_plugin(refresh_on: Value) -> Value {
         "summary": {"operation": "example.poll.wallet", "path": "/balanceText"}
     }));
     let manifest = PluginManifest::from_json(&serde_json::to_vec(&manifest).unwrap()).unwrap();
-    let mut extensions = manifest.client_extensions.clone();
-    extensions
-        .contributions
-        .retain(|contribution| contribution.kind.is_client_surface());
+    let extensions = manifest.client_extensions.clone();
     json!({
         "pluginId": manifest.plugin_id, "version": manifest.version,
         "manifestDigest": format!("sha256:{}", "b".repeat(64)), "grantRevision": 1,

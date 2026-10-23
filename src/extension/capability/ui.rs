@@ -143,10 +143,7 @@ pub(crate) fn parse_present(request: Value) -> Result<PresentRequest> {
     bounded(&request)?;
     let parsed: PresentRequest = serde_json::from_value(request).map_err(|_| invalid())?;
     parsed.message.validate().map_err(|_| invalid())?;
-    if !valid_message_id(&parsed.message_id)
-        || !valid_locale(&parsed.locale)
-        || parsed.kind.is_some_and(|kind| !kind.is_client_surface())
-    {
+    if !valid_message_id(&parsed.message_id) || !valid_locale(&parsed.locale) {
         return Err(invalid());
     }
     Ok(parsed)
@@ -501,7 +498,6 @@ pub(crate) fn plugin_contribution_of<'a>(
     let contribution = plugin.extensions.contributions.iter().find(|c| {
         c.id == message.contribution_id
             && c.schema_version == message.schema_version
-            && c.kind.is_client_surface()
             && kind.is_none_or(|kind| c.kind == kind)
     })?;
     Some((plugin, contribution))

@@ -5,6 +5,7 @@ pub mod conversation_user_settings;
 pub mod event;
 pub mod media;
 pub mod message;
+pub mod receipt;
 pub mod search;
 pub mod sync;
 pub mod timeline;
@@ -31,6 +32,7 @@ pub use message::{
     ConversationType, DeleteScope, DeleteType, IMMessage, MarkType, Message, MessageSource,
     MessageStatus, MessageType, ReactionAction, SendAck, SendAckDurability,
 };
+pub use receipt::{MessageReadSummary, MessageReceiptStatus, MessageReceiptView};
 pub use search::{ConversationListQuery, MessageSearchKind, MessageSearchQuery};
 pub use sync::{
     ConversationHistoryBackfillResponse, ConversationVersion, StartupHomeSyncRequest,

@@ -7,6 +7,8 @@ use crate::shared::error::Result;
 pub struct MessageViewAssembler {
     store: Arc<dyn MessageStore>,
     profile_reader: Arc<dyn UserReader>,
+    /// Group read summaries of the viewer's own messages (`receipt.readSummary`).
+    read_summaries: Option<Arc<crate::application::services::ReadSummaryService>>,
 }
 
 impl MessageViewAssembler {
@@ -14,7 +16,18 @@ impl MessageViewAssembler {
         Self {
             store,
             profile_reader,
+            read_summaries: None,
         }
+    }
+
+    /// View messages carry the group read summary of the viewer's own messages,
+    /// fetched in the background for the messages views show.
+    pub(crate) fn with_read_summaries(
+        mut self,
+        read_summaries: Arc<crate::application::services::ReadSummaryService>,
+    ) -> Self {
+        self.read_summaries = Some(read_summaries);
+        self
     }
 
     pub async fn get(&self, message_id: &str) -> Result<Option<IMMessage>> {
@@ -60,6 +73,9 @@ impl MessageViewAssembler {
     pub async fn hydrate_messages_for_view(&self, views: &mut [IMMessage]) -> Result<()> {
         self.hydrate_reactions_for_messages(views).await?;
         self.fill_sender_profiles_for_messages(views).await?;
+        if let Some(read_summaries) = &self.read_summaries {
+            read_summaries.decorate(views).await;
+        }
         Ok(())
     }
 

@@ -43,11 +43,7 @@ impl Fixture {
             "/../flare-proto/flare-plugin-protocol/tests/fixtures/plugin-ui-v2-manifest.json"
         )))
         .unwrap();
-        let mut extensions = manifest.client_extensions;
-        // Core never sends admin pages to clients.
-        extensions
-            .contributions
-            .retain(|contribution| contribution.kind.is_client_surface());
+        let extensions = manifest.client_extensions;
         let catalog = Arc::new(SyncMutex::new(UiCatalog {
             tenant_id: "201".into(),
             version: 1,
@@ -385,7 +381,7 @@ async fn present_resolves_v2_blocks_over_payload_shared_and_local_layers() {
         .unwrap();
     assert_eq!(foreign["data"]["voterCount"], 0);
 
-    // Admin pages are not a client surface.
+    // Console pages are no contribution kind.
     let mut admin = present("server-1");
     admin["kind"] = json!("admin-page");
     assert!(f.api.present_plugin_message(admin).await.is_err());

@@ -36,6 +36,12 @@ public func pluginUiEvaluationRequestToJson(request: PluginUiEvaluationRequest):
     return json.toJsonString()
 }
 
+public func messageReadReceiptMembersRequestToJson(request: MessageReadReceiptMembersRequest): String {
+    let json = CjJsonObject()
+    jsonPutRaw(json, "payload", request.payload)
+    return json.toJsonString()
+}
+
 public func pluginCommandRequestToJson(request: PluginCommandRequest): String {
     let json = CjJsonObject()
     jsonPutRaw(json, "payload", request.payload)
@@ -1075,6 +1081,50 @@ public func messageLocalStateFromJson(raw: String): MessageLocalState {
     return messageLocalStateFromObject(wireDecodeResponseObject(jsonObjectFromRaw(raw)))
 }
 
+// The core's receipt projection; None when absent or malformed (an older core).
+public func messageReceiptViewFromValue(value: CjJsonValue): ?MessageReceiptView {
+    try {
+        let object = value.asObject()
+        let raw = jsonStringField(object, "status", "")
+        var status: ?MessageReceiptStatus = None
+        if (raw == "pending") { status = Some(MessageReceiptStatus.Pending) }
+        if (raw == "sending") { status = Some(MessageReceiptStatus.Sending) }
+        if (raw == "sent") { status = Some(MessageReceiptStatus.Sent) }
+        if (raw == "read") { status = Some(MessageReceiptStatus.Read) }
+        if (raw == "failed") { status = Some(MessageReceiptStatus.Failed) }
+        let readSummary: ?MessageReadSummary = match (object.get("readSummary")) {
+            case Some(summary) => messageReadSummaryFromValue(summary)
+            case None => None
+        }
+        return match (status) {
+            case Some(found) => Some(MessageReceiptView(status: found, readSummary: readSummary))
+            case None => None
+        }
+    } catch (_) {
+        return None
+    }
+}
+
+func messageReadSummaryFromValue(value: CjJsonValue): ?MessageReadSummary {
+    try {
+        let object = value.asObject()
+        let readCount = jsonIntField(object, "readCount", -1)
+        let unreadCount = jsonIntField(object, "unreadCount", -1)
+        let total = jsonIntField(object, "total", -1)
+        if (readCount < 0 || unreadCount < 0 || total <= 0 || total > 4294967295
+            || readCount > total || unreadCount > total) {
+            return None
+        }
+        return Some(MessageReadSummary(
+            readCount: UInt32(readCount),
+            unreadCount: UInt32(unreadCount),
+            total: UInt32(total)
+        ))
+    } catch (_) {
+        return None
+    }
+}
+
 public func messageLocalStateFromObject(object: CjJsonObject): MessageLocalState {
     let sending = jsonBoolField(object, "sending", false)
     let failed = jsonBoolField(object, "failed", false)
@@ -1205,6 +1255,10 @@ public func messageFromObject(object: CjJsonObject): Message {
         }
     let timelineKey = jsonStringField(object, "timelineKey", "")
     let timelineSortTs = UInt64(jsonIntField(object, "timelineSortTs", 0))
+    let receipt: ?MessageReceiptView = match (object.get("receipt")) {
+            case Some(value) => messageReceiptViewFromValue(value)
+            case None => None
+        }
     return Message(
         serverId: serverId,
         clientMsgId: clientMsgId,
@@ -1238,7 +1292,8 @@ public func messageFromObject(object: CjJsonObject): Message {
         updatedAt: updatedAt,
         localState: localState,
         timelineKey: timelineKey,
-        timelineSortTs: timelineSortTs
+        timelineSortTs: timelineSortTs,
+        receipt: receipt
     )
 }
 

@@ -12,6 +12,10 @@ func pluginCommandRequestToMap(_ request: PluginCommandRequest) -> [String: AnyS
     ["payload": wrapSendable(request.payload)]
 }
 
+func messageReadReceiptMembersRequestToMap(_ request: MessageReadReceiptMembersRequest) -> [String: AnySendable] {
+    ["payload": wrapSendable(request.payload)]
+}
+
 /// GENERATED. Do not edit by hand.
 
 func unwrapRequest(_ value: AnySendable) -> [String: AnySendable]? {
@@ -1494,6 +1498,26 @@ func messageLocalStateFromJson(_ value: Any?) throws -> MessageLocalState? {
     )
 }
 
+/// The core's receipt projection; nil when absent or malformed (an older core).
+func messageReceiptViewFromJson(_ value: Any?) -> MessageReceiptView? {
+    guard let json = value as? [String: Any],
+          let raw = json["status"] as? String,
+          let status = MessageReceiptStatus(rawValue: raw) else { return nil }
+    func count(_ summary: [String: Any], _ key: String) -> UInt32? {
+        guard let number = summary[key] as? NSNumber, number.int64Value >= 0,
+              number.int64Value <= Int64(UInt32.max) else { return nil }
+        return UInt32(number.int64Value)
+    }
+    var readSummary: MessageReadSummary?
+    if let summary = json["readSummary"] as? [String: Any],
+       let readCount = count(summary, "readCount"),
+       let unreadCount = count(summary, "unreadCount"),
+       let total = count(summary, "total"), total > 0 {
+        readSummary = MessageReadSummary(readCount: readCount, unreadCount: unreadCount, total: total)
+    }
+    return MessageReceiptView(status: status, readSummary: readSummary)
+}
+
 func messagePreviewFromJson(_ value: Any?) throws -> MessagePreview? {
     guard let json = value as? [String: Any] else { return nil }
     return try MessagePreview(
@@ -1584,7 +1608,8 @@ public func messageFromJson(_ value: Any) throws -> Message {
         updatedAt: try requiredUInt64Field(json, "updatedAt", "Message"),
         version: try requiredUInt64Field(json, "version", "Message"),
         timelineKey: try requiredStringField(json, "timelineKey", "Message"),
-        timelineSortTs: try requiredUInt64Field(json, "timelineSortTs", "Message")
+        timelineSortTs: try requiredUInt64Field(json, "timelineSortTs", "Message"),
+        receipt: messageReceiptViewFromJson(json["receipt"])
     )
 }
 

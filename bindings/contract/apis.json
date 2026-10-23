@@ -607,6 +607,12 @@
           "core": "MessageApi::search_in_conversation",
           "c": "flare_message_dispatch_json:search_in_conversation",
           "tauri": "sdk_message_dispatch_json"
+        },
+        {
+          "id": "message.read_receipt_members",
+          "core": "MessageApi::read_receipt_members",
+          "c": "flare_message_dispatch_json:read_receipt_members",
+          "tauri": "sdk_message_dispatch_json"
         }
       ]
     },
@@ -909,6 +915,12 @@
           "id": "capability.plugin_detail",
           "core": "CapabilityApi::plugin_detail",
           "c": "flare_capability_dispatch_json:plugin_detail",
+          "tauri": "sdk_message_dispatch_json"
+        },
+        {
+          "id": "capability.plugin_page",
+          "core": "CapabilityApi::plugin_page",
+          "c": "flare_capability_dispatch_json:plugin_page",
           "tauri": "sdk_message_dispatch_json"
         },
         {

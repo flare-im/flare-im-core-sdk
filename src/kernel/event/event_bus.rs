@@ -528,7 +528,8 @@ impl EventBus {
                 | MessageEvent::Unmarked { .. }
                 | MessageEvent::PresenceChanged { .. }
                 | MessageEvent::Custom { .. }
-                | MessageEvent::PluginStateChanged { .. } => {}
+                | MessageEvent::PluginStateChanged { .. }
+                | MessageEvent::ReadSummariesChanged { .. } => {}
             },
             SdkEvent::Notification(NotificationEvent::Received { message }) => {
                 dispatched += dispatch_callbacks_with(

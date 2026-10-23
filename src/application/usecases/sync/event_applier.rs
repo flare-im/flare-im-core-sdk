@@ -105,6 +105,18 @@ impl SyncEventApplier {
                 );
                 return Ok(false);
             };
+            // Core never edits a plugin card nor turns a message into one; applied, such an
+            // event would forge or erase a card. Consumed without effect (a replay decides
+            // the same).
+            if let Some(stored) = self.stores.messages.get(&edit.server_msg_id).await?
+                && !crate::domain::inbound_edit_allowed(&stored, new_content)
+            {
+                tracing::warn!(
+                    server_msg_id = %edit.server_msg_id,
+                    "sync edit event touches a plugin card; ignored"
+                );
+                return Ok(true);
+            }
             match self
                 .stores
                 .messages
@@ -789,6 +801,105 @@ mod tests {
             flare_proto::common::MessageStatus::Sent as i32
         );
         assert!(updated.is_read);
+    }
+
+    #[tokio::test]
+    async fn replay_edits_never_make_or_unmake_a_plugin_card() {
+        use flare_proto::common::message_content::Content;
+        use flare_proto::common::{
+            AppCardContent, MessageContent, MessageEditEvent, TextContent, event::Payload,
+        };
+        use prost::Message as _;
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        sqlite_init_schema(&pool).await.unwrap();
+        let message_repo = Arc::new(SqliteMessageRepo::new(pool));
+        let applier = SyncEventApplier::new(
+            StoreProvider {
+                plugin_commands: None,
+                messages: message_repo.clone(),
+                conversations: Arc::new(NoopConversationStore),
+                conversation_participants: None,
+                cursors: Arc::new(NoopSyncCursorStore),
+                pending_send_reader: None,
+                pending_send_writer: None,
+                upload_manifest_store: None,
+                media_cache_store: None,
+                media_cache_admin: None,
+                user_file_download_store: None,
+                user_profiles_reader: None,
+                user_profiles_writer: None,
+            },
+            EventBus::new(),
+            EventDeduper::new(Some(32)),
+        );
+        let text = |text: &str| MessageContent {
+            content: Some(Content::Text(TextContent {
+                text: text.into(),
+                ..Default::default()
+            })),
+        };
+        let card = MessageContent {
+            content: Some(Content::AppCard(AppCardContent {
+                card_type: crate::content::message_elem::PLUGIN_MESSAGE_CARD_TYPE.into(),
+                payload: br#"{"pluginId":"example.poll","contributionId":"example.poll.card","schemaVersion":1,"summary":"Poll","payload":{"pollId":"p1"}}"#.to_vec(),
+                ..Default::default()
+            })),
+        };
+        let stored = |server_id: &str, seq: u64, content: &MessageContent| {
+            let mut message = crate::model::IMMessage::new(flare_proto::common::Message {
+                server_id: server_id.into(),
+                client_msg_id: format!("c-{server_id}"),
+                conversation_id: "conv-1".into(),
+                sender_id: "u2".into(),
+                conversation_seq: seq,
+                content: Some(content.clone()),
+                ..Default::default()
+            });
+            message.encoded_content = content.encode_to_vec();
+            message
+        };
+        message_repo
+            .save_batch(&[
+                stored("s-text", 1, &text("hello")),
+                stored("s-card", 2, &card),
+                stored("s-other", 3, &text("plain")),
+            ])
+            .await
+            .unwrap();
+        let edit =
+            |server_msg_id: &str, seq: u64, content: MessageContent| flare_proto::common::Event {
+                conversation_id: "conv-1".into(),
+                conversation_seq: seq,
+                payload: Some(Payload::Edit(MessageEditEvent {
+                    server_msg_id: server_msg_id.into(),
+                    new_content: Some(content),
+                    ..Default::default()
+                })),
+                ..Default::default()
+            };
+        let outcomes = applier
+            .apply_events(
+                "u1",
+                &[
+                    edit("s-text", 10, card.clone()),
+                    edit("s-card", 11, text("gone")),
+                    edit("s-other", 12, text("edited")),
+                ],
+                ReplayMode::CriticalEvents,
+            )
+            .await;
+        assert_eq!(outcomes, vec![true, true, true], "consumed, never replayed");
+        let content_of = |message: crate::model::IMMessage| {
+            MessageContent::decode(message.encoded_content.as_slice()).unwrap()
+        };
+        let text_now = message_repo.get("s-text").await.unwrap().unwrap();
+        assert!(!text_now.is_top_level_plugin_card(), "no card appears");
+        assert_eq!(content_of(text_now), text("hello"));
+        let card_now = message_repo.get("s-card").await.unwrap().unwrap();
+        assert!(card_now.is_top_level_plugin_card(), "the card stays");
+        assert_eq!(content_of(card_now), card);
+        let other = message_repo.get("s-other").await.unwrap().unwrap();
+        assert_eq!(content_of(other), text("edited"), "plain edits apply");
     }
 
     #[tokio::test]

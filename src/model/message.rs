@@ -58,6 +58,8 @@ fn strip_plugin_message_state(attributes: &mut HashMap<String, String>) {
     attributes.remove(PLUGIN_STATE_JSON_KEY);
     attributes.remove(PLUGIN_STATE_VERSION_KEY);
     attributes.remove(PLUGIN_STATE_BASED_ON_KEY);
+    // The view-only read summary never crosses the wire either way.
+    attributes.remove(super::receipt::READ_SUMMARY_JSON_KEY);
 }
 
 /// Core 在历史、同步与实时下发里给「不是实体绑定那条」的插件卡片（伪造或转发的副本）挂上的标记，
@@ -286,7 +288,7 @@ impl Serialize for IMMessage {
     where
         S: Serializer,
     {
-        let mut state = serializer.serialize_struct("IMMessage", 33)?;
+        let mut state = serializer.serialize_struct("IMMessage", 34)?;
         state.serialize_field("serverId", &self.server_id)?;
         state.serialize_field("clientMsgId", &self.client_msg_id)?;
         state.serialize_field("conversationId", &self.conversation_id)?;
@@ -320,7 +322,16 @@ impl Serialize for IMMessage {
         state.serialize_field("isEdited", &self.is_edited)?;
         state.serialize_field("mentionUsers", &self.mention_users)?;
         state.serialize_field("mentionAll", &self.mention_all)?;
-        state.serialize_field("attributes", &self.attributes)?;
+        if self
+            .attributes
+            .contains_key(super::receipt::READ_SUMMARY_JSON_KEY)
+        {
+            let mut attributes = self.attributes.clone();
+            attributes.remove(super::receipt::READ_SUMMARY_JSON_KEY);
+            state.serialize_field("attributes", &attributes)?;
+        } else {
+            state.serialize_field("attributes", &self.attributes)?;
+        }
         state.serialize_field("extensions", &self.extensions)?;
         state.serialize_field("reactions", &self.reactions)?;
         state.serialize_field("version", &self.version)?;
@@ -328,6 +339,7 @@ impl Serialize for IMMessage {
         state.serialize_field("localState", &self.local_state)?;
         state.serialize_field("timelineKey", &self.timeline_key())?;
         state.serialize_field("timelineSortTs", &self.timeline_sort_ts())?;
+        state.serialize_field("receipt", &self.receipt_view())?;
         state.end()
     }
 }
@@ -558,6 +570,27 @@ impl IMMessage {
         serde_json::from_slice::<flare_plugin_protocol::ui::PluginMessage>(&payload)
             .ok()
             .filter(|message| message.validate().is_ok())
+    }
+
+    /// 顶层是不是插件卡（APP_CARD `flare.plugin.message.v1`），不论信封是否合法。有编码缓存时以缓存
+    /// 为准；没有时看投影出的 Custom 形态（只有插件卡与宿主经 JSON 交来的本地卡片会是它）。
+    pub(crate) fn is_top_level_plugin_card(&self) -> bool {
+        if !self.encoded_content.is_empty() {
+            return Self::wire_plugin_card_payload(&self.encoded_content).is_some();
+        }
+        matches!(
+            self.content.as_ref(),
+            Some(Elem::Custom(custom)) if custom.r#type == PLUGIN_MESSAGE_CARD_TYPE
+        )
+    }
+
+    /// wire 内容的顶层是不是插件卡（APP_CARD `flare.plugin.message.v1`）。
+    pub(crate) fn content_is_plugin_card(content: &MessageContent) -> bool {
+        matches!(
+            &content.content,
+            Some(flare_proto::common::message_content::Content::AppCard(card))
+                if card.card_type == PLUGIN_MESSAGE_CARD_TYPE
+        )
     }
 
     /// 编码内容是顶层插件卡 APP_CARD 时它的载荷。

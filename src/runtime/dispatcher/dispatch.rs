@@ -458,6 +458,31 @@ impl Dispatcher {
                         return;
                     };
                     if let Some(ref stores) = self.stores {
+                        // Core never edits a plugin card nor turns a message into one; such an
+                        // event is consumed without effect. The check needs the stored message:
+                        // when it cannot be read the edit is not applied either, and the event is
+                        // rolled back to be replayed by sync (as the replay path does).
+                        let stored = match stores.messages.get(&edit.server_msg_id).await {
+                            Ok(stored) => stored,
+                            Err(e) => {
+                                warn!(
+                                    error = %e,
+                                    server_msg_id = %edit.server_msg_id,
+                                    "Event Edit: the stored message could not be read; event will be retried"
+                                );
+                                self.rollback_applied_event(ev).await;
+                                return;
+                            }
+                        };
+                        if let Some(stored) = stored
+                            && !crate::domain::inbound_edit_allowed(&stored, new_content)
+                        {
+                            warn!(
+                                server_msg_id = %edit.server_msg_id,
+                                "Event Edit touches a plugin card; ignored"
+                            );
+                            return;
+                        }
                         match stores
                             .messages
                             .apply_edit_event(

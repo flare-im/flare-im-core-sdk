@@ -40,6 +40,7 @@ pub const MESSAGE_DISPATCH_OPERATIONS: &[&str] = &[
     "mark_by_message_id",
     "unmark_by_message_id",
     "action_availability",
+    "read_receipt_members",
 ];
 
 pub fn is_message_operation(operation: &str) -> bool {
@@ -233,6 +234,15 @@ pub async fn dispatch_message(
                 .await?,
             )
         }
+        "read_receipt_members" => json(
+            api.read_receipt_members(
+                params
+                    .get("payload")
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null),
+            )
+            .await?,
+        ),
         _ => Err(binding_operation_not_supported(operation)),
     }
 }

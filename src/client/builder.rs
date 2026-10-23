@@ -625,10 +625,19 @@ impl IMClientBuilder {
             self.config.effective_device_id(),
             Some(bus.clone()),
         ));
-        let message_view_assembler = Arc::new(MessageViewAssembler::new(
-            store_ref.messages.clone(),
-            profile_reader.clone(),
-        ));
+        let read_summaries = crate::application::services::ReadSummaryService::new(
+            Arc::new(
+                crate::infrastructure::transport::http::read_receipt_api::HttpReadReceiptTransport::new(
+                    capability_http_client.clone(),
+                ),
+            ),
+            bus.clone(),
+            current_user_id.clone(),
+        );
+        let message_view_assembler = Arc::new(
+            MessageViewAssembler::new(store_ref.messages.clone(), profile_reader.clone())
+                .with_read_summaries(read_summaries.clone()),
+        );
         let media_api = Arc::new(MediaApi::from_session_handler(
             media_service,
             current_user_id.clone(),
@@ -728,7 +737,8 @@ impl IMClientBuilder {
                     message_view_assembler,
                     current_user_id,
                 )
-                .with_plugin_cards(capability_api.clone()),
+                .with_plugin_cards(capability_api.clone())
+                .with_read_receipts(read_summaries),
             ),
             media_api: Some(media_api),
             capability_api: Some(capability_api),

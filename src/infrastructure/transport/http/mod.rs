@@ -2,6 +2,7 @@ pub mod http_client;
 #[cfg(target_arch = "wasm32")]
 pub mod http_client_wasm;
 pub mod media_dto;
+pub(crate) mod read_receipt_api;
 pub use http_client::{CoreBearerRenewal, HttpClient, HttpRequestContext, SentBytesCallback};
 pub use media_dto::{
     AbortDirectUploadHttpRequest, CommitDirectUploadPartsHttpRequest,

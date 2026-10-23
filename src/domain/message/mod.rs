@@ -2,6 +2,7 @@ mod actor;
 mod content_policy;
 mod delivery;
 mod draft;
+mod edit_policy;
 mod locator;
 mod mutation;
 mod transport;
@@ -15,6 +16,7 @@ pub use delivery::{
     REASON_SEND_FAILED_BEFORE_ACK_MAX_RETRIES, REASON_TIMEOUT_AFTER_RETRIES, RetryDecision,
 };
 pub use draft::MessageDraftService;
+pub(crate) use edit_policy::inbound_edit_allowed;
 pub use locator::MessageLocatorService;
 pub(crate) use mutation::{
     DELETE_SCOPE_CONVERSATION_GLOBAL, DELETE_SCOPE_USER_PRIVATE, DELETE_TYPE_SOFT,

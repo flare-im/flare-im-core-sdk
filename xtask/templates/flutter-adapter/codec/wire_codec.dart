@@ -12,6 +12,10 @@ Map<String, Object?> pluginCommandRequestToMap(PluginCommandRequest request) {
   return {'payload': request.payload};
 }
 
+Map<String, Object?> messageReadReceiptMembersRequestToMap(MessageReadReceiptMembersRequest request) {
+  return {'payload': request.payload};
+}
+
 Map<String, Object?> conversationListQueryToMap(ConversationListQuery query) {
   return {
     if (query.keyword != null) 'keyword': query.keyword!,
@@ -755,6 +759,7 @@ Message messageFromJson(Object? value) {
     localState: localStateFromJson(json['localState']),
     timelineKey: requiredStringField(json, 'timelineKey', 'Message'),
     timelineSortTs: requiredIntField(json, 'timelineSortTs', 'Message'),
+    receipt: receiptFromJson(json['receipt']),
   );
 }
 
@@ -879,6 +884,34 @@ List<ReactionEntry> reactionList(Object? value) {
     'reactions',
     'Message',
   ).map(reactionFromJson).toList(growable: false);
+}
+
+/// The core's receipt projection; null when absent or malformed (an older core).
+MessageReceiptView? receiptFromJson(Object? value) {
+  if (value is! Map) return null;
+  final json = mapValue(value);
+  final raw = json['status'];
+  MessageReceiptStatus? status;
+  for (final candidate in MessageReceiptStatus.values) {
+    if (candidate.name == raw) status = candidate;
+  }
+  if (status == null) return null;
+  int? count(Map<String, Object?> summary, String key) {
+    final value = summary[key];
+    return value is int && value >= 0 ? value : null;
+  }
+  MessageReadSummary? readSummary;
+  final rawSummary = json['readSummary'];
+  if (rawSummary is Map) {
+    final summary = mapValue(rawSummary);
+    final readCount = count(summary, 'readCount');
+    final unreadCount = count(summary, 'unreadCount');
+    final total = count(summary, 'total');
+    if (readCount != null && unreadCount != null && total != null && total > 0) {
+      readSummary = MessageReadSummary(readCount: readCount, unreadCount: unreadCount, total: total);
+    }
+  }
+  return MessageReceiptView(status: status, readSummary: readSummary);
 }
 
 MessageLocalState? localStateFromJson(Object? value) {

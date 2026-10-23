@@ -16,6 +16,8 @@ mod registry;
 pub mod rtc_ids;
 /// Shared safe data-only UI evaluation; every binding uses the same contract.
 pub mod ui;
+/// Plugin pages: request parsing, source paging and page actions.
+pub(crate) mod ui_page;
 pub use flare_plugin_protocol::ui as ui_contract;
 
 mod plugins;

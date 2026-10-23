@@ -28,6 +28,11 @@ use crate::infrastructure::transport::http::http_client::HttpRequestContext;
 use crate::infrastructure::transport::http::{HttpApiResponse, HttpClient, unwrap_api_response};
 use crate::shared::error::{ErrorCode, FlareError, Result};
 
+#[path = "capability_page.rs"]
+mod page;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "capability_page_tests.rs"]
+mod page_tests;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 #[path = "capability_platform_v2_tests.rs"]
 mod platform_v2_tests;
@@ -682,9 +687,17 @@ impl CapabilityApi {
     /// the plugin is no longer available invalidates the catalog and
     /// re-announces the plugin's recent cards. A create result's `data.posted`
     /// (the card Core posted) is returned as it is.
+    ///
+    /// A page action names `page: {pluginId, page}` instead of `message`
+    /// (see [`Self::plugin_page`]): it binds over the page view's `data`, a
+    /// row action takes `row: {key, input}` as the view gave it, and it never
+    /// carries `messageId`.
     pub async fn invoke_plugin_action(&self, request: Value) -> Result<Value> {
         use crate::extension::capability::ui;
         use flare_plugin_protocol::ui::UiActionTarget;
+        if crate::extension::capability::ui_page::is_page_action(&request) {
+            return self.invoke_page_action(request).await;
+        }
         let request = ui::parse_invoke(request)?;
         self.session_guard
             .run_with_user(|user_id| async move {

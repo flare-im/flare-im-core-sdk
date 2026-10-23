@@ -31,6 +31,9 @@ fun pluginUiEvaluationRequestToMap(request: PluginUiEvaluationRequest): Map<Stri
 fun pluginCommandRequestToMap(request: PluginCommandRequest): Map<String, Any?> =
     mapOf("payload" to request.payload)
 
+fun messageReadReceiptMembersRequestToMap(request: MessageReadReceiptMembersRequest): Map<String, Any?> =
+    mapOf("payload" to request.payload)
+
 fun buildPluginMessageRequestToMap(request: BuildPluginMessageRequest): Map<String, Any?> =
     mapOf("conversationId" to request.conversationId, "payload" to request.payload)
 
@@ -1087,6 +1090,33 @@ fun messageLocalStateFromJson(value: Any?): MessageLocalState? {
     )
 }
 
+/** The core's receipt projection; null when absent or malformed (an older core). */
+fun messageReceiptViewFromJson(value: Any?): MessageReceiptView? {
+    val json = mapValue(value)
+    if (json.isEmpty()) return null
+    val status = when (field(json, "status")?.toString()) {
+        "pending" -> MessageReceiptStatus.PENDING
+        "sending" -> MessageReceiptStatus.SENDING
+        "sent" -> MessageReceiptStatus.SENT
+        "read" -> MessageReceiptStatus.READ
+        "failed" -> MessageReceiptStatus.FAILED
+        else -> return null
+    }
+    val summary = mapValue(field(json, "readSummary"))
+    fun count(key: String): Int? =
+        (field(summary, key) as? Number)?.toLong()?.takeIf { it in 0..Int.MAX_VALUE.toLong() }?.toInt()
+    val readCount = count("readCount")
+    val unreadCount = count("unreadCount")
+    val total = count("total")
+    val readSummary =
+        if (readCount != null && unreadCount != null && total != null && total > 0) {
+            MessageReadSummary(readCount = readCount, unreadCount = unreadCount, total = total)
+        } else {
+            null
+        }
+    return MessageReceiptView(status = status, readSummary = readSummary)
+}
+
 fun messagePreviewFromJson(value: Any?): MessagePreview? {
     val json = mapValue(value)
     if (json.isEmpty()) return null
@@ -1190,6 +1220,7 @@ fun messageFromJson(value: Any?): Message {
         version = requiredLongField(json, "version", "Message"),
         timelineKey = field(json, "timelineKey")?.let(::stringValue).orEmpty(),
         timelineSortTs = requiredLongField(json, "timelineSortTs", "Message"),
+        receipt = messageReceiptViewFromJson(field(json, "receipt")),
     )
 }
 

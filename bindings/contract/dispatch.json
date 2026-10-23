@@ -454,6 +454,17 @@
             ]
           ],
           "result": "json"
+        },
+        {
+          "op": "read_receipt_members",
+          "method": "read_receipt_members",
+          "args": [
+            [
+              "request",
+              "json_null_default"
+            ]
+          ],
+          "result": "json"
         }
       ]
     },
@@ -1685,6 +1696,17 @@
         {
           "op": "plugin_detail",
           "method": "plugin_detail",
+          "args": [
+            [
+              "request",
+              "json_null_default"
+            ]
+          ],
+          "result": "json"
+        },
+        {
+          "op": "plugin_page",
+          "method": "plugin_page",
           "args": [
             [
               "request",

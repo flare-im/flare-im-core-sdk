@@ -624,6 +624,14 @@ final class _DefaultMessagesApi implements MessagesApi {
   }
 
   @override
+  Future<Map<String, Object?>> readReceiptMembers(MessageReadReceiptMembersRequest request) {
+    return _dispatchMap(
+      NativeCallMap.messageReadReceiptMembers,
+      messageReadReceiptMembersRequestToMap(request),
+    );
+  }
+
+  @override
   Future<ListMessagesResponse> searchMessagesInConversation(
       MessageSearchQuery request) async {
     final raw = await _dispatchMap(
@@ -943,6 +951,12 @@ final class _DefaultCapabilitiesApi implements CapabilitiesApi {
   Future<Map<String, Object?>> pluginDetail(PluginUiEvaluationRequest request) {
     return _bridge.invoke<Map<String, Object?>>(
         NativeCallMap.capabilityPluginDetail, pluginUiEvaluationRequestToMap(request));
+  }
+
+  @override
+  Future<Map<String, Object?>> pluginPage(PluginUiEvaluationRequest request) {
+    return _bridge.invoke<Map<String, Object?>>(
+        NativeCallMap.capabilityPluginPage, pluginUiEvaluationRequestToMap(request));
   }
 
   @override

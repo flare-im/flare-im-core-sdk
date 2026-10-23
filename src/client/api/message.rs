@@ -37,6 +37,8 @@ pub struct MessageApi {
     current_user_id: CurrentUserIdStore,
     /// Plugin card rules that need the authorized catalog (forwardability).
     plugin_cards: Option<Arc<super::CapabilityApi>>,
+    /// Group read receipts: summaries on view messages and the member lists.
+    read_receipts: Option<Arc<crate::application::services::ReadSummaryService>>,
 }
 
 impl MessageApi {
@@ -52,7 +54,48 @@ impl MessageApi {
             view_assembler,
             current_user_id,
             plugin_cards: None,
+            read_receipts: None,
         }
+    }
+
+    /// Enables [`Self::read_receipt_members`] (the group read receipt sheet).
+    pub(crate) fn with_read_receipts(
+        mut self,
+        read_receipts: Arc<crate::application::services::ReadSummaryService>,
+    ) -> Self {
+        self.read_receipts = Some(read_receipts);
+        self
+    }
+
+    /// One page of who read, or has not yet read, one of the viewer's own
+    /// messages in a group: `{conversationId, serverMsgId, state: "read" |
+    /// "unread", cursor?, limit?}` (limit 1..=200, default 50) in,
+    /// `{conversationId, serverMsgId, available, summary?, userIds, nextCursor?,
+    /// hasMore}` out, user ids ascending. `available: false` (no list) for a
+    /// conversation that is not a group or is above the large-group threshold.
+    /// Core refuses another sender's message (`MESSAGE_READ_RECEIPT_NOT_SENDER`)
+    /// and one not in the conversation. A summary in the page refreshes the
+    /// message's `receipt.readSummary` in open views.
+    pub async fn read_receipt_members(
+        &self,
+        request: serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        self.ensure_session_active().await?;
+        let read_receipts = self.read_receipts.as_ref().ok_or_else(|| {
+            FlareError::localized(
+                ErrorCode::OperationNotSupported,
+                "sdk.read_receipt.unavailable",
+            )
+        })?;
+        let request: crate::application::services::read_summaries::ReadReceiptMembersRequest =
+            serde_json::from_value(request).map_err(|_| {
+                FlareError::localized(
+                    ErrorCode::InvalidParameter,
+                    "sdk.read_receipt.invalid_request",
+                )
+            })?;
+        let page = read_receipts.members(request).await?;
+        serde_json::to_value(page).map_err(|error| FlareError::system(error.to_string()))
     }
 
     /// Lets [`Self::action_availability`] offer "forward" on a plugin card only
