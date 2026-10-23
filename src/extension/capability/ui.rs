@@ -6,8 +6,8 @@ use flare_plugin_protocol::{
     state::SharedState,
     ui::{
         ClientPlugin, NativeCapability, PluginMessage, PluginMessageState, ResolvedPluginView,
-        ResolvedUiBlock, UiActionTarget, UiAudience, UiCatalog, UiDetail, UiFormError,
-        UiRenderContext, UiStateLayers,
+        ResolvedUiBlock, UiActionTarget, UiAudience, UiCatalog, UiDetail, UiEntrySummary,
+        UiFormError, UiRenderContext, UiStateLayers, UiUnavailablePlugin, UiUnavailableReason,
     },
 };
 use serde::{Deserialize, Serialize};
@@ -261,6 +261,167 @@ pub(crate) fn composer_actions(
     });
     actions
 }
+/// A "Me" (account) screen entry declared by an authorized plugin
+/// (`account-entry`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginAccountEntry {
+    pub plugin_id: String,
+    pub contribution_id: String,
+    /// Contribution title in the requested locale (exact tag, then language).
+    pub title: String,
+    /// Kit icon name; absent when undeclared or malformed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
+    pub order: i32,
+    /// The `page` contribution of the same plugin the entry opens.
+    pub page: String,
+    /// The subtitle source: a `query` operation (called with `{}`) and the
+    /// pointer of a scalar in its result data. Never called while listing;
+    /// the host calls it when it shows the entry.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<UiEntrySummary>,
+}
+/// Account entries of `catalog` for `platform`, by order then title, with the
+/// same rules as [`composer_actions`]: the server already trimmed the catalog,
+/// so this only drops what a client cannot render (another tenant's or an
+/// expired catalog, other platforms, unknown schema versions, invalid
+/// documents, an entry whose page is not in the catalog, a summary operation
+/// the catalog does not offer).
+pub(crate) fn account_entries(
+    tenant: &str,
+    catalog: &UiCatalog,
+    platform: ClientPlatform,
+    locale: &str,
+) -> Vec<PluginAccountEntry> {
+    if catalog.tenant_id != tenant || catalog.valid_until_ms <= now_ms() {
+        return Vec::new();
+    }
+    let mut entries: Vec<_> = catalog
+        .plugins
+        .iter()
+        .filter(|plugin| plugin.extensions.platforms.contains(&platform))
+        .flat_map(|plugin| {
+            plugin
+                .extensions
+                .contributions
+                .iter()
+                .filter(|c| {
+                    c.kind == UiContributionKind::AccountEntry
+                        && c.schema_version == 1
+                        && c.schema.validate().is_ok()
+                })
+                .filter_map(move |c| {
+                    let page = match c.schema.actions.as_slice() {
+                        [action] => match &action.target {
+                            UiActionTarget::Page { page } => page,
+                            _ => return None,
+                        },
+                        _ => return None,
+                    };
+                    if !plugin
+                        .extensions
+                        .contributions
+                        .iter()
+                        .any(|p| &p.id == page && p.kind == UiContributionKind::Page)
+                    {
+                        return None;
+                    }
+                    Some(PluginAccountEntry {
+                        plugin_id: plugin.plugin_id.clone(),
+                        contribution_id: c.id.clone(),
+                        title: c.schema.localized_title(locale).to_owned(),
+                        icon: c.icon.clone().filter(|icon| is_ui_icon_name(icon)),
+                        order: c.order,
+                        page: page.clone(),
+                        summary: c.summary.clone().filter(|summary| {
+                            summary.validate().is_ok()
+                                && plugin.operations.contains(&summary.operation)
+                        }),
+                    })
+                })
+        })
+        .collect();
+    entries.sort_by(|a, b| {
+        (a.order, &a.title, &a.contribution_id).cmp(&(b.order, &b.title, &b.contribution_id))
+    });
+    entries
+}
+
+/// The catalog in a `flare.plugin.ui.catalog` result, read plugin by plugin so
+/// one plugin a client cannot read (a newer manifest field, an unknown
+/// contribution kind) costs only that plugin, or only that contribution:
+/// - a contribution that does not parse is dropped from its plugin;
+/// - a plugin that still does not parse is dropped and listed in
+///   `unavailable` as `incompatible_version` (when its id is readable);
+/// - an `unavailable` entry that does not parse is dropped.
+///
+/// `None` when the envelope itself (tenant, version, validity, plugin list)
+/// is unreadable.
+pub(crate) fn parse_catalog(data: &Value) -> Option<UiCatalog> {
+    let object = data.as_object()?;
+    let mut catalog = UiCatalog {
+        tenant_id: object.get("tenantId")?.as_str()?.to_owned(),
+        version: object.get("version")?.as_u64()?,
+        valid_until_ms: object.get("validUntilMs")?.as_i64()?,
+        plugins: Vec::new(),
+        unavailable: object
+            .get("unavailable")
+            .and_then(Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|item| serde_json::from_value(item.clone()).ok())
+                    .collect()
+            })
+            .unwrap_or_default(),
+    };
+    for raw in object.get("plugins")?.as_array()? {
+        match serde_json::from_value::<ClientPlugin>(raw.clone()) {
+            Ok(plugin) => catalog.plugins.push(plugin),
+            Err(_) => {
+                let mut trimmed = raw.clone();
+                if let Some(contributions) = trimmed
+                    .pointer_mut("/extensions/contributions")
+                    .and_then(Value::as_array_mut)
+                {
+                    contributions
+                        .retain(|c| serde_json::from_value::<UiContribution>(c.clone()).is_ok());
+                }
+                match serde_json::from_value::<ClientPlugin>(trimmed) {
+                    Ok(plugin) => {
+                        tracing::warn!(
+                            target: "flare_sdk.plugin",
+                            plugin_id = %plugin.plugin_id,
+                            "plugin catalog: contributions this client cannot read were dropped"
+                        );
+                        catalog.plugins.push(plugin);
+                    }
+                    Err(_) => {
+                        let plugin_id = raw.get("pluginId").and_then(Value::as_str);
+                        tracing::warn!(
+                            target: "flare_sdk.plugin",
+                            plugin_id = plugin_id.unwrap_or_default(),
+                            "plugin catalog: a plugin this client cannot read was dropped"
+                        );
+                        if let Some(plugin_id) = plugin_id.filter(|id| {
+                            !id.is_empty()
+                                && id.len() <= 128
+                                && !catalog.unavailable.iter().any(|p| p.plugin_id == *id)
+                        }) {
+                            catalog.unavailable.push(UiUnavailablePlugin {
+                                plugin_id: plugin_id.to_owned(),
+                                reason: UiUnavailableReason::IncompatibleVersion,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Some(catalog)
+}
+
 pub(crate) fn resolve(tenant: &str, request: Value) -> Result<Value> {
     bounded(&request)?;
     let request: ResolveRequest = serde_json::from_value(request).map_err(|_| invalid())?;
@@ -348,17 +509,20 @@ pub(crate) fn plugin_contribution_of<'a>(
 
 /// The two state layers stored on a card's message: the shared layer from Core
 /// and the viewer's local layer. The shared layer's entity defaults to the
-/// card's own (history carries values and version only).
+/// card's own (history carries values and version only). `unbound` is Core's
+/// mark on a card that is not the one bound to its entity.
 #[derive(Default)]
 pub(crate) struct CardState {
     pub shared: Option<SharedState>,
     pub local: Option<PluginMessageState>,
+    pub unbound: bool,
 }
 impl CardState {
     pub fn of(stored: Option<&crate::model::IMMessage>, entity: Option<&str>) -> Self {
         Self {
             shared: stored.and_then(|m| m.plugin_shared_state(entity)),
             local: stored.and_then(crate::model::IMMessage::plugin_message_state),
+            unbound: stored.is_some_and(crate::model::IMMessage::plugin_card_unbound),
         }
     }
     pub fn layers(&self) -> UiStateLayers<'_> {
@@ -392,14 +556,18 @@ impl CardPresentation<'_> {
 /// The v2 view of a card over its state layers (`payload ← shared ← local`),
 /// plus `data`, the data it was resolved against, while the view is available:
 /// the merged card data, or `{"config": ...}` for a composer-action form
-/// ([`ClientPlugin::document_data`]).
+/// ([`ClientPlugin::document_data`]). A card Core marked as an unbound copy
+/// comes back read-only ([`ResolvedPluginView::into_read_only`]).
 pub(crate) fn present_card(
     catalog: &UiCatalog,
     message: &PluginMessage,
     state: &CardState,
     presentation: &CardPresentation<'_>,
 ) -> Result<Value> {
-    let view = catalog.resolve_with_state(message, state.layers(), presentation.context());
+    let mut view = catalog.resolve_with_state(message, state.layers(), presentation.context());
+    if state.unbound {
+        view = view.into_read_only();
+    }
     let available = view.available;
     let mut view = serde_json::to_value(view).map_err(|_| invalid())?;
     if available

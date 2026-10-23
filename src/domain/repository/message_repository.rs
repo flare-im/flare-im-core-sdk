@@ -7,7 +7,7 @@ use flare_plugin_protocol::ui::PluginMessageState;
 
 use crate::model::message::{
     PLUGIN_SHARED_ENTITY_KEY, PLUGIN_SHARED_STATE_JSON_KEY, PLUGIN_SHARED_STATE_VERSION_KEY,
-    PLUGIN_STATE_JSON_KEY, PLUGIN_STATE_VERSION_KEY, ReactionEntry,
+    PLUGIN_STATE_BASED_ON_KEY, PLUGIN_STATE_JSON_KEY, PLUGIN_STATE_VERSION_KEY, ReactionEntry,
 };
 use crate::model::{IMMessage, MessageSearchQuery};
 use crate::shared::error::{ErrorCode, FlareError, Result};
@@ -54,6 +54,10 @@ pub(crate) fn carry_plugin_message_state(
         PLUGIN_STATE_VERSION_KEY.to_string(),
         existing_version.to_string(),
     );
+    match existing.get(PLUGIN_STATE_BASED_ON_KEY) {
+        Some(based_on) => incoming.insert(PLUGIN_STATE_BASED_ON_KEY.to_string(), based_on.clone()),
+        None => incoming.remove(PLUGIN_STATE_BASED_ON_KEY),
+    };
 }
 
 /// 序列化一份待写入的插件卡片状态；不满足协议边界时拒绝。
@@ -68,19 +72,29 @@ pub(crate) fn encode_plugin_message_state(state: &PluginMessageState) -> Result<
     serde_json::to_string(&state.values).map_err(|_| invalid())
 }
 
-/// 按版本单调写入：更旧的版本返回 `false`，相同版本以后到者为准。
+/// 按版本单调写入：更旧的版本返回 `false`，相同版本以后到者为准。`basedOnVersion` 随这份值一起
+/// 写入（没有时删掉旧的），它描述的是这份值。
 pub(crate) fn write_plugin_message_state(
     attributes: &mut HashMap<String, String>,
-    version: u64,
+    state: &PluginMessageState,
     values_json: &str,
 ) -> bool {
     if attributes.contains_key(PLUGIN_STATE_JSON_KEY)
-        && version < message_attribute_seq(attributes, PLUGIN_STATE_VERSION_KEY)
+        && state.version < message_attribute_seq(attributes, PLUGIN_STATE_VERSION_KEY)
     {
         return false;
     }
     attributes.insert(PLUGIN_STATE_JSON_KEY.to_string(), values_json.to_string());
-    attributes.insert(PLUGIN_STATE_VERSION_KEY.to_string(), version.to_string());
+    attributes.insert(
+        PLUGIN_STATE_VERSION_KEY.to_string(),
+        state.version.to_string(),
+    );
+    match state.based_on_version {
+        Some(based_on) => {
+            attributes.insert(PLUGIN_STATE_BASED_ON_KEY.to_string(), based_on.to_string())
+        }
+        None => attributes.remove(PLUGIN_STATE_BASED_ON_KEY),
+    };
     true
 }
 
@@ -580,11 +594,52 @@ mod tests {
         let merged = merge_message_event_attributes(newer, stored);
         assert_eq!(merged[PLUGIN_STATE_JSON_KEY], r#"{"status":"refunded"}"#);
 
+        let state = |version: u64, based_on: Option<u64>| PluginMessageState {
+            version,
+            based_on_version: based_on,
+            values: Default::default(),
+        };
         let mut target = HashMap::new();
-        assert!(write_plugin_message_state(&mut target, 2, "{}"));
-        assert!(!write_plugin_message_state(&mut target, 1, r#"{"a":1}"#));
-        assert!(write_plugin_message_state(&mut target, 2, r#"{"a":2}"#));
+        assert!(write_plugin_message_state(
+            &mut target,
+            &state(2, Some(5)),
+            "{}"
+        ));
+        assert_eq!(target[PLUGIN_STATE_BASED_ON_KEY], "5");
+        assert!(!write_plugin_message_state(
+            &mut target,
+            &state(1, Some(9)),
+            r#"{"a":1}"#
+        ));
+        assert_eq!(target[PLUGIN_STATE_BASED_ON_KEY], "5");
+        assert!(write_plugin_message_state(
+            &mut target,
+            &state(2, None),
+            r#"{"a":2}"#
+        ));
         assert_eq!(target[PLUGIN_STATE_JSON_KEY], r#"{"a":2}"#);
+        assert!(
+            !target.contains_key(PLUGIN_STATE_BASED_ON_KEY),
+            "basedOnVersion describes the values written with it"
+        );
+    }
+
+    #[test]
+    fn overwrites_carry_the_local_layer_with_its_based_on_version() {
+        let stored = attributes(&[
+            (PLUGIN_STATE_JSON_KEY, r#"{"canClose":true}"#),
+            (PLUGIN_STATE_VERSION_KEY, "3"),
+            (PLUGIN_STATE_BASED_ON_KEY, "7"),
+        ]);
+        let mut incoming = attributes(&[("x", "1")]);
+        carry_plugin_message_state(&mut incoming, &stored);
+        assert_eq!(incoming[PLUGIN_STATE_BASED_ON_KEY], "7");
+        assert_eq!(incoming[PLUGIN_STATE_VERSION_KEY], "3");
+        let mut unversioned = stored.clone();
+        unversioned.remove(PLUGIN_STATE_BASED_ON_KEY);
+        let mut incoming = attributes(&[(PLUGIN_STATE_BASED_ON_KEY, "9")]);
+        carry_plugin_message_state(&mut incoming, &unversioned);
+        assert!(!incoming.contains_key(PLUGIN_STATE_BASED_ON_KEY));
     }
 
     #[test]

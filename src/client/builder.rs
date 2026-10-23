@@ -648,7 +648,9 @@ impl IMClientBuilder {
                 store_ref.messages.clone(),
                 bus.clone(),
                 current_user_id.clone(),
-            ))),
+            )))
+            // Last: the viewer-layer driver dispatches through a clone of the API built so far.
+            .with_viewer_state(current_user_id.clone()),
         );
         let presence_api = Arc::new(PresenceApi::new(
             presence_http_client,

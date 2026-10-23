@@ -7,6 +7,7 @@ pub mod message_builder;
 pub(crate) mod message_deduper;
 pub(crate) mod plugin_shared_state;
 pub(crate) mod plugin_state_refetch;
+pub(crate) mod plugin_viewer_schedule;
 
 pub(crate) use event_deduper::{EventDedupeKey, EventDeduper};
 pub(crate) use incoming_message_converger::IncomingMessageConverger;

@@ -18,6 +18,10 @@ const APP_CARD_VOTE: &str = "vote";
 const APP_CARD_TASK: &str = "task";
 const APP_CARD_SCHEDULE: &str = "schedule";
 const APP_CARD_ANNOUNCEMENT: &str = "announcement";
+/// Card type of the generic plugin card envelope (APP_CARD only).
+pub(crate) const PLUGIN_MESSAGE_CARD_TYPE: &str = "flare.plugin.message.v1";
+/// Placeholder reason of content the SDK does not render as what it claims to be.
+pub(crate) const UNSUPPORTED_CONTENT_REASON: &str = "unsupported";
 
 // ---------- 通用子结构 ----------
 
@@ -1111,6 +1115,18 @@ fn proto_content_to_out(c: &ProtoContent) -> Option<Elem> {
             show_badge: n.show_badge,
             play_sound: n.play_sound,
         }),
+        // A plugin card is only ever an APP_CARD (posted by the platform); its Custom
+        // projection below is what renderers key on. A wire Custom of the same type is
+        // nobody's card (Ingest never vetted it, Core binds no entity to it): unknown
+        // content, so no host draws it as a card.
+        ProtoContent::Custom(c) if c.r#type == PLUGIN_MESSAGE_CARD_TYPE => {
+            Elem::Placeholder(PlaceholderElem {
+                reason: UNSUPPORTED_CONTENT_REASON.to_string(),
+                payload: Vec::new(),
+                fallback_text: String::new(),
+                metadata: std::collections::HashMap::new(),
+            })
+        }
         ProtoContent::Custom(c) => Elem::Custom(CustomElem {
             r#type: c.r#type.clone(),
             payload: c.payload.clone(),
@@ -1380,13 +1396,13 @@ fn elem_to_proto_content(elem: &Elem) -> ProtoContent {
         // APP_CARD is projected as a CustomElem for renderer composition. JSON
         // bindings omit encoded_content; restore this generic envelope before
         // sending/forwarding so message_type and wire oneof remain consistent.
-        Elem::Custom(c) if c.r#type == "flare.plugin.message.v1" && c.payload.len() <= 65536 => {
+        Elem::Custom(c) if c.r#type == PLUGIN_MESSAGE_CARD_TYPE && c.payload.len() <= 65536 => {
             let envelope =
                 serde_json::from_slice::<flare_plugin_protocol::ui::PluginMessage>(&c.payload)
                     .ok()
                     .filter(|message| message.validate().is_ok());
             if let Some(envelope) = envelope {
-                let mut card = app_card_content(envelope.plugin_id, "flare.plugin.message.v1", "");
+                let mut card = app_card_content(envelope.plugin_id, PLUGIN_MESSAGE_CARD_TYPE, "");
                 card.summary = envelope.summary;
                 card.payload_schema = "flare.plugin.message/v1".into();
                 card.payload = c.payload.clone();

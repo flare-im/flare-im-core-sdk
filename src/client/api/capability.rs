@@ -29,11 +29,91 @@ use crate::infrastructure::transport::http::{HttpApiResponse, HttpClient, unwrap
 use crate::shared::error::{ErrorCode, FlareError, Result};
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "capability_platform_v2_tests.rs"]
+mod platform_v2_tests;
+#[cfg(all(test, not(target_arch = "wasm32")))]
 #[path = "capability_ui_tests.rs"]
 mod ui_tests;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 #[path = "capability_ui_v2_tests.rs"]
 mod ui_v2_tests;
+#[path = "capability_viewer.rs"]
+mod viewer;
+
+/// The last catalog read, kept only so presentations that were already
+/// waiting for a read can share it.
+struct CatalogRead {
+    user: String,
+    /// [`CatalogFlight::reads`] when it completed.
+    read: u64,
+    generation: u64,
+    catalog: flare_plugin_protocol::ui::UiCatalog,
+}
+/// Catalog reads for presentation are coalesced, never cached: a
+/// presentation reuses a read only when that read completed after the
+/// presentation started waiting (a screen of cards shares one read), so no
+/// positive grant is kept between calls. An invalidation
+/// ([`CapabilityApi::invalidate_plugin_catalog`], or a plugin answering
+/// disabled, not installed, no permission or unsupported platform) keeps a
+/// read that started before it from being shared.
+#[derive(Default)]
+struct CatalogFlight {
+    reads: std::sync::atomic::AtomicU64,
+    generation: std::sync::atomic::AtomicU64,
+    last: std::sync::Mutex<Option<CatalogRead>>,
+    /// One presentation read at a time; the ones waiting reuse its result.
+    lock: tokio::sync::Mutex<()>,
+}
+impl CatalogFlight {
+    fn generation(&self) -> u64 {
+        self.generation.load(std::sync::atomic::Ordering::SeqCst)
+    }
+    fn reads(&self) -> u64 {
+        self.reads.load(std::sync::atomic::Ordering::SeqCst)
+    }
+    /// The read that completed after `started` (a [`Self::reads`] value) for
+    /// `user`, if no invalidation came since.
+    fn shared_since(
+        &self,
+        user: &str,
+        started: u64,
+    ) -> Option<flare_plugin_protocol::ui::UiCatalog> {
+        let last = self
+            .last
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        last.as_ref()
+            .filter(|read| {
+                read.user == user && read.read > started && read.generation == self.generation()
+            })
+            .map(|read| read.catalog.clone())
+    }
+    fn completed(
+        &self,
+        user: String,
+        generation: u64,
+        catalog: flare_plugin_protocol::ui::UiCatalog,
+    ) {
+        let read = self.reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+        *self
+            .last
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(CatalogRead {
+            user,
+            read,
+            generation,
+            catalog,
+        });
+    }
+    fn invalidate(&self) {
+        self.generation
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        *self
+            .last
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+    }
+}
 
 #[derive(Clone)]
 pub struct CapabilityApi {
@@ -43,6 +123,9 @@ pub struct CapabilityApi {
     bus: Option<crate::kernel::event::EventBus>,
     /// Background read of a presented card's shared layer when its message has none.
     plugin_state_refetch: Option<Arc<crate::application::services::PluginStateRefetch>>,
+    /// Background reads of presented cards' viewer layers (`viewerState`).
+    viewer_state: Option<Arc<viewer::ViewerStateDriver>>,
+    catalog_flight: Arc<CatalogFlight>,
     http: Option<HttpClient>,
     pub(super) session_guard: SessionGuard,
     #[cfg(not(target_arch = "wasm32"))]
@@ -83,6 +166,8 @@ impl CapabilityApi {
             messages: None,
             bus: None,
             plugin_state_refetch: None,
+            viewer_state: None,
+            catalog_flight: Arc::new(CatalogFlight::default()),
             http: None,
             session_guard: SessionGuard::new(current_user_id.clone(), "capability"),
             #[cfg(not(target_arch = "wasm32"))]
@@ -125,6 +210,19 @@ impl CapabilityApi {
         self.plugin_state_refetch = Some(refetch);
         self
     }
+    /// Remembers presented cards (announced again when the catalog changes)
+    /// and schedules their viewer layers (a message-content contribution's
+    /// `viewerState`) in the background. Needs [`Self::with_message_state`]
+    /// and the transport first, so call it last: the driver dispatches
+    /// through a clone of this API taken here, without a driver of its own.
+    pub(crate) fn with_viewer_state(mut self, current_user: Arc<RwLock<String>>) -> Self {
+        let (Some(messages), Some(bus)) = (self.messages.clone(), self.bus.clone()) else {
+            return self;
+        };
+        let driver = viewer::ViewerStateDriver::new(self.clone(), messages, bus, current_user);
+        self.viewer_state = Some(driver);
+        self
+    }
     pub fn with_http_transport(mut self, http: HttpClient) -> Self {
         self.http = Some(http);
         self
@@ -136,6 +234,7 @@ impl CapabilityApi {
         conversation_id: Option<&str>,
         tenant_id: Option<&str>,
         user_id: Option<&str>,
+        message_id: Option<&str>,
     ) -> Result<CapabilityDispatchResult> {
         let request_id = uuid::Uuid::new_v4().to_string();
         let expected_request_id = request_id.clone();
@@ -162,16 +261,18 @@ impl CapabilityApi {
                         "sdk.capability.identity_override_denied",
                     ));
                 }
+                let mut request = serde_json::json!({
+                    "capabilityId": capability_id, "payload": payload,
+                    "conversationId": conversation_id, "requestId": request_id,
+                    "expectedTenantId": self.default_tenant_id, "expectedUserId": user,
+                });
+                if let Some(message_id) = message_id {
+                    request["messageId"] = Value::from(message_id);
+                }
                 let body: HttpApiResponse<CapabilityDispatchResult> = http
-                    .post(
-                        "/api/v1/capabilities/dispatch",
-                        &serde_json::json!({
-                            "capabilityId": capability_id, "payload": payload,
-                            "conversationId": conversation_id, "requestId": request_id,
-                            "expectedTenantId": self.default_tenant_id, "expectedUserId": user,
-                        }),
-                    )
-                    .await?;
+                    .post("/api/v1/capabilities/dispatch", &request)
+                    .await
+                    .map_err(crate::extension::capability::plugin_errors::localize_plugin_error)?;
                 unwrap_api_response(body, "capability dispatch")
             })
             .await?;
@@ -265,12 +366,23 @@ impl CapabilityApi {
     /// back from the server once in the background; a layer found there is
     /// stored and announced with `PluginStateChanged`, so the host presents
     /// the card again.
+    ///
+    /// A card whose contribution declares `viewerState` has its viewer layer
+    /// read in the background while it is presented (missing, or computed from
+    /// an older shared version than the one stored; again on a newer shared
+    /// version when `refreshOn` has `sharedVersion`), throttled per card; the
+    /// layer is stored and announced the same way.
+    ///
+    /// The view says why it is inert in `unavailableReason`; a catalog that
+    /// cannot be read gives the inert summary with `catalog_unreachable`
+    /// instead of an error, and a card Core marked as an unbound copy is
+    /// read-only (`unbound_copy`). Concurrent presentations share one catalog
+    /// read; none is kept after it.
     pub async fn present_plugin_message(&self, request: Value) -> Result<Value> {
         use crate::extension::capability::ui;
         let request = ui::parse_present(request)?;
         self.session_guard
             .run_with_user(|viewer| async move {
-                let (_, catalog) = self.fetch_plugin_ui_catalog().await?;
                 let stored = match request.message_id.as_deref() {
                     Some(message_id) => {
                         self.stored_plugin_message(message_id, &request.message)
@@ -278,19 +390,40 @@ impl CapabilityApi {
                     }
                     None => None,
                 };
+                let viewer = viewer.unwrap_or_default();
+                let catalog = match self.presentation_catalog().await {
+                    Ok(catalog) => catalog,
+                    Err(error) if error.code() == Some(ErrorCode::NotConnected) => {
+                        return Err(error);
+                    }
+                    Err(error) => {
+                        tracing::debug!(target: "flare_sdk.plugin", %error, "plugin catalog unavailable; card shown inert");
+                        if let (Some(driver), Some(stored)) = (&self.viewer_state, &stored) {
+                            driver.on_present(stored, None, &viewer, false);
+                        }
+                        let state = ui::CardState::of(stored.as_ref(), None);
+                        return card_view(
+                            flare_plugin_protocol::ui::ResolvedPluginView::unavailable(
+                                &request.message,
+                                flare_plugin_protocol::ui::UiUnavailableReason::CatalogUnreachable,
+                            ),
+                            &state,
+                        );
+                    }
+                };
                 let kind = request
                     .kind
                     .unwrap_or(flare_plugin_protocol::manifest::UiContributionKind::MessageContent);
-                let entity = ui::contribution_of(&catalog, &request.message, Some(kind))
-                    .and_then(|contribution| contribution.entity_of(&request.message.payload));
+                let contribution = ui::contribution_of(&catalog, &request.message, Some(kind));
+                let entity =
+                    contribution.and_then(|contribution| contribution.entity_of(&request.message.payload));
                 let state = ui::CardState::of(stored.as_ref(), entity.as_deref());
-                let viewer = viewer.unwrap_or_default();
                 if let (Some(refetch), Some(stored), Some(entity)) =
                     (&self.plugin_state_refetch, &stored, entity.as_deref())
                 {
                     refetch.on_present(stored, entity, &viewer);
                 }
-                let mut view = ui::present_card(
+                let view = ui::present_card(
                     &catalog,
                     &request.message,
                     &state,
@@ -302,19 +435,90 @@ impl CapabilityApi {
                         viewer: &viewer,
                     },
                 )?;
-                if let Some(view) = view.as_object_mut() {
-                    view.insert(
-                        "stateVersion".into(),
-                        Value::from(state.local.as_ref().map_or(0, |state| state.version)),
-                    );
-                    view.insert(
-                        "sharedStateVersion".into(),
-                        Value::from(state.shared.as_ref().map_or(0, |state| state.version)),
-                    );
+                if let (Some(driver), Some(stored)) = (&self.viewer_state, &stored) {
+                    // Every presented card is remembered (to present again when the
+                    // catalog changes); only an interactive one reads its viewer layer.
+                    let interactive =
+                        !state.unbound && view.get("available") == Some(&Value::Bool(true));
+                    driver.on_present(stored, contribution, &viewer, interactive);
                 }
-                Ok(view)
+                card_view_value(view, &state)
             })
             .await
+    }
+    /// The server id of the message a card call comes from, for Core to check
+    /// that it is the message bound to the card's entity: the stored message's
+    /// server id, else the id the host gave.
+    fn card_message_id(
+        requested: Option<&str>,
+        stored: Option<&crate::model::IMMessage>,
+    ) -> Option<String> {
+        stored
+            .map(|stored| stored.server_id.trim())
+            .filter(|id| !id.is_empty())
+            .or(requested)
+            .map(str::to_owned)
+    }
+    /// The catalog to present with: a read that completed while this
+    /// presentation waited for it (a screen of cards shares one read), else
+    /// one read now. Nothing is kept after the reads ([`CatalogFlight`]).
+    async fn presentation_catalog(&self) -> Result<flare_plugin_protocol::ui::UiCatalog> {
+        let user = self.session_guard.capture_user().await?.unwrap_or_default();
+        let started = self.catalog_flight.reads();
+        let _flight = self.catalog_flight.lock.lock().await;
+        if let Some(catalog) = self.catalog_flight.shared_since(&user, started) {
+            return Ok(catalog);
+        }
+        Ok(self.fetch_plugin_ui_catalog().await?.1)
+    }
+    /// Keep any catalog read in flight from being shared with later
+    /// presentations.
+    pub(crate) fn invalidate_catalog_reads(&self) {
+        self.catalog_flight.invalidate();
+    }
+    /// The plugin catalog changed (the app returned to the foreground, say):
+    /// a catalog read in flight is not shared any more, and the cards
+    /// presented in the last minutes are announced with `PluginStateChanged`,
+    /// so hosts present them again against a fresh catalog (a disabled
+    /// plugin's cards turn inert, a re-enabled one's come back). The SDK does
+    /// the same by itself when a plugin call answers disabled, not installed,
+    /// no permission or unsupported platform.
+    pub async fn invalidate_plugin_catalog(&self) -> Result<()> {
+        self.catalog_flight.invalidate();
+        if let Some(driver) = &self.viewer_state {
+            driver.announce_recent(None).await;
+        }
+        Ok(())
+    }
+    /// After a failed plugin call: an answer that means the catalog is out of
+    /// date invalidates in-flight reads and re-announces that plugin's recent
+    /// cards.
+    async fn after_plugin_error(&self, error: &FlareError, plugin_id: &str) {
+        if crate::extension::capability::plugin_errors::invalidates_catalog(error) {
+            self.catalog_flight.invalidate();
+            if let Some(driver) = &self.viewer_state {
+                driver.announce_recent(Some(plugin_id)).await;
+            }
+        }
+    }
+    /// A card call (action, detail, viewer layer) dispatched with the message
+    /// it comes from (`messageId`, the card message's server id).
+    pub(crate) async fn dispatch_card(
+        &self,
+        capability_id: &str,
+        payload: Value,
+        conversation_id: Option<&str>,
+        message_id: Option<&str>,
+    ) -> Result<CapabilityDispatchResult> {
+        self.dispatch_with(
+            capability_id,
+            payload,
+            conversation_id,
+            Some(&self.default_tenant_id),
+            None,
+            message_id,
+        )
+        .await
     }
     /// The stored message for `message_id` (server id or client message id), only
     /// when it carries the same plugin card. Read failures degrade to no state.
@@ -405,9 +609,15 @@ impl CapabilityApi {
             return;
         };
         let mut changed = None;
+        // The newest shared version known for the card: the plugin's local layer is never
+        // fresh beyond it (`PluginMessageState::capped_at`).
+        let mut known_shared = stored.plugin_shared_state_version();
         if let Some(state) = &shared {
             match store.apply_plugin_shared_state(message_id, state).await {
-                Ok(OperationApplyResult::Applied) => changed = Some(state.version),
+                Ok(OperationApplyResult::Applied) => {
+                    changed = Some(state.version);
+                    known_shared = known_shared.max(state.version);
+                }
                 Ok(result) => tracing::debug!(
                     target = "flare_sdk.plugin",
                     ?result,
@@ -421,8 +631,8 @@ impl CapabilityApi {
                 ),
             }
         }
-        if let Some(state) = &local {
-            match store.apply_plugin_message_state(message_id, state).await {
+        if let Some(state) = local.map(|state| state.capped_at(known_shared)) {
+            match store.apply_plugin_message_state(message_id, &state).await {
                 Ok(OperationApplyResult::Applied) => changed = Some(state.version),
                 Ok(result) => tracing::debug!(
                     target = "flare_sdk.plugin",
@@ -463,6 +673,15 @@ impl CapabilityApi {
     /// With `messageId`, a successful operation's `data.sharedState` (this
     /// card's entity) and `data.messageState` are stored on that message; calls
     /// not made from a message ignore them.
+    ///
+    /// A card call carries the card message's server id to Core
+    /// (`messageId`), which accepts it only from the message bound to the
+    /// card's entity. A card Core marked as an unbound copy is refused here
+    /// with `sdk.plugin.card_unbound`. Failures come back as `sdk.plugin.*`
+    /// keys (see [`crate::extension::capability::plugin_errors`]); one meaning
+    /// the plugin is no longer available invalidates the catalog and
+    /// re-announces the plugin's recent cards. A create result's `data.posted`
+    /// (the card Core posted) is returned as it is.
     pub async fn invoke_plugin_action(&self, request: Value) -> Result<Value> {
         use crate::extension::capability::ui;
         use flare_plugin_protocol::ui::UiActionTarget;
@@ -477,6 +696,17 @@ impl CapabilityApi {
                     }
                     None => None,
                 };
+                if stored
+                    .as_ref()
+                    .is_some_and(crate::model::IMMessage::plugin_card_unbound)
+                {
+                    return Err(FlareError::localized(
+                        ErrorCode::PermissionDenied,
+                        "sdk.plugin.card_unbound",
+                    ));
+                }
+                let card_message_id =
+                    Self::card_message_id(request.message_id.as_deref(), stored.as_ref());
                 match ui::prepare_action(
                     &self.default_tenant_id,
                     &catalog,
@@ -491,15 +721,24 @@ impl CapabilityApi {
                         payload,
                         entity,
                     } => {
-                        let response = self
-                            .dispatch(
+                        let response = match self
+                            .dispatch_with(
                                 &operation,
                                 payload,
                                 request.conversation_id.as_deref(),
                                 Some(&self.default_tenant_id),
                                 user_id.as_deref(),
+                                card_message_id.as_deref(),
                             )
-                            .await?;
+                            .await
+                        {
+                            Ok(response) => response,
+                            Err(error) => {
+                                self.after_plugin_error(&error, &request.message.plugin_id)
+                                    .await;
+                                return Err(error);
+                            }
+                        };
                         if let Some(message_id) = request.message_id.as_deref() {
                             self.write_plugin_message_state(
                                 message_id,
@@ -555,6 +794,15 @@ impl CapabilityApi {
                     }
                     None => None,
                 };
+                if stored
+                    .as_ref()
+                    .is_some_and(crate::model::IMMessage::plugin_card_unbound)
+                {
+                    return Err(FlareError::localized(
+                        ErrorCode::PermissionDenied,
+                        "sdk.plugin.card_unbound",
+                    ));
+                }
                 let detail = ui::prepare_detail(
                     &self.default_tenant_id,
                     &catalog,
@@ -564,8 +812,11 @@ impl CapabilityApi {
                 // A malformed cursor is refused before anything is sent.
                 let input = detail.input(request.cursor.as_deref())?;
                 let user_id = user_id.as_deref();
+                let card_message_id =
+                    Self::card_message_id(request.message_id.as_deref(), stored.as_ref());
+                let card = (user_id, card_message_id.as_deref());
                 let mut view = self
-                    .detail_page(&catalog, &request, &detail, input, user_id)
+                    .detail_page(&catalog, &request, &detail, input, card)
                     .await?;
                 match previous {
                     Some(previous) if request.refresh => {
@@ -576,7 +827,7 @@ impl CapabilityApi {
                         {
                             let input = detail.input(Some(&cursor))?;
                             let page = self
-                                .detail_page(&catalog, &request, &detail, input, user_id)
+                                .detail_page(&catalog, &request, &detail, input, card)
                                 .await?;
                             view.append_page(page);
                             pages += 1;
@@ -593,26 +844,37 @@ impl CapabilityApi {
             .await
     }
     /// One page of a card's detail: the detail operation with `input`, its
-    /// result resolved against the detail document.
+    /// result resolved against the detail document. `card` is the signed-in
+    /// user and the card message's server id.
     async fn detail_page(
         &self,
         catalog: &flare_plugin_protocol::ui::UiCatalog,
         request: &crate::extension::capability::ui::DetailRequest,
         detail: &crate::extension::capability::ui::PreparedDetail,
         input: Value,
-        user_id: Option<&str>,
+        card: (Option<&str>, Option<&str>),
     ) -> Result<flare_plugin_protocol::ui::ResolvedPluginView> {
         use crate::extension::capability::ui;
-        let response = self
-            .dispatch(
+        let (user_id, message_id) = card;
+        let response = match self
+            .dispatch_with(
                 detail.operation(),
                 input,
                 request.conversation_id.as_deref(),
                 Some(&self.default_tenant_id),
                 user_id,
+                message_id,
             )
-            .await?
-            .fail_if_unsuccessful()?;
+            .await
+            .and_then(CapabilityDispatchResult::fail_if_unsuccessful)
+        {
+            Ok(response) => response,
+            Err(error) => {
+                self.after_plugin_error(&error, &request.message.plugin_id)
+                    .await;
+                return Err(error);
+            }
+        };
         Ok(ui::detail_page(
             catalog,
             &request.message,
@@ -634,8 +896,8 @@ impl CapabilityApi {
         &self,
         message: &flare_plugin_protocol::ui::PluginMessage,
     ) -> bool {
-        match self.fetch_plugin_ui_catalog().await {
-            Ok((_, catalog)) => crate::extension::capability::ui::contribution_of(
+        match self.presentation_catalog().await {
+            Ok(catalog) => crate::extension::capability::ui::contribution_of(
                 &catalog,
                 message,
                 Some(flare_plugin_protocol::manifest::UiContributionKind::MessageContent),
@@ -678,6 +940,40 @@ impl CapabilityApi {
             .await?;
         Ok(serde_json::json!({ "actions": actions }))
     }
+    /// "Me" (account) screen entries of the plugins the current user may use
+    /// on `platform` (`account-entry` contributions), titles in `locale`,
+    /// sorted by order then title. Reads a fresh catalog each call; no further
+    /// grant check, the server already trimmed it. A `summary` is never called
+    /// here: the host dispatches its `query` operation (input `{}`) when it
+    /// shows the entry and reads the scalar at `summary.path`.
+    pub async fn account_entries(
+        &self,
+        platform: flare_plugin_protocol::manifest::ClientPlatform,
+        locale: &str,
+    ) -> Result<Vec<crate::extension::capability::ui::PluginAccountEntry>> {
+        self.session_guard
+            .run(async {
+                let (_, catalog) = self.fetch_plugin_ui_catalog().await?;
+                Ok(crate::extension::capability::ui::account_entries(
+                    &self.default_tenant_id,
+                    &catalog,
+                    platform,
+                    locale,
+                ))
+            })
+            .await
+    }
+    /// Binding form of [`Self::account_entries`]: `{platform, locale}` in,
+    /// `{entries: [{pluginId, contributionId, title, icon?, order, page,
+    /// summary?: {operation, path}}]}` out. `page` is the plugin's page
+    /// contribution the entry opens.
+    pub async fn plugin_account_entries(&self, request: Value) -> Result<Value> {
+        let request = crate::extension::capability::ui::parse_composer_actions(request)?;
+        let entries = self
+            .account_entries(request.platform, &request.locale)
+            .await?;
+        Ok(serde_json::json!({ "entries": entries }))
+    }
     /// Refresh on login, tenant change and plugin state change. The returned
     /// catalog expires; callers must drop it on logout and never persist secrets.
     /// Each plugin carries `configuration`: the client-visible subset of its
@@ -686,9 +982,23 @@ impl CapabilityApi {
     pub async fn plugin_ui_catalog(&self) -> Result<Value> {
         Ok(self.fetch_plugin_ui_catalog().await?.0)
     }
+    /// A fresh catalog read; presentations waiting meanwhile share it
+    /// ([`CatalogFlight`]). The catalog is read plugin by plugin
+    /// ([`crate::extension::capability::ui::parse_catalog`]), so a plugin this
+    /// client cannot read costs only that plugin. A catalog that cannot be read
+    /// at all is `sdk.plugin.catalog_unreachable`.
     async fn fetch_plugin_ui_catalog(
         &self,
     ) -> Result<(Value, flare_plugin_protocol::ui::UiCatalog)> {
+        use crate::extension::capability::plugin_errors::PLUGIN_CATALOG_UNREACHABLE_KEY;
+        let unreachable = || {
+            FlareError::localized(
+                ErrorCode::ServiceUnavailable,
+                PLUGIN_CATALOG_UNREACHABLE_KEY,
+            )
+        };
+        let generation = self.catalog_flight.generation();
+        let user = self.session_guard.capture_user().await?.unwrap_or_default();
         let result = self
             .dispatch(
                 flare_plugin_protocol::ui::UI_CATALOG_OPERATION,
@@ -697,16 +1007,24 @@ impl CapabilityApi {
                 None,
                 None,
             )
-            .await?;
+            .await
+            .map_err(|error| match error.code() {
+                Some(ErrorCode::NotConnected) => error,
+                _ => {
+                    tracing::debug!(target: "flare_sdk.plugin", %error, "plugin catalog read failed");
+                    unreachable()
+                }
+            })?;
         if !result.success {
-            return Err(FlareError::system("plugin UI catalog unavailable"));
+            return Err(unreachable());
         }
-        let catalog: flare_plugin_protocol::ui::UiCatalog =
-            serde_json::from_value(result.data.clone())
-                .map_err(|_| FlareError::system("invalid plugin UI catalog"))?;
+        let catalog = crate::extension::capability::ui::parse_catalog(&result.data)
+            .ok_or_else(unreachable)?;
         if catalog.plugins.len() > 128 {
             return Err(FlareError::system("plugin UI catalog limit"));
         }
+        self.catalog_flight
+            .completed(user, generation, catalog.clone());
         Ok((result.data, catalog))
     }
 
@@ -821,7 +1139,6 @@ impl CapabilityApi {
         ))
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
     pub async fn dispatch(
         &self,
         capability_id: &str,
@@ -830,9 +1147,41 @@ impl CapabilityApi {
         tenant_id: Option<&str>,
         user_id: Option<&str>,
     ) -> Result<CapabilityDispatchResult> {
+        self.dispatch_with(
+            capability_id,
+            payload,
+            conversation_id,
+            tenant_id,
+            user_id,
+            None,
+        )
+        .await
+    }
+
+    /// [`Self::dispatch`] with the plugin card message a call comes from
+    /// (`message_id`, a server message id): HTTP `messageId`, gRPC
+    /// `message_id`. Core accepts a card call only from the message bound to
+    /// the card's entity.
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn dispatch_with(
+        &self,
+        capability_id: &str,
+        payload: Value,
+        conversation_id: Option<&str>,
+        tenant_id: Option<&str>,
+        user_id: Option<&str>,
+        message_id: Option<&str>,
+    ) -> Result<CapabilityDispatchResult> {
         if self.http.is_some() {
             return self
-                .dispatch_http(capability_id, payload, conversation_id, tenant_id, user_id)
+                .dispatch_http(
+                    capability_id,
+                    payload,
+                    conversation_id,
+                    tenant_id,
+                    user_id,
+                    message_id,
+                )
                 .await;
         }
         let api = self.clone();
@@ -840,6 +1189,7 @@ impl CapabilityApi {
         let conversation_id = conversation_id.map(str::to_string);
         let tenant_id = tenant_id.map(str::to_string);
         let user_id = user_id.map(str::to_string);
+        let message_id = message_id.map(str::to_string);
         self.session_guard
             .run_with_user(move |session_user_id| async move {
                 let user = session_user_id
@@ -870,6 +1220,7 @@ impl CapabilityApi {
                     conversation_id: conversation_id.unwrap_or_default(),
                     payload_json,
                     request_id: uuid::Uuid::new_v4().to_string(),
+                    message_id: message_id.unwrap_or_default(),
                 });
                 api.enrich_metadata(&mut req).await?;
                 let resp = client
@@ -903,16 +1254,24 @@ impl CapabilityApi {
     }
 
     #[cfg(target_arch = "wasm32")]
-    pub async fn dispatch(
+    async fn dispatch_with(
         &self,
         capability_id: &str,
         payload: Value,
         conversation_id: Option<&str>,
         tenant_id: Option<&str>,
         user_id: Option<&str>,
+        message_id: Option<&str>,
     ) -> Result<CapabilityDispatchResult> {
-        self.dispatch_http(capability_id, payload, conversation_id, tenant_id, user_id)
-            .await
+        self.dispatch_http(
+            capability_id,
+            payload,
+            conversation_id,
+            tenant_id,
+            user_id,
+            message_id,
+        )
+        .await
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -1382,6 +1741,35 @@ impl CapabilityApi {
             "sdk.capability.wasm_not_supported",
         ))
     }
+}
+
+/// A presented card as the bindings return it: the view plus `stateVersion`
+/// (local layer, 0 when none) and `sharedStateVersion` (shared layer, 0 when
+/// none).
+fn card_view_value(
+    mut view: Value,
+    state: &crate::extension::capability::ui::CardState,
+) -> Result<Value> {
+    if let Some(view) = view.as_object_mut() {
+        view.insert(
+            "stateVersion".into(),
+            Value::from(state.local.as_ref().map_or(0, |state| state.version)),
+        );
+        view.insert(
+            "sharedStateVersion".into(),
+            Value::from(state.shared.as_ref().map_or(0, |state| state.version)),
+        );
+    }
+    Ok(view)
+}
+fn card_view(
+    view: flare_plugin_protocol::ui::ResolvedPluginView,
+    state: &crate::extension::capability::ui::CardState,
+) -> Result<Value> {
+    card_view_value(
+        serde_json::to_value(view).map_err(|_| FlareError::system("plugin view encoding"))?,
+        state,
+    )
 }
 
 #[cfg(not(target_arch = "wasm32"))]

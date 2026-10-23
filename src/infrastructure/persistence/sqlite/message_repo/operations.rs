@@ -422,7 +422,7 @@ impl MessageStore for SqliteMessageRepo {
             let server_id: String = row.try_get("server_id").map_err(sqlx_err)?;
             let extra_raw: Option<String> = row.try_get("attributes").map_err(sqlx_err)?;
             let mut attributes = parse_extra(extra_raw.as_deref());
-            if !write_plugin_message_state(&mut attributes, state.version, &values_json) {
+            if !write_plugin_message_state(&mut attributes, state, &values_json) {
                 continue;
             }
             sqlx::query("UPDATE messages SET attributes = ? WHERE server_id = ?")

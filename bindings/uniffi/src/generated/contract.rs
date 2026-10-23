@@ -147,6 +147,8 @@ pub const UNIFFI_CANONICAL_OPERATIONS: &[&str] = &[
     "capability.plugin_ui_catalog",
     "capability.plugin_composer_actions",
     "capability.plugin_detail",
+    "capability.plugin_account_entries",
+    "capability.plugin_catalog_invalidate",
     "capability.list",
     "capability.list_user",
     "capability.dispatch",

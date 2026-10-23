@@ -563,7 +563,7 @@ impl MessageStore for MemoryMessageStore {
             return Ok(OperationApplyResult::NotFound);
         };
         Ok(
-            if write_plugin_message_state(&mut message.attributes, state.version, &values_json) {
+            if write_plugin_message_state(&mut message.attributes, state, &values_json) {
                 OperationApplyResult::Applied
             } else {
                 OperationApplyResult::IgnoredStale

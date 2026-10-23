@@ -1694,6 +1694,23 @@
           "result": "json"
         },
         {
+          "op": "plugin_account_entries",
+          "method": "plugin_account_entries",
+          "args": [
+            [
+              "request",
+              "json_null_default"
+            ]
+          ],
+          "result": "json"
+        },
+        {
+          "op": "plugin_catalog_invalidate",
+          "method": "invalidate_plugin_catalog",
+          "args": [],
+          "result": "unit"
+        },
+        {
           "op": "capability_list",
           "method": "list_capabilities",
           "args": [],

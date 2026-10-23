@@ -946,6 +946,17 @@ final class _DefaultCapabilitiesApi implements CapabilitiesApi {
   }
 
   @override
+  Future<Map<String, Object?>> pluginAccountEntries(PluginUiEvaluationRequest request) {
+    return _bridge.invoke<Map<String, Object?>>(
+        NativeCallMap.capabilityPluginAccountEntries, pluginUiEvaluationRequestToMap(request));
+  }
+
+  @override
+  Future<void> invalidatePluginCatalog(Map<String, Object?> request) {
+    return _bridge.invoke<void>(NativeCallMap.capabilityPluginCatalogInvalidate, request);
+  }
+
+  @override
   Future<Map<String, Object?>> listCapabilities(Map<String, Object?> request) {
     return _bridge.invoke<Map<String, Object?>>(
         NativeCallMap.capabilityList, request);

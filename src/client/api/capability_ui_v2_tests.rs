@@ -72,6 +72,7 @@ impl Fixture {
                     .unwrap()
                     .clone(),
             }],
+            unavailable: vec![],
         }));
         let calls = Arc::new(SyncMutex::new(Vec::new()));
         let results = Arc::new(SyncMutex::new(HashMap::<String, Value>::new()));
@@ -230,6 +231,7 @@ fn local(version: u64, values: Value) -> PluginMessageState {
     PluginMessageState {
         version,
         values: values.as_object().unwrap().clone(),
+        based_on_version: None,
     }
 }
 

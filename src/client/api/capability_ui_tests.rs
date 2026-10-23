@@ -18,8 +18,12 @@ struct Fixture {
     hold: Arc<AtomicBool>,
     entered: Arc<tokio::sync::Notify>,
     release: Arc<tokio::sync::Notify>,
+    // Read only by the durable-command tests, which need SQLite storage.
+    #[cfg_attr(not(feature = "storage-sqlite"), allow(dead_code))]
     drop_next: Arc<AtomicBool>,
+    #[cfg_attr(not(feature = "storage-sqlite"), allow(dead_code))]
     business_error: Arc<SyncMutex<Option<String>>>,
+    #[cfg_attr(not(feature = "storage-sqlite"), allow(dead_code))]
     observation: Arc<SyncMutex<Option<Value>>>,
     vote_result: Arc<SyncMutex<Value>>,
     server: tokio::task::JoinHandle<()>,
@@ -49,6 +53,7 @@ impl Fixture {
                 operations: ["example.poll.vote".into(), "example.poll.details".into()].into(),
                 configuration: Default::default(),
             }],
+            unavailable: vec![],
         }));
         let calls = Arc::new(SyncMutex::new(Vec::new()));
         let hold = Arc::new(AtomicBool::new(false));

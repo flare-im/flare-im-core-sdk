@@ -68,6 +68,14 @@ pub const C_DISPATCH_OPS: &[(&str, &str)] = &[
         "pending_plugin_command",
     ),
     (
+        "capability.plugin_account_entries",
+        "plugin_account_entries",
+    ),
+    (
+        "capability.plugin_catalog_invalidate",
+        "plugin_catalog_invalidate",
+    ),
+    (
         "capability.plugin_composer_actions",
         "plugin_composer_actions",
     ),

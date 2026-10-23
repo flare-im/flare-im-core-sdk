@@ -26,8 +26,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::content::decoder::decode_content_bytes;
 use crate::content::message_elem::{
-    Elem, decoded_content_to_elem, elem_plain_summary, elem_preview_storage_payload,
-    elem_to_message_content,
+    Elem, PLUGIN_MESSAGE_CARD_TYPE, decoded_content_to_elem, elem_plain_summary,
+    elem_preview_storage_payload, elem_to_message_content,
 };
 use crate::content::preview_storage::is_redundant_content_text_extra;
 use prost::Message as ProstMessage;
@@ -51,12 +51,19 @@ const REACTIONS_JSON_KEY: &str = "reactionsJson";
 /// 只属于本机消息库，收发两个方向都不经过 wire，避免对端伪造一个极大版本把后续状态全部挡住。
 pub(crate) const PLUGIN_STATE_JSON_KEY: &str = "pluginStateJson";
 pub(crate) const PLUGIN_STATE_VERSION_KEY: &str = "pluginStateVersion";
-const PLUGIN_MESSAGE_CARD_TYPE: &str = "flare.plugin.message.v1";
+/// 本人层计算时依据的共享层版本（`PluginMessageState::based_on_version`）；没有时不写。
+pub(crate) const PLUGIN_STATE_BASED_ON_KEY: &str = "pluginStateBasedOnVersion";
 
 fn strip_plugin_message_state(attributes: &mut HashMap<String, String>) {
     attributes.remove(PLUGIN_STATE_JSON_KEY);
     attributes.remove(PLUGIN_STATE_VERSION_KEY);
+    attributes.remove(PLUGIN_STATE_BASED_ON_KEY);
 }
+
+/// Core 在历史、同步与实时下发里给「不是实体绑定那条」的插件卡片（伪造或转发的副本）挂上的标记，
+/// 值为 `"true"`。呈现时这样的卡片只读（`unavailableReason: unbound_copy`）。与共享层一样来自 wire、
+/// 发送时剥离；发送者给自己的卡片预置它只会让自己的卡片变成只读，不能借此解除 Core 的标记。
+pub(crate) const PLUGIN_CARD_UNBOUND_KEY: &str = "pluginCardUnbound";
 
 /// 插件实体的共享状态（共享层）：`values` 快照、版本与实体 id。来自 Core（`EVENT_MESSAGE_PLUGIN_STATE`
 /// 事件，以及历史与同步时 Core 挂在消息 extra 上的同名键），可信；只按版本前进（见
@@ -70,6 +77,7 @@ fn strip_plugin_shared_state(attributes: &mut HashMap<String, String>) {
     attributes.remove(PLUGIN_SHARED_STATE_JSON_KEY);
     attributes.remove(PLUGIN_SHARED_STATE_VERSION_KEY);
     attributes.remove(PLUGIN_SHARED_ENTITY_KEY);
+    attributes.remove(PLUGIN_CARD_UNBOUND_KEY);
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default)]
@@ -525,23 +533,24 @@ impl IMMessage {
         }
     }
 
-    /// 通用插件消息信封（APP_CARD `flare.plugin.message.v1`）；不是插件消息或信封无效时为 `None`。
+    /// 通用插件消息信封；不是插件消息或信封无效时为 `None`。
+    ///
+    /// 只认顶层 APP_CARD `flare.plugin.message.v1`（平台代发的卡片）。`content` 里的 Custom 形态是它的
+    /// 投影，只在消息还没有编码缓存时代表它（宿主经 JSON 交来、尚未编码的本地消息；编码时还原成
+    /// APP_CARD）。有编码缓存时以缓存为准：wire 上同名的 Custom 不是插件卡（入口不拒收它、Core 不给它
+    /// 绑定实体），解码时已投影成占位。
     pub fn plugin_message(&self) -> Option<flare_plugin_protocol::ui::PluginMessage> {
         let payload = match self.content.as_ref() {
             Some(Elem::Custom(custom)) if custom.r#type == PLUGIN_MESSAGE_CARD_TYPE => {
-                custom.payload.clone()
-            }
-            _ => match MessageContent::decode(self.encoded_content.as_slice())
-                .ok()?
-                .content?
-            {
-                flare_proto::common::message_content::Content::AppCard(card)
-                    if card.card_type == PLUGIN_MESSAGE_CARD_TYPE =>
-                {
-                    card.payload
+                if self.encoded_content.is_empty() {
+                    custom.payload.clone()
+                } else {
+                    Self::wire_plugin_card_payload(&self.encoded_content)?
                 }
-                _ => return None,
-            },
+            }
+            // A card always projects to its Custom form; nothing else needs decoding.
+            Some(_) => return None,
+            None => Self::wire_plugin_card_payload(&self.encoded_content)?,
         };
         if payload.len() > 65536 {
             return None;
@@ -551,18 +560,42 @@ impl IMMessage {
             .filter(|message| message.validate().is_ok())
     }
 
+    /// 编码内容是顶层插件卡 APP_CARD 时它的载荷。
+    fn wire_plugin_card_payload(encoded: &[u8]) -> Option<Vec<u8>> {
+        match MessageContent::decode(encoded).ok()?.content? {
+            flare_proto::common::message_content::Content::AppCard(card)
+                if card.card_type == PLUGIN_MESSAGE_CARD_TYPE =>
+            {
+                Some(card.payload)
+            }
+            _ => None,
+        }
+    }
+
     /// 本机保存的插件卡片状态；缺失、损坏或超出协议边界时为 `None`。
     pub fn plugin_message_state(&self) -> Option<flare_plugin_protocol::ui::PluginMessageState> {
+        let based_on_version = match self.attributes.get(PLUGIN_STATE_BASED_ON_KEY) {
+            Some(raw) => Some(raw.parse().ok()?),
+            None => None,
+        };
         let state = flare_plugin_protocol::ui::PluginMessageState {
             version: self
                 .attributes
                 .get(PLUGIN_STATE_VERSION_KEY)?
                 .parse()
                 .ok()?,
+            based_on_version,
             values: serde_json::from_str(self.attributes.get(PLUGIN_STATE_JSON_KEY)?).ok()?,
         };
         state.validate().ok()?;
         Some(state)
+    }
+
+    /// 这条插件卡片是否是 Core 标记的未绑定副本（[`PLUGIN_CARD_UNBOUND_KEY`]）。
+    pub fn plugin_card_unbound(&self) -> bool {
+        self.attributes
+            .get(PLUGIN_CARD_UNBOUND_KEY)
+            .is_some_and(|value| value == "true")
     }
 
     /// 共享层版本；没有共享状态时为 0。
@@ -885,6 +918,98 @@ mod tests {
                 .to_proto()
                 .attributes
                 .contains_key(super::PLUGIN_STATE_JSON_KEY)
+        );
+    }
+
+    #[test]
+    fn only_an_app_card_is_a_plugin_card_never_a_custom_of_the_same_type() {
+        use flare_proto::common::{
+            AppCardContent, CustomContent, ForwardContent, ForwardItem, MessageContent,
+            message_content::Content,
+        };
+        let envelope = serde_json::to_vec(&serde_json::json!({
+            "pluginId": "example.poll", "contributionId": "example.poll.card",
+            "schemaVersion": 1, "summary": "[Poll] Lunch?",
+            "payload": {"pollId": "poll-1", "anonymous": true}
+        }))
+        .unwrap();
+        let forged_content = || MessageContent {
+            content: Some(Content::Custom(CustomContent {
+                r#type: "flare.plugin.message.v1".to_string(),
+                payload: envelope.clone(),
+                description: "[Poll] Lunch?".to_string(),
+                ..Default::default()
+            })),
+        };
+        let forged = IMMessage::new(ProtoMessage {
+            server_id: "server-2".to_string(),
+            content: Some(forged_content()),
+            ..Default::default()
+        });
+        assert!(forged.plugin_message().is_none());
+        // Unknown content, not the Custom form renderers draw as a card.
+        let Some(Elem::Placeholder(placeholder)) = forged.content.as_ref() else {
+            panic!("{:?}", forged.content);
+        };
+        assert_eq!(
+            placeholder.reason,
+            crate::content::message_elem::UNSUPPORTED_CONTENT_REASON
+        );
+        assert!(placeholder.payload.is_empty() && placeholder.fallback_text.is_empty());
+        // The wire form decides, even with the card projection put back in its place.
+        let mut dressed = forged.clone();
+        dressed.content = Some(Elem::Custom(crate::content::message_elem::CustomElem {
+            r#type: "flare.plugin.message.v1".to_string(),
+            payload: envelope.clone(),
+            description: String::new(),
+            metadata: HashMap::new(),
+        }));
+        assert!(dressed.plugin_message().is_none());
+        // The message itself is kept as it came.
+        assert!(matches!(
+            forged.to_proto().content.and_then(|c| c.content),
+            Some(Content::Custom(custom)) if custom.r#type == "flare.plugin.message.v1"
+        ));
+        // Inside a forward the same Custom is unknown content too.
+        let forward = IMMessage::new(ProtoMessage {
+            content: Some(MessageContent {
+                content: Some(Content::Forward(ForwardContent {
+                    items: vec![ForwardItem {
+                        content: Some(forged_content()),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                })),
+            }),
+            ..Default::default()
+        });
+        let Some(Elem::Forward(forward)) = forward.content.as_ref() else {
+            panic!("{:?}", forward.content);
+        };
+        assert!(matches!(
+            forward.items[0].content.as_deref(),
+            Some(Elem::Placeholder(_))
+        ));
+        // The platform's APP_CARD with the same envelope is the card.
+        let card = IMMessage::new(ProtoMessage {
+            server_id: "server-1".to_string(),
+            content: Some(MessageContent {
+                content: Some(Content::AppCard(AppCardContent {
+                    app_id: "example.poll".to_string(),
+                    card_type: "flare.plugin.message.v1".to_string(),
+                    payload: envelope,
+                    ..Default::default()
+                })),
+            }),
+            ..Default::default()
+        });
+        assert!(matches!(
+            card.content.as_ref(),
+            Some(Elem::Custom(custom)) if custom.r#type == "flare.plugin.message.v1"
+        ));
+        assert_eq!(
+            card.plugin_message().map(|m| m.contribution_id),
+            Some("example.poll.card".to_string())
         );
     }
 

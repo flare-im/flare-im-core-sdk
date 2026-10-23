@@ -10,6 +10,8 @@
 pub mod call_event;
 mod manifest;
 mod plugin;
+/// Localized keys of plugin call failures.
+pub mod plugin_errors;
 mod registry;
 pub mod rtc_ids;
 /// Shared safe data-only UI evaluation; every binding uses the same contract.
