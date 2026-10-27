@@ -101,6 +101,8 @@ pub struct HttpRequestContext {
     core_renewal: RwLock<Option<Arc<dyn CoreBearerRenewal>>>,
     /// Concurrent expiries renew once; later waiters reuse the bearer already renewed.
     core_renewal_gate: tokio::sync::Mutex<()>,
+    /// Invalidates a pending renewal when the host replaces or clears its session.
+    core_session_epoch: std::sync::atomic::AtomicU64,
 }
 
 impl HttpRequestContext {
@@ -110,13 +112,28 @@ impl HttpRequestContext {
 
     pub async fn set_core_bearer_renewal(&self, renewal: Option<Arc<dyn CoreBearerRenewal>>) {
         *self.core_renewal.write().await = renewal;
+        self.core_session_epoch
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     }
 
     /// After Core rejected `rejected` as expired: the bearer to retry with, if any.
     pub(crate) async fn renew_core_bearer(&self, rejected: &str) -> Option<String> {
+        let epoch = self
+            .core_session_epoch
+            .load(std::sync::atomic::Ordering::SeqCst);
         let renewal = self.core_renewal.read().await.clone()?;
         let _gate = self.core_renewal_gate.lock().await;
+        if self
+            .core_session_epoch
+            .load(std::sync::atomic::Ordering::SeqCst)
+            != epoch
+        {
+            return None;
+        }
         let current = self.auth_token.read().await.clone();
+        if current.trim().is_empty() {
+            return None;
+        }
         if !current.trim().is_empty() && current != rejected {
             return Some(current);
         }
@@ -124,11 +141,28 @@ impl HttpRequestContext {
             .renew()
             .await
             .filter(|token| !token.trim().is_empty() && token != rejected)?;
-        *self.auth_token.write().await = fresh.clone();
+        let mut current = self.auth_token.write().await;
+        if self
+            .core_session_epoch
+            .load(std::sync::atomic::Ordering::SeqCst)
+            != epoch
+            || current.trim().is_empty()
+        {
+            return None;
+        }
+        // The host may already have pushed a newer token while renewal awaited.
+        if *current != rejected {
+            return Some(current.clone());
+        }
+        *current = fresh.clone();
         Some(fresh)
     }
 
     pub async fn set_auth_context(&self, token: String, language: Option<String>) {
+        if token.trim().is_empty() {
+            self.core_session_epoch
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
         *self.auth_token.write().await = token;
         if let Some(language) = language {
             *self.language.write().await = language;
@@ -584,24 +618,36 @@ mod tests {
         context.set_auth_context("expired-token".into(), None).await;
         let renewal = std::sync::Arc::new(CountingRenewal(Default::default()));
         context
-            .set_core_bearer_renewal(Some(renewal.clone() as std::sync::Arc<dyn super::CoreBearerRenewal>))
+            .set_core_bearer_renewal(Some(
+                renewal.clone() as std::sync::Arc<dyn super::CoreBearerRenewal>
+            ))
             .await;
         let (url, server) = scripted_server(vec![
-            (401, r#"{"error":"authorization token is invalid: TOKEN_EXPIRED"}"#),
+            (401, r#"{"code":401,"reason":"TOKEN_EXPIRED","message":""}"#),
             (200, "{}"),
         ])
         .await;
         let client = super::HttpClient::with_context(url, std::sync::Arc::clone(&context))
             .with_core_bearer();
-        let _: serde_json::Value = client.post("/x", &serde_json::json!({})).await.expect("retried");
+        let _: serde_json::Value = client
+            .post("/x", &serde_json::json!({}))
+            .await
+            .expect("retried");
         assert_eq!(
             server.await.unwrap(),
-            vec!["Bearer expired-token".to_string(), "Bearer fresh-token".to_string()]
+            vec![
+                "Bearer expired-token".to_string(),
+                "Bearer fresh-token".to_string()
+            ]
         );
         assert_eq!(renewal.0.load(std::sync::atomic::Ordering::SeqCst), 1);
         // The renewed bearer stays for later Core requests.
         assert_eq!(
-            context.build_core_headers().await.get("Authorization").map(String::as_str),
+            context
+                .build_core_headers()
+                .await
+                .get("Authorization")
+                .map(String::as_str),
             Some("Bearer fresh-token")
         );
     }
@@ -613,22 +659,114 @@ mod tests {
         context.set_auth_context("im-token".into(), None).await;
         let renewal = std::sync::Arc::new(CountingRenewal(Default::default()));
         context
-            .set_core_bearer_renewal(Some(renewal.clone() as std::sync::Arc<dyn super::CoreBearerRenewal>))
+            .set_core_bearer_renewal(Some(
+                renewal.clone() as std::sync::Arc<dyn super::CoreBearerRenewal>
+            ))
             .await;
         // A revoked (not expired) bearer is final.
-        let (url, server) =
-            scripted_server(vec![(401, r#"{"error":"TOKEN_REVOKED"}"#)]).await;
+        let (url, server) = scripted_server(vec![(401, r#"{"error":"TOKEN_REVOKED"}"#)]).await;
         let client = super::HttpClient::with_context(url, std::sync::Arc::clone(&context))
             .with_core_bearer();
-        assert!(client.post::<_, serde_json::Value>("/x", &serde_json::json!({})).await.is_err());
+        assert!(
+            client
+                .post::<_, serde_json::Value>("/x", &serde_json::json!({}))
+                .await
+                .is_err()
+        );
         assert_eq!(server.await.unwrap().len(), 1);
         // Business gateway clients carry their own session and never renew the Core bearer.
-        let (url, server) =
-            scripted_server(vec![(401, r#"{"error":"TOKEN_EXPIRED"}"#)]).await;
+        let (url, server) = scripted_server(vec![(
+            401,
+            r#"{"code":401,"reason":"TOKEN_EXPIRED","message":""}"#,
+        )])
+        .await;
         let client = super::HttpClient::with_context(url, std::sync::Arc::clone(&context));
-        assert!(client.post::<_, serde_json::Value>("/x", &serde_json::json!({})).await.is_err());
+        assert!(
+            client
+                .post::<_, serde_json::Value>("/x", &serde_json::json!({}))
+                .await
+                .is_err()
+        );
         assert_eq!(server.await.unwrap().len(), 1);
         assert_eq!(renewal.0.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn concurrent_core_expiries_share_one_renewal() {
+        let context = std::sync::Arc::new(HttpRequestContext::new());
+        context.set_auth_context("expired-token".into(), None).await;
+        let renewal = std::sync::Arc::new(CountingRenewal(Default::default()));
+        context.set_core_bearer_renewal(Some(renewal.clone())).await;
+        let calls = (0..16).map(|_| context.renew_core_bearer("expired-token"));
+        assert!(
+            futures::future::join_all(calls)
+                .await
+                .iter()
+                .all(|token| token.as_deref() == Some("fresh-token"))
+        );
+        assert_eq!(renewal.0.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    struct HeldRenewal {
+        started: tokio::sync::Notify,
+        release: tokio::sync::Notify,
+    }
+
+    #[async_trait::async_trait]
+    impl super::CoreBearerRenewal for HeldRenewal {
+        async fn renew(&self) -> Option<String> {
+            self.started.notify_one();
+            self.release.notified().await;
+            Some("late-old-session-token".into())
+        }
+    }
+
+    #[tokio::test]
+    async fn a_renewal_finishing_after_logout_cannot_revive_the_bearer() {
+        let context = std::sync::Arc::new(HttpRequestContext::new());
+        context.set_auth_context("expired-token".into(), None).await;
+        let renewal = std::sync::Arc::new(HeldRenewal {
+            started: tokio::sync::Notify::new(),
+            release: tokio::sync::Notify::new(),
+        });
+        context.set_core_bearer_renewal(Some(renewal.clone())).await;
+        let c = context.clone();
+        let task = tokio::spawn(async move { c.renew_core_bearer("expired-token").await });
+        renewal.started.notified().await;
+        context.set_auth_context(String::new(), None).await;
+        context
+            .set_auth_context("new-login-token".into(), None)
+            .await;
+        renewal.release.notify_one();
+        assert_eq!(task.await.unwrap(), None);
+        assert_eq!(
+            context.build_core_headers().await["Authorization"],
+            "Bearer new-login-token"
+        );
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[tokio::test]
+    async fn a_second_expiry_is_final_and_message_text_cannot_trigger_refresh() {
+        let context = std::sync::Arc::new(HttpRequestContext::new());
+        context.set_auth_context("expired-token".into(), None).await;
+        let renewal = std::sync::Arc::new(CountingRenewal(Default::default()));
+        context.set_core_bearer_renewal(Some(renewal.clone())).await;
+        let expired = r#"{"code":401,"reason":"TOKEN_EXPIRED","message":""}"#;
+        let (url, server) = scripted_server(vec![(401, expired), (401, expired)]).await;
+        let client = super::HttpClient::with_context(url, context.clone()).with_core_bearer();
+        assert!(client.get::<serde_json::Value>("/x", None).await.is_err());
+        assert_eq!(server.await.unwrap().len(), 2);
+        assert_eq!(renewal.0.load(std::sync::atomic::Ordering::SeqCst), 1);
+        let (url, server) = scripted_server(vec![(
+            401,
+            r#"{"code":401,"reason":"TOKEN_REVOKED","message":"TOKEN_EXPIRED"}"#,
+        )])
+        .await;
+        let client = super::HttpClient::with_context(url, context).with_core_bearer();
+        assert!(client.get::<serde_json::Value>("/x", None).await.is_err());
+        assert_eq!(server.await.unwrap().len(), 1);
+        assert_eq!(renewal.0.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -874,7 +1012,6 @@ impl HttpClient {
         }
     }
 
-    #[cfg(target_arch = "wasm32")]
     async fn context_headers(&self) -> HashMap<String, String> {
         if let Some(ctx) = &self.context {
             self.headers_from(ctx).await
@@ -1266,8 +1403,8 @@ impl HttpClient {
     where
         T: serde::de::DeserializeOwned,
     {
-        let headers = self.context_headers().await;
-        wasm_http::fetch_json("GET", self.build_url(path), query, None, headers, None).await
+        self.request_wasm_json("GET", self.build_url(path), query, None, None)
+            .await
     }
 
     #[cfg(target_arch = "wasm32")]
@@ -1280,13 +1417,11 @@ impl HttpClient {
     where
         T: serde::de::DeserializeOwned,
     {
-        let headers = self.context_headers().await;
-        wasm_http::fetch_json(
+        self.request_wasm_json(
             "GET",
             self.build_url(path),
             query,
             None,
-            headers,
             Some(extra_headers),
         )
         .await
@@ -1310,18 +1445,10 @@ impl HttpClient {
         B: serde::Serialize + ?Sized,
         T: serde::de::DeserializeOwned,
     {
-        let headers = self.context_headers().await;
         let body_json = serde_json::to_string(body)
             .map_err(|e| FlareError::system(format!("encode http json body failed: {e}")))?;
-        wasm_http::fetch_json(
-            "POST",
-            self.build_url(path),
-            None,
-            Some(&body_json),
-            headers,
-            None,
-        )
-        .await
+        self.request_wasm_json("POST", self.build_url(path), None, Some(&body_json), None)
+            .await
     }
 
     #[cfg(target_arch = "wasm32")]
@@ -1335,15 +1462,13 @@ impl HttpClient {
         B: serde::Serialize + ?Sized,
         T: serde::de::DeserializeOwned,
     {
-        let headers = self.context_headers().await;
         let body_json = serde_json::to_string(body)
             .map_err(|e| FlareError::system(format!("encode http json body failed: {e}")))?;
-        wasm_http::fetch_json(
+        self.request_wasm_json(
             "POST",
             self.build_url(path),
             None,
             Some(&body_json),
-            headers,
             Some(extra_headers),
         )
         .await
@@ -1374,18 +1499,10 @@ impl HttpClient {
         B: serde::Serialize + ?Sized,
         T: serde::de::DeserializeOwned,
     {
-        let headers = self.context_headers().await;
         let body_json = serde_json::to_string(body)
             .map_err(|e| FlareError::system(format!("encode http json body failed: {e}")))?;
-        wasm_http::fetch_json(
-            "PUT",
-            self.build_url(path),
-            None,
-            Some(&body_json),
-            headers,
-            None,
-        )
-        .await
+        self.request_wasm_json("PUT", self.build_url(path), None, Some(&body_json), None)
+            .await
     }
 
     #[cfg(target_arch = "wasm32")]
@@ -1454,8 +1571,8 @@ impl HttpClient {
     where
         T: serde::de::DeserializeOwned,
     {
-        let headers = self.context_headers().await;
-        wasm_http::fetch_json("DELETE", self.build_url(path), query, None, headers, None).await
+        self.request_wasm_json("DELETE", self.build_url(path), query, None, None)
+            .await
     }
 
     #[cfg(target_arch = "wasm32")]
@@ -1476,18 +1593,10 @@ impl HttpClient {
         B: serde::Serialize + ?Sized,
         T: serde::de::DeserializeOwned,
     {
-        let headers = self.context_headers().await;
         let body_json = serde_json::to_string(body)
             .map_err(|e| FlareError::system(format!("encode http json body failed: {e}")))?;
-        wasm_http::fetch_json(
-            "DELETE",
-            self.build_url(path),
-            None,
-            Some(&body_json),
-            headers,
-            None,
-        )
-        .await
+        self.request_wasm_json("DELETE", self.build_url(path), None, Some(&body_json), None)
+            .await
     }
 
     #[cfg(target_arch = "wasm32")]
@@ -1501,15 +1610,13 @@ impl HttpClient {
         B: serde::Serialize + ?Sized,
         T: serde::de::DeserializeOwned,
     {
-        let headers = self.context_headers().await;
         let body_json = serde_json::to_string(body)
             .map_err(|e| FlareError::system(format!("encode http json body failed: {e}")))?;
-        wasm_http::fetch_json(
+        self.request_wasm_json(
             "DELETE",
             self.build_url(path),
             None,
             Some(&body_json),
-            headers,
             Some(extra_headers),
         )
         .await
@@ -1527,6 +1634,106 @@ impl HttpClient {
             None,
         )
         .await
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    async fn request_wasm_json<T: serde::de::DeserializeOwned>(
+        &self,
+        method: &str,
+        url: String,
+        query: Option<&HashMap<String, String>>,
+        body: Option<&str>,
+        extra_headers: Option<&HashMap<String, String>>,
+    ) -> Result<T> {
+        let client = self.clone();
+        let method = method.to_owned();
+        let query = query.cloned();
+        let body = body.map(|value| value.as_bytes().to_vec());
+        let extra = extra_headers.cloned().unwrap_or_default();
+        let (tx, rx) = futures::channel::oneshot::channel();
+        wasm_bindgen_futures::spawn_local(async move {
+            let result = async {
+                let headers = client.context_headers().await;
+                let content_type = body.as_ref().map(|_| "application/json");
+                let sent = client.core_bearer_in_headers(&headers, &extra);
+                let first = wasm_http::fetch_bytes(
+                    &method,
+                    url.clone(),
+                    query.as_ref(),
+                    body.clone(),
+                    content_type,
+                    headers,
+                    Some(&extra),
+                )
+                .await;
+                match first {
+                    Err(error)
+                        if client
+                            .renew_after_core_expiry(&error, sent.as_deref())
+                            .await =>
+                    {
+                        wasm_http::fetch_bytes(
+                            &method,
+                            url,
+                            query.as_ref(),
+                            body,
+                            content_type,
+                            client.context_headers().await,
+                            Some(&extra),
+                        )
+                        .await
+                    }
+                    result => result,
+                }
+            }
+            .await;
+            let _ = tx.send(result);
+        });
+        let bytes = rx
+            .await
+            .map_err(|_| FlareError::system("http renewal task dropped"))??;
+        serde_json::from_slice(&bytes)
+            .map_err(|error| FlareError::system(format!("parse http json failed: {error}")))
+    }
+
+    /// Only an exact typed expiry reason from a Core request permits one retry.
+    async fn renew_after_core_expiry(&self, error: &FlareError, sent: Option<&str>) -> bool {
+        let Some(sent) = sent else {
+            return false;
+        };
+        let expired = error
+            .as_localized()
+            .and_then(|error| error.params)
+            .is_some_and(|params| {
+                params.get("httpStatus").map(String::as_str) == Some("401")
+                    && params.get("machineReason").map(String::as_str) == Some("TOKEN_EXPIRED")
+            });
+        if !expired {
+            return false;
+        }
+        match &self.context {
+            Some(context) => context.renew_core_bearer(sent).await.is_some(),
+            None => false,
+        }
+    }
+
+    fn core_bearer_in_headers(
+        &self,
+        headers: &HashMap<String, String>,
+        extra: &HashMap<String, String>,
+    ) -> Option<String> {
+        if !self.core_bearer
+            || extra
+                .keys()
+                .any(|key| key.eq_ignore_ascii_case("authorization"))
+        {
+            return None;
+        }
+        headers
+            .get("Authorization")?
+            .strip_prefix("Bearer ")
+            .filter(|token| !token.trim().is_empty())
+            .map(str::to_owned)
     }
 
     fn build_url(&self, path: &str) -> String {
@@ -1588,19 +1795,28 @@ impl HttpClient {
         T: serde::de::DeserializeOwned,
     {
         self.ensure_tls_ready()?;
-        let sent_bearer = self.core_bearer_in_use().await;
+        let context_headers = self.context_headers().await;
+        let sent = self.core_bearer_in_headers(&context_headers, headers);
         let mut resp = self
-            .send_native(method.clone(), &url, query, body, headers)
+            .send_native(method.clone(), &url, query, body, &context_headers, headers)
             .await?;
-        if resp.status() == reqwest::StatusCode::UNAUTHORIZED
-            && let (Some(context), Some(sent)) = (self.context.as_ref(), sent_bearer)
-        {
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
             let text = resp.text().await.unwrap_or_default();
-            if !text.contains("TOKEN_EXPIRED") || context.renew_core_bearer(&sent).await.is_none() {
-                return Err(http_error_from_response_status(401, &text));
+            let error = http_error_from_response_status(status, &text);
+            if !self.renew_after_core_expiry(&error, sent.as_deref()).await {
+                return Err(error);
             }
-            // One retry with the renewed bearer; a second rejection is final.
-            resp = self.send_native(method, &url, query, body, headers).await?;
+            resp = self
+                .send_native(
+                    method,
+                    &url,
+                    query,
+                    body,
+                    &self.context_headers().await,
+                    headers,
+                )
+                .await?;
         }
         let status = resp.status();
         if !status.is_success() {
@@ -1612,16 +1828,6 @@ impl HttpClient {
             .map_err(|e| FlareError::system(format!("parse http json failed: {e}")))
     }
 
-    /// The Core bearer a request is about to carry; business gateway clients never renew it.
-    #[cfg(not(target_arch = "wasm32"))]
-    async fn core_bearer_in_use(&self) -> Option<String> {
-        if !self.core_bearer {
-            return None;
-        }
-        let token = self.context.as_ref()?.auth_token.read().await.clone();
-        (!token.trim().is_empty()).then_some(token)
-    }
-
     #[cfg(not(target_arch = "wasm32"))]
     async fn send_native<B>(
         &self,
@@ -1629,16 +1835,15 @@ impl HttpClient {
         url: &str,
         query: Option<&HashMap<String, String>>,
         body: Option<&B>,
+        context_headers: &HashMap<String, String>,
         headers: &HashMap<String, String>,
     ) -> Result<reqwest::Response>
     where
         B: serde::Serialize + ?Sized,
     {
         let mut req = self.client.request(method, url);
-        if let Some(context) = &self.context {
-            for (key, value) in self.headers_from(context).await {
-                req = req.header(key, value);
-            }
+        for (key, value) in context_headers {
+            req = req.header(key, value);
         }
         if let Some(q) = query {
             req = req.query(q);

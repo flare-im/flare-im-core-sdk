@@ -15,10 +15,21 @@ use crate::infrastructure::protocol::{Codec, PacketSender, ProtobufCodec};
 use crate::shared::error::{ErrorCode, FlareError, Result};
 use crate::shared::util::timeout;
 
+#[cfg(not(target_arch = "wasm32"))]
+fn native_device_platform(target_os: &str) -> DevicePlatform {
+    // PlatformExclusive compares this value across installations. Classifying mobile
+    // builds as PC would kick a different native platform when it signs in.
+    match target_os {
+        "ios" => DevicePlatform::IOS,
+        "android" => DevicePlatform::Android,
+        _ => DevicePlatform::PC,
+    }
+}
+
 fn sdk_device_info(config: &SdkConfig) -> DeviceInfo {
     let device_id = config.effective_device_id();
     #[cfg(not(target_arch = "wasm32"))]
-    let platform = DevicePlatform::PC;
+    let platform = native_device_platform(std::env::consts::OS);
     #[cfg(not(target_arch = "wasm32"))]
     let model = "FlareSDK".to_string();
     #[cfg(target_arch = "wasm32")]
@@ -316,6 +327,20 @@ mod tests {
         assert!(
             !body.contains("client.is_connected(),"),
             "同步版内部是 block_in_place + block_on，在 async 里调用会 panic 或占住 worker"
+        );
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn native_device_platform_separates_mobile_platforms() {
+        assert_eq!(native_device_platform("ios"), DevicePlatform::IOS);
+        assert_eq!(native_device_platform("android"), DevicePlatform::Android);
+        for os in ["macos", "windows", "linux", "freebsd"] {
+            assert_eq!(native_device_platform(os), DevicePlatform::PC);
+        }
+        assert_eq!(
+            sdk_device_info(&SdkConfig::default()).platform,
+            native_device_platform(std::env::consts::OS)
         );
     }
 
