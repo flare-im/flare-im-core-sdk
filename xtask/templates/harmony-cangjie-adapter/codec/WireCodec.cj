@@ -422,15 +422,14 @@ public func jsonMessageBuildOpField(object: CjJsonObject, key: String, fallback:
 
 let HEARTBEAT_APP_STATE_WIRE_ORDER: Array<HeartbeatAppState> = [HeartbeatAppState.Foreground, HeartbeatAppState.Background]
 let MESSAGE_SEARCH_KIND_WIRE_ORDER: Array<MessageSearchKind> = [MessageSearchKind.Message, MessageSearchKind.Text, MessageSearchKind.Media, MessageSearchKind.Image, MessageSearchKind.Video, MessageSearchKind.Audio, MessageSearchKind.File]
-let SDK_EVENT_KIND_WIRE_ORDER: Array<SdkEventKind> = [SdkEventKind.Lifecycle, SdkEventKind.Connection, SdkEventKind.Message, SdkEventKind.Notification, SdkEventKind.Conversation, SdkEventKind.Sync, SdkEventKind.Extension, SdkEventKind.ExtensionEvent, SdkEventKind.Presence, SdkEventKind.Media, SdkEventKind.Capability]
+let SDK_EVENT_KIND_WIRE_ORDER: Array<SdkEventKind> = [SdkEventKind.Lifecycle, SdkEventKind.Connection, SdkEventKind.Message, SdkEventKind.Notification, SdkEventKind.Conversation, SdkEventKind.Sync, SdkEventKind.Extension, SdkEventKind.ExtensionEvent, SdkEventKind.Presence, SdkEventKind.Media, SdkEventKind.Plugin]
 let LIFECYCLE_EVENT_NAME_WIRE_ORDER: Array<LifecycleEventName> = [LifecycleEventName.Initializing, LifecycleEventName.Initialized, LifecycleEventName.InitFailed, LifecycleEventName.LoginSucceeded, LifecycleEventName.LoginFailed, LifecycleEventName.LoggedOut, LifecycleEventName.Disposed]
 let SDK_CONNECTION_STATE_WIRE_ORDER: Array<SdkConnectionState> = [SdkConnectionState.Disconnected, SdkConnectionState.Connecting, SdkConnectionState.Connected, SdkConnectionState.Ready, SdkConnectionState.Reconnecting]
 let CONNECTION_EVENT_NAME_WIRE_ORDER: Array<ConnectionEventName> = [ConnectionEventName.Connecting, ConnectionEventName.Connected, ConnectionEventName.Ready, ConnectionEventName.Disconnected, ConnectionEventName.Reconnecting, ConnectionEventName.ReconnectFailed, ConnectionEventName.StateChanged, ConnectionEventName.SyncStateChanged, ConnectionEventName.ServerError, ConnectionEventName.KickedOff, ConnectionEventName.TokenExpired]
-let MESSAGE_EVENT_NAME_WIRE_ORDER: Array<MessageEventName> = [MessageEventName.Received, MessageEventName.ReceivedBatch, MessageEventName.SendAck, MessageEventName.SendFailed, MessageEventName.Capability, MessageEventName.Recalled, MessageEventName.Typing, MessageEventName.Edited, MessageEventName.ReactionChanged, MessageEventName.Deleted, MessageEventName.ReadReceipt, MessageEventName.BurnScheduled, MessageEventName.Burned, MessageEventName.HardDeleted, MessageEventName.Pinned, MessageEventName.Unpinned, MessageEventName.Marked, MessageEventName.Unmarked, MessageEventName.RetentionScheduled, MessageEventName.RetentionExpired, MessageEventName.RetentionPurged, MessageEventName.PresenceChanged, MessageEventName.CallSignal, MessageEventName.Custom, MessageEventName.PluginStateChanged]
+let MESSAGE_EVENT_NAME_WIRE_ORDER: Array<MessageEventName> = [MessageEventName.Received, MessageEventName.ReceivedBatch, MessageEventName.SendAck, MessageEventName.SendFailed, MessageEventName.Recalled, MessageEventName.Typing, MessageEventName.Edited, MessageEventName.ReactionChanged, MessageEventName.Deleted, MessageEventName.ReadReceipt, MessageEventName.BurnScheduled, MessageEventName.Burned, MessageEventName.HardDeleted, MessageEventName.Pinned, MessageEventName.Unpinned, MessageEventName.Marked, MessageEventName.Unmarked, MessageEventName.RetentionScheduled, MessageEventName.RetentionExpired, MessageEventName.RetentionPurged, MessageEventName.PresenceChanged, MessageEventName.Custom, MessageEventName.PluginStateChanged]
 let CONVERSATION_EVENT_NAME_WIRE_ORDER: Array<ConversationEventName> = [ConversationEventName.Synced, ConversationEventName.Created, ConversationEventName.Updated, ConversationEventName.UnreadCountChanged, ConversationEventName.Deleted]
 let SYNC_EVENT_NAME_WIRE_ORDER: Array<SyncEventName> = [SyncEventName.StateChanged, SyncEventName.Started, SyncEventName.Finished, SyncEventName.Failed, SyncEventName.Progress, SyncEventName.TaskCompleted, SyncEventName.ResyncNeeded]
 let PROGRESS_EVENT_NAME_WIRE_ORDER: Array<ProgressEventName> = [ProgressEventName.SyncProgress, ProgressEventName.UploadProgress, ProgressEventName.DownloadProgress]
-let CAPABILITY_EVENT_NAME_WIRE_ORDER: Array<CapabilityEventName> = [CapabilityEventName.Changed, CapabilityEventName.Unavailable]
 
 public func connectionStateFromWire(value: String): ConnectionState {
     if (value == "connecting") { return ConnectionState.Connecting }
@@ -3251,35 +3250,6 @@ public func syncEventFromObject(object: CjJsonObject): SyncEvent {
         task: task,
         progress: progress,
         error: error
-    )
-}
-
-public func capabilityEventToJson(request: CapabilityEvent): String {
-    let json = CjJsonObject()
-    jsonPutInt(json, "name", enumWireIndex(CAPABILITY_EVENT_NAME_WIRE_ORDER, request.name))
-    match (request.capability) {
-        case Some(value) => jsonPutString(json, "capability", value)
-        case None => ()
-    }
-    match (request.reason) {
-        case Some(value) => jsonPutString(json, "reason", value)
-        case None => ()
-    }
-    return json.toJsonString()
-}
-
-public func capabilityEventFromJson(raw: String): CapabilityEvent {
-    return capabilityEventFromObject(wireDecodeResponseObject(jsonObjectFromRaw(raw)))
-}
-
-public func capabilityEventFromObject(object: CjJsonObject): CapabilityEvent {
-    let name = jsonEnumField(CAPABILITY_EVENT_NAME_WIRE_ORDER, object, "name", CapabilityEventName.Changed)
-    let capability: ?String = jsonOptionalStringField(object, "capability")
-    let reason: ?String = jsonOptionalStringField(object, "reason")
-    return CapabilityEvent(
-        name: name,
-        capability: capability,
-        reason: reason
     )
 }
 

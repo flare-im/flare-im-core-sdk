@@ -27,16 +27,12 @@ const PLATFORM_EVENT_GROUPS: &[(&str, &[&str])] = &[
         ],
     ),
     ("connection", &["connecting", "reconnect_failed", "ready"]),
-    (
-        "message",
-        &["burn_scheduled", "burned", "hard_deleted", "call_signal"],
-    ),
+    ("message", &["burn_scheduled", "burned", "hard_deleted"]),
     ("presence", &["changed"]),
     (
         "media",
         &["cache_changed", "upload_progress", "download_progress"],
     ),
-    ("capability", &["changed", "unavailable"]),
 ];
 
 const PLATFORM_ERROR_CODES: &[&str] = &[

@@ -695,7 +695,10 @@ fn ts_listener_predicate_expr(name: &str) -> Option<&'static str> {
         "onDownloadProgress" => {
             Some("eventNameIs(event, 'progress', ProgressEventName.DownloadProgress)")
         }
-        "onCapabilityChanged" => Some("eventTypeIs(event, 'capability')"),
+        "onPluginRealtime" => Some("eventEventIs(event, 'plugin', PluginEventName.Realtime)"),
+        "onPluginCatalogChanged" => {
+            Some("eventEventIs(event, 'plugin', PluginEventName.CatalogChanged)")
+        }
         _ => None,
     }
 }
@@ -784,7 +787,6 @@ fn ts_event_decoder_expr(entry: &TypescriptEventRegistryEntry) -> String {
         "message.reaction_changed" => "reactionChangedEvent(payload)".to_string(),
         "message.read_receipt" => "readReceiptEvent(payload)".to_string(),
         "message.presence_changed" => "presenceChangedEvent(payload)".to_string(),
-        "message.capability" => "contractEvent(\"message\", \"capability\", payload)".to_string(),
         "message.custom" => "contractEvent(\"message\", \"custom\", payload)".to_string(),
         "conversation.synced" => {
             "conversationEvent(ConversationEventName.Synced, \"synced\", payload)".to_string()
@@ -817,7 +819,9 @@ fn ts_event_decoder_expr(entry: &TypescriptEventRegistryEntry) -> String {
         }
         "sync.progress" => "syncProgressEvent(payload)".to_string(),
         "view.updated" => "viewUpdatedEvent(payload)".to_string(),
-        "extension.event" => "capabilityEvent(payload)".to_string(),
+        "extension.event" => "contractEvent(\"extension\", \"event\", payload)".to_string(),
+        "plugin.realtime" => "pluginRealtimeEvent(payload)".to_string(),
+        "plugin.catalog_changed" => "pluginCatalogChangedEvent(payload)".to_string(),
         _ => "undefined".to_string(),
     }
 }
@@ -1047,12 +1051,25 @@ fn emit_typescript_native_event_decoder(
         "  return { ...record, type: 'presence', event: 'changed', conversationId: optionalString(record.conversationId, 'conversationId'), userId: requiredString(record.userId, 'userId'), status: requiredString(record.status, 'status'), extra: stringRecord(record.extra, 'extra') };".to_string(),
         "}".to_string(),
         String::new(),
-        "function capabilityEvent(payload: unknown): CapabilityEvent & Record<string, unknown> {".to_string(),
+        "function pluginRealtimeEvent(payload: unknown): PluginRealtimeEvent & Record<string, unknown> {".to_string(),
         "  const record = eventPayloadRecord(payload);".to_string(),
-        "  const eventName = String(record.name ?? record.event ?? '').trim() === CapabilityEventName.Unavailable".to_string(),
-        "    ? CapabilityEventName.Unavailable".to_string(),
-        "    : CapabilityEventName.Changed;".to_string(),
-        "  return { ...record, type: 'capability', event: eventName, name: eventName, capability: optionalString(record.capability, 'capability'), reason: optionalString(record.reason, 'reason') };".to_string(),
+        "  const body = record.payload;".to_string(),
+        "  if (!body || typeof body !== 'object' || Array.isArray(body)) invalidEventField('payload', 'object');".to_string(),
+        "  return {".to_string(),
+        "    type: 'plugin',".to_string(),
+        "    event: PluginEventName.Realtime,".to_string(),
+        "    pluginId: requiredString(record.pluginId, 'pluginId'),".to_string(),
+        "    packetType: requiredString(record.packetType, 'packetType'),".to_string(),
+        "    conversationId: requiredString(record.conversationId, 'conversationId'),".to_string(),
+        "    payload: body as Record<string, unknown>,".to_string(),
+        "    deliveryId: requiredString(record.deliveryId, 'deliveryId'),".to_string(),
+        "    expiresAtMs: requiredNumber(record.expiresAtMs, 'expiresAtMs'),".to_string(),
+        "  };".to_string(),
+        "}".to_string(),
+        String::new(),
+        "function pluginCatalogChangedEvent(payload: unknown): PluginCatalogChangedEvent & Record<string, unknown> {".to_string(),
+        "  const record = eventPayloadRecord(payload);".to_string(),
+        "  return { type: 'plugin', event: PluginEventName.CatalogChanged, version: requiredString(record.version, 'version') };".to_string(),
         "}".to_string(),
         String::new(),
         "function conversationEvent(name: ConversationEventName, event: string, payload: unknown): ConversationEvent & Record<string, unknown> {".to_string(),
@@ -1182,8 +1199,6 @@ fn emit_typescript_adapter_events_api(
         .map(|listener| ts_listener_payload_type(str_field(listener, "payload")).to_string())
         .collect::<BTreeSet<_>>();
     let mut model_imports = [
-        "CapabilityEvent",
-        "CapabilityEventName",
         "ConnectionEvent",
         "ConnectionEventName",
         "ConversationEvent",
@@ -1196,6 +1211,9 @@ fn emit_typescript_adapter_events_api(
         "MessageReceivedEvent",
         "MessageSendAckEvent",
         "MessageSendFailedEvent",
+        "PluginCatalogChangedEvent",
+        "PluginEventName",
+        "PluginRealtimeEvent",
         "PresenceChangedEvent",
         "ProgressEventName",
         "ReactionChangedEvent",
@@ -1513,9 +1531,17 @@ fn emit_typescript_adapter_events_api(
         "      listener.onViewUpdated?.(event as ViewUpdate);".to_string(),
         "      return;".to_string(),
         "    }".to_string(),
-        "    if (type === 'capability') {".to_string(),
-        "      listener.onCapabilityChanged?.(event as CapabilityEvent);".to_string(),
-        "      return;".to_string(),
+        "    if (type === 'plugin') {".to_string(),
+        "      switch (eventName) {".to_string(),
+        "        case PluginEventName.Realtime:".to_string(),
+        "          listener.onPluginRealtime?.(event as PluginRealtimeEvent);".to_string(),
+        "          return;".to_string(),
+        "        case PluginEventName.CatalogChanged:".to_string(),
+        "          listener.onPluginCatalogChanged?.(event as PluginCatalogChangedEvent);".to_string(),
+        "          return;".to_string(),
+        "        default:".to_string(),
+        "          return;".to_string(),
+        "      }".to_string(),
         "    }".to_string(),
         "    if ((event as LifecycleEvent).name !== undefined) {".to_string(),
         "      const lifecycle = event as LifecycleEvent;".to_string(),

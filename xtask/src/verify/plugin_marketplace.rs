@@ -29,7 +29,7 @@ pub(crate) fn verify_plugin_marketplace_gate(root: &Path) -> Result<()> {
         "plugin catalog",
         &[
             "\"schema\": \"flare.im.sdk.plugin.catalog.v1\"",
-            "\"id\": \"sdk.plugin.av\"",
+            "\"id\": \"sdk.plugin.call\"",
             "\"id\": \"sdk.plugin.ai\"",
             "\"distribution\": \"composition-time\"",
             "\"runtimeInstall\": \"not-supported\"",
@@ -81,8 +81,8 @@ pub(crate) fn verify_plugin_marketplace_gate(root: &Path) -> Result<()> {
         &plugin_root.join("flare-sdk-plugin-call/plugin.json"),
         "call plugin manifest",
         &[
-            "\"id\": \"sdk.plugin.av\"",
-            "\"namespaces\": [\"rtc\"]",
+            "\"id\": \"sdk.plugin.call\"",
+            "\"namespaces\": [\n    \"flare.call\"\n  ]",
             "\"platforms\"",
             "\"operations\"",
         ],
@@ -95,12 +95,12 @@ pub(crate) fn verify_plugin_marketplace_gate(root: &Path) -> Result<()> {
         "generated/sdk_plugin_ai/ios/SdkPluginAiPluginApi.swift",
         "generated/sdk_plugin_ai/harmonyos-arkts/SdkPluginAiPluginApi.ets",
         "generated/sdk_plugin_ai/cangjie/SdkPluginAiPluginApi.cj",
-        "generated/sdk_plugin_av/typescript/pluginApi.ts",
-        "generated/sdk_plugin_av/flutter/sdk_plugin_av_plugin_api.dart",
-        "generated/sdk_plugin_av/android/SdkPluginAvPluginApi.kt",
-        "generated/sdk_plugin_av/ios/SdkPluginAvPluginApi.swift",
-        "generated/sdk_plugin_av/harmonyos-arkts/SdkPluginAvPluginApi.ets",
-        "generated/sdk_plugin_av/cangjie/SdkPluginAvPluginApi.cj",
+        "generated/sdk_plugin_call/typescript/pluginApi.ts",
+        "generated/sdk_plugin_call/flutter/sdk_plugin_call_plugin_api.dart",
+        "generated/sdk_plugin_call/android/SdkPluginCallPluginApi.kt",
+        "generated/sdk_plugin_call/ios/SdkPluginCallPluginApi.swift",
+        "generated/sdk_plugin_call/harmonyos-arkts/SdkPluginCallPluginApi.ets",
+        "generated/sdk_plugin_call/cangjie/SdkPluginCallPluginApi.cj",
     ] {
         require_contains_all(
             &mut errors,

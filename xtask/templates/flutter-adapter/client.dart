@@ -999,12 +999,6 @@ final class _DefaultCapabilitiesApi implements CapabilitiesApi {
   Future<void> revokeCapability(Map<String, Object?> request) {
     return _bridge.invoke<void>(NativeCallMap.capabilityRevoke, request);
   }
-
-  @override
-  Future<void> sendCallSignal(Map<String, Object?> request) {
-    return _bridge.invoke<void>(
-        NativeCallMap.capabilitySendCallSignal, request);
-  }
 }
 
 final class _DefaultViewsApi implements ViewsApi {

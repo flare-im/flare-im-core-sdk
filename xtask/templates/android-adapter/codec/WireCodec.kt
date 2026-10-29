@@ -13,11 +13,11 @@ import com.flare.im.model.common.error.*
 import com.flare.im.model.content.*
 import com.flare.im.model.entity.*
 import com.flare.im.model.event.*
-import com.flare.im.model.event.capability.*
 import com.flare.im.model.event.connection.*
 import com.flare.im.model.event.conversation.*
 import com.flare.im.model.event.lifecycle.*
 import com.flare.im.model.event.message.*
+import com.flare.im.model.event.plugin.*
 import com.flare.im.model.event.presence.*
 import com.flare.im.model.event.progress.*
 import com.flare.im.model.event.sync.*
@@ -735,12 +735,6 @@ fun syncEventToMap(request: SyncEvent): Map<String, Any?> = buildMap {
     request.task?.let { put("task", it) }
     request.progress?.let { put("progress", it) }
     request.error?.let { put("error", sdkErrorPayloadToMap(it)) }
-}
-
-fun capabilityEventToMap(request: CapabilityEvent): Map<String, Any?> = buildMap {
-    put("name", request.name.ordinal)
-    request.capability?.let { put("capability", it) }
-    request.reason?.let { put("reason", it) }
 }
 
 

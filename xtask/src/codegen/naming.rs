@@ -87,8 +87,11 @@ pub(crate) fn model_package_suffix(name: &str) -> &'static str {
         "event.progress"
     } else if name == "PresenceChangedEvent" {
         "event.presence"
-    } else if name.starts_with("CapabilityEvent") {
-        "event.capability"
+    } else if matches!(
+        name,
+        "PluginEventName" | "PluginRealtimeEvent" | "PluginCatalogChangedEvent"
+    ) {
+        "event.plugin"
     } else {
         "entity"
     }

@@ -89,15 +89,14 @@ func userIdFromRequest(_ request: [String: AnySendable]) -> String? {
 
 private let HEARTBEAT_APP_STATE_WIRE_ORDER: [HeartbeatAppState] = [.foreground, .background]
 private let MESSAGE_SEARCH_KIND_WIRE_ORDER: [MessageSearchKind] = [.message, .text, .media, .image, .video, .audio, .file]
-private let SDK_EVENT_KIND_WIRE_ORDER: [SdkEventKind] = [.lifecycle, .connection, .message, .notification, .conversation, .sync, .`extension`, .extensionEvent, .presence, .media, .capability, .view]
+private let SDK_EVENT_KIND_WIRE_ORDER: [SdkEventKind] = [.lifecycle, .connection, .message, .notification, .conversation, .sync, .`extension`, .extensionEvent, .presence, .media, .plugin, .view]
 private let LIFECYCLE_EVENT_NAME_WIRE_ORDER: [LifecycleEventName] = [.initializing, .initialized, .initFailed, .loginSucceeded, .loginFailed, .loggedOut, .disposed]
 private let SDK_CONNECTION_STATE_WIRE_ORDER: [SdkConnectionState] = [.disconnected, .connecting, .connected, .ready, .reconnecting]
 private let CONNECTION_EVENT_NAME_WIRE_ORDER: [ConnectionEventName] = [.connecting, .connected, .ready, .disconnected, .reconnecting, .reconnectFailed, .stateChanged, .syncStateChanged, .serverError, .kickedOff, .tokenExpired]
-private let MESSAGE_EVENT_NAME_WIRE_ORDER: [MessageEventName] = [.received, .receivedBatch, .sendAck, .sendFailed, .capability, .recalled, .typing, .typingAggregate, .edited, .reactionChanged, .deleted, .readReceipt, .burnScheduled, .burned, .hardDeleted, .pinned, .unpinned, .marked, .unmarked, .retentionScheduled, .retentionExpired, .retentionPurged, .presenceChanged, .callSignal, .custom, .pluginStateChanged]
+private let MESSAGE_EVENT_NAME_WIRE_ORDER: [MessageEventName] = [.received, .receivedBatch, .sendAck, .sendFailed, .recalled, .typing, .typingAggregate, .edited, .reactionChanged, .deleted, .readReceipt, .burnScheduled, .burned, .hardDeleted, .pinned, .unpinned, .marked, .unmarked, .retentionScheduled, .retentionExpired, .retentionPurged, .presenceChanged, .custom, .pluginStateChanged]
 private let CONVERSATION_EVENT_NAME_WIRE_ORDER: [ConversationEventName] = [.synced, .created, .updated, .unreadCountChanged, .deleted]
 private let SYNC_EVENT_NAME_WIRE_ORDER: [SyncEventName] = [.stateChanged, .started, .finished, .failed, .progress, .taskCompleted, .resyncNeeded]
 private let PROGRESS_EVENT_NAME_WIRE_ORDER: [ProgressEventName] = [.syncProgress, .uploadProgress, .downloadProgress]
-private let CAPABILITY_EVENT_NAME_WIRE_ORDER: [CapabilityEventName] = [.changed, .unavailable]
 
 func setHeartbeatAppStateRequestToMap(_ request: SetHeartbeatAppStateRequest) -> [String: AnySendable] {
     [
@@ -925,13 +924,6 @@ func syncEventToMap(_ request: SyncEvent) -> [String: AnySendable] {
         "task": wrapSendable(request.task),
         "progress": wrapSendable(request.progress),
         "error": wrapSendable(request.error),
-    ]
-}
-func capabilityEventToMap(_ request: CapabilityEvent) -> [String: AnySendable] {
-    [
-        "name": wrapSendable(request.name),
-        "capability": wrapSendable(request.capability),
-        "reason": wrapSendable(request.reason),
     ]
 }
 

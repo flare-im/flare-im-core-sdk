@@ -868,12 +868,12 @@ fn emit_typescript_callback_index() -> String {
         "export type { EventCallback, EventSubscription, ListenerHandler, NativeEventSubscription } from '../listener/common';",
         "export type { MessageSendCallback } from './message_send_callback';",
         "export type { FlareImEventListener } from '../listener';",
-        "export type { CapabilityEventListener } from '../listener/capability';",
         "export type { ConnectionEventListener } from '../listener/connection';",
         "export type { ConversationEventListener } from '../listener/conversation';",
         "export type { LifecycleEventListener } from '../listener/lifecycle';",
         "export type { MediaEventListener } from '../listener/media';",
         "export type { MessageEventListener } from '../listener/message';",
+        "export type { PluginEventListener } from '../listener/plugin';",
         "export type { SyncEventListener } from '../listener/sync';",
     ]
     .join("\n")

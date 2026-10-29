@@ -19,11 +19,11 @@ import com.flare.im.model.common.error.*
 import com.flare.im.model.content.*
 import com.flare.im.model.entity.*
 import com.flare.im.model.event.*
-import com.flare.im.model.event.capability.*
 import com.flare.im.model.event.connection.*
 import com.flare.im.model.event.conversation.*
 import com.flare.im.model.event.lifecycle.*
 import com.flare.im.model.event.message.*
+import com.flare.im.model.event.plugin.*
 import com.flare.im.model.event.presence.*
 import com.flare.im.model.event.progress.*
 import com.flare.im.model.event.sync.*
@@ -214,8 +214,11 @@ class DefaultEventsApi(
     override fun onDownloadProgress(listener: EventCallback<ProgressEvent>): EventSubscription =
         registerProgress(ProgressEventName.DOWNLOAD_PROGRESS, listener)
 
-    override fun onCapabilityChanged(listener: EventCallback<CapabilityEvent>): EventSubscription =
-        registerTyped(CapabilityEvent::class.java, listener)
+    override fun onPluginRealtime(listener: EventCallback<PluginRealtimeEvent>): EventSubscription =
+        registerTyped(PluginRealtimeEvent::class.java, listener)
+
+    override fun onPluginCatalogChanged(listener: EventCallback<PluginCatalogChangedEvent>): EventSubscription =
+        registerTyped(PluginCatalogChangedEvent::class.java, listener)
 
     private fun register(handler: Any): EventSubscription {
         val subscriptionId = nextId++
@@ -298,7 +301,6 @@ class DefaultEventsApi(
                 MessageEventName.RECEIVED_BATCH,
                 MessageEventName.SEND_ACK,
                 MessageEventName.SEND_FAILED,
-                MessageEventName.CAPABILITY,
                 MessageEventName.TYPING,
                 MessageEventName.TYPING_AGGREGATE,
                 MessageEventName.REACTION_CHANGED,
@@ -309,7 +311,6 @@ class DefaultEventsApi(
                 MessageEventName.UNMARKED,
                 MessageEventName.RETENTION_SCHEDULED,
                 MessageEventName.PRESENCE_CHANGED,
-                MessageEventName.CALL_SIGNAL,
                 MessageEventName.CUSTOM -> Unit
             }
             is ReadReceiptEvent -> listener.onMessageReadReceipt(event)
@@ -339,7 +340,8 @@ class DefaultEventsApi(
                 ProgressEventName.DOWNLOAD_PROGRESS -> listener.onDownloadProgress(event)
             }
             is ViewUpdate -> listener.onViewUpdated(event)
-            is CapabilityEvent -> listener.onCapabilityChanged(event)
+            is PluginRealtimeEvent -> listener.onPluginRealtime(event)
+            is PluginCatalogChangedEvent -> listener.onPluginCatalogChanged(event)
         }
     }
 }
@@ -421,10 +423,16 @@ private fun nativeEventFromCode(eventType: Int, payload: Map<String, Any?>): Any
         EventCode.SYNC_TASK_COMPLETED,
         EventCode.SYNC_STATE_CHANGED,
         EventCode.SYNC_RESYNC_NEEDED -> syncEventFromCode(eventType, payload)
-        EventCode.EXTENSION -> CapabilityEvent(
-            name = CapabilityEventName.CHANGED,
-            capability = optionalEventString(payload["capability"], "capability"),
-            reason = optionalEventString(payload["reason"], "reason"),
+        EventCode.PLUGIN_REALTIME -> PluginRealtimeEvent(
+            pluginId = requiredEventString(payload["pluginId"], "pluginId"),
+            packetType = requiredEventString(payload["packetType"], "packetType"),
+            conversationId = requiredEventString(payload["conversationId"], "conversationId"),
+            payload = requiredEventMap(payload["payload"], "payload"),
+            deliveryId = requiredEventString(payload["deliveryId"], "deliveryId"),
+            expiresAtMs = requiredEventInt(payload["expiresAtMs"], "expiresAtMs"),
+        )
+        EventCode.PLUGIN_CATALOG_CHANGED -> PluginCatalogChangedEvent(
+            version = requiredEventString(payload["version"], "version"),
         )
         EventCode.VIEW_UPDATED -> viewUpdateFromJson(payload)
         else -> unknownEventFromCode(eventType, payload)

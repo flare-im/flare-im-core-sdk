@@ -191,7 +191,10 @@ public final class DefaultEventsApi: EventsApiProtocol {
     public func onDownloadProgress(_ listener: @escaping EventCallback<ProgressEvent>) -> any EventSubscription {
         registerTyped(listener)
     }
-    public func onCapabilityChanged(_ listener: @escaping EventCallback<CapabilityEvent>) -> any EventSubscription {
+    public func onPluginRealtime(_ listener: @escaping EventCallback<PluginRealtimeEvent>) -> any EventSubscription {
+        registerTyped(listener)
+    }
+    public func onPluginCatalogChanged(_ listener: @escaping EventCallback<PluginCatalogChangedEvent>) -> any EventSubscription {
         registerTyped(listener)
     }
 
@@ -308,12 +311,17 @@ private func nativeEventFromCode(eventType: Int, payload: Any?) throws -> Any {
             taskId: task,
             detail: try optionalString(json["detail"]?.value, "detail")
         )
-    case EventCode.extensionEvent:
-        return CapabilityEvent(
-            name: .changed,
-            capability: try optionalString(json["capability"]?.value, "capability"),
-            reason: try optionalString(json["reason"]?.value, "reason")
+    case EventCode.pluginRealtime:
+        return PluginRealtimeEvent(
+            pluginId: try requiredString(json["pluginId"]?.value, "pluginId"),
+            packetType: try requiredString(json["packetType"]?.value, "packetType"),
+            conversationId: try requiredString(json["conversationId"]?.value, "conversationId"),
+            payload: try requiredJsonObject(json["payload"]?.value, "payload"),
+            deliveryId: try requiredString(json["deliveryId"]?.value, "deliveryId"),
+            expiresAtMs: try requiredUInt64(json["expiresAtMs"]?.value, "expiresAtMs")
         )
+    case EventCode.pluginCatalogChanged:
+        return PluginCatalogChangedEvent(version: try requiredString(json["version"]?.value, "version"))
     case EventCode.viewUpdated:
         return try viewUpdateFromJson(json)
     default:
@@ -557,6 +565,12 @@ private func optionalBool(_ value: Any?, _ field: String) throws -> Bool? {
     return try requiredBool(value, field)
 }
 
+private func requiredJsonObject(_ value: Any?, _ field: String) throws -> [String: AnySendable] {
+    if let map = value as? [String: AnySendable] { return map }
+    if let map = value as? [String: Any] { return map.mapValues { AnySendable($0) } }
+    try invalidEventField(field, "object")
+}
+
 private func requiredListOfMaps(_ value: Any?, _ field: String) throws -> [[String: Any]] {
     guard let items = value as? [Any] else {
         try invalidEventField(field, "array")
@@ -664,10 +678,10 @@ private func dispatchToListener(_ listener: any FlareImEventListener, event: Any
         case .pinned: listener.onMessagePinned(mutation)
         case .unpinned: listener.onMessageUnpinned(mutation)
         case .pluginStateChanged: listener.onMessagePluginStateChanged(mutation)
-        case .received, .receivedBatch, .sendAck, .sendFailed, .capability,
+        case .received, .receivedBatch, .sendAck, .sendFailed,
              .typing, .typingAggregate, .reactionChanged, .readReceipt, .burnScheduled,
              .hardDeleted, .marked, .unmarked, .retentionScheduled,
-             .presenceChanged, .callSignal, .custom:
+             .presenceChanged, .custom:
             break
         }
         return
@@ -709,8 +723,12 @@ private func dispatchToListener(_ listener: any FlareImEventListener, event: Any
         listener.onSyncProgress(progress)
         return
     }
-    if let capability = event as? CapabilityEvent {
-        listener.onCapabilityChanged(capability)
+    if let realtime = event as? PluginRealtimeEvent {
+        listener.onPluginRealtime(realtime)
+        return
+    }
+    if let catalog = event as? PluginCatalogChangedEvent {
+        listener.onPluginCatalogChanged(catalog)
         return
     }
 }

@@ -90,15 +90,14 @@ const HEARTBEAT_APP_STATE_WIRE_ORDER: HeartbeatAppState[] = [HeartbeatAppState.F
 const CONVERSATION_TYPE_WIRE_VALUES: ConversationType[] = [ConversationType.Unspecified, ConversationType.Single, ConversationType.Group, ConversationType.Ai, ConversationType.System, ConversationType.Customer, ConversationType.Temp, ConversationType.Channel, ConversationType.Broadcast];
 const MESSAGE_CONTENT_TYPE_WIRE_VALUES: MessageContentType[] = [MessageContentType.Text, MessageContentType.Image, MessageContentType.Video, MessageContentType.Audio, MessageContentType.File, MessageContentType.Location, MessageContentType.Card, MessageContentType.Sticker, MessageContentType.Emoji, MessageContentType.Quote, MessageContentType.LinkCard, MessageContentType.Forward, MessageContentType.Thread, MessageContentType.MiniProgram, MessageContentType.RichText, MessageContentType.ImageGroup, MessageContentType.System, MessageContentType.Notification, MessageContentType.Vote, MessageContentType.Task, MessageContentType.Schedule, MessageContentType.Announcement, MessageContentType.Custom, MessageContentType.Placeholder];
 const MESSAGE_SEARCH_KIND_WIRE_ORDER: MessageSearchKind[] = [MessageSearchKind.Message, MessageSearchKind.Text, MessageSearchKind.Media, MessageSearchKind.Image, MessageSearchKind.Video, MessageSearchKind.Audio, MessageSearchKind.File];
-const SDK_EVENT_KIND_WIRE_ORDER: SdkEventKind[] = [SdkEventKind.Lifecycle, SdkEventKind.Connection, SdkEventKind.Message, SdkEventKind.Notification, SdkEventKind.Conversation, SdkEventKind.Sync, SdkEventKind.Extension, SdkEventKind.ExtensionEvent, SdkEventKind.Presence, SdkEventKind.Media, SdkEventKind.Capability];
+const SDK_EVENT_KIND_WIRE_ORDER: SdkEventKind[] = [SdkEventKind.Lifecycle, SdkEventKind.Connection, SdkEventKind.Message, SdkEventKind.Notification, SdkEventKind.Conversation, SdkEventKind.Sync, SdkEventKind.Extension, SdkEventKind.ExtensionEvent, SdkEventKind.Presence, SdkEventKind.Media, SdkEventKind.Plugin];
 const LIFECYCLE_EVENT_NAME_WIRE_ORDER: LifecycleEventName[] = [LifecycleEventName.Initializing, LifecycleEventName.Initialized, LifecycleEventName.InitFailed, LifecycleEventName.LoginSucceeded, LifecycleEventName.LoginFailed, LifecycleEventName.LoggedOut, LifecycleEventName.Disposed];
 const SDK_CONNECTION_STATE_WIRE_ORDER: SdkConnectionState[] = [SdkConnectionState.Disconnected, SdkConnectionState.Connecting, SdkConnectionState.Connected, SdkConnectionState.Ready, SdkConnectionState.Reconnecting];
 const CONNECTION_EVENT_NAME_WIRE_ORDER: ConnectionEventName[] = [ConnectionEventName.Connecting, ConnectionEventName.Connected, ConnectionEventName.Ready, ConnectionEventName.Disconnected, ConnectionEventName.Reconnecting, ConnectionEventName.ReconnectFailed, ConnectionEventName.StateChanged, ConnectionEventName.SyncStateChanged, ConnectionEventName.ServerError, ConnectionEventName.KickedOff, ConnectionEventName.TokenExpired];
-const MESSAGE_EVENT_NAME_WIRE_ORDER: MessageEventName[] = [MessageEventName.Received, MessageEventName.ReceivedBatch, MessageEventName.SendAck, MessageEventName.SendFailed, MessageEventName.Capability, MessageEventName.Recalled, MessageEventName.Typing, MessageEventName.Edited, MessageEventName.ReactionChanged, MessageEventName.Deleted, MessageEventName.ReadReceipt, MessageEventName.BurnScheduled, MessageEventName.Burned, MessageEventName.HardDeleted, MessageEventName.Pinned, MessageEventName.Unpinned, MessageEventName.Marked, MessageEventName.Unmarked, MessageEventName.RetentionScheduled, MessageEventName.RetentionExpired, MessageEventName.RetentionPurged, MessageEventName.PresenceChanged, MessageEventName.CallSignal, MessageEventName.Custom, MessageEventName.PluginStateChanged];
+const MESSAGE_EVENT_NAME_WIRE_ORDER: MessageEventName[] = [MessageEventName.Received, MessageEventName.ReceivedBatch, MessageEventName.SendAck, MessageEventName.SendFailed, MessageEventName.Recalled, MessageEventName.Typing, MessageEventName.Edited, MessageEventName.ReactionChanged, MessageEventName.Deleted, MessageEventName.ReadReceipt, MessageEventName.BurnScheduled, MessageEventName.Burned, MessageEventName.HardDeleted, MessageEventName.Pinned, MessageEventName.Unpinned, MessageEventName.Marked, MessageEventName.Unmarked, MessageEventName.RetentionScheduled, MessageEventName.RetentionExpired, MessageEventName.RetentionPurged, MessageEventName.PresenceChanged, MessageEventName.Custom, MessageEventName.PluginStateChanged];
 const CONVERSATION_EVENT_NAME_WIRE_ORDER: ConversationEventName[] = [ConversationEventName.Synced, ConversationEventName.Created, ConversationEventName.Updated, ConversationEventName.UnreadCountChanged, ConversationEventName.Deleted];
 const SYNC_EVENT_NAME_WIRE_ORDER: SyncEventName[] = [SyncEventName.StateChanged, SyncEventName.Started, SyncEventName.Finished, SyncEventName.Failed, SyncEventName.Progress, SyncEventName.TaskCompleted, SyncEventName.ResyncNeeded];
 const PROGRESS_EVENT_NAME_WIRE_ORDER: ProgressEventName[] = [ProgressEventName.SyncProgress, ProgressEventName.UploadProgress, ProgressEventName.DownloadProgress];
-const CAPABILITY_EVENT_NAME_WIRE_ORDER: CapabilityEventName[] = [CapabilityEventName.Changed, CapabilityEventName.Unavailable];
 
 
 
@@ -862,14 +861,6 @@ export function syncEventToMap(request: SyncEvent): Record<string, Object> {
   ...(request.task !== undefined ? { task: request.task } : {}),
   ...(request.progress !== undefined ? { progress: request.progress } : {}),
   ...(request.error !== undefined ? { error: sdkErrorPayloadToMap(request.error) } : {}),
-  };
-}
-
-export function capabilityEventToMap(request: CapabilityEvent): Record<string, Object> {
-  return {
-  name: enumWireIndex(CAPABILITY_EVENT_NAME_WIRE_ORDER, request.name),
-  ...(request.capability !== undefined ? { capability: request.capability } : {}),
-  ...(request.reason !== undefined ? { reason: request.reason } : {}),
   };
 }
 
