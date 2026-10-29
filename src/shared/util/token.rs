@@ -49,7 +49,7 @@ fn generate_jti() -> String {
     {
         let ts = js_sys::Date::now() as u64;
         let seq = JTI_SEQ.fetch_add(1, Ordering::Relaxed);
-        return format!("{ts:x}-{seq:04x}");
+        format!("{ts:x}-{seq:04x}")
     }
 
     #[cfg(not(target_arch = "wasm32"))]

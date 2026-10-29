@@ -439,7 +439,7 @@ impl MediaUploaderPort for MediaService {
         })?;
         let options = options.unwrap_or_default();
         let progress_cb: Option<UploadProgressCallback> =
-            progress.map(|sink| Arc::new(move |p| sink(p)) as UploadProgressCallback);
+            progress.map(|sink| Arc::new(sink) as UploadProgressCallback);
         self.upload_bytes_direct(
             &bytes,
             media.metadata.file_name,
