@@ -56,6 +56,12 @@ pub fn create_wasm_runtime() -> FlareImWasmRuntime {
     FlareImWasmRuntime::new()
 }
 
+impl Default for FlareImWasmRuntime {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[wasm_bindgen]
 impl FlareImWasmRuntime {
     #[wasm_bindgen(constructor)]
@@ -70,30 +76,14 @@ impl FlareImWasmRuntime {
         set_event_callback(self.state.runtime_id, callback);
     }
 
-    /// Register JS IndexedDB persistence host callbacks before `sdk.login`.
+    /// Install the JS persistence host before `sdk.login`: one object with the
+    /// methods `loadSnapshot`, `saveMessage`, `saveConversation`, `saveCursor`,
+    /// `savePendingSend`, `deleteMessage`, `deleteConversation` and
+    /// `deletePendingSend`. Throws `INVALID_PARAMETER` when one is missing.
     #[wasm_bindgen(js_name = setStorageHost)]
-    pub fn set_storage_host(
-        &self,
-        load_snapshot: Function,
-        save_message: Function,
-        save_conversation: Function,
-        save_cursor: Function,
-        save_pending_send: Function,
-        delete_message: Function,
-        delete_conversation: Function,
-        delete_pending_send: Function,
-    ) {
+    pub fn set_storage_host(&self, host: JsValue) -> Result<(), JsValue> {
         let _ = self;
-        set_storage_host(
-            load_snapshot,
-            save_message,
-            save_conversation,
-            save_cursor,
-            save_pending_send,
-            delete_message,
-            delete_conversation,
-            delete_pending_send,
-        );
+        set_storage_host(&host).map_err(|error| sdk_error_js(&error, Some("setStorageHost")))
     }
 
     #[wasm_bindgen(js_name = clearStorageHost)]

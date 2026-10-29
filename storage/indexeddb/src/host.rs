@@ -6,7 +6,7 @@ use std::rc::Rc;
 use flare_im_core_sdk::model::Conversation;
 use flare_im_core_sdk::model::IMMessage;
 use flare_im_core_sdk::storage::PendingSendVo;
-use flare_im_core_sdk::{FlareError, Result};
+use flare_im_core_sdk::{ErrorCode, FlareError, Result};
 use js_sys::Function;
 use serde::{Deserialize, Serialize};
 use serde_wasm_bindgen::Serializer;
@@ -15,9 +15,11 @@ use wasm_bindgen::JsValue;
 use wasm_bindgen_futures::JsFuture;
 
 thread_local! {
-    static STORAGE_HOST: RefCell<Option<Rc<StorageHost>>> = RefCell::new(None);
+    static STORAGE_HOST: RefCell<Option<Rc<StorageHost>>> = const { RefCell::new(None) };
 }
 
+/// The JS storage host's methods, read by name and bound to the host object when it
+/// is installed, so a host never depends on the order of its callbacks.
 #[derive(Clone)]
 struct StorageHost {
     load_snapshot: Function,
@@ -115,28 +117,45 @@ fn to_host_value<T: Serialize>(payload: &T, operation: &str) -> Result<JsValue> 
         .map_err(|e| FlareError::system(format!("encode {operation} payload failed: {e}")))
 }
 
-pub fn set_storage_host(
-    load_snapshot: Function,
-    save_message: Function,
-    save_conversation: Function,
-    save_cursor: Function,
-    save_pending_send: Function,
-    delete_message: Function,
-    delete_conversation: Function,
-    delete_pending_send: Function,
-) {
+impl StorageHost {
+    fn from_js(host: &JsValue) -> Result<Self> {
+        Ok(Self {
+            load_snapshot: host_method(host, "loadSnapshot")?,
+            save_message: host_method(host, "saveMessage")?,
+            save_conversation: host_method(host, "saveConversation")?,
+            save_cursor: host_method(host, "saveCursor")?,
+            save_pending_send: host_method(host, "savePendingSend")?,
+            delete_message: host_method(host, "deleteMessage")?,
+            delete_conversation: host_method(host, "deleteConversation")?,
+            delete_pending_send: host_method(host, "deletePendingSend")?,
+        })
+    }
+}
+
+/// `host[name]` bound to `host`; an invalid parameter when the host lacks it.
+fn host_method(host: &JsValue, name: &str) -> Result<Function> {
+    js_sys::Reflect::get(host, &JsValue::from_str(name))
+        .ok()
+        .and_then(|value| value.dyn_into::<Function>().ok())
+        .map(|method| method.bind0(host))
+        .ok_or_else(|| {
+            FlareError::localized(
+                ErrorCode::InvalidParameter,
+                format!("storage host has no {name} method"),
+            )
+        })
+}
+
+/// Installs the JS storage host: one object with the methods `loadSnapshot`,
+/// `saveMessage`, `saveConversation`, `saveCursor`, `savePendingSend`,
+/// `deleteMessage`, `deleteConversation` and `deletePendingSend`. A host missing
+/// any of them is refused and the installed one stays.
+pub fn set_storage_host(host: &JsValue) -> Result<()> {
+    let host = StorageHost::from_js(host)?;
     STORAGE_HOST.with(|slot| {
-        *slot.borrow_mut() = Some(Rc::new(StorageHost {
-            load_snapshot,
-            save_message,
-            save_conversation,
-            save_cursor,
-            save_pending_send,
-            delete_message,
-            delete_conversation,
-            delete_pending_send,
-        }));
+        *slot.borrow_mut() = Some(Rc::new(host));
     });
+    Ok(())
 }
 
 pub fn clear_storage_host() {
