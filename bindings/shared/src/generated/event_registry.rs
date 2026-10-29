@@ -21,7 +21,6 @@ pub const EVENT_ROUTE_TABLE: &[(i32, &str, &str)] = &[
     (2004, "message.send_failed", "im://send_failed"),
     (2005, "message.recalled", "im://message_recalled"),
     (2006, "message.typing", "im://typing"),
-    (2007, "message.capability", "im://message_capability"),
     (2008, "message.edited", "im://message_edited"),
     (
         2009,
@@ -81,6 +80,12 @@ pub const EVENT_ROUTE_TABLE: &[(i32, &str, &str)] = &[
     (4008, "sync.readiness", "im://sync_readiness"),
     (6001, "view.updated", "im://view_updated"),
     (5001, "extension.event", "im://extension"),
+    (7001, "plugin.realtime", "im://plugin_realtime"),
+    (
+        7002,
+        "plugin.catalog_changed",
+        "im://plugin_catalog_changed",
+    ),
 ];
 
 pub fn contract_event_id_for_code(code: i32) -> Option<&'static str> {

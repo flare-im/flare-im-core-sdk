@@ -18,7 +18,8 @@ use crate::application::usecases::{
     MessageSendUseCase, MessageViewAssembler, sync_request::SyncRequestUseCase,
 };
 use crate::client::api::{
-    CapabilityApi, ConversationApi, MediaApi, MessageApi, MessageBuildApi, PresenceApi, ViewApi,
+    CapabilityApi, ConversationApi, MediaApi, MessageApi, MessageBuildApi, PluginCatalogNotices,
+    PresenceApi, ViewApi,
 };
 use crate::client::config::SdkConfig;
 use crate::client::im_client::{IMClient, IMClientInner};
@@ -670,19 +671,10 @@ impl IMClientBuilder {
         let capability_registry = Arc::new(SdkCapabilityRegistry::new_session_bound(
             current_user_id.clone(),
         ));
-        capability_registry.register_capability_observer(|cid, packet| {
-            tracing::debug!(
-                target = "flare_sdk.plugin.call",
-                conversation_id = %cid,
-                capability_id = %packet.capability_id,
-                packet_type = %packet.packet_type,
-                "capability packet (observer)"
-            );
-        });
-        let reg = capability_registry.clone();
-        let _capability_plugin_bridge = bus.on_capability(move |conversation_id: &str, packet| {
-            reg.dispatch_capability_to_observers(conversation_id, packet);
-        });
+        engine.set_plugin_catalog_notices(Arc::new(PluginCatalogNotices::new(
+            capability_api.as_ref().clone(),
+            bus.clone(),
+        )));
         for plugin in self.capability_plugins {
             let plugin_id = plugin.plugin_id();
             let register_result = capability_registry.register(plugin.clone());

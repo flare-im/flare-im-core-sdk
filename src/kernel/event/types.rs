@@ -4,10 +4,9 @@
 //! 不暴露大 trait，便于 FFI / Swift / Kotlin / TypeScript 绑定。
 
 use flare_proto::common::{
-    CapabilityPacket, CustomEvent, MarkEvent, MessageDeleteEvent, MessageRecallEvent,
-    MessageRetentionExpiredEvent, MessageRetentionPurgedEvent, MessageRetentionScheduledEvent,
-    PinEvent, PresenceHintPacket, ReadReceiptEvent, SendAck, TypingAggregatePacket,
-    TypingStatePacket, UnmarkEvent, UnpinEvent,
+    CustomEvent, MarkEvent, MessageDeleteEvent, MessageRecallEvent, MessageRetentionExpiredEvent,
+    MessageRetentionPurgedEvent, MessageRetentionScheduledEvent, PinEvent, PresenceHintPacket,
+    ReadReceiptEvent, SendAck, TypingAggregatePacket, TypingStatePacket, UnmarkEvent, UnpinEvent,
 };
 
 use crate::kernel::{SdkState, SyncRunContext, SyncState};
@@ -136,11 +135,6 @@ pub enum MessageEvent {
     PresenceChanged {
         conversation_id: String,
         event: PresenceHintPacket,
-    },
-    /// 能力包下行（RTC/通话等插件能力统一走 DATA capability）
-    Capability {
-        conversation_id: String,
-        packet: Box<CapabilityPacket>,
     },
     /// 自定义领域事件（custom）
     Custom {
@@ -274,6 +268,40 @@ pub struct ExtensionEvent {
     pub payload: Vec<u8>,
 }
 
+/// A realtime packet a plugin delivered to this user's online connections
+/// (`im.realtime.deliver`): online only, at most once, never stored. The SDK
+/// drops expired packets and packets whose payload is not a JSON object.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PluginRealtime {
+    /// The delivering plugin (`DataPacket.capability.capability_id`), e.g. `flare.call`.
+    pub plugin_id: String,
+    /// The plugin's packet type, e.g. `call.snapshot`.
+    pub packet_type: String,
+    /// The conversation the plugin delivered to.
+    pub conversation_id: String,
+    /// The plugin's JSON object payload.
+    pub payload: serde_json::Map<String, serde_json::Value>,
+    /// Core's id of this delivery.
+    pub delivery_id: String,
+    /// Wall-clock milliseconds after which the packet is stale.
+    pub expires_at_ms: u64,
+}
+
+/// Plugin domain events.
+#[derive(Clone, Debug)]
+pub enum PluginEvent {
+    /// A plugin realtime packet ([`PluginRealtime`]).
+    Realtime(Box<PluginRealtime>),
+    /// The tenant's plugin catalog changed (a plugin enabled, disabled or
+    /// reconfigured). The SDK has already invalidated its catalog; hosts read
+    /// their plugin entries again. Emitted after a random 0-3 s delay, with the
+    /// notices of 3 s merged into one.
+    CatalogChanged {
+        /// The authorization projection version Core announced.
+        version: String,
+    },
+}
+
 /// Notification 域事件：IM 下行 `NotificationContent`（与聊天 `MessageEvent::Received` 分离）。
 #[derive(Clone, Debug)]
 pub enum NotificationEvent {
@@ -300,6 +328,7 @@ pub enum SdkEvent {
     Sync(SyncNotify),
     View(ViewUpdate),
     Extension(ExtensionEvent),
+    Plugin(PluginEvent),
 }
 
 #[cfg(test)]

@@ -7,6 +7,13 @@
 
 ### 新增
 
+- 插件下行的两个类型化事件：`SdkEvent::Plugin(PluginEvent::Realtime)`（插件经宿主能力
+  `im.realtime.deliver` 投递的实时包：`pluginId`、`packetType`、`conversationId`、JSON 对象 `payload`、
+  `deliveryId`、`expiresAtMs`；过期包与 payload 不是 JSON 对象的包直接丢弃）与
+  `PluginEvent::CatalogChanged { version }`（租户插件目录变更通知：先让插件目录失效，再在 0–3 秒随机
+  延迟后发出，3 秒内的通知合并为一次）。Rust 侧 `on_plugin_realtime` / `on_plugin_catalog_changed`；
+  绑定层事件 `plugin.realtime`（7001，`im://plugin_realtime`）与 `plugin.catalog_changed`
+  （7002，`im://plugin_catalog_changed`）。
 - 跟进契约层新增的两个会话参与者字段（需要 `flare-proto` 2.1.0）：
   `is_mention_only`（只接收提到我的消息）与 `visible_from_seq`（可见历史下限）。
 - `PresenceApi::register_push_token` / `unregister_push_token`：为本设备登记、注销离线推送令牌，
@@ -104,6 +111,15 @@
   `tests/single_reconnect_path.rs` 的竞速用例不再需要把连接超时调短，并断言一次建连只拨一次。
 - `media.user_download_get_saved_path` 只返回仍在磁盘上的文件：用户删掉或挪走了保存的文件，
   它删掉这条下载记录并返回 `null`，客户端据此把「在文件夹中显示」换回「下载」。
+
+### 移除
+
+- 通话专用代码：`rtc_ids`、`call_event`、内置插件 `AvCapabilityPlugin`、`CapabilityApi::rtc_*` 与
+  `RtcSfuSubscriptionRequest`、Tauri 命令 `sdk_rtc_ice_config_snapshot`。通话改为托管插件 `flare.call`，
+  经 `dispatch` 调用，状态以 `PluginEvent::Realtime` 到达。
+- 未类型化的能力包事件 `MessageEvent::Capability`（事件码 2007，`im://message_capability`）、
+  `on_capability` 与注册表的能力包观察者，由上面两个插件事件取代。
+- 上行 `send_capability_packet`：网关丢弃上行能力包，插件上行一律走 HTTP 能力调用。
 
 ### 依赖
 

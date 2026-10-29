@@ -1,0 +1,340 @@
+//! Downlink `DataPacket.capability`: plugin realtime packets and the tenant's
+//! plugin catalog-changed notices (the only capability packets Core sends).
+
+use flare_proto::common::CapabilityPacket;
+use serde_json::Value;
+
+use crate::kernel::event::PluginRealtime;
+
+/// `capability_id` of the tenant's plugin catalog-changed notice.
+pub(super) const PLUGIN_CATALOG_CAPABILITY_ID: &str = "flare.plugin.catalog";
+/// `packet_type` of the catalog-changed notice.
+pub(super) const PLUGIN_CATALOG_CHANGED: &str = "changed";
+
+const ATTR_CONVERSATION_ID: &str = "conversation_id";
+const ATTR_DELIVERY_ID: &str = "delivery_id";
+const ATTR_EXPIRES_AT_MS: &str = "expires_at_ms";
+
+#[derive(Debug, PartialEq)]
+pub(super) enum PluginPacket {
+    Realtime(Box<PluginRealtime>),
+    CatalogChanged { version: String },
+}
+
+/// Why a capability packet was dropped (logged, never surfaced).
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum Dropped {
+    Expired,
+    Malformed(&'static str),
+}
+
+/// Reads one downlink capability packet at wall-clock `now_ms`.
+pub(super) fn classify(packet: CapabilityPacket, now_ms: u64) -> Result<PluginPacket, Dropped> {
+    if packet.capability_id == PLUGIN_CATALOG_CAPABILITY_ID {
+        return catalog_changed(&packet);
+    }
+    realtime(packet, now_ms).map(|realtime| PluginPacket::Realtime(Box::new(realtime)))
+}
+
+fn catalog_changed(packet: &CapabilityPacket) -> Result<PluginPacket, Dropped> {
+    if packet.packet_type != PLUGIN_CATALOG_CHANGED {
+        return Err(Dropped::Malformed("catalog packet_type"));
+    }
+    let payload = serde_json::from_slice::<Value>(&packet.payload)
+        .map_err(|_| Dropped::Malformed("catalog payload"))?;
+    match payload.get("version").and_then(Value::as_str) {
+        Some(version) if !version.is_empty() => Ok(PluginPacket::CatalogChanged {
+            version: version.to_string(),
+        }),
+        _ => Err(Dropped::Malformed("catalog version")),
+    }
+}
+
+fn realtime(packet: CapabilityPacket, now_ms: u64) -> Result<PluginRealtime, Dropped> {
+    let CapabilityPacket {
+        capability_id,
+        packet_type,
+        payload,
+        mut attributes,
+        correlation_id,
+        ..
+    } = packet;
+    if capability_id.is_empty() {
+        return Err(Dropped::Malformed("plugin id"));
+    }
+    if packet_type.is_empty() {
+        return Err(Dropped::Malformed("packet type"));
+    }
+    let expires_at_ms = attributes
+        .get(ATTR_EXPIRES_AT_MS)
+        .and_then(|value| value.parse::<u64>().ok())
+        .ok_or(Dropped::Malformed("expires_at_ms"))?;
+    if now_ms > expires_at_ms {
+        return Err(Dropped::Expired);
+    }
+    let Ok(Value::Object(payload)) = serde_json::from_slice::<Value>(&payload) else {
+        return Err(Dropped::Malformed("payload is not a JSON object"));
+    };
+    let delivery_id = attributes
+        .remove(ATTR_DELIVERY_ID)
+        .filter(|id| !id.is_empty())
+        .or(correlation_id.filter(|id| !id.is_empty()))
+        .ok_or(Dropped::Malformed("delivery id"))?;
+    let conversation_id = attributes
+        .remove(ATTR_CONVERSATION_ID)
+        .filter(|id| !id.is_empty())
+        .ok_or(Dropped::Malformed("conversation id"))?;
+    Ok(PluginRealtime {
+        plugin_id: capability_id,
+        packet_type,
+        conversation_id,
+        payload,
+        delivery_id,
+        expires_at_ms,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use serde_json::json;
+
+    use super::*;
+
+    const NOW: u64 = 1_730_000_000_000;
+
+    fn realtime_packet(payload: &[u8], expires_at_ms: u64) -> CapabilityPacket {
+        CapabilityPacket {
+            capability_id: "flare.call".into(),
+            packet_type: "call.snapshot".into(),
+            version: "1".into(),
+            payload: payload.to_vec(),
+            attributes: HashMap::from([
+                ("conversation_id".into(), "conv-1".into()),
+                ("plugin_id".into(), "flare.call".into()),
+                ("delivery_id".into(), "d-1".into()),
+                ("expires_at_ms".into(), expires_at_ms.to_string()),
+            ]),
+            correlation_id: Some("d-1".into()),
+        }
+    }
+
+    fn catalog_packet(payload: &[u8]) -> CapabilityPacket {
+        CapabilityPacket {
+            capability_id: PLUGIN_CATALOG_CAPABILITY_ID.into(),
+            packet_type: PLUGIN_CATALOG_CHANGED.into(),
+            version: "1".into(),
+            payload: payload.to_vec(),
+            attributes: HashMap::from([("tenant_id".into(), "t1".into())]),
+            correlation_id: None,
+        }
+    }
+
+    #[test]
+    fn a_live_realtime_packet_becomes_the_typed_event() {
+        let packet = realtime_packet(br#"{"callId":"c-1","version":3}"#, NOW + 60_000);
+        let Ok(PluginPacket::Realtime(realtime)) = classify(packet, NOW) else {
+            panic!("live packet must be delivered");
+        };
+        assert_eq!(
+            *realtime,
+            PluginRealtime {
+                plugin_id: "flare.call".into(),
+                packet_type: "call.snapshot".into(),
+                conversation_id: "conv-1".into(),
+                payload: json!({"callId": "c-1", "version": 3})
+                    .as_object()
+                    .cloned()
+                    .unwrap(),
+                delivery_id: "d-1".into(),
+                expires_at_ms: NOW + 60_000,
+            }
+        );
+    }
+
+    #[test]
+    fn an_expired_realtime_packet_is_dropped() {
+        assert_eq!(
+            classify(realtime_packet(br#"{"callId":"c-1"}"#, NOW - 1), NOW),
+            Err(Dropped::Expired)
+        );
+        // Still live at the expiry millisecond itself.
+        assert!(classify(realtime_packet(br#"{"callId":"c-1"}"#, NOW), NOW).is_ok());
+    }
+
+    #[test]
+    fn a_payload_that_is_not_a_json_object_is_dropped() {
+        for payload in [
+            &br#"[1,2]"#[..],
+            b"\"text\"",
+            b"42",
+            b"null",
+            b"not json",
+            b"",
+        ] {
+            assert_eq!(
+                classify(realtime_packet(payload, NOW + 1_000), NOW),
+                Err(Dropped::Malformed("payload is not a JSON object")),
+                "payload {:?}",
+                String::from_utf8_lossy(payload)
+            );
+        }
+    }
+
+    #[test]
+    fn a_realtime_packet_without_expiry_or_conversation_is_dropped() {
+        let mut packet = realtime_packet(b"{}", NOW + 1_000);
+        packet.attributes.remove("expires_at_ms");
+        assert_eq!(
+            classify(packet, NOW),
+            Err(Dropped::Malformed("expires_at_ms"))
+        );
+        let mut packet = realtime_packet(b"{}", NOW + 1_000);
+        packet.attributes.remove("conversation_id");
+        assert_eq!(
+            classify(packet, NOW),
+            Err(Dropped::Malformed("conversation id"))
+        );
+    }
+
+    #[test]
+    fn the_delivery_id_falls_back_to_the_correlation_id() {
+        let mut packet = realtime_packet(b"{}", NOW + 1_000);
+        packet.attributes.remove("delivery_id");
+        packet.correlation_id = Some("d-9".into());
+        let Ok(PluginPacket::Realtime(realtime)) = classify(packet, NOW) else {
+            panic!("packet must be delivered");
+        };
+        assert_eq!(realtime.delivery_id, "d-9");
+    }
+
+    #[test]
+    fn the_catalog_notice_is_not_a_realtime_packet() {
+        assert_eq!(
+            classify(catalog_packet(br#"{"version":"42"}"#), NOW),
+            Ok(PluginPacket::CatalogChanged {
+                version: "42".into()
+            })
+        );
+        assert_eq!(
+            classify(catalog_packet(br#"{"version":42}"#), NOW),
+            Err(Dropped::Malformed("catalog version"))
+        );
+        let mut other = catalog_packet(br#"{"version":"42"}"#);
+        other.packet_type = "something".into();
+        assert_eq!(
+            classify(other, NOW),
+            Err(Dropped::Malformed("catalog packet_type"))
+        );
+    }
+}
+
+#[cfg(test)]
+mod dispatch_tests {
+    use std::collections::HashMap;
+    use std::sync::{Arc, Mutex};
+
+    use flare_proto::common::CapabilityPacket;
+    use tokio::sync::RwLock;
+
+    use super::super::Dispatcher;
+    use crate::application::notification::{
+        NotificationHandlerRegistry, NotificationInboundPipeline,
+    };
+    use crate::application::services::{EventDeduper, MessageDeduper};
+    use crate::infrastructure::protocol::DownlinkPayload;
+    use crate::kernel::PluginCatalogNoticePort;
+    use crate::kernel::event::{EventBus, PluginEvent, SdkEvent};
+    use crate::shared::util::now_millis;
+    use crate::spi::metrics::MetricsRecorder;
+
+    #[derive(Default)]
+    struct Notices(Mutex<Vec<String>>);
+
+    impl PluginCatalogNoticePort for Notices {
+        fn catalog_changed(&self, version: String) {
+            self.0.lock().unwrap().push(version);
+        }
+    }
+
+    fn dispatcher(bus: &EventBus, notices: Arc<Notices>) -> Dispatcher {
+        Dispatcher::new(
+            bus.clone(),
+            None,
+            None,
+            None,
+            None,
+            Arc::new(RwLock::new("u1".to_string())),
+            EventDeduper::new(Some(64)),
+            NotificationInboundPipeline::new(
+                Arc::new(NotificationHandlerRegistry::new()),
+                MessageDeduper::new(Some(64)),
+                bus.clone(),
+            ),
+            MetricsRecorder::disabled(),
+        )
+        .with_plugin_catalog_notices(Some(notices))
+    }
+
+    fn realtime(payload: &[u8], expires_at_ms: u64) -> DownlinkPayload {
+        DownlinkPayload::Capability(CapabilityPacket {
+            capability_id: "flare.call".into(),
+            packet_type: "call.snapshot".into(),
+            version: "1".into(),
+            payload: payload.to_vec(),
+            attributes: HashMap::from([
+                ("conversation_id".into(), "conv-1".into()),
+                ("plugin_id".into(), "flare.call".into()),
+                ("delivery_id".into(), "d-1".into()),
+                ("expires_at_ms".into(), expires_at_ms.to_string()),
+            ]),
+            correlation_id: Some("d-1".into()),
+        })
+    }
+
+    #[tokio::test]
+    async fn capability_packets_become_plugin_events_and_catalog_notices() {
+        let bus = EventBus::new();
+        let mut events = bus.subscribe();
+        let notices = Arc::new(Notices::default());
+        let dispatcher = dispatcher(&bus, notices.clone());
+        let live = now_millis() + 60_000;
+
+        dispatcher
+            .dispatch(realtime(br#"{"callId":"c-1"}"#, live))
+            .await
+            .unwrap();
+        dispatcher
+            .dispatch(realtime(br#"{"callId":"c-2"}"#, now_millis() - 1))
+            .await
+            .unwrap();
+        dispatcher.dispatch(realtime(b"[1]", live)).await.unwrap();
+        dispatcher
+            .dispatch(DownlinkPayload::Capability(CapabilityPacket {
+                capability_id: super::PLUGIN_CATALOG_CAPABILITY_ID.into(),
+                packet_type: super::PLUGIN_CATALOG_CHANGED.into(),
+                version: "1".into(),
+                payload: br#"{"version":"9"}"#.to_vec(),
+                attributes: HashMap::from([("tenant_id".into(), "t1".into())]),
+                correlation_id: None,
+            }))
+            .await
+            .unwrap();
+
+        let mut delivered = Vec::new();
+        while let Ok(event) = events.try_recv() {
+            match event {
+                SdkEvent::Plugin(PluginEvent::Realtime(realtime)) => {
+                    delivered.push(realtime.payload["callId"].clone())
+                }
+                SdkEvent::Plugin(PluginEvent::CatalogChanged { .. }) => {
+                    panic!("the dispatcher hands catalog notices to the port, never to the bus")
+                }
+                _ => {}
+            }
+        }
+        assert_eq!(delivered, vec![serde_json::json!("c-1")]);
+        assert_eq!(*notices.0.lock().unwrap(), vec!["9".to_string()]);
+    }
+}

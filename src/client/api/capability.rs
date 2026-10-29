@@ -26,6 +26,8 @@ use crate::infrastructure::transport::http::http_client::HttpRequestContext;
 use crate::infrastructure::transport::http::{HttpApiResponse, HttpClient, unwrap_api_response};
 use crate::shared::error::{ErrorCode, FlareError, Result};
 
+#[path = "capability_catalog_notices.rs"]
+mod catalog_notices;
 #[path = "capability_page.rs"]
 mod page;
 #[cfg(all(test, not(target_arch = "wasm32")))]
@@ -40,6 +42,7 @@ mod ui_tests;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 #[path = "capability_ui_v2_tests.rs"]
 mod ui_v2_tests;
+pub(crate) use catalog_notices::PluginCatalogNotices;
 #[path = "capability_viewer.rs"]
 mod viewer;
 

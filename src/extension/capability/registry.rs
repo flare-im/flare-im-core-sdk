@@ -1,9 +1,8 @@
-//! [`SdkCapabilityRegistry`]：按 `capability_id` 前缀解析插件并派发；并可注册能力包观察者（与总线 `on_capability` 联动）。
+//! [`SdkCapabilityRegistry`]：按 `capability_id` 前缀解析插件并派发。
 
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
-use flare_proto::common::CapabilityPacket;
 use serde_json::Value;
 
 use crate::client::api::session_guard::SessionGuard;
@@ -11,8 +10,6 @@ use crate::client::api::{CapabilityDispatchResult, UserCapabilityGrantDto};
 use crate::extension::capability::{SdkCapabilityPlugin, SdkPluginManifest};
 use crate::kernel::CurrentUserIdStore;
 use crate::shared::error::{ErrorCode, FlareError, Result};
-
-type CapabilityObserver = Arc<dyn Fn(&str, &CapabilityPacket) + Send + Sync>;
 
 #[derive(Debug, Clone)]
 struct PluginRuntimeState {
@@ -25,7 +22,6 @@ pub struct SdkCapabilityRegistry {
     plugins: RwLock<HashMap<String, Arc<dyn SdkCapabilityPlugin>>>,
     namespace_index: RwLock<HashMap<String, String>>,
     plugin_states: RwLock<HashMap<String, PluginRuntimeState>>,
-    capability_observers: RwLock<Vec<CapabilityObserver>>,
 }
 
 impl SdkCapabilityRegistry {
@@ -35,7 +31,6 @@ impl SdkCapabilityRegistry {
             plugins: RwLock::new(HashMap::new()),
             namespace_index: RwLock::new(HashMap::new()),
             plugin_states: RwLock::new(HashMap::new()),
-            capability_observers: RwLock::new(Vec::new()),
         }
     }
 
@@ -45,30 +40,6 @@ impl SdkCapabilityRegistry {
             plugins: RwLock::new(HashMap::new()),
             namespace_index: RwLock::new(HashMap::new()),
             plugin_states: RwLock::new(HashMap::new()),
-            capability_observers: RwLock::new(Vec::new()),
-        }
-    }
-
-    /// 注册下行能力包观察者（在 [`crate::kernel::event::EventBus::on_capability`] 与构建器桥接之后收到与 UI 相同的能力包）。
-    pub fn register_capability_observer<F>(&self, f: F)
-    where
-        F: Fn(&str, &CapabilityPacket) + Send + Sync + 'static,
-    {
-        if let Ok(mut g) = self.capability_observers.write() {
-            g.push(Arc::new(f));
-        }
-    }
-
-    /// 由构建器在 `MessageEvent::Capability` 发布路径上调用，转发给已注册观察者。
-    pub fn dispatch_capability_to_observers(
-        &self,
-        conversation_id: &str,
-        packet: &CapabilityPacket,
-    ) {
-        if let Ok(list) = self.capability_observers.read() {
-            for f in list.iter() {
-                f(conversation_id, packet);
-            }
         }
     }
 

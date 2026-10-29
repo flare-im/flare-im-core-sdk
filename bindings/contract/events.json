@@ -30,7 +30,8 @@
       "notification": "3501-3999",
       "sync": "4001-4999",
       "extension": "5001-5999",
-      "view": "6001-6999"
+      "view": "6001-6999",
+      "plugin": "7001-7999"
     }
   },
   "events": [
@@ -145,14 +146,6 @@
       "cCodeName": "FLARE_EVENT_MESSAGE_TYPING",
       "cJson": { "type": "message", "event": "typing", "fields": ["conversationId", "userId", "typing"] },
       "tauri": "im://typing"
-    },
-    {
-      "id": "message.capability",
-      "core": "SdkEvent::Message(MessageEvent::Capability)",
-      "cCode": 2007,
-      "cCodeName": "FLARE_EVENT_MESSAGE_CAPABILITY",
-      "cJson": { "type": "message", "event": "capability", "fields": ["conversationId", "capabilityId", "packetType", "version", "payload", "attributes", "correlationId"] },
-      "tauri": "im://message_capability"
     },
     {
       "id": "message.edited",
@@ -401,6 +394,22 @@
       "cCodeName": "FLARE_EVENT_EXTENSION",
       "cJson": { "type": "extension", "event": "extension", "fields": ["source", "eventType", "payload"] },
       "tauri": "im://extension"
+    },
+    {
+      "id": "plugin.realtime",
+      "core": "SdkEvent::Plugin(PluginEvent::Realtime)",
+      "cCode": 7001,
+      "cCodeName": "FLARE_EVENT_PLUGIN_REALTIME",
+      "cJson": { "type": "plugin", "event": "realtime", "fields": ["pluginId", "packetType", "conversationId", "payload", "deliveryId", "expiresAtMs"] },
+      "tauri": "im://plugin_realtime"
+    },
+    {
+      "id": "plugin.catalog_changed",
+      "core": "SdkEvent::Plugin(PluginEvent::CatalogChanged)",
+      "cCode": 7002,
+      "cCodeName": "FLARE_EVENT_PLUGIN_CATALOG_CHANGED",
+      "cJson": { "type": "plugin", "event": "catalog_changed", "fields": ["version"] },
+      "tauri": "im://plugin_catalog_changed"
     }
   ]
 }

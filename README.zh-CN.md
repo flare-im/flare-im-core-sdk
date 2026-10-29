@@ -66,7 +66,7 @@ cd flare-im-core-sdk && cargo check
 | `core/` | 事件总线、dispatcher、可靠队列、sync orchestrator |
 | `infrastructure/` | protobuf codec、packet sender、socket/http transport、memory/sqlite persistence |
 | `platform/` | media、transport、宿主能力端口 |
-| `extension/` | capability registry、middleware、RTC/SFU capability id helpers |
+| `extension/` | capability registry、插件 UI 与页面、middleware |
 
 ## 安装
 
@@ -135,14 +135,15 @@ let response = flare_im_core_sdk_bindings_runtime::invoke_json(
 ).await;
 ```
 
-Contract 源在 `bindings/contract/*.json`；修改后运行 `rtk cargo xtask codegen` 更新生成表。`call_signal.proto` 已移除，RTC/SFU 通过 `DataPacket.capability` 和 `rtc.*` capability id 发送。
+Contract 源在 `bindings/contract/*.json`；修改后运行 `rtk cargo xtask codegen` 更新生成表。
 
 ## 事件体系
 
 事件统一使用 `SdkEvent`：
 
 - `EventBus::subscribe()` 提供 typed Rust 事件流。
-- message mutation 事件来自 `event.proto` oneof payload；typing/presence/RTC 不占用 `conversation_seq`，走 DATA realtime/capability。
+- message mutation 事件来自 `event.proto` oneof payload；typing/presence 不占用 `conversation_seq`，走 DATA realtime。
+- 插件实时包（`DataPacket.capability`，`im.realtime.deliver`）以 `SdkEvent::Plugin(PluginEvent::Realtime)` 给出，过期包与 payload 不是 JSON 对象的包直接丢弃。租户的 `flare.plugin.catalog` / `changed` 通知先让插件目录失效，再在 0–3 秒随机延迟后以 `PluginEvent::CatalogChanged` 给出，3 秒内的通知合并为一次。绑定层事件为 `plugin.realtime`（7001，`im://plugin_realtime`）和 `plugin.catalog_changed`（7002，`im://plugin_catalog_changed`）。
 - `bindings/contract/events.json` 维护跨平台 event id、C code 和 `im://*` 名称。
 - 自定义业务事件走 `ExtensionEvent` 或 `MessageEvent::Custom`，payload bytes 对 core 不透明。
 
@@ -156,7 +157,7 @@ Contract 源在 `bindings/contract/*.json`；修改后运行 `rtk cargo xtask co
 
 ### 断线时不经 outbox 的操作
 
-只有发消息走 outbox。撤回、编辑、删除、表情回应、置顶与标记、已读回执（`mark_read`、`mark_read_and_burn`）、同步请求、能力包与自定义数据都是直发：不排队、不重试。长连接断开期间（包括重连监视器还在退避时）它们立即失败，不会自己重连；重连只走重连监视器一条路径。请按错误码分支，不要解析错误文本：
+只有发消息走 outbox。撤回、编辑、删除、表情回应、置顶与标记、已读回执（`mark_read`、`mark_read_and_burn`）、同步请求与自定义数据都是直发：不排队、不重试。长连接断开期间（包括重连监视器还在退避时）它们立即失败，不会自己重连；重连只走重连监视器一条路径。请按错误码分支，不要解析错误文本：
 
 | 错误码 | 含义 | 应用侧建议 |
 | --- | --- | --- |

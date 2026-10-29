@@ -7,8 +7,7 @@
 use std::sync::Arc;
 
 use flare_proto::common::{
-    CapabilityPacket, MessageRecallEvent, ReadReceiptEvent, SendAck, TypingAggregatePacket,
-    TypingStatePacket,
+    MessageRecallEvent, ReadReceiptEvent, SendAck, TypingAggregatePacket, TypingStatePacket,
 };
 
 use crate::application::notification::NotificationHandler;
@@ -16,8 +15,8 @@ use crate::client::IMClient;
 use crate::kernel::SdkState;
 use crate::kernel::SyncState;
 use crate::kernel::event::{
-    CustomEventSelector, EventFilter, FilteredEventReceiver, SdkEventKind, SdkEventType,
-    SharedEvent, Subscription, SyncPhase,
+    CustomEventSelector, EventFilter, FilteredEventReceiver, PluginRealtime, SdkEventKind,
+    SdkEventType, SharedEvent, Subscription, SyncPhase,
 };
 use crate::model::IMMessage;
 use crate::shared::error::Result;
@@ -247,12 +246,23 @@ impl IMClient {
         self.with_engine(|e| e.bus().on_read_receipt(f))
     }
 
-    /// 能力包下行（DATA capability）；RTC/通话等插件信令统一走这里。
-    pub fn on_capability<F>(&self, f: F) -> Result<Subscription>
+    /// Plugin realtime packets (`im.realtime.deliver`); expired packets and
+    /// non-object payloads never arrive.
+    pub fn on_plugin_realtime<F>(&self, f: F) -> Result<Subscription>
     where
-        F: Fn(&str, &CapabilityPacket) + Send + Sync + 'static,
+        F: Fn(&PluginRealtime) + Send + Sync + 'static,
     {
-        self.with_engine(|e| e.bus().on_capability(f))
+        self.with_engine(|e| e.bus().on_plugin_realtime(f))
+    }
+
+    /// The tenant's plugin catalog changed (after the SDK invalidated its
+    /// catalog, a random 0-3 s later, notices of 3 s merged); the argument is
+    /// the announced version.
+    pub fn on_plugin_catalog_changed<F>(&self, f: F) -> Result<Subscription>
+    where
+        F: Fn(&str) + Send + Sync + 'static,
+    {
+        self.with_engine(|e| e.bus().on_plugin_catalog_changed(f))
     }
 
     // ========== 会话列表（元数据 / 未读 / 删除）==========

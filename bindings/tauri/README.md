@@ -54,5 +54,5 @@ const response = await invoke("sdk_invoke_json", {
 - Do not implement IM business rules in this crate.
 - Do not restore the old command tree or `SdkEvent -> im://*` converter without
   first wiring it to the current `SdkEvent` and `events.json` contract.
-- RTC/SFU signaling uses DATA capability packets and `rtc.*` IDs, not durable
-  `call_signal` events.
+- Plugin realtime packets and plugin catalog changes reach the app as the
+  typed `im://plugin_realtime` and `im://plugin_catalog_changed` events.

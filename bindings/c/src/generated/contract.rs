@@ -7,7 +7,6 @@ pub const PLATFORM_BINDING: &str = "c";
 pub const BINDING_CONTRACT_VERSION: &str = "flare-im-ffi/v1";
 
 pub const C_API_SYMBOLS: &[&str] = &[
-    "capability_dispatch payload",
     "flare_capability_dispatch_json",
     "flare_event_subscribe",
     "flare_event_subscribe_batch",
@@ -195,7 +194,6 @@ pub const EVENT_CODES: &[(&str, i32)] = &[
     ("message.send_failed", 2004),
     ("message.recalled", 2005),
     ("message.typing", 2006),
-    ("message.capability", 2007),
     ("message.edited", 2008),
     ("message.reaction_changed", 2009),
     ("message.deleted", 2010),
@@ -227,6 +225,8 @@ pub const EVENT_CODES: &[(&str, i32)] = &[
     ("sync.readiness", 4008),
     ("view.updated", 6001),
     ("extension.event", 5001),
+    ("plugin.realtime", 7001),
+    ("plugin.catalog_changed", 7002),
 ];
 
 pub const ERROR_CODES: &[(&str, i32)] = &[

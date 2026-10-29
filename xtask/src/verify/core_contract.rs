@@ -92,14 +92,6 @@ fn client_methods(spec: &Value) -> Vec<(&Value, &Value)> {
         .collect()
 }
 
-fn normalize_core_api_id(api_id: &str) -> String {
-    if api_id.starts_with("rtc.") {
-        "capability.dispatch".to_string()
-    } else {
-        api_id.to_string()
-    }
-}
-
 fn is_removed_operation_id(value: &str) -> bool {
     REMOVED_OPERATION_IDS.contains(&value)
         || REMOVED_OPERATION_PREFIXES
@@ -240,13 +232,10 @@ fn verify_core_typed_operation_coverage(errors: &mut Vec<String>, spec: &Value, 
                 continue;
             }
             let api_id = str_field(method, "id");
-            let expected_operation = normalize_core_api_id(api_id);
-            if !client_operations.contains(&expected_operation) {
+            if !client_operations.contains(api_id) {
                 fail(
                     errors,
-                    format!(
-                        "core API missing typed client operation: {module_id}.{api_id} -> {expected_operation}"
-                    ),
+                    format!("core API missing typed client operation: {module_id}.{api_id}"),
                 );
             }
         }
@@ -462,7 +451,7 @@ fn verify_event_coverage(errors: &mut Vec<String>, spec: &Value, core_events: &V
             "message" => Some("MessageEventName"),
             "conversation" => Some("ConversationEventName"),
             "sync" => Some("SyncEventName"),
-            "capability" => Some("CapabilityEventName"),
+            "plugin" => Some("PluginEventName"),
             _ => None,
         };
         if let Some(enum_name) = enum_name

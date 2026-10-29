@@ -7,8 +7,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock};
 
 use flare_proto::common::{
-    CapabilityPacket, MessageRecallEvent, ReadReceiptEvent, SendAck, TypingAggregatePacket,
-    TypingStatePacket,
+    MessageRecallEvent, ReadReceiptEvent, SendAck, TypingAggregatePacket, TypingStatePacket,
 };
 
 use crate::model::IMMessage;
@@ -81,7 +80,6 @@ type FnRecalled = Arc<dyn Fn(String, MessageRecallEvent) + Send + Sync>;
 type FnTyping = Arc<dyn Fn(String, TypingStatePacket) + Send + Sync>;
 type FnTypingAggregate = Arc<dyn Fn(String, TypingAggregatePacket) + Send + Sync>;
 type FnReadReceipt = Arc<dyn Fn(String, ReadReceiptEvent) + Send + Sync>;
-type FnCapability = Arc<dyn Fn(String, CapabilityPacket) + Send + Sync>;
 type FnConversationIds = Arc<dyn Fn(Vec<String>) + Send + Sync>;
 type FnConversationId = Arc<dyn Fn(String) + Send + Sync>;
 type FnConversationUnreadCountChanged = Arc<dyn Fn(String, u32) + Send + Sync>;
@@ -144,7 +142,6 @@ pub struct EventBus {
     on_typing: Arc<RwLock<Vec<FnTyping>>>,
     on_typing_aggregate: Arc<RwLock<Vec<FnTypingAggregate>>>,
     on_read_receipt: Arc<RwLock<Vec<FnReadReceipt>>>,
-    capability_listeners: Arc<RwLock<Vec<FnCapability>>>,
     // Conversation
     on_conversation_synced: Arc<RwLock<Vec<FnConversationIds>>>,
     on_conversation_created: Arc<RwLock<Vec<FnConversationId>>>,
@@ -219,7 +216,6 @@ impl EventBus {
         let on_typing = Arc::new(RwLock::new(Vec::new()));
         let on_typing_aggregate = Arc::new(RwLock::new(Vec::new()));
         let on_read_receipt = Arc::new(RwLock::new(Vec::new()));
-        let capability_listeners = Arc::new(RwLock::new(Vec::new()));
         let on_conversation_synced = Arc::new(RwLock::new(Vec::new()));
         let on_conversation_created = Arc::new(RwLock::new(Vec::new()));
         let on_conversation_updated = Arc::new(RwLock::new(Vec::new()));
@@ -262,7 +258,6 @@ impl EventBus {
             on_typing,
             on_typing_aggregate,
             on_read_receipt,
-            capability_listeners,
             on_conversation_synced,
             on_conversation_created,
             on_conversation_updated,
@@ -492,18 +487,6 @@ impl EventBus {
                         },
                     );
                 }
-                MessageEvent::Capability {
-                    conversation_id,
-                    packet,
-                } => {
-                    dispatched += dispatch_callbacks_with(
-                        &self.capability_listeners,
-                        || (conversation_id.clone(), packet.as_ref().clone()),
-                        |f, (conversation_id, packet)| {
-                            f(conversation_id.clone(), packet.clone());
-                        },
-                    );
-                }
                 MessageEvent::ReadReceipt {
                     conversation_id,
                     event,
@@ -644,7 +627,7 @@ impl EventBus {
                     },
                 );
             }
-            SdkEvent::View(_) => {}
+            SdkEvent::View(_) | SdkEvent::Plugin(_) => {}
         }
         dispatched
     }

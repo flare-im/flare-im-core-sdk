@@ -1,7 +1,7 @@
 use flare_im_core_sdk::RawSdkEvent;
 use flare_im_core_sdk::event::{
-    ConnectionEvent, ConversationEvent, MessageEvent, NotificationEvent, ReadinessStage, SdkEvent,
-    SyncNotify, SyncPhase,
+    ConnectionEvent, ConversationEvent, MessageEvent, NotificationEvent, PluginEvent,
+    ReadinessStage, SdkEvent, SyncNotify, SyncPhase,
 };
 use flare_im_core_sdk::model::message::send_ack;
 use flare_im_core_sdk::prelude::SyncRunContext;
@@ -356,6 +356,20 @@ pub fn sdk_event_payload(ev: &SdkEvent) -> Option<(&'static str, Value)> {
             "view.updated",
             serde_json::to_value(update).unwrap_or_else(|_| json!({})),
         ),
+        SdkEvent::Plugin(PluginEvent::Realtime(realtime)) => (
+            "plugin.realtime",
+            json!({
+                "pluginId": realtime.plugin_id,
+                "packetType": realtime.packet_type,
+                "conversationId": realtime.conversation_id,
+                "payload": realtime.payload,
+                "deliveryId": realtime.delivery_id,
+                "expiresAtMs": realtime.expires_at_ms,
+            }),
+        ),
+        SdkEvent::Plugin(PluginEvent::CatalogChanged { version }) => {
+            ("plugin.catalog_changed", json!({ "version": version }))
+        }
         _ => return None,
     };
 
@@ -487,6 +501,52 @@ mod tests {
             payload,
             json!({"conversationId": "conversation-1", "messageId": "server-1", "version": 3})
         );
+    }
+
+    #[test]
+    fn plugin_realtime_is_forwarded_with_the_wire_contract_fields() {
+        let event = SdkEvent::Plugin(PluginEvent::Realtime(Box::new(
+            flare_im_core_sdk::event::PluginRealtime {
+                plugin_id: "flare.call".to_string(),
+                packet_type: "call.snapshot".to_string(),
+                conversation_id: "conversation-1".to_string(),
+                payload: json!({"callId": "c-1", "version": 2})
+                    .as_object()
+                    .cloned()
+                    .expect("object"),
+                delivery_id: "d-1".to_string(),
+                expires_at_ms: 1_730_000_000_000,
+            },
+        )));
+        let (channel, payload) =
+            sdk_event_channel_payload(&event).expect("plugin realtime should map to channel");
+
+        assert_eq!(channel, "im://plugin_realtime");
+        assert_eq!(sdk_event_code(&event), 7001);
+        assert_eq!(
+            payload,
+            json!({
+                "pluginId": "flare.call",
+                "packetType": "call.snapshot",
+                "conversationId": "conversation-1",
+                "payload": {"callId": "c-1", "version": 2},
+                "deliveryId": "d-1",
+                "expiresAtMs": 1_730_000_000_000_u64
+            })
+        );
+    }
+
+    #[test]
+    fn plugin_catalog_changed_is_forwarded_with_its_version() {
+        let event = SdkEvent::Plugin(PluginEvent::CatalogChanged {
+            version: "42".to_string(),
+        });
+        let (channel, payload) =
+            sdk_event_channel_payload(&event).expect("catalog change should map to channel");
+
+        assert_eq!(channel, "im://plugin_catalog_changed");
+        assert_eq!(sdk_event_code(&event), 7002);
+        assert_eq!(payload, json!({"version": "42"}));
     }
 
     #[test]

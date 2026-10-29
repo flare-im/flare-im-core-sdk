@@ -17,7 +17,6 @@ pub const CONTRACT_EVENT_IDS: &[&str] = &[
     "message.send_failed",
     "message.recalled",
     "message.typing",
-    "message.capability",
     "message.edited",
     "message.reaction_changed",
     "message.deleted",
@@ -49,6 +48,8 @@ pub const CONTRACT_EVENT_IDS: &[&str] = &[
     "sync.readiness",
     "view.updated",
     "extension.event",
+    "plugin.realtime",
+    "plugin.catalog_changed",
 ];
 
 /// `(contract_event_id, web_event_name)` when a web adapter maps `im://*` names.
@@ -67,7 +68,6 @@ pub const WEB_EVENT_ROUTES: &[(&str, &str)] = &[
     ("message.send_failed", "im://send_failed"),
     ("message.recalled", "im://message_recalled"),
     ("message.typing", "im://typing"),
-    ("message.capability", "im://message_capability"),
     ("message.edited", "im://message_edited"),
     ("message.reaction_changed", "im://message_reaction_changed"),
     ("message.deleted", "im://message_deleted"),
@@ -111,4 +111,6 @@ pub const WEB_EVENT_ROUTES: &[(&str, &str)] = &[
     ("sync.readiness", "im://sync_readiness"),
     ("view.updated", "im://view_updated"),
     ("extension.event", "im://extension"),
+    ("plugin.realtime", "im://plugin_realtime"),
+    ("plugin.catalog_changed", "im://plugin_catalog_changed"),
 ];

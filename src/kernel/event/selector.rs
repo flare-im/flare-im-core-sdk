@@ -8,8 +8,8 @@ use crate::content::message_elem::Elem;
 use crate::model::IMMessage;
 
 use super::types::{
-    ConnectionEvent, ConversationEvent, ExtensionEvent, MessageEvent, NotificationEvent, SdkEvent,
-    SyncNotify,
+    ConnectionEvent, ConversationEvent, ExtensionEvent, MessageEvent, NotificationEvent,
+    PluginEvent, SdkEvent, SyncNotify,
 };
 
 /// Top-level SDK event domain.
@@ -22,6 +22,7 @@ pub enum SdkEventKind {
     Sync,
     View,
     Extension,
+    Plugin,
 }
 
 impl SdkEventKind {
@@ -90,6 +91,7 @@ pub enum SdkEventType {
     Sync(SyncEventType),
     View(ViewEventType),
     Extension(ExtensionEventType),
+    Plugin(PluginEventType),
 }
 
 impl SdkEventType {
@@ -130,6 +132,7 @@ impl SdkEventType {
             (Self::Sync(expected), SdkEvent::Sync(actual)) => expected.matches(actual),
             (Self::View(expected), SdkEvent::View(actual)) => expected.matches(actual),
             (Self::Extension(expected), SdkEvent::Extension(actual)) => expected.matches(actual),
+            (Self::Plugin(expected), SdkEvent::Plugin(actual)) => expected.matches(actual),
             _ => false,
         }
     }
@@ -174,6 +177,12 @@ impl From<ViewEventType> for SdkEventType {
 impl From<ExtensionEventType> for SdkEventType {
     fn from(event_type: ExtensionEventType) -> Self {
         Self::Extension(event_type)
+    }
+}
+
+impl From<PluginEventType> for SdkEventType {
+    fn from(event_type: PluginEventType) -> Self {
+        Self::Plugin(event_type)
     }
 }
 
@@ -228,7 +237,6 @@ pub enum MessageEventType {
     Marked,
     Unmarked,
     PresenceChanged,
-    Capability,
     Custom,
     CustomNamed(CustomEventSelector),
     PluginStateChanged,
@@ -256,7 +264,6 @@ impl MessageEventType {
             | (Self::Marked, MessageEvent::Marked { .. })
             | (Self::Unmarked, MessageEvent::Unmarked { .. })
             | (Self::PresenceChanged, MessageEvent::PresenceChanged { .. })
-            | (Self::Capability, MessageEvent::Capability { .. })
             | (Self::Custom, MessageEvent::Custom { .. })
             | (Self::PluginStateChanged, MessageEvent::PluginStateChanged { .. })
             | (Self::ReadSummariesChanged, MessageEvent::ReadSummariesChanged { .. }) => true,
@@ -351,6 +358,22 @@ pub enum ViewEventType {
 impl ViewEventType {
     fn matches(&self, _event: &crate::model::ViewUpdate) -> bool {
         matches!(self, Self::Updated)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum PluginEventType {
+    Realtime,
+    CatalogChanged,
+}
+
+impl PluginEventType {
+    fn matches(&self, event: &PluginEvent) -> bool {
+        matches!(
+            (self, event),
+            (Self::Realtime, PluginEvent::Realtime(_))
+                | (Self::CatalogChanged, PluginEvent::CatalogChanged { .. })
+        )
     }
 }
 
@@ -515,6 +538,7 @@ impl SdkEvent {
             Self::Sync(_) => SdkEventKind::Sync,
             Self::View(_) => SdkEventKind::View,
             Self::Extension(_) => SdkEventKind::Extension,
+            Self::Plugin(_) => SdkEventKind::Plugin,
         }
     }
 
@@ -599,9 +623,6 @@ impl SdkEvent {
             Self::Message(MessageEvent::PresenceChanged { .. }) => {
                 SdkEventType::Message(MessageEventType::PresenceChanged)
             }
-            Self::Message(MessageEvent::Capability { .. }) => {
-                SdkEventType::Message(MessageEventType::Capability)
-            }
             Self::Message(MessageEvent::PluginStateChanged { .. }) => {
                 SdkEventType::Message(MessageEventType::PluginStateChanged)
             }
@@ -660,6 +681,12 @@ impl SdkEvent {
                 event.source.clone(),
                 event.event_type.clone(),
             )),
+            Self::Plugin(PluginEvent::Realtime(_)) => {
+                SdkEventType::Plugin(PluginEventType::Realtime)
+            }
+            Self::Plugin(PluginEvent::CatalogChanged { .. }) => {
+                SdkEventType::Plugin(PluginEventType::CatalogChanged)
+            }
         }
     }
 

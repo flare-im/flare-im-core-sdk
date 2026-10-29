@@ -18,7 +18,8 @@ use crate::kernel::event::{
 };
 use crate::kernel::{
     ConnectionEvent, ConnectionFsm, ConnectionState, ConversationSummarySync, CurrentUserIdStore,
-    SdkState, SessionSyncRunner, StartupClass, SyncManager, SyncResponseHandler, SyncRunContext,
+    PluginCatalogNoticePort, SdkState, SessionSyncRunner, StartupClass, SyncManager,
+    SyncResponseHandler, SyncRunContext,
 };
 use crate::runtime::{ReliableSendQueue, ReliableSendQueueConfig};
 use crate::shared::error::FlareError;
@@ -47,6 +48,8 @@ pub struct SdkEngine {
     notification_pipeline: NotificationInboundPipeline,
     /// 防熵探测循环（低频对账兜底），会话激活时装载、注销/断连时中止。
     anti_entropy_probe: StdMutex<Option<BackgroundTask>>,
+    /// Receives the tenant's plugin catalog-changed notices of every connection.
+    plugin_catalog_notices: std::sync::OnceLock<Arc<dyn PluginCatalogNoticePort>>,
     metrics: MetricsRecorder,
 }
 
@@ -160,7 +163,16 @@ impl SdkEngine {
             message_deduper,
             notification_pipeline,
             anti_entropy_probe: StdMutex::new(None),
+            plugin_catalog_notices: std::sync::OnceLock::new(),
             metrics,
+        }
+    }
+
+    /// Hands the tenant's plugin catalog-changed notices of every later
+    /// connection to `notices`; set once while the client is built.
+    pub(crate) fn set_plugin_catalog_notices(&self, notices: Arc<dyn PluginCatalogNoticePort>) {
+        if self.plugin_catalog_notices.set(notices).is_err() {
+            tracing::warn!("plugin catalog notices already set; keeping the first");
         }
     }
 
@@ -236,17 +248,20 @@ impl SdkEngine {
         sync_run: SyncRunContext,
     ) -> crate::shared::error::Result<()> {
         let ready = Arc::new(tokio::sync::Notify::new());
-        let dispatcher = Arc::new(Dispatcher::new(
-            self.bus.clone(),
-            self.reliable_queue.clone(),
-            self.sync_response_handler.clone(),
-            self.session_sync.clone(),
-            Some(self.stores.clone()),
-            self.current_user_id.clone(),
-            self.event_deduper.clone(),
-            self.notification_pipeline.clone(),
-            self.metrics.clone(),
-        ));
+        let dispatcher = Arc::new(
+            Dispatcher::new(
+                self.bus.clone(),
+                self.reliable_queue.clone(),
+                self.sync_response_handler.clone(),
+                self.session_sync.clone(),
+                Some(self.stores.clone()),
+                self.current_user_id.clone(),
+                self.event_deduper.clone(),
+                self.notification_pipeline.clone(),
+                self.metrics.clone(),
+            )
+            .with_plugin_catalog_notices(self.plugin_catalog_notices.get().cloned()),
+        );
         // A2 win#2：建连后启动有界串行持久化 worker，使接收热路径的落盘脱离 socket 读循环。
         dispatcher.start_persist_worker();
         dispatcher.start_typing_sweep();

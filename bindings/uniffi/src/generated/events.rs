@@ -17,7 +17,6 @@ pub const EVENT_CODE_TABLE: &[(&str, i32)] = &[
     ("message.send_failed", 2004),
     ("message.recalled", 2005),
     ("message.typing", 2006),
-    ("message.capability", 2007),
     ("message.edited", 2008),
     ("message.reaction_changed", 2009),
     ("message.deleted", 2010),
@@ -49,4 +48,6 @@ pub const EVENT_CODE_TABLE: &[(&str, i32)] = &[
     ("sync.readiness", 4008),
     ("view.updated", 6001),
     ("extension.event", 5001),
+    ("plugin.realtime", 7001),
+    ("plugin.catalog_changed", 7002),
 ];

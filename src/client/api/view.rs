@@ -828,9 +828,6 @@ fn message_refresh_target(event: &MessageEvent) -> ViewRefreshTarget {
         | MessageEvent::PresenceChanged {
             conversation_id, ..
         }
-        | MessageEvent::Capability {
-            conversation_id, ..
-        }
         | MessageEvent::Custom {
             conversation_id, ..
         }

@@ -210,16 +210,26 @@ impl Dispatcher {
                     &[MetricLabel::new("type", "capability")],
                     1,
                 );
-                let conversation_id = packet
-                    .attributes
-                    .get("conversation_id")
-                    .cloned()
-                    .unwrap_or_default();
-                self.bus
-                    .publish(SdkEvent::Message(MessageEvent::Capability {
-                        conversation_id,
-                        packet: Box::new(packet),
-                    }));
+                let capability_id = packet.capability_id.clone();
+                match plugin_packets::classify(packet, now_millis()) {
+                    Ok(plugin_packets::PluginPacket::Realtime(realtime)) => {
+                        self.bus
+                            .publish(SdkEvent::Plugin(PluginEvent::Realtime(realtime)));
+                    }
+                    Ok(plugin_packets::PluginPacket::CatalogChanged { version }) => {
+                        if let Some(notices) = &self.plugin_catalog_notices {
+                            notices.catalog_changed(version);
+                        }
+                    }
+                    Err(reason) => {
+                        tracing::debug!(
+                            target: "flare_sdk.plugin",
+                            %capability_id,
+                            ?reason,
+                            "plugin capability packet dropped"
+                        );
+                    }
+                }
             }
             DownlinkPayload::RealtimeControl(control) => {
                 self.metrics.counter_with_labels(

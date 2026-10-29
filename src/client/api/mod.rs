@@ -18,6 +18,7 @@ pub(crate) mod session_guard;
 mod view;
 
 pub use crate::extension::capability::ui::PluginComposerAction;
+pub(crate) use capability::PluginCatalogNotices;
 pub use capability::{
     CapabilityApi, CapabilityDescriptorDto, CapabilityDispatchResult, UserCapabilityGrantDto,
 };

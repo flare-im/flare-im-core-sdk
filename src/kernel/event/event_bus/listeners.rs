@@ -2,8 +2,8 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock};
 
 use flare_proto::common::{
-    CapabilityPacket, CustomEvent, MessageRecallEvent, ReadReceiptEvent, SendAck,
-    TypingAggregatePacket, TypingStatePacket,
+    CustomEvent, MessageRecallEvent, ReadReceiptEvent, SendAck, TypingAggregatePacket,
+    TypingStatePacket,
 };
 
 use crate::kernel::{SdkState, SyncState};
@@ -11,12 +11,14 @@ use crate::model::IMMessage;
 
 use super::super::selector::{
     CustomEventSelector, EventFilter, ExtensionEventType, MessageEventType, NotificationEventType,
-    SdkEventKind, SdkEventType,
+    PluginEventType, SdkEventKind, SdkEventType,
 };
-use super::super::types::{MessageEvent, NotificationEvent, SdkEvent, SyncPhase};
+use super::super::types::{
+    MessageEvent, NotificationEvent, PluginEvent, PluginRealtime, SdkEvent, SyncPhase,
+};
 use super::dispatch::{RecoverableRwLock, replay_after_dispatch_window};
 use super::{
-    EventBus, EventReceiver, EventRoute, FilteredEventReceiver, FnAny, FnCapability, FnConnected,
+    EventBus, EventReceiver, EventRoute, FilteredEventReceiver, FnAny, FnConnected,
     FnConversationId, FnConversationIds, FnConversationUnreadCountChanged, FnDisconnected,
     FnExtension, FnKickedOff, FnMessage, FnMessageBatch, FnNotification, FnReadReceipt, FnRecalled,
     FnSendAck, FnSendFailed, FnServerError, FnStateChanged, FnSyncPhase, FnSyncProgress,
@@ -302,17 +304,35 @@ impl EventBus {
         )
     }
 
-    /// 注册能力包下行（DATA capability；RTC/通话等插件信令统一走这里）。
-    pub fn on_capability<F>(&self, f: F) -> Subscription
+    /// Plugin realtime packets (`im.realtime.deliver`); expired packets and
+    /// non-object payloads never arrive.
+    pub fn on_plugin_realtime<F>(&self, f: F) -> Subscription
     where
-        F: Fn(&str, &CapabilityPacket) + Send + Sync + 'static,
+        F: Fn(&PluginRealtime) + Send + Sync + 'static,
     {
-        let f: FnCapability = Arc::new(move |cid, packet| f(cid.as_str(), &packet));
-        self.callback_subscription(
-            &self.capability_listeners,
-            &self.typed_callback_count,
-            f,
-            same_arc,
+        self.on_event_type(
+            SdkEventType::Plugin(PluginEventType::Realtime),
+            move |event| {
+                if let SdkEvent::Plugin(PluginEvent::Realtime(realtime)) = event.as_ref() {
+                    f(realtime);
+                }
+            },
+        )
+    }
+
+    /// The tenant's plugin catalog changed; the argument is the announced
+    /// version. The SDK has already invalidated its catalog.
+    pub fn on_plugin_catalog_changed<F>(&self, f: F) -> Subscription
+    where
+        F: Fn(&str) + Send + Sync + 'static,
+    {
+        self.on_event_type(
+            SdkEventType::Plugin(PluginEventType::CatalogChanged),
+            move |event| {
+                if let SdkEvent::Plugin(PluginEvent::CatalogChanged { version }) = event.as_ref() {
+                    f(version);
+                }
+            },
         )
     }
 

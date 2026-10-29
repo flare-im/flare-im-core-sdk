@@ -37,7 +37,6 @@ pub enum BindingEventId {
     MessageSendFailed,
     MessageRecalled,
     MessageTyping,
-    MessageCapability,
     MessageEdited,
     MessageReactionChanged,
     MessageDeleted,
@@ -69,4 +68,6 @@ pub enum BindingEventId {
     SyncReadiness,
     ViewUpdated,
     ExtensionEvent,
+    PluginRealtime,
+    PluginCatalogChanged,
 }

@@ -49,12 +49,12 @@ pub use event_bus::{
 };
 pub use selector::{
     ConnectionEventType, ConversationEventType, CustomEventDefinition, CustomEventSelector,
-    EventFilter, ExtensionEventType, MessageEventType, NotificationEventType, SdkEventKind,
-    SdkEventType, SyncEventType, ViewEventType,
+    EventFilter, ExtensionEventType, MessageEventType, NotificationEventType, PluginEventType,
+    SdkEventKind, SdkEventType, SyncEventType, ViewEventType,
 };
 pub use types::{
     ConnectionEvent, ConversationEvent, ExtensionEvent, MessageEvent, NotificationEvent,
-    ReadinessStage, SdkEvent, SyncNotify, SyncPhase,
+    PluginEvent, PluginRealtime, ReadinessStage, SdkEvent, SyncNotify, SyncPhase,
 };
 
 use std::sync::Arc;

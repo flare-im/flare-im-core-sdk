@@ -78,7 +78,7 @@ is no longer the production contract.
 | `core/` | Event bus, dispatcher, reliable queue, sync orchestrator |
 | `infrastructure/` | protobuf codec, packet sender, socket/http transport, memory/sqlite persistence |
 | `platform/` | Media, transport, and host-capability ports |
-| `extension/` | Capability registry, middleware, RTC/SFU capability-id helpers |
+| `extension/` | Capability registry, plugin UI and pages, middleware |
 
 ## Installation
 
@@ -151,8 +151,7 @@ let response = flare_im_core_sdk_bindings_runtime::invoke_json(
 ```
 
 Contract sources live in `bindings/contract/*.json`; after editing them, run
-`rtk cargo xtask codegen` to regenerate the tables. `call_signal.proto` has been
-removed — RTC/SFU is sent via `DataPacket.capability` and `rtc.*` capability ids.
+`rtk cargo xtask codegen` to regenerate the tables.
 
 ## Event system
 
@@ -160,8 +159,16 @@ Events uniformly use `SdkEvent`:
 
 - `EventBus::subscribe()` provides a typed Rust event stream.
 - Message-mutation events come from the `event.proto` oneof payload;
-  typing/presence/RTC do not consume `conversation_seq` and travel over the
-  DATA realtime/capability channel.
+  typing/presence do not consume `conversation_seq` and travel over the DATA
+  realtime channel.
+- Plugin realtime packets (`DataPacket.capability`, `im.realtime.deliver`)
+  surface as `SdkEvent::Plugin(PluginEvent::Realtime)`: expired packets and
+  payloads that are not JSON objects are dropped. The tenant's
+  `flare.plugin.catalog` / `changed` notice invalidates the plugin catalog and
+  surfaces as `PluginEvent::CatalogChanged` after a random 0-3 s delay, with
+  notices within 3 s merged. Bindings emit them as `plugin.realtime` (7001,
+  `im://plugin_realtime`) and `plugin.catalog_changed` (7002,
+  `im://plugin_catalog_changed`).
 - `bindings/contract/events.json` maintains cross-platform event ids, C codes,
   and `im://*` names.
 - Custom business events go through `ExtensionEvent` or `MessageEvent::Custom`;
@@ -184,8 +191,8 @@ Events uniformly use `SdkEvent`:
 ### Operations outside the outbox while disconnected
 
 Only message sends go through the outbox. Recall, edit, delete, reactions,
-pin/mark, read receipts (`mark_read`, `mark_read_and_burn`), sync requests,
-capability packets and custom data are sent directly: they are not queued and
+pin/mark, read receipts (`mark_read`, `mark_read_and_burn`), sync requests
+and custom data are sent directly: they are not queued and
 not retried. While the long connection is down (including while the reconnect
 watcher is still backing off) they fail at once instead of reconnecting; the
 watcher is the only reconnect path. Branch on the error code, not the message:

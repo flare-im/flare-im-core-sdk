@@ -6,6 +6,7 @@
 
 pub mod event;
 pub mod fsm;
+mod plugin_catalog;
 mod reliable_queue;
 pub mod sync;
 
@@ -16,6 +17,7 @@ pub use fsm::{
     ConnectionEvent, ConnectionFsm, ConnectionState, MessageState, MessageStateEvent,
     MessageStateFsm, SyncFsm, SyncState, SyncTransition,
 };
+pub use plugin_catalog::PluginCatalogNoticePort;
 pub use reliable_queue::ReliableSendQueuePort;
 pub use sync::{
     ApplyOutcome, AttentionRegistry, AttentionState, ConvergeTarget, ConvergenceDriver,
