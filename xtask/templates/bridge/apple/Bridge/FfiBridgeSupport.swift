@@ -249,11 +249,11 @@ enum FfiNativeCallbacks {
             FfiCallbackRouter.shared.complete(
                 id: id,
                 result: nil,
-                error: FlareSdkException(
-                    code: "native_error_\(code)",
+                error: FlareSdkException.fromNative(
+                    nativeCode: code,
                     message: message.isEmpty ? "Native operation failed." : message,
                     operation: nil,
-                    details: ["details_json": detailsJson]
+                    detailsJson: detailsJson
                 )
             )
             return

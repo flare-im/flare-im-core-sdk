@@ -260,14 +260,12 @@ class JniNativeBridge(
             val pendingCall = pending.remove(contextId) ?: return
             if (errorCode != 0) {
                 pendingCall.continuation.resumeWithException(
-                    FlareSdkException(
-                        code = "native.$errorCode",
+                    FlareSdkException.fromNative(
+                        nativeCode = errorCode,
                         message = errorMessage ?: "Native C ABI call failed.",
                         operation = pendingCall.descriptor.operation,
-                        details = mapOf(
-                            "detailsJson" to (errorDetailsJson ?: ""),
-                            "cApi" to pendingCall.descriptor.cApi,
-                        ),
+                        detailsJson = errorDetailsJson,
+                        details = mapOf("cApi" to pendingCall.descriptor.cApi),
                     ),
                 )
                 return
