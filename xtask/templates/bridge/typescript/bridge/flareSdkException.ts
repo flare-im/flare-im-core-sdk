@@ -7,10 +7,14 @@
 export interface FlareSdkErrorDetails {
   /** Localized key or reason, e.g. `sdk.plugin.disabled`. */
   reason?: string;
-  /** Metadata Core and the SDK attached, e.g. a plugin rejection's `machineReason`. */
-  params?: Readonly<Record<string, string>>;
   /** Whether Core judges the failure worth retrying. */
   retryable?: boolean;
+  /** The HTTP status Core answered (100..=599). */
+  httpStatus?: number;
+  /** Core's numeric error code. */
+  remoteCode?: number;
+  /** Core's or the plugin's code, e.g. `PLUGIN_DISABLED`, `CALL_FULL`. */
+  machineReason?: string;
 }
 
 /** Stable TypeScript error surfaced by platform bridges. */
@@ -20,8 +24,10 @@ export class FlareSdkException extends Error {
   readonly operation?: string;
   readonly details?: Record<string, string>;
   readonly reason?: string;
-  readonly params?: Readonly<Record<string, string>>;
   readonly retryable: boolean;
+  readonly httpStatus?: number;
+  readonly remoteCode?: number;
+  readonly machineReason?: string;
 
   constructor(
     code: string,
@@ -36,21 +42,22 @@ export class FlareSdkException extends Error {
     this.operation = operation;
     this.details = details;
     this.reason = sdk.reason;
-    this.params = sdk.params;
     this.retryable = sdk.retryable ?? false;
+    this.httpStatus = sdk.httpStatus;
+    this.remoteCode = sdk.remoteCode;
+    this.machineReason = sdk.machineReason;
   }
 
   /**
    * The exception for an error a binding threw or rejected with: the wasm runtime's `Error`
-   * or a Tauri command's rejection object, both carrying `code`, `reason`, `params` and
-   * `retryable`. Null when `error` carries no code.
+   * or a Tauri command's rejection object, both carrying the structured error. Null when
+   * `error` carries no code.
    */
   static fromBindingError(error: unknown, operation?: string): FlareSdkException | null {
     if (error instanceof FlareSdkException) return error;
     if (!error || typeof error !== 'object') return null;
     const value = error as Record<string, unknown>;
     if (typeof value.code !== 'string' || !value.code) return null;
-    const params = stringRecord(value.params);
     return new FlareSdkException(
       value.code,
       typeof value.message === 'string' ? value.message : value.code,
@@ -58,17 +65,11 @@ export class FlareSdkException extends Error {
       undefined,
       {
         reason: typeof value.reason === 'string' ? value.reason : undefined,
-        params,
         retryable: value.retryable === true,
+        httpStatus: typeof value.httpStatus === 'number' ? value.httpStatus : undefined,
+        remoteCode: typeof value.remoteCode === 'number' ? value.remoteCode : undefined,
+        machineReason: typeof value.machineReason === 'string' ? value.machineReason : undefined,
       },
     );
   }
-}
-
-function stringRecord(value: unknown): Readonly<Record<string, string>> | undefined {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
-  const entries = Object.entries(value as Record<string, unknown>).filter(
-    (entry): entry is [string, string] => typeof entry[1] === 'string',
-  );
-  return entries.length ? Object.fromEntries(entries) : undefined;
 }
