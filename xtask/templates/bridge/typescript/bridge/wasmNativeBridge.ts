@@ -133,8 +133,9 @@ export class WasmNativeBridge implements NativeBridge {
       const result = await runtime.invoke(descriptor.operation, payload);
       return wireDecodeResponse(result) as T;
     } catch (error) {
-      if (error instanceof FlareSdkException) {
-        throw error;
+      const structured = FlareSdkException.fromBindingError(error, descriptor.operation);
+      if (structured) {
+        throw structured;
       }
       throw new FlareSdkException(
         'wasm.invoke_failed',

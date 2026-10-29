@@ -93,8 +93,9 @@ export class TauriNativeBridge implements NativeBridge {
       }
       return wireDecodeResponse(raw) as T;
     } catch (error) {
-      if (error instanceof FlareSdkException) {
-        throw error;
+      const structured = FlareSdkException.fromBindingError(error, operation);
+      if (structured) {
+        throw structured;
       }
       throw new FlareSdkException(
         'tauri.invoke_failed',

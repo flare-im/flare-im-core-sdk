@@ -69,8 +69,9 @@ export class FfiNativeBridge implements NativeBridge {
       }
       return wireDecodeResponse(JSON.parse(raw)) as T;
     } catch (error) {
-      if (error instanceof FlareSdkException) {
-        throw error;
+      const structured = FlareSdkException.fromBindingError(error, descriptor.operation);
+      if (structured) {
+        throw structured;
       }
       throw new FlareSdkException(
         'native.invoke_failed',
