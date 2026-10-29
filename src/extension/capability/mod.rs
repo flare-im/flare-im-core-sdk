@@ -2,25 +2,21 @@
 //!
 //! ## 调用方式
 //!
-//! 1. **直连 gRPC**（不经过注册表）：[`crate::client::api::CapabilityApi`] — `dispatch` / `rtc_*` 便捷方法。
+//! 1. **直连 gRPC**（不经过注册表）：[`crate::client::api::CapabilityApi`] — `dispatch`。
 //! 2. **经插件注册表**（与 `SdkCapabilityPlugin` 对齐）：[`SdkCapabilityRegistry::invoke`] 或 [`crate::client::IMClient::invoke_capability`]。
 //!
-//! 通话相关 `rtc.*` capability_id 与 JSON payload 由 core SDK 维护，并统一走 DATA capability。
+//! 插件下行实时包与目录变更通知以类型化事件 [`crate::kernel::event::PluginEvent`] 交给宿主。
 
-pub mod call_event;
 mod manifest;
 mod plugin;
 /// Localized keys of plugin call failures.
 pub mod plugin_errors;
 mod registry;
-pub mod rtc_ids;
 /// Shared safe data-only UI evaluation; every binding uses the same contract.
 pub mod ui;
 /// Plugin pages: request parsing, source paging and page actions.
 pub(crate) mod ui_page;
 pub use flare_plugin_protocol::ui as ui_contract;
-
-mod plugins;
 
 pub use manifest::{
     SdkPluginEventManifest, SdkPluginManifest, SdkPluginOperationManifest,
@@ -28,5 +24,3 @@ pub use manifest::{
 };
 pub use plugin::SdkCapabilityPlugin;
 pub use registry::SdkCapabilityRegistry;
-
-pub use plugins::call_av::AvCapabilityPlugin;

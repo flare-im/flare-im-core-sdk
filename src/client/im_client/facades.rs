@@ -1,6 +1,5 @@
 use std::sync::Arc;
 
-use flare_proto::common::CapabilityPacket;
 use serde_json::Value;
 
 use crate::FlareError;
@@ -192,12 +191,6 @@ impl IMClient {
         self.capability_registry()?
             .list_user_grants_for_capability(capability_id, tenant_id, user_id)
             .await
-    }
-
-    /// 上行发送能力包（DATA capability，不占用 conversation_seq）。
-    pub async fn send_capability_packet(&self, packet: CapabilityPacket) -> Result<()> {
-        let sender = self.with_engine_async(|e| e.sender().clone()).await?;
-        sender.send_capability_packet(&packet).await
     }
 
     /// 获取 SDK 事件总线（用于原始事件订阅或桥接到宿主事件系统）。

@@ -22,7 +22,6 @@ use crate::client::api::{
 };
 use crate::client::config::SdkConfig;
 use crate::client::im_client::{IMClient, IMClientInner};
-use crate::extension::capability::AvCapabilityPlugin;
 use crate::extension::capability::{SdkCapabilityPlugin, SdkCapabilityRegistry};
 use crate::extension::encryption::{
     ContentEncryptionInterceptor, ConversationEncryptionPolicyResolver,
@@ -671,8 +670,6 @@ impl IMClientBuilder {
         let capability_registry = Arc::new(SdkCapabilityRegistry::new_session_bound(
             current_user_id.clone(),
         ));
-        let _ =
-            capability_registry.register(Arc::new(AvCapabilityPlugin::new(capability_api.clone())));
         capability_registry.register_capability_observer(|cid, packet| {
             tracing::debug!(
                 target = "flare_sdk.plugin.call",

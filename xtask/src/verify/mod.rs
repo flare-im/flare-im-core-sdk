@@ -7,7 +7,6 @@ mod network_reconnect;
 mod observability;
 mod performance;
 mod plugin_marketplace;
-mod rtc_capability;
 mod spec;
 mod structure;
 
@@ -38,6 +37,5 @@ pub(crate) use network_reconnect::verify_network_reconnect_gate;
 pub(crate) use observability::verify_observability_gate;
 pub(crate) use performance::verify_performance_gate;
 pub(crate) use plugin_marketplace::verify_plugin_marketplace_gate;
-pub(crate) use rtc_capability::verify_rtc_capability_gate;
 pub(crate) use spec::verify_spec;
 pub(crate) use structure::verify_structure;

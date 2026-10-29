@@ -19,8 +19,7 @@ mod view;
 
 pub use crate::extension::capability::ui::PluginComposerAction;
 pub use capability::{
-    CapabilityApi, CapabilityDescriptorDto, CapabilityDispatchResult, RtcSfuSubscriptionRequest,
-    UserCapabilityGrantDto,
+    CapabilityApi, CapabilityDescriptorDto, CapabilityDispatchResult, UserCapabilityGrantDto,
 };
 pub use conversation::ConversationApi;
 pub use media::{

@@ -40,7 +40,7 @@ use verify::{
     verify_e2ee_contract_gate, verify_enterprise_compliance_gate, verify_golden_contracts,
     verify_media_processing_gate, verify_multidevice_state_gate, verify_network_reconnect_gate,
     verify_observability_gate, verify_performance_gate, verify_plugin_marketplace_gate,
-    verify_rtc_capability_gate, verify_spec, verify_structure,
+    verify_spec, verify_structure,
 };
 
 fn main() {
@@ -64,7 +64,6 @@ fn run() -> Result<()> {
         "observability" | "verify-observability" => verify_observability_gate(&root),
         "performance" | "verify-performance" => verify_performance_gate(&root),
         "plugin-marketplace" | "verify-plugin-marketplace" => verify_plugin_marketplace_gate(&root),
-        "rtc-capability" | "verify-rtc-capability" => verify_rtc_capability_gate(&root),
         "e2ee-contract" | "verify-e2ee-contract" => verify_e2ee_contract_gate(&root),
         "enterprise-compliance" | "verify-enterprise-compliance" => {
             verify_enterprise_compliance_gate(&root)
@@ -97,7 +96,6 @@ fn run() -> Result<()> {
             verify_observability_gate(&root)?;
             verify_performance_gate(&root)?;
             verify_plugin_marketplace_gate(&root)?;
-            verify_rtc_capability_gate(&root)?;
             verify_e2ee_contract_gate(&root)?;
             verify_enterprise_compliance_gate(&root)?;
             verify_channel_capability_gate(&root)?;
@@ -146,7 +144,6 @@ fn run() -> Result<()> {
             verify_observability_gate(&root)?;
             verify_performance_gate(&root)?;
             verify_plugin_marketplace_gate(&root)?;
-            verify_rtc_capability_gate(&root)?;
             verify_e2ee_contract_gate(&root)?;
             verify_enterprise_compliance_gate(&root)?;
             verify_channel_capability_gate(&root)?;
@@ -196,7 +193,6 @@ fn run() -> Result<()> {
             verify_observability_gate(&root)?;
             verify_performance_gate(&root)?;
             verify_plugin_marketplace_gate(&root)?;
-            verify_rtc_capability_gate(&root)?;
             verify_e2ee_contract_gate(&root)?;
             verify_enterprise_compliance_gate(&root)?;
             verify_channel_capability_gate(&root)?;
@@ -237,7 +233,6 @@ fn print_help() {
     eprintln!(
         "  plugin-marketplace  Verify plugin catalog, schema, stubs, and capability registry"
     );
-    eprintln!("  rtc-capability      Verify RTC capability API, plugin, and SFU anchors");
     eprintln!("  e2ee-contract      Verify E2EE SDK, server push, and privacy anchors");
     eprintln!("  channel-capability Verify Channel/Broadcast and large-conversation anchors");
     eprintln!("  media-processing   Verify media processing port/server processor anchors");

@@ -12,8 +12,7 @@ use flare_core::common::protocol::{
 };
 use flare_proto::common::data_packet::Payload as DataPacketPayload;
 use flare_proto::common::{
-    Ack, CapabilityPacket, CustomData, DataPacket, Event, Message as ProtoMessage,
-    RealtimeControlPacket, SyncRes,
+    Ack, CustomData, DataPacket, Event, Message as ProtoMessage, RealtimeControlPacket, SyncRes,
 };
 use prost::Message;
 use tokio::sync::Mutex;
@@ -163,22 +162,6 @@ impl PacketSender {
         let frame = builder::frame_with_payload_command(cmd, Reliability::AtLeastOnce);
         self.send_frame_with_timeout(&frame, CONTROL_SEND_TIMEOUT, "custom data send timeout")
             .await
-    }
-
-    /// 发送能力包（`DataPacket` + `capability`）。PayloadCommand.type=Data；不占用 conversation_seq。
-    pub async fn send_capability_packet(&self, packet: &CapabilityPacket) -> Result<()> {
-        let data = DataPacket {
-            payload: Some(DataPacketPayload::Capability(packet.clone())),
-        };
-        let payload = data.encode_to_vec();
-        let cmd = builder::data_message(builder::generate_message_id(), payload, None, None);
-        let frame = builder::frame_with_payload_command(cmd, Reliability::AtLeastOnce);
-        self.send_frame_with_timeout(
-            &frame,
-            CONTROL_SEND_TIMEOUT,
-            "capability packet send timeout",
-        )
-        .await
     }
 
     /// 发送实时控制包（`DataPacket` + `realtime_control`）。PayloadCommand.type=Data；不占用 conversation_seq。

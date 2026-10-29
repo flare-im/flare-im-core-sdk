@@ -20,14 +20,6 @@ pub mod model {
         #[serde(default, rename = "sdkConfig")]
         pub sdk_config: Option<SdkConfigOverlay>,
     }
-
-    #[derive(Debug, Clone, Serialize, Deserialize)]
-    pub struct RtcIceConfigSnapshotPayload {
-        pub source: String,
-        pub turn_enabled: bool,
-        pub default_ice_tf: String,
-        pub ice_servers: serde_json::Value,
-    }
 }
 
 pub const BINDING_CONTRACT_VERSION: &str =
@@ -37,5 +29,5 @@ pub type SdkConfigOptions = flare_im_core_sdk::client::SdkConfigOverlay;
 
 pub use commands::*;
 pub use generated::handler::im_invoke_handler;
-pub use model::{RtcIceConfigSnapshotPayload, SdkInitArgs};
+pub use model::SdkInitArgs;
 pub use state::SdkState;

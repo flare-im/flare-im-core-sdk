@@ -51,9 +51,8 @@ pub mod event {
 /// reaching into SDK internals.
 pub mod plugin {
     pub use crate::extension::capability::{
-        AvCapabilityPlugin, SdkCapabilityPlugin, SdkCapabilityRegistry, SdkPluginEventManifest,
-        SdkPluginManifest, SdkPluginOperationManifest, SdkPluginPermissionManifest,
-        SdkPluginUiKitManifest,
+        SdkCapabilityPlugin, SdkCapabilityRegistry, SdkPluginEventManifest, SdkPluginManifest,
+        SdkPluginOperationManifest, SdkPluginPermissionManifest, SdkPluginUiKitManifest,
     };
     /// Shared platform Manifest, permission/grant and lifecycle contract. Client
     /// composition manifests below remain build-time SDK package declarations.
@@ -108,9 +107,9 @@ pub mod prelude {
         CapabilityApi, CapabilityDescriptorDto, CapabilityDispatchResult, ConnectedApis,
         ConversationApi, CoreTokenConfig, CreateLocationRequest, CreateRichDocRequest,
         CreateStickerRequest, EditRichDocRequest, IMClient, IMClientBuilder, LoginDbKind, MediaApi,
-        MessageApi, MessageBuildApi, NetworkChangeEvent, RtcSfuSubscriptionRequest,
-        RuntimeHealthSnapshot, SdkConfig, SdkConfigBuilder, SdkConfigOverlay, SdkResourceProfile,
-        SdkRuntimeResources, TlsConfig, TransportKind, TransportPolicy, UserCapabilityGrantDto,
+        MessageApi, MessageBuildApi, NetworkChangeEvent, RuntimeHealthSnapshot, SdkConfig,
+        SdkConfigBuilder, SdkConfigOverlay, SdkResourceProfile, SdkRuntimeResources, TlsConfig,
+        TransportKind, TransportPolicy, UserCapabilityGrantDto,
     };
     pub use crate::domain::{
         ConversationStore, DEFAULT_MEDIA_CACHE_MAX_BYTES, MediaCacheEntryVo, MediaCacheStatsVo,
