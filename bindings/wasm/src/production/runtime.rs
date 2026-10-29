@@ -6,7 +6,7 @@ use std::sync::atomic::Ordering;
 use flare_im_core_sdk::client::lifecycle::LoginDbKind;
 use flare_im_core_sdk::event::SharedEventReceiver;
 use flare_im_core_sdk_bindings_runtime::{
-    SessionTaskSlot, binding_response_to_value, invoke_api_id_json,
+    SessionTaskSlot, binding_response_to_value, boundary_error_js, invoke_api_id_json, sdk_error_js,
 };
 use js_sys::Function;
 use serde::Serialize;
@@ -22,18 +22,13 @@ use flare_im_core_sdk_storage_indexeddb::{
 };
 
 fn js_error(code: &str, operation: &str, error: impl ToString) -> JsValue {
-    JsValue::from_str(
-        &json!({
-            "code": code,
-            "operation": operation,
-            "message": error.to_string(),
-        })
-        .to_string(),
-    )
+    boundary_error_js(code, operation, &error.to_string())
 }
 
+/// An SDK failure as an `Error` carrying the structured error (`code`, `reason`,
+/// `params`, `retryable`, `operation`).
 fn map_sdk_err(operation: &str, error: flare_im_core_sdk::FlareError) -> JsValue {
-    js_error("sdk.error", operation, error)
+    sdk_error_js(&error, Some(operation))
 }
 
 fn parse_request(request_json: &str) -> Result<Value, JsValue> {

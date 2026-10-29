@@ -5,7 +5,7 @@
     "C ABI synchronous return codes describe submit/argument failure only.",
     "Asynchronous failures are delivered through FlareResultCallback(error, result_json).",
     "FlareError.code is stable. FlareError.message is human-readable and must not be parsed.",
-    "details_json is reserved for future structured diagnostics and may be empty.",
+    "details_json carries the structured error {code, reason, params?, retryable}: code is the core ErrorCode wire name (INTERNAL_ERROR without one), reason the localized key, params the metadata such as a plugin rejection's machineReason. The wasm runtime throws an Error with these as properties; Tauri commands reject with this object plus message and operation.",
     "Platform SDKs must map codes to typed errors instead of string matching messages."
   ],
   "cAbi": {

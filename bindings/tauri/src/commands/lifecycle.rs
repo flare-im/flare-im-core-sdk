@@ -10,7 +10,8 @@ use flare_im_core_sdk::event::{SdkEvent, SharedEventReceiver};
 use flare_im_core_sdk_bindings_runtime::{SessionTaskSlot, platform_event_bridge_resync_marker};
 
 #[tauri::command(rename_all = "camelCase")]
-pub async fn sdk_ffi_contract_version() -> std::result::Result<serde_json::Value, String> {
+pub async fn sdk_ffi_contract_version()
+-> std::result::Result<serde_json::Value, super::CommandError> {
     Ok(serde_json::json!({
         "version": crate::BINDING_CONTRACT_VERSION
     }))
@@ -22,7 +23,7 @@ pub async fn sdk_init(
     state: State<'_, SdkState>,
     environment: Option<String>,
     sdk_config: Option<SdkConfigOverlay>,
-) -> std::result::Result<(), String> {
+) -> std::result::Result<(), super::CommandError> {
     state
         .set_config(environment, sdk_config)
         .await
@@ -36,7 +37,7 @@ pub async fn sdk_login(
     app: tauri::AppHandle,
     user_id: String,
     token: Option<String>,
-) -> std::result::Result<(), String> {
+) -> std::result::Result<(), super::CommandError> {
     let client = state.client();
     let event_bridge = state.event_bridge();
     event_bridge.clear();
@@ -74,7 +75,7 @@ pub async fn sdk_prepare(
     state: State<'_, SdkState>,
     app: tauri::AppHandle,
     user_id: String,
-) -> std::result::Result<(), String> {
+) -> std::result::Result<(), super::CommandError> {
     let client = state.client();
     let event_bridge = state.event_bridge();
     event_bridge.clear();
@@ -96,7 +97,7 @@ pub async fn sdk_connect(
     state: State<'_, SdkState>,
     user_id: String,
     token: Option<String>,
-) -> std::result::Result<(), String> {
+) -> std::result::Result<(), super::CommandError> {
     let client = state.client();
     let apis = client
         .connect(&user_id, token.as_deref())
@@ -189,7 +190,9 @@ mod tests {
 }
 
 #[tauri::command(rename_all = "camelCase")]
-pub async fn sdk_logout(state: State<'_, SdkState>) -> std::result::Result<(), String> {
+pub async fn sdk_logout(
+    state: State<'_, SdkState>,
+) -> std::result::Result<(), super::CommandError> {
     state.logout().await.map_err(super::map_sdk_err)
 }
 
@@ -198,7 +201,7 @@ pub async fn sdk_update_access_token(
     state: State<'_, SdkState>,
     access_token: String,
     tenant_id: Option<String>,
-) -> std::result::Result<(), String> {
+) -> std::result::Result<(), super::CommandError> {
     state
         .client()
         .update_access_token(access_token, tenant_id.as_deref())
@@ -207,19 +210,23 @@ pub async fn sdk_update_access_token(
 }
 
 #[tauri::command(rename_all = "camelCase")]
-pub async fn sdk_is_connected(state: State<'_, SdkState>) -> std::result::Result<bool, String> {
+pub async fn sdk_is_connected(
+    state: State<'_, SdkState>,
+) -> std::result::Result<bool, super::CommandError> {
     Ok(state.client().is_connected().await)
 }
 
 #[tauri::command(rename_all = "camelCase")]
 pub async fn sdk_current_user_id(
     state: State<'_, SdkState>,
-) -> std::result::Result<Option<String>, String> {
+) -> std::result::Result<Option<String>, super::CommandError> {
     Ok(state.client().current_user_id().await)
 }
 
 #[tauri::command(rename_all = "camelCase")]
-pub async fn sdk_engine_state(state: State<'_, SdkState>) -> std::result::Result<String, String> {
+pub async fn sdk_engine_state(
+    state: State<'_, SdkState>,
+) -> std::result::Result<String, super::CommandError> {
     let c = state.client();
     Ok(format!("{:?}", c.state()))
 }
@@ -228,7 +235,7 @@ pub async fn sdk_engine_state(state: State<'_, SdkState>) -> std::result::Result
 pub async fn sdk_sync_conversation(
     state: State<'_, SdkState>,
     conversation_id: String,
-) -> std::result::Result<(), String> {
+) -> std::result::Result<(), super::CommandError> {
     state
         .client()
         .sync_conversation(&conversation_id)
@@ -242,7 +249,7 @@ pub async fn sdk_sync_messages(
     conversation_id: String,
     last_seq: u64,
     limit: i32,
-) -> std::result::Result<(), String> {
+) -> std::result::Result<(), super::CommandError> {
     state
         .client()
         .sync_messages(&conversation_id, last_seq, limit)
@@ -255,7 +262,7 @@ pub async fn sdk_set_conversation_input_state(
     state: State<'_, SdkState>,
     conversation_id: String,
     is_typing: bool,
-) -> std::result::Result<(), String> {
+) -> std::result::Result<(), super::CommandError> {
     state
         .client()
         .set_conversation_input_state(&conversation_id, is_typing)

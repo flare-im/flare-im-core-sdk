@@ -7,7 +7,8 @@ pub use crate::generated::errors::*;
 use crate::types::{FlareError, FlareString};
 use flare_im_core_sdk::FlareError as SdkError;
 
-/// 从 SDK FlareError 创建 C ABI FlareError
+/// 从 SDK FlareError 创建 C ABI FlareError；`details_json` 是结构化错误
+/// `{code, reason, params?, retryable}`（`contract/errors.json`），宿主据此识别错误，不解析 `message`。
 #[inline]
 pub fn make_error(err: &SdkError) -> FlareError {
     use std::fmt::Write;
@@ -23,7 +24,9 @@ pub fn make_error(err: &SdkError) -> FlareError {
     FlareError {
         code,
         message: FlareString::from_rust_string(message),
-        details_json: FlareString::from_rust_string(String::new()),
+        details_json: FlareString::from_rust_string(
+            flare_im_core_sdk_bindings_runtime::sdk_error_details(err).to_string(),
+        ),
     }
 }
 
@@ -54,6 +57,25 @@ mod tests {
         let code = converted.code;
         flare_error_free(converted);
         code
+    }
+
+    /// `details_json` 带着核心错误码、原因与参数：插件拒绝码（`machineReason`）不必从文本里找。
+    #[test]
+    fn details_json_carries_the_structured_error() {
+        let err = SdkError::localized(ErrorCode::PermissionDenied, "sdk.plugin.disabled");
+        let converted = make_error(&err);
+        let details = unsafe {
+            std::str::from_utf8(std::slice::from_raw_parts(
+                converted.details_json.ptr as *const u8,
+                converted.details_json.len,
+            ))
+            .expect("utf-8")
+            .to_owned()
+        };
+        flare_error_free(converted);
+        let details: serde_json::Value = serde_json::from_str(&details).expect("json");
+        assert_eq!(details["code"], "PERMISSION_DENIED");
+        assert_eq!(details["reason"], "sdk.plugin.disabled");
     }
 
     /// 连接建立失败、连接被关闭、网络连接丢失都是网络类失败：经 C ABI 交给宿主时是

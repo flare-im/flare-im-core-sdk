@@ -13,6 +13,8 @@ pub mod event;
 pub mod generated;
 pub mod invocation;
 pub mod invoke;
+#[cfg(target_arch = "wasm32")]
+pub mod js_error;
 pub mod operation;
 pub mod request;
 pub mod session;
@@ -26,7 +28,7 @@ pub use contract::{
 };
 pub use error::{
     BindingBoundaryError, BindingBoundaryResult, binding_invalid_parameter,
-    binding_operation_not_supported,
+    binding_operation_not_supported, sdk_error_details, sdk_error_value,
 };
 pub use event::{
     platform_event_bridge_resync_marker, sdk_event_batch_json, sdk_event_channel_payload,
@@ -39,6 +41,8 @@ pub use generated::{
     MESSAGE_DISPATCH_OPERATIONS,
 };
 pub use invoke::{InvokeSession, binding_response_to_value, invoke_api_id_json};
+#[cfg(target_arch = "wasm32")]
+pub use js_error::{boundary_error_js, sdk_error_js};
 pub use operation::{NormalizedOperation, message_build_catalog, normalize_operation};
 pub use request::{BindingRequest, BindingResponse};
 pub use session::SessionSlot;

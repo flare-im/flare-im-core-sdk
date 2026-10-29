@@ -4,16 +4,19 @@ use flare_im_core_sdk::serde_json::Value;
 use tauri::State;
 
 use crate::state::SdkState;
-use flare_im_core_sdk_bindings_runtime::{binding_response_to_value, invoke_api_id_json};
+use flare_im_core_sdk_bindings_runtime::{
+    binding_response_to_value, invoke_api_id_json, sdk_error_value,
+};
 
+/// Rejects with the structured error (`sdk_error_value`), never its text.
 #[tauri::command(rename_all = "camelCase")]
 pub async fn sdk_invoke_json(
     state: State<'_, SdkState>,
     api_id: String,
     request_json: String,
-) -> Result<Value, String> {
+) -> Result<Value, Value> {
     invoke_api_id_json(&*state, &api_id, &request_json)
         .await
         .map(binding_response_to_value)
-        .map_err(|e| e.to_string())
+        .map_err(|e| sdk_error_value(&e, Some(&api_id)))
 }

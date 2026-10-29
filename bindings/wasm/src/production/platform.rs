@@ -12,7 +12,7 @@ use wasm_bindgen::prelude::*;
 const DEMO_ENCRYPTION_KEY: &[u8; AES256_KEY_LEN] = b"01234567890123456789012345678901";
 
 fn map_err(err: FlareError) -> JsValue {
-    JsValue::from_str(&err.to_string())
+    flare_im_core_sdk_bindings_runtime::sdk_error_js(&err, None)
 }
 
 #[wasm_bindgen(js_name = flareEncryptionKeyLen)]

@@ -1879,17 +1879,20 @@ fn render_tauri_invoke() -> String {
          use flare_im_core_sdk::serde_json::Value;\n\
          use tauri::State;\n\n\
          use crate::state::SdkState;\n\
-         use flare_im_core_sdk_bindings_runtime::{{binding_response_to_value, invoke_api_id_json}};\n\n\
+         use flare_im_core_sdk_bindings_runtime::{{\n\
+         \x20   binding_response_to_value, invoke_api_id_json, sdk_error_value,\n\
+         }};\n\n\
+         /// Rejects with the structured error (`sdk_error_value`), never its text.\n\
          #[tauri::command(rename_all = \"camelCase\")]\n\
          pub async fn sdk_invoke_json(\n\
          \x20   state: State<'_, SdkState>,\n\
          \x20   api_id: String,\n\
          \x20   request_json: String,\n\
-         ) -> Result<Value, String> {{\n\
+         ) -> Result<Value, Value> {{\n\
          \x20   invoke_api_id_json(&*state, &api_id, &request_json)\n\
          \x20       .await\n\
          \x20       .map(binding_response_to_value)\n\
-         \x20       .map_err(|e| e.to_string())\n\
+         \x20       .map_err(|e| sdk_error_value(&e, Some(&api_id)))\n\
          }}\n",
         header = platform_header()
     )
