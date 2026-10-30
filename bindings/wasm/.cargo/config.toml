@@ -1,0 +1,6 @@
+# Builds started here (`npm run build`, i.e. wasm-pack) produce the browser bundle. Users pay
+# for its size twice, to download it and to compile it, so it is optimized for size like the
+# `release-mobile` profile; native release builds, started from the workspace root, keep
+# opt-level 3. `scripts/check_wasm_budget.py` measures the result.
+[profile.release]
+opt-level = "z"
