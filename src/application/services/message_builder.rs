@@ -1300,7 +1300,9 @@ mod tests {
 
     /// A forward record carries each message's readable words and its sender's name: the words the conversation
     /// list shows as they are (a plugin card as `[plugin] summary`, never its data), nothing for a message only a
-    /// type word can name, and the name the forwarder sees — never the account id.
+    /// type word can name, and the name the forwarder sees — never the account id. Whether a card may be forwarded
+    /// at all is `MessageBuildApi::create_forward`'s check: a card whose contribution does not declare
+    /// `forwardable`, such as a red packet, is refused there and never reaches the builder.
     #[test]
     fn a_forward_record_carries_readable_words_and_sender_names() {
         use crate::content::message_elem::{CustomElem, PLUGIN_MESSAGE_CARD_TYPE};
@@ -1324,9 +1326,9 @@ mod tests {
         card.content = Some(Elem::Custom(CustomElem {
             r#type: PLUGIN_MESSAGE_CARD_TYPE.into(),
             payload: serde_json::to_vec(&serde_json::json!({
-                "pluginId": "flare.redpacket", "contributionId": "flare.redpacket.card",
-                "schemaVersion": 1, "summary": "恭喜发财", "displayName": "红包",
-                "payload": {"packetId": "p1", "amountMinor": "8888", "amountText": "¥88.88"}
+                "pluginId": "example.poll", "contributionId": "example.poll.card",
+                "schemaVersion": 1, "summary": "午饭吃什么", "displayName": "投票",
+                "payload": {"pollId": "poll-1", "voters": 88}
             }))
             .expect("envelope"),
             description: String::new(),
@@ -1356,7 +1358,7 @@ mod tests {
                 (Some("Bob"), "今晚七点见"),
                 (None, "今晚七点见"),
                 (None, ""),
-                (Some("Lab Bob"), "[红包] 恭喜发财"),
+                (Some("Lab Bob"), "[投票] 午饭吃什么"),
             ]
         );
         assert!(forward.items.iter().all(|item| item.content.is_some()));

@@ -61,6 +61,16 @@ const MEDIA_TYPES: [i32; 5] = [
     16, // IMAGE_GROUP
 ];
 
+/// 一条消息本身能不能被转发：撤回或删除的不能；插件卡片（`flare.plugin.message.v1`）默认绑定在所在会话里，
+/// 只有当前目录里它的 message-content 贡献声明了 `forwardable`（`plugin_forwardable`）才能。
+///
+/// 菜单的「转发」（[`message_action_availability`] 的 `can_forward`，另看待发）与构建转发记录
+/// （`message_builder.create_forward` 拒收不能转发的源消息）读的是同一条规则。
+pub fn message_forwardable(message: &IMMessage, plugin_forwardable: bool) -> bool {
+    let active = message.status != STATUS_RECALLED && message.status != STATUS_DELETED;
+    active && (plugin_forwardable || message.plugin_message().is_none())
+}
+
 /// 计算一条消息此刻可用的动作。
 pub fn message_action_availability(
     message: &IMMessage,
@@ -76,11 +86,10 @@ pub fn message_action_availability(
     let editable_type = message.message_type == TYPE_TEXT || message.message_type == TYPE_RICH_TEXT;
     let media_type = MEDIA_TYPES.contains(&message.message_type);
     let single = !ctx.multi_select_mode;
-    let forwardable = ctx.plugin_forwardable || message.plugin_message().is_none();
 
     MessageActionAvailability {
         can_reply: single && active,
-        can_forward: active && !ctx.is_pending && forwardable,
+        can_forward: !ctx.is_pending && message_forwardable(message, ctx.plugin_forwardable),
         // 复制看的是"有没有可复制的正文"，而不是消息类型：
         // 一条没有文字的图片消息，复制什么都不会发生，不该给这个入口。
         can_copy: active
@@ -482,6 +491,46 @@ mod tests {
             message_action_availability(&message("other", TYPE_TEXT, 3), &ctx()).can_forward,
             "other messages are unaffected"
         );
+    }
+
+    /// The forward builder reads the rule the menu reads: dead content and plugin cards that do not
+    /// declare `forwardable` cannot be forwarded; pending is the menu's own fact.
+    #[test]
+    fn message_forwardable_is_the_rule_behind_can_forward() {
+        let text = message("other", TYPE_TEXT, 3);
+        assert!(message_forwardable(&text, false));
+        assert!(!message_forwardable(
+            &message("other", TYPE_TEXT, STATUS_RECALLED),
+            false
+        ));
+        assert!(!message_forwardable(
+            &message("other", TYPE_TEXT, STATUS_DELETED),
+            true
+        ));
+        assert!(message_forwardable(
+            &message("me", TYPE_TEXT, STATUS_FAILED),
+            false
+        ));
+        let mut card = message("other", 21, 3);
+        card.content = Some(crate::model::Elem::Custom(
+            crate::content::message_elem::CustomElem {
+                r#type: "flare.plugin.message.v1".into(),
+                payload: serde_json::to_vec(&serde_json::json!({
+                    "pluginId": "flare.redpacket", "contributionId": "flare.redpacket.card",
+                    "schemaVersion": 1, "summary": "恭喜发财", "payload": {"packetId": "p1"}
+                }))
+                .unwrap(),
+                description: String::new(),
+                metadata: Default::default(),
+            },
+        ));
+        assert!(!message_forwardable(&card, false));
+        assert!(message_forwardable(&card, true));
+        let pending = MessageActionContext {
+            is_pending: true,
+            ..ctx()
+        };
+        assert!(!message_action_availability(&text, &pending).can_forward);
     }
 
     /// 把向量写到仓库，供各端一致性用例消费。

@@ -556,11 +556,11 @@ impl IMClientBuilder {
         sync_handler.set_reliable_queue(reliable_queue.clone());
         let bus = engine.bus().clone();
 
-        let message_build_api = Arc::new(MessageBuildApi::new(
+        let message_build_api = MessageBuildApi::new(
             current_user_id.clone(),
             store_ref.conversations.clone(),
             profile_reader.clone(),
-        ));
+        );
         let media_base_url = self
             .config
             .http_url
@@ -672,6 +672,9 @@ impl IMClientBuilder {
         let capability_registry = Arc::new(SdkCapabilityRegistry::new_session_bound(
             current_user_id.clone(),
         ));
+        // Forward records take a plugin card only when its contribution declares it forwardable.
+        let message_build_api =
+            Arc::new(message_build_api.with_plugin_cards(capability_api.clone()));
         engine.set_plugin_catalog_notices(Arc::new(PluginCatalogNotices::new(
             capability_api.as_ref().clone(),
             bus.clone(),

@@ -80,12 +80,27 @@ fn needs_member_roster(conv: &crate::model::Conversation) -> bool {
     !(is_user_set_group && server_established)
 }
 
+/// 插件卡片能不能转发：它在当前授权目录里的 message-content 贡献声明了 `forwardable`。
+#[async_trait::async_trait]
+pub(crate) trait ForwardableCards: Send + Sync {
+    async fn forwardable(&self, card: &flare_plugin_protocol::ui::PluginMessage) -> bool;
+}
+
+#[async_trait::async_trait]
+impl ForwardableCards for super::CapabilityApi {
+    async fn forwardable(&self, card: &flare_plugin_protocol::ui::PluginMessage) -> bool {
+        self.plugin_card_forwardable(card).await
+    }
+}
+
 /// 多类型消息的构建入口（不负责发送）。
 pub struct MessageBuildApi {
     current_user_id: CurrentUserIdStore,
     conversations: Arc<dyn ConversationStore>,
     /// 身份缓存：转发记录给源消息的发送者补名字。
     profiles: Arc<dyn UserReader>,
+    /// 插件卡片的可转发判定（授权目录）；没有时插件卡片一律不能转发。
+    plugin_cards: Option<Arc<dyn ForwardableCards>>,
 }
 
 impl MessageBuildApi {
@@ -98,7 +113,50 @@ impl MessageBuildApi {
             current_user_id,
             conversations,
             profiles,
+            plugin_cards: None,
         }
+    }
+
+    /// 让转发记录收下声明了 `forwardable` 的插件卡片（与菜单的「转发」同一份目录判定）；
+    /// 不接的话插件卡片一律不能转发。
+    pub fn with_plugin_cards(self, capability: Arc<super::CapabilityApi>) -> Self {
+        self.with_forwardable_cards(capability)
+    }
+
+    pub(crate) fn with_forwardable_cards(mut self, cards: Arc<dyn ForwardableCards>) -> Self {
+        self.plugin_cards = Some(cards);
+        self
+    }
+
+    /// 转发的每条源消息都必须能转发（[`crate::domain::message_actions::message_forwardable`]，菜单的
+    /// 「转发」读的是同一条规则）：有一条不能就整个拒掉，并按 id（服务端 id，没有时客户端 id）点名，
+    /// 不静默跳过——跳过的话，选了几条、记录里少几条，用户无从知道。
+    async fn refuse_unforwardable(&self, sources: &[IMMessage]) -> Result<()> {
+        let mut refused = Vec::new();
+        for source in sources {
+            let plugin_forwardable = match (source.plugin_message(), &self.plugin_cards) {
+                (Some(card), Some(cards)) => cards.forwardable(&card).await,
+                _ => false,
+            };
+            if !crate::domain::message_actions::message_forwardable(source, plugin_forwardable) {
+                let server_id = source.server_id.trim();
+                refused.push(if server_id.is_empty() {
+                    source.client_msg_id.trim().to_owned()
+                } else {
+                    server_id.to_owned()
+                });
+            }
+        }
+        if refused.is_empty() {
+            return Ok(());
+        }
+        Err(FlareError::localized(
+            ErrorCode::InvalidParameter,
+            format!(
+                "sdk.message.forward.not_forwardable: {}",
+                refused.join(", ")
+            ),
+        ))
     }
 
     /// 宿主交来的源消息缺发送者名时（没经过时间线读取的身份填充，或读取时缓存里还没有这个人），按 sender_id
@@ -325,6 +383,8 @@ impl MessageBuildApi {
         self.apply_conversation_routing(conversation_id, msg).await
     }
 
+    /// 源消息里有不能转发的（撤回或删除的、没声明 `forwardable` 的插件卡片）就整个拒绝：
+    /// `INVALID_PARAMETER`，原因 `sdk.message.forward.not_forwardable: <id>, …` 点名每一条。
     pub async fn create_forward(
         &self,
         conversation_id: &str,
@@ -333,6 +393,7 @@ impl MessageBuildApi {
         mut sources: Vec<IMMessage>,
     ) -> Result<IMMessage> {
         let sender_id = self.current_sender_id().await?;
+        self.refuse_unforwardable(&sources).await?;
         self.name_forward_sources(&mut sources).await?;
         let msg = MessageBuilderService::build_forward(
             conversation_id,
@@ -781,5 +842,128 @@ mod forward_sender_tests {
             .map(|item| item.source_sender_name.as_deref())
             .collect();
         assert_eq!(names, vec![Some("Lab Carol"), None, None, Some("Lab Bob")]);
+    }
+
+    /// The forwardability the test catalog declares: only these contributions.
+    struct Declared(&'static [&'static str]);
+
+    #[async_trait::async_trait]
+    impl super::ForwardableCards for Declared {
+        async fn forwardable(&self, card: &flare_plugin_protocol::ui::PluginMessage) -> bool {
+            self.0.contains(&card.contribution_id.as_str())
+        }
+    }
+
+    fn api() -> MessageBuildApi {
+        MessageBuildApi::new(
+            Arc::new(RwLock::new("u-alice".to_string())),
+            Arc::new(MemoryConversationStore::new()),
+            Arc::new(MemoryUserProfileStore::new()),
+        )
+    }
+
+    fn text(server_id: &str, status: i32) -> crate::model::message::IMMessage {
+        let mut message = MessageBuilderService::build_text(
+            "2ATESTGROUPCID0001",
+            "u-bob",
+            "hi",
+            None,
+            false,
+            &[],
+        )
+        .expect("text");
+        message.server_id = server_id.into();
+        message.sender_display_name = "Lab Bob".into();
+        message.status = status;
+        message
+    }
+
+    fn card(server_id: &str, plugin: &str, name: &str) -> crate::model::message::IMMessage {
+        use crate::content::message_elem::{CustomElem, PLUGIN_MESSAGE_CARD_TYPE};
+        let mut message = text(server_id, 3);
+        // As a host hands a card over: its JSON carries the Custom projection and no encoded content.
+        message.encoded_content.clear();
+        message.content = Some(Elem::Custom(CustomElem {
+            r#type: PLUGIN_MESSAGE_CARD_TYPE.into(),
+            payload: serde_json::to_vec(&serde_json::json!({
+                "pluginId": plugin, "contributionId": format!("{plugin}.card"),
+                "schemaVersion": 1, "summary": "恭喜发财", "displayName": name,
+                "payload": {"packetId": "p1", "amountMinor": "8888", "amountText": "¥88.88"}
+            }))
+            .expect("envelope"),
+            description: String::new(),
+            metadata: Default::default(),
+        }));
+        message
+    }
+
+    /// A merged forward of four messages that holds a red packet card and a recalled message is refused as a
+    /// whole, naming both: nothing is left out of the record without the forwarder knowing.
+    #[tokio::test]
+    async fn a_forward_refuses_sources_that_cannot_be_forwarded_and_names_them() {
+        let sources = vec![
+            text("s-1", 3),
+            card("s-2", "flare.redpacket", "红包"),
+            text("s-3", 5),
+            text("s-4", 3),
+        ];
+        for api in [
+            api(),
+            api().with_forwardable_cards(Arc::new(Declared(&["example.poll.card"]))),
+        ] {
+            let error = api
+                .create_forward("2ATESTGROUPCID0001", true, "", sources.clone())
+                .await
+                .expect_err("refused");
+            assert_eq!(
+                error.code(),
+                Some(crate::shared::error::ErrorCode::InvalidParameter)
+            );
+            assert_eq!(
+                error.reason(),
+                "sdk.message.forward.not_forwardable: s-2, s-3"
+            );
+        }
+        let error = api()
+            .create_forward(
+                "2ATESTGROUPCID0001",
+                false,
+                "",
+                vec![card("s-2", "flare.redpacket", "红包")],
+            )
+            .await
+            .expect_err("a single forward too");
+        assert_eq!(error.reason(), "sdk.message.forward.not_forwardable: s-2");
+        let record = api()
+            .create_forward(
+                "2ATESTGROUPCID0001",
+                true,
+                "",
+                vec![text("s-1", 3), text("s-4", 4)],
+            )
+            .await
+            .expect("plain and failed messages forward");
+        assert!(matches!(record.content, Some(Elem::Forward(ref f)) if f.items.len() == 2));
+    }
+
+    /// A card whose contribution declares `forwardable` goes into the record, read as `[plugin] summary` and
+    /// never as its data.
+    #[tokio::test]
+    async fn a_card_declared_forwardable_is_forwarded_by_its_words() {
+        let api = api().with_forwardable_cards(Arc::new(Declared(&["example.poll.card"])));
+        let record = api
+            .create_forward(
+                "2ATESTGROUPCID0001",
+                true,
+                "",
+                vec![text("s-1", 3), card("s-2", "example.poll", "投票")],
+            )
+            .await
+            .expect("forward");
+        let Some(Elem::Forward(forward)) = record.content else {
+            panic!("a forward elem");
+        };
+        assert_eq!(forward.items[1].plain_text, "[投票] 恭喜发财");
+        assert!(forward.items[1].content.is_some());
     }
 }
