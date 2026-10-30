@@ -29,6 +29,8 @@ struct Fixture {
     #[cfg_attr(not(feature = "storage-sqlite"), allow(dead_code))]
     rejection: Arc<SyncMutex<Option<String>>>,
     vote_result: Arc<SyncMutex<Value>>,
+    /// The answer of `example.poll.available`; `"slow"` answers after 5 s.
+    availability: Arc<SyncMutex<Value>>,
     server: tokio::task::JoinHandle<()>,
 }
 impl Drop for Fixture {
@@ -72,6 +74,8 @@ impl Fixture {
         let refused = rejection.clone();
         let vote_result = Arc::new(SyncMutex::new(json!({"status":"recorded"})));
         let voted = vote_result.clone();
+        let availability = Arc::new(SyncMutex::new(json!({"available": true})));
+        let available = availability.clone();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let base = format!("http://{}", listener.local_addr().unwrap());
         let (c, q, h, e, r) = (
@@ -135,6 +139,19 @@ impl Fixture {
                         r.notified().await;
                     }
                     serde_json::to_value(c.lock().unwrap().clone()).unwrap()
+                } else if body["capabilityId"] == "example.poll.available" {
+                    assert_eq!(body["payload"], json!({}));
+                    let answer = available.lock().unwrap().clone();
+                    if answer == json!("slow") {
+                        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                    }
+                    if answer == json!("refuse") {
+                        next_error
+                            .lock()
+                            .unwrap()
+                            .replace("PAYMENTS_UNAVAILABLE".into());
+                    }
+                    answer
                 } else if body["capabilityId"] == "example.poll.lookup" {
                     observed.lock().unwrap().clone().unwrap_or_else(||json!({
                             "commandId":"stable-command","capabilityId":"example.poll.vote",
@@ -187,6 +204,7 @@ impl Fixture {
             observation,
             rejection,
             vote_result,
+            availability,
             server,
         }
     }
@@ -960,6 +978,131 @@ fn composer_contribution(
         raw[key] = value.clone();
     }
     serde_json::from_value(raw).unwrap()
+}
+#[tokio::test]
+async fn composer_entries_with_availability_are_listed_only_when_their_plugin_admits_them() {
+    use flare_plugin_protocol::manifest::ClientPlatform;
+    let f = Fixture::new().await;
+    {
+        let mut catalog = f.catalog.lock().unwrap();
+        catalog.plugins[0]
+            .operations
+            .insert("example.poll.available".into());
+        let contributions = &mut catalog.plugins[0].extensions.contributions;
+        contributions.push(composer_contribution(
+            "example.poll.create",
+            "投票",
+            json!({"order": 1}),
+        ));
+        contributions.push(composer_contribution(
+            "example.poll.gated",
+            "付费",
+            json!({"order": 2, "availability": {"operation": "example.poll.available", "path": "/available"}}),
+        ));
+        contributions.push(composer_contribution(
+            "example.poll.twin",
+            "同源",
+            json!({"order": 3, "availability": {"operation": "example.poll.available", "path": "/available"}}),
+        ));
+        // An availability the catalog does not offer cannot be asked: hidden.
+        contributions.push(composer_contribution(
+            "example.poll.unoffered",
+            "未开放",
+            json!({"order": 4, "availability": {"operation": "example.poll.close", "path": "/available"}}),
+        ));
+    }
+    let asks = |f: &Fixture| {
+        f.calls
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|c| c["capabilityId"] == "example.poll.available")
+            .count()
+    };
+    let ids = |actions: &[crate::extension::capability::ui::PluginComposerAction]| {
+        actions
+            .iter()
+            .map(|a| a.contribution_id.clone())
+            .collect::<Vec<_>>()
+    };
+    let listed = f
+        .api
+        .composer_actions(ClientPlatform::Ios, "")
+        .await
+        .unwrap();
+    assert_eq!(
+        ids(&listed),
+        [
+            "example.poll.create",
+            "example.poll.gated",
+            "example.poll.twin"
+        ]
+    );
+    assert_eq!(asks(&f), 1, "one question per plugin operation");
+    // The binding form does not expose the declaration.
+    let bound = f
+        .api
+        .plugin_composer_actions(json!({"platform": "ios"}))
+        .await
+        .unwrap();
+    assert!(bound["actions"][1].get("availability").is_none());
+    assert_eq!(asks(&f), 1, "a recent answer is reused");
+    // A refusal now: the catalog invalidation forgets the old answer.
+    *f.availability.lock().unwrap() = json!({"available": false});
+    f.api.invalidate_plugin_catalog().await.unwrap();
+    let listed = f
+        .api
+        .composer_actions(ClientPlatform::Ios, "")
+        .await
+        .unwrap();
+    assert_eq!(ids(&listed), ["example.poll.create"]);
+    assert_eq!(asks(&f), 2);
+    // Only a boolean true admits; errors hide too.
+    for answer in [
+        json!({"available": "true"}),
+        json!({}),
+        json!({"available": 1}),
+    ] {
+        *f.availability.lock().unwrap() = answer.clone();
+        f.api.invalidate_plugin_catalog().await.unwrap();
+        let listed = f
+            .api
+            .composer_actions(ClientPlatform::Ios, "")
+            .await
+            .unwrap();
+        assert_eq!(ids(&listed), ["example.poll.create"], "{answer}");
+    }
+    // The plugin refusing the question hides the entry too.
+    *f.availability.lock().unwrap() = json!("refuse");
+    f.api.invalidate_plugin_catalog().await.unwrap();
+    let listed = f
+        .api
+        .composer_actions(ClientPlatform::Ios, "")
+        .await
+        .unwrap();
+    assert_eq!(ids(&listed), ["example.poll.create"]);
+    // A hidden entry comes back once its plugin admits it again.
+    *f.availability.lock().unwrap() = json!({"available": true});
+    f.api.invalidate_plugin_catalog().await.unwrap();
+    let before = asks(&f);
+    let listed = f
+        .api
+        .composer_actions(ClientPlatform::Ios, "")
+        .await
+        .unwrap();
+    assert_eq!(ids(&listed).len(), 3);
+    assert_eq!(asks(&f), before + 1);
+    // A slow answer is not waited for: the listing finishes, the entry hides.
+    *f.availability.lock().unwrap() = json!("slow");
+    f.api.invalidate_plugin_catalog().await.unwrap();
+    let started = std::time::Instant::now();
+    let listed = f
+        .api
+        .composer_actions(ClientPlatform::Ios, "")
+        .await
+        .unwrap();
+    assert_eq!(ids(&listed), ["example.poll.create"]);
+    assert!(started.elapsed() < std::time::Duration::from_millis(4000));
 }
 #[tokio::test]
 async fn composer_actions_list_authorized_entries_for_the_platform_in_order() {

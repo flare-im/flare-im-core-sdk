@@ -28,6 +28,8 @@ use crate::shared::error::{ErrorCode, FlareError, Result};
 
 #[path = "capability_catalog_notices.rs"]
 mod catalog_notices;
+#[path = "capability_entry_availability.rs"]
+mod entry_availability;
 #[path = "capability_page.rs"]
 mod page;
 #[cfg(all(test, not(target_arch = "wasm32")))]
@@ -132,6 +134,8 @@ pub struct CapabilityApi {
     /// Background reads of presented cards' viewer layers (`viewerState`).
     viewer_state: Option<Arc<viewer::ViewerStateDriver>>,
     catalog_flight: Arc<CatalogFlight>,
+    /// Recent answers of composer entries' availability queries.
+    entry_availability: Arc<entry_availability::EntryAvailability>,
     http: Option<HttpClient>,
     pub(super) session_guard: SessionGuard,
     #[cfg(not(target_arch = "wasm32"))]
@@ -161,6 +165,7 @@ impl CapabilityApi {
             plugin_state_refetch: None,
             viewer_state: None,
             catalog_flight: Arc::new(CatalogFlight::default()),
+            entry_availability: Arc::default(),
             http: None,
             session_guard: SessionGuard::new(current_user_id.clone(), "capability"),
             #[cfg(not(target_arch = "wasm32"))]
@@ -913,6 +918,8 @@ impl CapabilityApi {
     /// Composer ("+" panel) entries of the plugins the current user may use on
     /// `platform`, titles in `locale`, sorted by order then title. Reads a fresh
     /// catalog each call; no further grant check, the server already trimmed it.
+    /// An entry declaring `availability` is listed only when its plugin says
+    /// it can be used now (see `capability_entry_availability.rs`).
     pub async fn composer_actions(
         &self,
         platform: flare_plugin_protocol::manifest::ClientPlatform,
@@ -921,12 +928,13 @@ impl CapabilityApi {
         self.session_guard
             .run(async {
                 let (_, catalog) = self.fetch_plugin_ui_catalog().await?;
-                Ok(crate::extension::capability::ui::composer_actions(
+                let actions = crate::extension::capability::ui::composer_actions(
                     &self.default_tenant_id,
                     &catalog,
                     platform,
                     locale,
-                ))
+                );
+                self.admitted_composer_actions(actions).await
             })
             .await
     }

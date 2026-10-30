@@ -6,8 +6,9 @@ use flare_plugin_protocol::{
     state::SharedState,
     ui::{
         ClientPlugin, NativeCapability, PluginMessage, PluginMessageState, ResolvedPluginView,
-        ResolvedUiBlock, UiActionTarget, UiAudience, UiCatalog, UiDetail, UiEntrySummary,
-        UiFormError, UiRenderContext, UiStateLayers, UiUnavailablePlugin, UiUnavailableReason,
+        ResolvedUiBlock, UiActionTarget, UiAudience, UiCatalog, UiDetail, UiEntryAvailability,
+        UiEntrySummary, UiFormError, UiRenderContext, UiStateLayers, UiUnavailablePlugin,
+        UiUnavailableReason,
     },
 };
 use serde::{Deserialize, Serialize};
@@ -197,6 +198,11 @@ pub struct PluginComposerAction {
     /// Hosts filter with the open conversation; presentation only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub audience: Option<UiAudience>,
+    /// The plugin's declaration of whether the entry can be used now, asked
+    /// by the SDK before listing it (see [`UiEntryAvailability`]); never on
+    /// the wire, hosts only see entries that passed.
+    #[serde(skip)]
+    pub availability: Option<UiEntryAvailability>,
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -217,7 +223,9 @@ pub(crate) fn parse_composer_actions(request: Value) -> Result<ComposerActionsRe
 /// server already trimmed the catalog by grant, capability policy and user
 /// consent, so this only drops what a client cannot render: another tenant's
 /// or an expired catalog, other platforms, unknown schema versions and invalid
-/// documents.
+/// documents. An entry declaring an availability the catalog does not offer
+/// (a malformed one, or an operation outside the plugin's offered operations)
+/// is dropped too; the others carry it for the SDK to ask before listing.
 pub(crate) fn composer_actions(
     tenant: &str,
     catalog: &UiCatalog,
@@ -242,6 +250,10 @@ pub(crate) fn composer_actions(
                         && c.schema.validate().is_ok()
                         // A malformed audience hides the entry rather than showing it to everyone.
                         && c.audience.as_ref().is_none_or(|a| a.validate().is_ok())
+                        // An availability the client cannot ask hides the entry.
+                        && c.availability.as_ref().is_none_or(|a| {
+                            a.validate().is_ok() && plugin.operations.contains(&a.operation)
+                        })
                 })
                 .map(|c| PluginComposerAction {
                     plugin_id: plugin.plugin_id.clone(),
@@ -250,6 +262,7 @@ pub(crate) fn composer_actions(
                     icon: c.icon.clone().filter(|icon| is_ui_icon_name(icon)),
                     order: c.order,
                     audience: c.audience.clone().filter(|a| *a != UiAudience::default()),
+                    availability: c.availability.clone(),
                 })
         })
         .collect();
