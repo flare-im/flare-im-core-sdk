@@ -197,8 +197,17 @@ mod tests {
             "nothing before the jitter"
         );
         tokio::time::sleep(Duration::from_millis(200)).await;
-        for _ in 0..10 {
-            tokio::task::yield_now().await;
+        // The announcement first tries to invalidate the catalog over real HTTP, and the bus
+        // hands it to its subscribers on a blocking thread; neither moves with the paused
+        // clock. Give them real time, bounded, instead of a fixed number of yields, which a
+        // loaded runner does not always cover.
+        for _ in 0..500 {
+            if !announced.lock().unwrap().is_empty() {
+                break;
+            }
+            tokio::task::spawn_blocking(|| std::thread::sleep(Duration::from_millis(2)))
+                .await
+                .unwrap();
         }
         assert_eq!(*announced.lock().unwrap(), vec!["8".to_string()]);
     }
