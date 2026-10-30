@@ -30,22 +30,23 @@ pub(crate) fn verify_enterprise_compliance_gate(root: &Path) -> Result<()> {
         &monorepo_root
             .join("flare-im-core/flare-admin-gateway/src/interface/http/admin_auth_middleware.rs"),
         "admin gateway audit middleware",
-        // 中间件已从「令牌带 admin scope」改为验签的员工控制令牌（admin 用途、core-admin
-        // 受众），租户与操作者都按令牌核对；原来点名的 `has_gateway_admin_scope`、两条报错
-        // 文案和两个用例名随之换掉，这里按新实现逐条点名，判据不少于原来。
+        // 中间件已改为验网关签发的 Staff 签名上下文（x-flare-ctx）：只认一份、只认 Staff、
+        // 必须落到一个具体应用；权限与租户由路由表加签名里的权限决定，伪造的身份头一律
+        // 剥掉。原来点名的员工控制令牌校验、租户头与操作者头比对和三个用例名随之换掉，
+        // 这里按现实现逐条点名，判据不少于原来。
         &[
-            "verifier.verify_token(token, \"admin\", CORE_ADMIN_AUDIENCE)",
-            "actor.require_kind(ControlActorKind::Employee)",
-            "tenant context is required for admin api",
-            "one concrete tenant is required for admin api",
-            "actor.require_tenant(&tenant_id)",
-            "admin actor header does not match token",
-            "verified actor header is required for admin write api",
+            "verify_signed_context_metadata(&metadata, verifier)",
+            "claims.actor_type == SignedActorType::Staff",
+            "duplicate staff context",
+            "staff context must name one concrete application",
+            "authorize_admin_request(",
+            "tenant_id: Some(staff.tenant_id.clone())",
+            "untrusted_actor_headers",
             "audit reason is required for admin write api",
             "x-request-id or idempotency-key is required for admin write api",
-            "admin_boundary_accepts_only_signed_employee_admin_audience",
-            "admin_read_requires_one_exact_tenant",
-            "admin_write_requires_verified_actor_and_audit_context",
+            "the_boundary_admits_only_a_gateway_signed_staff_context",
+            "the_route_table_and_the_signed_permission_decide",
+            "write_routes_require_audit_context_and_platform_routes_platform_staff",
         ],
     );
     require_contains_all(
