@@ -1,5 +1,10 @@
 //! Product-neutral OS token lifecycle. Intent is saved BEFORE a possible write;
 //! logout can revoke by capability without retaining a bearer or an OS token on disk.
+//!
+//! The browser has no OS push token (APNs, FCM, Getui): registration needs a native host, so
+//! a wasm32 build never configures, attaches or reconciles, and reports `disabled`. Those
+//! paths return before any journal, URL or HTTP work, which keeps that code out of the
+//! web bundle.
 use crate::{
     infrastructure::transport::http::{HttpApiResponse, HttpClient, unwrap_api_response},
     shared::error::{ErrorCode, FlareError, Result},
@@ -191,6 +196,9 @@ impl PushLifecycle {
         self.configure_locked(http, root, device)
     }
     fn configure_locked(&self, http: HttpClient, root: PathBuf, device: &str) -> Result<()> {
+        if cfg!(target_arch = "wasm32") {
+            return Ok(());
+        }
         let endpoint =
             url::Url::parse(http.base_url()).map_err(|_| failure(ErrorCode::ConfigurationError))?;
         let local = endpoint.host_str().is_some_and(|host| {
@@ -239,6 +247,9 @@ impl PushLifecycle {
         Ok(())
     }
     pub async fn attach(&self, request: AttachPushSession) -> Result<()> {
+        if cfg!(target_arch = "wasm32") {
+            return Ok(());
+        }
         let AttachPushSession {
             epoch,
             generation,
@@ -289,6 +300,15 @@ impl PushLifecycle {
         Ok(())
     }
     pub fn status(&self) -> PushLifecycleStatus {
+        if cfg!(target_arch = "wasm32") {
+            return PushLifecycleStatus {
+                state: "disabled".into(),
+                configured_providers: 0,
+                registered_providers: 0,
+                pending_revocations: 0,
+                last_error: None,
+            };
+        }
         let s = self.lock();
         let confirmed = s
             .attempts
@@ -342,6 +362,9 @@ impl PushLifecycle {
         self.status()
     }
     async fn run(&self) -> Result<()> {
+        if cfg!(target_arch = "wasm32") {
+            return Ok(());
+        }
         let _io = self.io.lock().await;
         let (transport, entries) = {
             let s = self.lock();

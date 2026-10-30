@@ -42,7 +42,8 @@ Bad permissions, symlink/alias records, malformed/oversized storage or another w
 closed. A different destination/device cannot consume pending old capabilities. Restore the
 original configuration and reconcile before changing deployment/device/data root; do not
 silently discard pending storage. Browser/WASM OS-token updates explicitly return
-OperationNotSupported; this is not a Web Push implementation. Native persistence was verified
+OperationNotSupported and every other call reports `disabled`; the browser bundle carries no
+binding, journal or HTTP code for it. This is not a Web Push implementation. Native persistence was verified
 on macOS/Unix; Windows private storage/directory fsync is not claimed verified.
 
 Intent is persisted before a possibly committed PUT. After a lost response/cancel, read-back
