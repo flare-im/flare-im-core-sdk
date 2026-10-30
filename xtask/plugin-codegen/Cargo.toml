@@ -1,0 +1,25 @@
+[package]
+name = "xtask-plugin-codegen"
+version = "1.0.3"
+edition = "2024"
+rust-version = "1.94.0"
+authors = ["Flare Team"]
+license = "Apache-2.0"
+publish = false
+description = "Plugin manifest schema, catalog checks and six-platform plugin API stubs for the flare-sdk-plugin checkout"
+
+# Its own workspace, excluded from the SDK workspace: it depends on the private
+# flare-sdk-plugin repository, and the open-source SDK must resolve without it.
+[workspace]
+
+[[bin]]
+name = "xtask-plugin-codegen"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1.0"
+flare-im-core-sdk = { path = "../.." }
+flare-sdk-plugin-contract-codegen = { path = "../../../flare-sdk-plugin/flare-sdk-plugin-contract-codegen" }
+# The derive expands to paths under `serde`, so the crate has to be a direct dependency.
+serde = { version = "1.0", features = ["derive"] }
+sha2 = "0.10"

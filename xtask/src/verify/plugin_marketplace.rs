@@ -128,7 +128,7 @@ pub(crate) fn verify_plugin_marketplace_gate(root: &Path) -> Result<()> {
     );
     require_contains_all(
         &mut errors,
-        &sdk_root.join("xtask/src/plugin_codegen.rs"),
+        &sdk_root.join("xtask/plugin-codegen/src/main.rs"),
         "plugin codegen gate",
         &[
             "verify_catalog",

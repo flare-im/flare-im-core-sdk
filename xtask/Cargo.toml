@@ -19,6 +19,3 @@ regex = "1.10"
 schemars = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-sha2 = "0.10"
-
-flare-sdk-plugin-contract-codegen = { path = "../../flare-sdk-plugin/flare-sdk-plugin-contract-codegen" }
