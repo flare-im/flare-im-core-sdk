@@ -517,7 +517,8 @@ mod tests {
 impl Default for SdkConfig {
     fn default() -> Self {
         Self {
-            ws_url: Some("ws://localhost:8080".into()),
+            // The Core signaling gateway, as `lifecycle::default_ws_url` falls back to.
+            ws_url: Some("ws://localhost:60051".into()),
             quic_url: None,
             http_url: Some("http://localhost:50050".into()),
             media_storage_proxy_prefix: None,
