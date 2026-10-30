@@ -64,3 +64,182 @@ pub fn from_rpc_status(code: i32, message: impl Into<String>) -> FlareError {
     };
     FlareError::localized(code, msg)
 }
+
+/// Error param naming the messages an operation refused, so a host can say which ones without
+/// reading the reason text: the ids joined by `,`. The binding runtime hands it over as the typed
+/// list `refusedMessageIds` (`bindings/contract/errors.json`); attach it with [`refusing_messages`],
+/// read it with [`refused_message_ids`].
+pub const REFUSED_MESSAGE_IDS: &str = "refusedMessageIds";
+
+/// Most ids one error names. Enough for any selection a person makes, and it bounds what an error
+/// carries across a binding (at most about 64 KiB).
+pub const MAX_REFUSED_MESSAGE_IDS: usize = 500;
+
+/// Longest id an error names, in bytes.
+pub const MAX_REFUSED_MESSAGE_ID_BYTES: usize = 128;
+
+/// A message id as an error may name it: 1 to [`MAX_REFUSED_MESSAGE_ID_BYTES`] bytes of ASCII
+/// letters, digits, `.`, `_`, `:` or `-` (server ids and client message ids alike), so it can
+/// never split, smuggle markup or run long.
+fn is_namable_message_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= MAX_REFUSED_MESSAGE_ID_BYTES
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b':' | b'-'))
+}
+
+/// `error` naming the messages it refused ([`REFUSED_MESSAGE_IDS`]): in order, each once.
+///
+/// Names none unless there are 1 to [`MAX_REFUSED_MESSAGE_IDS`] ids and every one is well formed:
+/// part of the list would misstate how many were refused. Only a localized error carries params.
+pub fn refusing_messages<I, S>(error: FlareError, ids: I) -> FlareError
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    let mut named: Vec<String> = Vec::new();
+    for id in ids {
+        let id = id.as_ref();
+        if !is_namable_message_id(id) {
+            return error;
+        }
+        if !named.iter().any(|seen| seen == id) {
+            named.push(id.to_owned());
+        }
+    }
+    if named.is_empty() || named.len() > MAX_REFUSED_MESSAGE_IDS {
+        return error;
+    }
+    match error {
+        FlareError::Localized {
+            code,
+            reason,
+            details,
+            params,
+            timestamp,
+        } => {
+            let mut params = params.unwrap_or_default();
+            params.insert(REFUSED_MESSAGE_IDS.to_owned(), named.join(","));
+            FlareError::Localized {
+                code,
+                reason,
+                details,
+                params: Some(params),
+                timestamp,
+            }
+        }
+        other => other,
+    }
+}
+
+/// The messages `error` refused, as [`refusing_messages`] named them; `None` when it names none,
+/// more than [`MAX_REFUSED_MESSAGE_IDS`], or any id that is not well formed.
+pub fn refused_message_ids(error: &FlareError) -> Option<Vec<String>> {
+    let FlareError::Localized {
+        params: Some(params),
+        ..
+    } = error
+    else {
+        return None;
+    };
+    let ids: Vec<String> = params
+        .get(REFUSED_MESSAGE_IDS)?
+        .split(',')
+        .map(str::to_owned)
+        .collect();
+    (ids.len() <= MAX_REFUSED_MESSAGE_IDS && ids.iter().all(|id| is_namable_message_id(id)))
+        .then_some(ids)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn refusal() -> FlareError {
+        FlareError::localized(ErrorCode::InvalidParameter, "sdk.example.refused")
+    }
+
+    fn param(error: &FlareError) -> Option<&str> {
+        match error {
+            FlareError::Localized {
+                params: Some(params),
+                ..
+            } => params.get(REFUSED_MESSAGE_IDS).map(String::as_str),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn an_error_names_the_messages_it_refused_in_order_and_once() {
+        let error = refusing_messages(
+            refusal(),
+            [
+                "s-2",
+                "6b1f0c2e9a4d4f7e8c3b2a1d0e9f8a7b",
+                "s-2",
+                "msg:42.a_b",
+            ],
+        );
+        assert_eq!(
+            refused_message_ids(&error),
+            Some(vec![
+                "s-2".to_owned(),
+                "6b1f0c2e9a4d4f7e8c3b2a1d0e9f8a7b".to_owned(),
+                "msg:42.a_b".to_owned(),
+            ])
+        );
+        assert_eq!(error.code(), Some(ErrorCode::InvalidParameter));
+        assert_eq!(error.reason(), "sdk.example.refused");
+    }
+
+    #[test]
+    fn a_list_it_cannot_name_whole_names_nothing() {
+        let too_long = "a".repeat(MAX_REFUSED_MESSAGE_ID_BYTES + 1);
+        let too_many: Vec<String> = (0..=MAX_REFUSED_MESSAGE_IDS)
+            .map(|i| format!("m{i}"))
+            .collect();
+        let cases: [&[&str]; 6] = [
+            &[],
+            &["s-1", ""],
+            &["s-1", "a,b"],
+            &["s-1", "<b>"],
+            &["s-1", "id with space"],
+            &["s-1", "\u{7f5c}"],
+        ];
+        for ids in cases {
+            assert_eq!(param(&refusing_messages(refusal(), ids)), None, "{ids:?}");
+        }
+        assert_eq!(
+            param(&refusing_messages(refusal(), [too_long.as_str()])),
+            None
+        );
+        assert_eq!(param(&refusing_messages(refusal(), &too_many)), None);
+        let most: Vec<String> = too_many[..MAX_REFUSED_MESSAGE_IDS].to_vec();
+        assert_eq!(
+            refused_message_ids(&refusing_messages(refusal(), &most)).map(|ids| ids.len()),
+            Some(MAX_REFUSED_MESSAGE_IDS)
+        );
+        let edge = "a".repeat(MAX_REFUSED_MESSAGE_ID_BYTES);
+        assert!(refused_message_ids(&refusing_messages(refusal(), [edge.as_str()])).is_some());
+        assert!(param(&refusing_messages(FlareError::system("boom"), ["s-1"])).is_none());
+    }
+
+    #[test]
+    fn only_a_well_formed_param_reads_back() {
+        for raw in ["", "s-1,", "s-1,,s-2", "s-1, s-2", "s-1;s-2"] {
+            let mut params = std::collections::HashMap::new();
+            params.insert(REFUSED_MESSAGE_IDS.to_owned(), raw.to_owned());
+            let error = FlareError::Localized {
+                code: ErrorCode::InvalidParameter,
+                reason: "x".into(),
+                details: None,
+                params: Some(params),
+                timestamp: Default::default(),
+            };
+            assert_eq!(refused_message_ids(&error), None, "{raw:?}");
+        }
+        assert_eq!(refused_message_ids(&refusal()), None);
+        assert_eq!(refused_message_ids(&FlareError::system("boom")), None);
+    }
+}

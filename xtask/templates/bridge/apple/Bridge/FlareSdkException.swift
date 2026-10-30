@@ -5,7 +5,8 @@ import Foundation
 /// An SDK failure carries the binding's structured error (`bindings/contract/errors.json`):
 /// `code` is the core error code (`PERMISSION_DENIED`), `reason` the localized key
 /// (`sdk.plugin.disabled`), `machineReason` Core's or the plugin's code (`PLUGIN_DISABLED`,
-/// `CALL_FULL`), `httpStatus` and `remoteCode` Core's answer. Read these, never `message`.
+/// `CALL_FULL`), `httpStatus` and `remoteCode` Core's answer, `refusedMessageIds` the messages the
+/// operation refused. Read these, never `message`.
 public struct FlareSdkException: Error, LocalizedError, Sendable {
     public let code: String
     public let message: String
@@ -16,6 +17,7 @@ public struct FlareSdkException: Error, LocalizedError, Sendable {
     public let httpStatus: Int?
     public let remoteCode: Int?
     public let machineReason: String?
+    public let refusedMessageIds: [String]?
 
     public init(
         code: String,
@@ -26,7 +28,8 @@ public struct FlareSdkException: Error, LocalizedError, Sendable {
         retryable: Bool = false,
         httpStatus: Int? = nil,
         remoteCode: Int? = nil,
-        machineReason: String? = nil
+        machineReason: String? = nil,
+        refusedMessageIds: [String]? = nil
     ) {
         self.code = code
         self.message = message
@@ -37,6 +40,7 @@ public struct FlareSdkException: Error, LocalizedError, Sendable {
         self.httpStatus = httpStatus
         self.remoteCode = remoteCode
         self.machineReason = machineReason
+        self.refusedMessageIds = refusedMessageIds
     }
 
     /// The error of a failed native call: the structured error the SDK wrote in `details_json`,
@@ -58,7 +62,8 @@ public struct FlareSdkException: Error, LocalizedError, Sendable {
             retryable: structured["retryable"] as? Bool ?? false,
             httpStatus: (structured["httpStatus"] as? NSNumber)?.intValue,
             remoteCode: (structured["remoteCode"] as? NSNumber)?.intValue,
-            machineReason: structured["machineReason"] as? String
+            machineReason: structured["machineReason"] as? String,
+            refusedMessageIds: (structured["refusedMessageIds"] as? [String]).flatMap { $0.isEmpty ? nil : $0 }
         )
     }
 

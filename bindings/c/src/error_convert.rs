@@ -8,7 +8,8 @@ use crate::types::{FlareError, FlareString};
 use flare_im_core_sdk::FlareError as SdkError;
 
 /// 从 SDK FlareError 创建 C ABI FlareError；`details_json` 是结构化错误
-/// `{code, reason, params?, retryable}`（`contract/errors.json`），宿主据此识别错误，不解析 `message`。
+/// `{code, reason, retryable, httpStatus?, remoteCode?, machineReason?, refusedMessageIds?}`
+/// （`contract/errors.json`），宿主据此识别错误，不解析 `message`。
 #[inline]
 pub fn make_error(err: &SdkError) -> FlareError {
     use std::fmt::Write;
@@ -59,11 +60,8 @@ mod tests {
         code
     }
 
-    /// `details_json` 带着核心错误码、原因与参数：插件拒绝码（`machineReason`）不必从文本里找。
-    #[test]
-    fn details_json_carries_the_structured_error() {
-        let err = SdkError::localized(ErrorCode::PermissionDenied, "sdk.plugin.disabled");
-        let converted = make_error(&err);
+    fn details_of(err: &SdkError) -> serde_json::Value {
+        let converted = make_error(err);
         let details = unsafe {
             std::str::from_utf8(std::slice::from_raw_parts(
                 converted.details_json.ptr as *const u8,
@@ -73,9 +71,38 @@ mod tests {
             .to_owned()
         };
         flare_error_free(converted);
-        let details: serde_json::Value = serde_json::from_str(&details).expect("json");
+        serde_json::from_str(&details).expect("json")
+    }
+
+    /// `details_json` 带着核心错误码、原因与参数：插件拒绝码（`machineReason`）不必从文本里找。
+    #[test]
+    fn details_json_carries_the_structured_error() {
+        let details = details_of(&SdkError::localized(
+            ErrorCode::PermissionDenied,
+            "sdk.plugin.disabled",
+        ));
         assert_eq!(details["code"], "PERMISSION_DENIED");
         assert_eq!(details["reason"], "sdk.plugin.disabled");
+        assert!(details.get("refusedMessageIds").is_none());
+    }
+
+    /// 被拒的消息 id 是 `details_json` 里的字符串数组，宿主不必解析原因文本。
+    #[test]
+    fn details_json_names_the_refused_messages_as_a_list() {
+        let err = flare_im_core_sdk::refusing_messages(
+            SdkError::localized(
+                ErrorCode::InvalidParameter,
+                "sdk.message.forward.not_forwardable: s-2, s-3",
+            ),
+            ["s-2", "s-3"],
+        );
+        assert_eq!(c_code_of(&err), FLARE_ERR_INVALID_PARAM);
+        let details = details_of(&err);
+        assert_eq!(details["code"], "INVALID_PARAMETER");
+        assert_eq!(
+            details["refusedMessageIds"],
+            serde_json::json!(["s-2", "s-3"])
+        );
     }
 
     /// 连接建立失败、连接被关闭、网络连接丢失都是网络类失败：经 C ABI 交给宿主时是

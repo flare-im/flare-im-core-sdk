@@ -129,8 +129,8 @@ impl MessageBuildApi {
     }
 
     /// 转发的每条源消息都必须能转发（[`crate::domain::message_actions::message_forwardable`]，菜单的
-    /// 「转发」读的是同一条规则）：有一条不能就整个拒掉，并按 id（服务端 id，没有时客户端 id）点名，
-    /// 不静默跳过——跳过的话，选了几条、记录里少几条，用户无从知道。
+    /// 「转发」读的是同一条规则）：有一条不能就整个拒掉，并按 id（服务端 id，没有时客户端 id，每条一次）
+    /// 点名在 `refusedMessageIds` 里，不静默跳过——跳过的话，选了几条、记录里少几条，用户无从知道。
     async fn refuse_unforwardable(&self, sources: &[IMMessage]) -> Result<()> {
         let mut refused = Vec::new();
         for source in sources {
@@ -140,23 +140,27 @@ impl MessageBuildApi {
             };
             if !crate::domain::message_actions::message_forwardable(source, plugin_forwardable) {
                 let server_id = source.server_id.trim();
-                refused.push(if server_id.is_empty() {
-                    source.client_msg_id.trim().to_owned()
+                let id = if server_id.is_empty() {
+                    source.client_msg_id.trim()
                 } else {
-                    server_id.to_owned()
-                });
+                    server_id
+                };
+                if !refused.iter().any(|seen| seen == id) {
+                    refused.push(id.to_owned());
+                }
             }
         }
         if refused.is_empty() {
             return Ok(());
         }
-        Err(FlareError::localized(
+        let refusal = FlareError::localized(
             ErrorCode::InvalidParameter,
             format!(
                 "sdk.message.forward.not_forwardable: {}",
                 refused.join(", ")
             ),
-        ))
+        );
+        Err(crate::shared::error::refusing_messages(refusal, &refused))
     }
 
     /// 宿主交来的源消息缺发送者名时（没经过时间线读取的身份填充，或读取时缓存里还没有这个人），按 sender_id
@@ -384,7 +388,8 @@ impl MessageBuildApi {
     }
 
     /// 源消息里有不能转发的（撤回或删除的、没声明 `forwardable` 的插件卡片）就整个拒绝：
-    /// `INVALID_PARAMETER`，原因 `sdk.message.forward.not_forwardable: <id>, …` 点名每一条。
+    /// `INVALID_PARAMETER`，被拒的源消息 id 放在结构化的 `refusedMessageIds`
+    /// （[`crate::refused_message_ids`]）；原因 `sdk.message.forward.not_forwardable: <id>, …` 只给人看。
     pub async fn create_forward(
         &self,
         conversation_id: &str,
@@ -920,6 +925,10 @@ mod forward_sender_tests {
                 Some(crate::shared::error::ErrorCode::InvalidParameter)
             );
             assert_eq!(
+                crate::refused_message_ids(&error),
+                Some(vec!["s-2".to_owned(), "s-3".to_owned()])
+            );
+            assert_eq!(
                 error.reason(),
                 "sdk.message.forward.not_forwardable: s-2, s-3"
             );
@@ -934,6 +943,29 @@ mod forward_sender_tests {
             .await
             .expect_err("a single forward too");
         assert_eq!(error.reason(), "sdk.message.forward.not_forwardable: s-2");
+        assert_eq!(
+            crate::refused_message_ids(&error),
+            Some(vec!["s-2".to_owned()])
+        );
+        // A source picked twice is named once; one without a server id goes by its client id.
+        let mut unsent = text("", 5);
+        unsent.client_msg_id = "6b1f0c2e9a4d4f7e8c3b2a1d0e9f8a7b".into();
+        let error = api()
+            .create_forward(
+                "2ATESTGROUPCID0001",
+                true,
+                "",
+                vec![text("s-3", 5), unsent, text("s-3", 5), text("s-1", 3)],
+            )
+            .await
+            .expect_err("refused");
+        assert_eq!(
+            crate::refused_message_ids(&error),
+            Some(vec![
+                "s-3".to_owned(),
+                "6b1f0c2e9a4d4f7e8c3b2a1d0e9f8a7b".to_owned()
+            ])
+        );
         let record = api()
             .create_forward(
                 "2ATESTGROUPCID0001",

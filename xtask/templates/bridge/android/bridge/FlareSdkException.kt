@@ -8,7 +8,8 @@ import org.json.JSONObject
  * An SDK failure carries the binding's structured error (`bindings/contract/errors.json`):
  * [code] is the core error code (`PERMISSION_DENIED`), [reason] the localized key
  * (`sdk.plugin.disabled`), [machineReason] Core's or the plugin's code (`PLUGIN_DISABLED`,
- * `CALL_FULL`), [httpStatus] and [remoteCode] Core's answer. Read these, never [message].
+ * `CALL_FULL`), [httpStatus] and [remoteCode] Core's answer, [refusedMessageIds] the messages
+ * the operation refused. Read these, never [message].
  */
 class FlareSdkException(
     val code: String,
@@ -20,6 +21,7 @@ class FlareSdkException(
     val httpStatus: Int? = null,
     val remoteCode: Int? = null,
     val machineReason: String? = null,
+    val refusedMessageIds: List<String>? = null,
 ) : RuntimeException(message) {
     companion object {
         /**
@@ -40,6 +42,10 @@ class FlareSdkException(
                 structured?.takeIf { it.has(name) }?.optString(name)?.takeIf { it.isNotEmpty() }
             fun int(name: String): Int? =
                 structured?.takeIf { it.has(name) }?.opt(name)?.let { it as? Number }?.toInt()
+            fun strings(name: String): List<String>? {
+                val array = structured?.optJSONArray(name)?.takeIf { it.length() > 0 } ?: return null
+                return (0 until array.length()).map { array.opt(it) as? String ?: return null }
+            }
             return FlareSdkException(
                 code = string("code") ?: "native.$nativeCode",
                 message = message,
@@ -50,6 +56,7 @@ class FlareSdkException(
                 httpStatus = int("httpStatus"),
                 remoteCode = int("remoteCode"),
                 machineReason = string("machineReason"),
+                refusedMessageIds = strings("refusedMessageIds"),
             )
         }
     }

@@ -15,6 +15,8 @@ export interface FlareSdkErrorDetails {
   remoteCode?: number;
   /** Core's or the plugin's code, e.g. `PLUGIN_DISABLED`, `CALL_FULL`. */
   machineReason?: string;
+  /** The messages the operation refused, by id (a forward whose sources cannot all be forwarded). */
+  refusedMessageIds?: string[];
 }
 
 /** Stable TypeScript error surfaced by platform bridges. */
@@ -28,6 +30,7 @@ export class FlareSdkException extends Error {
   readonly httpStatus?: number;
   readonly remoteCode?: number;
   readonly machineReason?: string;
+  readonly refusedMessageIds?: string[];
 
   constructor(
     code: string,
@@ -46,6 +49,7 @@ export class FlareSdkException extends Error {
     this.httpStatus = sdk.httpStatus;
     this.remoteCode = sdk.remoteCode;
     this.machineReason = sdk.machineReason;
+    this.refusedMessageIds = sdk.refusedMessageIds;
   }
 
   /**
@@ -69,7 +73,15 @@ export class FlareSdkException extends Error {
         httpStatus: typeof value.httpStatus === 'number' ? value.httpStatus : undefined,
         remoteCode: typeof value.remoteCode === 'number' ? value.remoteCode : undefined,
         machineReason: typeof value.machineReason === 'string' ? value.machineReason : undefined,
+        refusedMessageIds: stringList(value.refusedMessageIds),
       },
     );
   }
+}
+
+/** `value` when it is a non-empty list of strings, else undefined. */
+function stringList(value: unknown): string[] | undefined {
+  return Array.isArray(value) && value.length > 0 && value.every((item) => typeof item === 'string')
+    ? [...value]
+    : undefined;
 }

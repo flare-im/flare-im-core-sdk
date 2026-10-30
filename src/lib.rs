@@ -97,6 +97,11 @@ pub use core::event::{
     SharedEventReceiver,
 };
 pub use shared::error::{ErrorCode, FlareError, Result};
+/// An error naming the messages an operation refused (`refusedMessageIds` in the binding error).
+pub use shared::error::{
+    MAX_REFUSED_MESSAGE_ID_BYTES, MAX_REFUSED_MESSAGE_IDS, REFUSED_MESSAGE_IDS,
+    refused_message_ids, refusing_messages,
+};
 /// 跨平台异步延时（wasm 用 JS 定时器，native 用 tokio）。供 SDK 上层做有界重试等。
 pub use shared::util::time::delay;
 

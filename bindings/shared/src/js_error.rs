@@ -15,8 +15,8 @@ pub fn boundary_error_js(code: &str, operation: &str, message: &str) -> JsValue 
     error_with(message, &json!({"code": code, "operation": operation}))
 }
 
-/// An SDK failure: `code` (core error code), `reason`, `params`, `retryable` and,
-/// when known, `operation` ([`sdk_error_value`]).
+/// An SDK failure: the structured error (`code`, `reason`, `retryable` and the
+/// typed facts) and, when known, `operation` ([`sdk_error_value`]).
 pub fn sdk_error_js(error: &FlareError, operation: Option<&str>) -> JsValue {
     error_with(&error.to_string(), &sdk_error_value(error, operation))
 }
