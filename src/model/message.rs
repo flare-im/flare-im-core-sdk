@@ -564,12 +564,7 @@ impl IMMessage {
             Some(_) => return None,
             None => Self::wire_plugin_card_payload(&self.encoded_content)?,
         };
-        if payload.len() > 65536 {
-            return None;
-        }
-        serde_json::from_slice::<flare_plugin_protocol::ui::PluginMessage>(&payload)
-            .ok()
-            .filter(|message| message.validate().is_ok())
+        crate::content::message_elem::plugin_card_envelope(&payload)
     }
 
     /// 顶层是不是插件卡（APP_CARD `flare.plugin.message.v1`），不论信封是否合法。有编码缓存时以缓存

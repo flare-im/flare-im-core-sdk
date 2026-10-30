@@ -22,6 +22,70 @@ const APP_CARD_ANNOUNCEMENT: &str = "announcement";
 pub(crate) const PLUGIN_MESSAGE_CARD_TYPE: &str = "flare.plugin.message.v1";
 /// Placeholder reason of content the SDK does not render as what it claims to be.
 pub(crate) const UNSUPPORTED_CONTENT_REASON: &str = "unsupported";
+/// Most bytes of a plugin card envelope the SDK reads.
+pub(crate) const MAX_PLUGIN_CARD_ENVELOPE_BYTES: usize = 65536;
+
+/// The plugin card envelope in `payload` when it is a valid one: at most
+/// [`MAX_PLUGIN_CARD_ENVELOPE_BYTES`] of JSON that reads as a
+/// [`PluginMessage`](flare_plugin_protocol::ui::PluginMessage) and passes its validation.
+///
+/// Every other plugin message reaches the SDK as a `serde_json::Value` (a presentation request,
+/// an operation result), so the envelope is read into one too and only then into its type: the
+/// type keeps one deserializer in the binary instead of one per input form. The read refuses
+/// what reading the bytes straight into the type refused, an object that repeats a key.
+pub(crate) fn plugin_card_envelope(
+    payload: &[u8],
+) -> Option<flare_plugin_protocol::ui::PluginMessage> {
+    if payload.len() > MAX_PLUGIN_CARD_ENVELOPE_BYTES {
+        return None;
+    }
+    let EnvelopeJson(value) = serde_json::from_slice(payload).ok()?;
+    serde_json::from_value::<flare_plugin_protocol::ui::PluginMessage>(value)
+        .ok()
+        .filter(|message| message.validate().is_ok())
+}
+
+/// A card envelope's JSON as a `Value`, refusing an object that repeats a key: a typed read
+/// refuses a repeated field, a `Value` would keep the last one. Nested values (the card's own
+/// `payload`) are plain `Value`s, as they were in the typed read.
+struct EnvelopeJson(Value);
+
+impl<'de> Deserialize<'de> for EnvelopeJson {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Envelope;
+        impl<'de> serde::de::Visitor<'de> for Envelope {
+            type Value = Value;
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("a plugin card envelope")
+            }
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                mut map: A,
+            ) -> Result<Value, A::Error> {
+                let mut object = Map::new();
+                while let Some(key) = map.next_key::<String>()? {
+                    let value = map.next_value::<Value>()?;
+                    if object.insert(key, value).is_some() {
+                        return Err(serde::de::Error::custom("repeated key"));
+                    }
+                }
+                Ok(Value::Object(object))
+            }
+            // A struct reads from a JSON array too (its fields in order); so does the envelope.
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(
+                self,
+                mut seq: A,
+            ) -> Result<Value, A::Error> {
+                let mut items = Vec::new();
+                while let Some(item) = seq.next_element::<Value>()? {
+                    items.push(item);
+                }
+                Ok(Value::Array(items))
+            }
+        }
+        deserializer.deserialize_any(Envelope).map(EnvelopeJson)
+    }
+}
 
 // ---------- 通用子结构 ----------
 
@@ -507,13 +571,10 @@ pub fn elem_preview_storage_payload(elem: &Elem) -> PreviewStoragePayload {
 /// 代发时写入的清单名称；缺哪个就只用另一个。信封无效时为 `None`（按普通自定义消息处理）。信封里的卡片
 /// 数据（`payload`）与状态层都不读，所以摘要里只有插件自己公开的文字。
 fn plugin_card_preview(custom: &CustomElem) -> Option<String> {
-    if custom.r#type != PLUGIN_MESSAGE_CARD_TYPE || custom.payload.len() > 65536 {
+    if custom.r#type != PLUGIN_MESSAGE_CARD_TYPE {
         return None;
     }
-    let envelope =
-        serde_json::from_slice::<flare_plugin_protocol::ui::PluginMessage>(&custom.payload)
-            .ok()
-            .filter(|message| message.validate().is_ok())?;
+    let envelope = plugin_card_envelope(&custom.payload)?;
     let name = envelope
         .display_name
         .as_deref()
@@ -1441,12 +1502,11 @@ fn elem_to_proto_content(elem: &Elem) -> ProtoContent {
         // APP_CARD is projected as a CustomElem for renderer composition. JSON
         // bindings omit encoded_content; restore this generic envelope before
         // sending/forwarding so message_type and wire oneof remain consistent.
-        Elem::Custom(c) if c.r#type == PLUGIN_MESSAGE_CARD_TYPE && c.payload.len() <= 65536 => {
-            let envelope =
-                serde_json::from_slice::<flare_plugin_protocol::ui::PluginMessage>(&c.payload)
-                    .ok()
-                    .filter(|message| message.validate().is_ok());
-            if let Some(envelope) = envelope {
+        Elem::Custom(c)
+            if c.r#type == PLUGIN_MESSAGE_CARD_TYPE
+                && c.payload.len() <= MAX_PLUGIN_CARD_ENVELOPE_BYTES =>
+        {
+            if let Some(envelope) = plugin_card_envelope(&c.payload) {
                 let mut card = app_card_content(envelope.plugin_id, PLUGIN_MESSAGE_CARD_TYPE, "");
                 card.summary = envelope.summary;
                 card.payload_schema = "flare.plugin.message/v1".into();
@@ -1497,6 +1557,68 @@ pub fn decoded_content_to_elem(decoded: &DecodedContent) -> Option<Elem> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A card envelope is read through a `Value` into its type, and reads exactly as the bytes read
+    /// straight into the type did: the same envelopes pass, the same are refused.
+    #[test]
+    fn a_card_envelope_reads_as_its_bytes_read_straight_into_the_type() {
+        use flare_plugin_protocol::ui::PluginMessage;
+        let typed = |bytes: &[u8]| {
+            serde_json::from_slice::<PluginMessage>(bytes)
+                .ok()
+                .filter(|message| message.validate().is_ok())
+        };
+        let valid = r#"{"pluginId":"example.poll","contributionId":"example.poll.card","schemaVersion":1,"summary":"投票","payload":{"a":1,"a":2},"displayName":"投票"}"#;
+        let pad = |len: usize| {
+            let head = r#"{"pluginId":"example.poll","contributionId":"example.poll.card","schemaVersion":1,"summary":"s","payload":{"x":""#;
+            let tail = r#""}}"#;
+            format!("{head}{}{tail}", "a".repeat(len - head.len() - tail.len()))
+        };
+        let cases = [
+            valid.to_owned(),
+            // An object that repeats a key, known or not.
+            r#"{"pluginId":"example.poll","pluginId":"example.poll","contributionId":"example.poll.card","schemaVersion":1,"summary":"s","payload":{}}"#.to_owned(),
+            r#"{"pluginId":"example.poll","contributionId":"example.poll.card","schemaVersion":1,"summary":"s","payload":{},"x":1,"x":1}"#.to_owned(),
+            // The fields in order, as an array.
+            r#"["example.poll","example.poll.card",1,"s",{}]"#.to_owned(),
+            r#"["example.poll","example.poll.card",1,"s",{},"投票"]"#.to_owned(),
+            r#"["example.poll","example.poll.card",1]"#.to_owned(),
+            // An unknown field, a missing one, a null display name, a wrong type.
+            r#"{"pluginId":"example.poll","contributionId":"example.poll.card","schemaVersion":1,"summary":"s","payload":{},"extra":1}"#.to_owned(),
+            r#"{"pluginId":"example.poll","contributionId":"example.poll.card","schemaVersion":1,"summary":"s"}"#.to_owned(),
+            r#"{"pluginId":"example.poll","contributionId":"example.poll.card","schemaVersion":1,"summary":"s","payload":null,"displayName":null}"#.to_owned(),
+            r#"{"pluginId":"example.poll","contributionId":"example.poll.card","schemaVersion":"1","summary":"s","payload":{}}"#.to_owned(),
+            r#"{"pluginId":"example.poll","contributionId":"example.poll.card","schemaVersion":1.0,"summary":"s","payload":{}}"#.to_owned(),
+            // Envelopes that read but are not valid.
+            r#"{"pluginId":"example.poll","contributionId":"example.poll.card","schemaVersion":2,"summary":"s","payload":{}}"#.to_owned(),
+            r#"{"pluginId":"example.poll","contributionId":"other.poll.card","schemaVersion":1,"summary":"s","payload":{}}"#.to_owned(),
+            // Not an envelope at all.
+            format!("{valid} x"),
+            "\"s\"".to_owned(),
+            "1".to_owned(),
+            "null".to_owned(),
+            String::new(),
+            "{".to_owned(),
+            pad(MAX_PLUGIN_CARD_ENVELOPE_BYTES),
+        ];
+        for bytes in &cases {
+            assert_eq!(
+                plugin_card_envelope(bytes.as_bytes()),
+                typed(bytes.as_bytes()),
+                "{bytes}"
+            );
+        }
+        assert!(plugin_card_envelope(valid.as_bytes()).is_some());
+        assert!(plugin_card_envelope(cases[3].as_bytes()).is_some());
+        assert!(plugin_card_envelope(pad(MAX_PLUGIN_CARD_ENVELOPE_BYTES).as_bytes()).is_some());
+        // Bytes over the cap are not read, though the envelope in them would pass.
+        let over = format!(
+            "{valid}{}",
+            " ".repeat(MAX_PLUGIN_CARD_ENVELOPE_BYTES + 1 - valid.len())
+        );
+        assert!(typed(over.as_bytes()).is_some());
+        assert_eq!(plugin_card_envelope(over.as_bytes()), None);
+    }
 
     #[test]
     fn image_info_mapping_preserves_blurhash() {
