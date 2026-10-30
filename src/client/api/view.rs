@@ -834,9 +834,9 @@ fn message_refresh_target(event: &MessageEvent) -> ViewRefreshTarget {
         | MessageEvent::PluginStateChanged {
             conversation_id, ..
         }
-        | MessageEvent::ReadSummariesChanged { conversation_id } => {
-            insert_non_empty(&mut ids, conversation_id)
-        }
+        | MessageEvent::ReadSummariesChanged {
+            conversation_id, ..
+        } => insert_non_empty(&mut ids, conversation_id),
         MessageEvent::SendFailed { .. } => return ViewRefreshTarget::All,
     }
     if ids.is_empty() {

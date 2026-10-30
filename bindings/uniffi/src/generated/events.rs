@@ -32,6 +32,7 @@ pub const EVENT_CODE_TABLE: &[(&str, i32)] = &[
     ("message.presence_changed", 2019),
     ("message.custom", 2020),
     ("message.plugin_state_changed", 2022),
+    ("message.read_summaries_changed", 2023),
     ("conversation.synced", 3001),
     ("conversation.created", 3002),
     ("conversation.updated", 3003),

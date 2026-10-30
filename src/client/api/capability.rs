@@ -1164,7 +1164,7 @@ impl CapabilityApi {
     /// `message_id`. Core accepts a card call only from the message bound to
     /// the card's entity.
     #[cfg(not(target_arch = "wasm32"))]
-    async fn dispatch_with(
+    pub(super) async fn dispatch_with(
         &self,
         capability_id: &str,
         payload: Value,
@@ -1255,7 +1255,7 @@ impl CapabilityApi {
     }
 
     #[cfg(target_arch = "wasm32")]
-    async fn dispatch_with(
+    pub(super) async fn dispatch_with(
         &self,
         capability_id: &str,
         payload: Value,

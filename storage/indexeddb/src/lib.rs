@@ -2,6 +2,7 @@
 //! Browser IndexedDB-backed storage adapter for the WASM SDK binding.
 
 mod host;
+mod plugin_command;
 mod provider;
 
 pub use host::{clear_storage_host, set_storage_host, storage_host_configured};

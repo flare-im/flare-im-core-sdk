@@ -559,6 +559,7 @@ impl IMClientBuilder {
         let message_build_api = Arc::new(MessageBuildApi::new(
             current_user_id.clone(),
             store_ref.conversations.clone(),
+            profile_reader.clone(),
         ));
         let media_base_url = self
             .config

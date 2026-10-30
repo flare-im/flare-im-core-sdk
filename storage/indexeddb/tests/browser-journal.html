@@ -1,0 +1,24 @@
+<!doctype html><meta charset="utf-8"><title>IndexedDB journal acceptance</title><h1>Real IndexedDB journal acceptance</h1><button id="run">Run acceptance</button><pre id="result">Not run</pre><script type="module">
+import {pluginCommandJournal as journal} from '../src/plugin_command.mjs';
+const base={tenantId:'journal-test-'+crypto.randomUUID(),userId:'test-user',slot:'test.slot'};
+const command={commandId:'original',capabilityId:'test.pay',conversationId:null,payload:{amount:'10'}};
+const encoded=JSON.stringify(command);
+const call=(operation,extra={},scope={})=>journal(JSON.stringify({...base,...scope,operation,...extra})).then(JSON.parse);
+const check=(ok,name)=>{if(!ok)throw new Error(name);return name;};
+document.querySelector('#run').onclick=async()=>{const results=[];try{
+results.push(check((await call('prepare',{commandJson:encoded})).response===null,'intent durable before request'));
+results.push(check((await call('prepare',{commandJson:encoded})).command.commandId==='original','identical replay'));
+results.push(check((await call('prepare',{commandJson:'{}'})).error==='pending_requires_reconciliation','occupied slot immutable'));
+results.push(check((await call('acknowledge',{commandId:'original'})).error==='unresolved_command','unknown cannot be acknowledged'));
+results.push(check(await call('pending',{}, {tenantId:base.tenantId+'-other'})===null,'tenant isolation'));
+results.push(check(await call('pending',{}, {userId:'other-user'})===null,'user isolation'));
+const responses=await Promise.all([call('complete',{commandJson:encoded,responseJson:'{"success":true,"id":"first"}'}),call('complete',{commandJson:encoded,responseJson:'{"success":true,"id":"second"}'})]);
+results.push(check(responses[0].response.id===responses[1].response.id,'concurrent completions retain first response'));
+await call('acknowledge',{commandId:'original'});
+const race=await Promise.all(Array.from({length:40},(_,i)=>call('prepare',{commandJson:encoded},{slot:'test.slot'+i})));
+results.push(check(race.filter(v=>v.error==='slot_limit').length===8,'atomic 32-slot quota across concurrent transactions'));
+for(let i=0;i<40;i++){const scope={slot:'test.slot'+i};const row=await call('pending',{},scope);if(row){await call('complete',{commandJson:encoded,responseJson:'{"success":true}'},scope);await call('acknowledge',{commandId:'original'},scope);}}
+results.push(check(await call('pending')===null,'acknowledged terminal command removed'));
+document.querySelector('#result').textContent='PASS '+results.length+'\n'+results.join('\n');
+}catch(e){document.querySelector('#result').textContent='FAIL '+e.message+'\n'+results.join('\n');}};
+</script>

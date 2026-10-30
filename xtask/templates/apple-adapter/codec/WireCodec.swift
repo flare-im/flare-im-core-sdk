@@ -1,9 +1,5 @@
 import Foundation
 
-func buildPluginMessageRequestToMap(_ request: BuildPluginMessageRequest) -> [String: AnySendable] {
-    ["conversationId": wrapSendable(request.conversationId), "payload": wrapSendable(request.payload)]
-}
-
 func pluginUiEvaluationRequestToMap(_ request: PluginUiEvaluationRequest) -> [String: AnySendable] {
     ["payload": wrapSendable(request.payload)]
 }
@@ -93,7 +89,7 @@ private let SDK_EVENT_KIND_WIRE_ORDER: [SdkEventKind] = [.lifecycle, .connection
 private let LIFECYCLE_EVENT_NAME_WIRE_ORDER: [LifecycleEventName] = [.initializing, .initialized, .initFailed, .loginSucceeded, .loginFailed, .loggedOut, .disposed]
 private let SDK_CONNECTION_STATE_WIRE_ORDER: [SdkConnectionState] = [.disconnected, .connecting, .connected, .ready, .reconnecting]
 private let CONNECTION_EVENT_NAME_WIRE_ORDER: [ConnectionEventName] = [.connecting, .connected, .ready, .disconnected, .reconnecting, .reconnectFailed, .stateChanged, .syncStateChanged, .serverError, .kickedOff, .tokenExpired]
-private let MESSAGE_EVENT_NAME_WIRE_ORDER: [MessageEventName] = [.received, .receivedBatch, .sendAck, .sendFailed, .recalled, .typing, .typingAggregate, .edited, .reactionChanged, .deleted, .readReceipt, .burnScheduled, .burned, .hardDeleted, .pinned, .unpinned, .marked, .unmarked, .retentionScheduled, .retentionExpired, .retentionPurged, .presenceChanged, .custom, .pluginStateChanged]
+private let MESSAGE_EVENT_NAME_WIRE_ORDER: [MessageEventName] = [.received, .receivedBatch, .sendAck, .sendFailed, .recalled, .typing, .typingAggregate, .edited, .reactionChanged, .deleted, .readReceipt, .burnScheduled, .burned, .hardDeleted, .pinned, .unpinned, .marked, .unmarked, .retentionScheduled, .retentionExpired, .retentionPurged, .presenceChanged, .custom, .pluginStateChanged, .readSummariesChanged]
 private let CONVERSATION_EVENT_NAME_WIRE_ORDER: [ConversationEventName] = [.synced, .created, .updated, .unreadCountChanged, .deleted]
 private let SYNC_EVENT_NAME_WIRE_ORDER: [SyncEventName] = [.stateChanged, .started, .finished, .failed, .progress, .taskCompleted, .resyncNeeded]
 private let PROGRESS_EVENT_NAME_WIRE_ORDER: [ProgressEventName] = [.syncProgress, .uploadProgress, .downloadProgress]

@@ -11,61 +11,11 @@ use crate::application::{
 };
 use crate::content::BuiltContent;
 use crate::domain::conversation::id as conversation_id;
-use crate::domain::{ConversationIdentityService, ConversationStore};
+use crate::domain::{ConversationIdentityService, ConversationStore, UserReader};
 use crate::kernel::CurrentUserIdStore;
 use crate::model::message::IMMessage;
 use crate::shared::error::{ErrorCode, FlareError, Result};
 use flare_proto::common::ImageInfo;
-
-#[cfg(test)]
-mod plugin_message_tests {
-    use super::*;
-    #[tokio::test]
-    async fn generic_plugin_card_preserves_inert_envelope_and_rejects_invalid_input() {
-        let api = MessageBuildApi::new(
-            Arc::new(tokio::sync::RwLock::new("sender".into())),
-            Arc::new(crate::infrastructure::persistence::memory_im::MemoryConversationStore::new()),
-        );
-        let envelope = serde_json::json!({"pluginId":"example.poll","contributionId":"example.poll.card","schemaVersion":1,"summary":"Poll","payload":{"pollId":"one"}});
-        let message = api
-            .create_plugin_message("group-1", envelope.clone())
-            .await
-            .unwrap();
-        assert_eq!(
-            message.message_type,
-            crate::model::MessageType::AppCard as i32
-        );
-        let roundtrip: IMMessage =
-            serde_json::from_value(serde_json::to_value(&message).unwrap()).unwrap();
-        assert!(roundtrip.encoded_content.is_empty());
-        let Some(flare_proto::common::message_content::Content::AppCard(card)) =
-            roundtrip.to_proto().content.unwrap().content
-        else {
-            panic!("JSON binding must retain APP_CARD wire content");
-        };
-        assert_eq!(card.app_id, "example.poll");
-        assert_eq!(card.card_type, "flare.plugin.message.v1");
-        assert_eq!(card.payload_schema, "flare.plugin.message/v1");
-        assert_eq!(
-            serde_json::from_slice::<serde_json::Value>(&card.payload).unwrap(),
-            envelope
-        );
-        let crate::content::message_elem::Elem::Custom(content) = message.content.unwrap() else {
-            panic!("generic custom view required");
-        };
-        assert_eq!(content.r#type, "flare.plugin.message.v1");
-        assert_eq!(
-            serde_json::from_slice::<serde_json::Value>(&content.payload).unwrap(),
-            envelope
-        );
-        let mut invalid = envelope.clone();
-        invalid["schemaVersion"] = 99.into();
-        assert!(api.create_plugin_message("group-1", invalid).await.is_err());
-        let mut invalid = envelope;
-        invalid["payload"] = serde_json::json!({"large":"x".repeat(65536)});
-        assert!(api.create_plugin_message("group-1", invalid).await.is_err());
-    }
-}
 
 #[derive(Clone, Debug)]
 pub struct CreateLocationRequest {
@@ -134,17 +84,47 @@ fn needs_member_roster(conv: &crate::model::Conversation) -> bool {
 pub struct MessageBuildApi {
     current_user_id: CurrentUserIdStore,
     conversations: Arc<dyn ConversationStore>,
+    /// 身份缓存：转发记录给源消息的发送者补名字。
+    profiles: Arc<dyn UserReader>,
 }
 
 impl MessageBuildApi {
     pub fn new(
         current_user_id: CurrentUserIdStore,
         conversations: Arc<dyn ConversationStore>,
+        profiles: Arc<dyn UserReader>,
     ) -> Self {
         Self {
             current_user_id,
             conversations,
+            profiles,
         }
+    }
+
+    /// 宿主交来的源消息缺发送者名时（没经过时间线读取的身份填充，或读取时缓存里还没有这个人），按 sender_id
+    /// 查身份缓存补上，与时间线展示同一个名字来源。
+    async fn name_forward_sources(&self, sources: &mut [IMMessage]) -> Result<()> {
+        let mut missing: Vec<String> = sources
+            .iter()
+            .filter(|source| MessageBuilderService::forward_sender_name(source).is_none())
+            .map(|source| source.sender_id.trim().to_owned())
+            .filter(|id| !id.is_empty())
+            .collect();
+        if missing.is_empty() {
+            return Ok(());
+        }
+        missing.sort();
+        missing.dedup();
+        let profiles = self.profiles.get_many(&missing).await?;
+        for source in sources.iter_mut() {
+            if MessageBuilderService::forward_sender_name(source).is_some() {
+                continue;
+            }
+            if let Some(profile) = profiles.get(source.sender_id.trim()) {
+                source.sender_display_name = profile.display_name().to_owned();
+            }
+        }
+        Ok(())
     }
 
     async fn current_sender_id(&self) -> Result<String> {
@@ -350,9 +330,10 @@ impl MessageBuildApi {
         conversation_id: &str,
         merge: bool,
         title: &str,
-        sources: Vec<IMMessage>,
+        mut sources: Vec<IMMessage>,
     ) -> Result<IMMessage> {
         let sender_id = self.current_sender_id().await?;
+        self.name_forward_sources(&mut sources).await?;
         let msg = MessageBuilderService::build_forward(
             conversation_id,
             &sender_id,
@@ -361,40 +342,6 @@ impl MessageBuildApi {
             &sources,
         )?;
         self.apply_conversation_routing(conversation_id, msg).await
-    }
-
-    /// Generic plugin content uses the existing APP_CARD transport and reliable
-    /// message pipeline. Historical actions never come from this payload.
-    pub async fn create_plugin_message(
-        &self,
-        conversation_id: &str,
-        payload: serde_json::Value,
-    ) -> Result<IMMessage> {
-        let message: flare_plugin_protocol::ui::PluginMessage = serde_json::from_value(payload)
-            .map_err(|_| {
-                FlareError::localized(ErrorCode::InvalidParameter, "sdk.plugin.invalid_message")
-            })?;
-        message.validate().map_err(|_| {
-            FlareError::localized(ErrorCode::InvalidParameter, "sdk.plugin.invalid_message")
-        })?;
-        let payload = serde_json::to_vec(&message)
-            .map_err(|_| FlareError::system("plugin message encoding"))?;
-        let content = BuiltContent::new(
-            flare_proto::common::MessageType::AppCard,
-            flare_proto::common::MessageContent {
-                content: Some(flare_proto::common::message_content::Content::AppCard(
-                    flare_proto::common::AppCardContent {
-                        app_id: message.plugin_id,
-                        card_type: "flare.plugin.message.v1".into(),
-                        summary: message.summary,
-                        payload_schema: "flare.plugin.message/v1".into(),
-                        payload,
-                        ..Default::default()
-                    },
-                )),
-            },
-        );
-        self.create_with_content(conversation_id, content).await
     }
 
     pub async fn create_with_content(
@@ -765,5 +712,74 @@ mod needs_member_roster_tests {
         let mut conv = Conversation::from_conversation_id("2ATESTGROUPCID0002".to_string());
         conv.max_seq = 99;
         assert!(needs_member_roster(&conv));
+    }
+}
+
+#[cfg(test)]
+mod forward_sender_tests {
+    use std::sync::Arc;
+
+    use tokio::sync::RwLock;
+
+    use super::MessageBuildApi;
+    use crate::application::MessageBuilderService;
+    use crate::content::message_elem::Elem;
+    use crate::domain::{UserProfile, UserWriter};
+    use crate::infrastructure::persistence::MemoryUserProfileStore;
+    use crate::infrastructure::persistence::memory_im::MemoryConversationStore;
+
+    /// A source the host hands over without a name is named from the identity cache by its sender id, as the
+    /// timeline names it; a cached profile that only has the id as its name, or none at all, names no one.
+    #[tokio::test]
+    async fn a_forward_names_unnamed_sources_from_the_identity_cache() {
+        let profiles = Arc::new(MemoryUserProfileStore::new());
+        profiles
+            .save_batch(&[
+                UserProfile::new("u-carol").with_nickname("Lab Carol"),
+                UserProfile::new("u-dave"),
+            ])
+            .await
+            .expect("profiles");
+        let api = MessageBuildApi::new(
+            Arc::new(RwLock::new("u-alice".to_string())),
+            Arc::new(MemoryConversationStore::new()),
+            profiles,
+        );
+        let source = |sender: &str, display: &str| {
+            let mut message = MessageBuilderService::build_text(
+                "2ATESTGROUPCID0001",
+                sender,
+                "hi",
+                None,
+                false,
+                &[],
+            )
+            .expect("source");
+            message.sender_display_name = display.into();
+            message
+        };
+        let record = api
+            .create_forward(
+                "2ATESTGROUPCID0001",
+                true,
+                "",
+                vec![
+                    source("u-carol", ""),
+                    source("u-dave", ""),
+                    source("u-erin", ""),
+                    source("u-bob", "Lab Bob"),
+                ],
+            )
+            .await
+            .expect("forward");
+        let Some(Elem::Forward(forward)) = record.content else {
+            panic!("a forward elem");
+        };
+        let names: Vec<Option<&str>> = forward
+            .items
+            .iter()
+            .map(|item| item.source_sender_name.as_deref())
+            .collect();
+        assert_eq!(names, vec![Some("Lab Carol"), None, None, Some("Lab Bob")]);
     }
 }

@@ -149,8 +149,12 @@ pub enum MessageEvent {
         version: u64,
     },
     /// 群聊里本人消息的已读摘要有了新值（核心 SDK 取回的）；打开的视图据此重读该会话，摘要随消息的
-    /// `receipt.readSummary` 增量带出。
-    ReadSummariesChanged { conversation_id: String },
+    /// `receipt.readSummary` 增量带出。`message_ids` 是摘要变了的消息（服务端 ID）；宿主自己读消息列表时
+    /// 据此重读这几条。
+    ReadSummariesChanged {
+        conversation_id: String,
+        message_ids: Vec<String>,
+    },
 }
 
 /// 会话域事件：新会话、会话信息变更、未读数变化、会话删除、列表同步完成

@@ -1285,7 +1285,6 @@ mod tests {
                     str_field(method, "name")
                 );
             }
-            assert!(target.body.contains("buildPluginMessageRequestTo"));
         }
     }
 }

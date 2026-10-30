@@ -90,7 +90,7 @@ impl CapabilityApi {
                             )
                         })
                 };
-                let first = match self.page_data(&request, &prepared, input, &viewer).await {
+                let mut first = match self.page_data(&request, &prepared, input, &viewer).await {
                     Ok(data) => data,
                     Err(error) if request.degrades() => match ui_page::inert_reason(&error) {
                         Some(reason) => return inert(reason),
@@ -98,6 +98,12 @@ impl CapabilityApi {
                     },
                     Err(error) => return Err(error),
                 };
+                if let Some(object) = first.as_object_mut() {
+                    object.insert(
+                        "_session".into(),
+                        serde_json::json!({"tenantId":self.default_tenant_id,"userId":viewer}),
+                    );
+                }
                 let mut view = resolve(&first)?;
                 let mut data = first;
                 match previous {
@@ -139,11 +145,15 @@ impl CapabilityApi {
             return Ok(input);
         };
         let viewer = (!viewer.is_empty()).then_some(viewer);
+        let conversation = input
+            .get("conversationId")
+            .and_then(Value::as_str)
+            .map(str::to_owned);
         match self
             .dispatch_with(
                 &source.operation,
                 input,
-                None,
+                conversation.as_deref(),
                 Some(&self.default_tenant_id),
                 viewer,
                 None,
@@ -151,7 +161,19 @@ impl CapabilityApi {
             .await
             .and_then(CapabilityDispatchResult::fail_if_unsuccessful)
         {
-            Ok(response) => Ok(response.data),
+            Ok(response) => {
+                let mut data = response.data;
+                if let Some(slot) = &source.command_slot {
+                    let journal = self
+                        .page_journal(&request.plugin_id, slot, viewer.unwrap_or_default())
+                        .await?;
+                    let object = data
+                        .as_object_mut()
+                        .ok_or_else(|| FlareError::system("page source must be an object"))?;
+                    object.insert("journal".into(), journal);
+                }
+                Ok(data)
+            }
             Err(error) => {
                 self.after_plugin_error(&error, &request.plugin_id).await;
                 Err(error)
@@ -172,6 +194,40 @@ impl CapabilityApi {
         self.session_guard
             .run_with_user(|user_id| async move {
                 let (_, catalog) = self.fetch_plugin_ui_catalog().await?;
+                let context = UiRenderContext {
+                    tenant: &self.default_tenant_id,
+                    platform: request.platform,
+                    kind: UiContributionKind::Page,
+                    locale: "",
+                    viewer: user_id.as_deref().unwrap_or_default(),
+                    now_ms: ui_page::now_ms(),
+                };
+                let (_, declaration) = catalog
+                    .page(&request.page.plugin_id, &request.page.page, &context)
+                    .map_err(|_| {
+                        FlareError::localized(
+                            ErrorCode::OperationNotSupported,
+                            "sdk.plugin.ui_action_unavailable",
+                        )
+                    })?;
+                let action = declaration
+                    .schema
+                    .actions
+                    .iter()
+                    .find(|a| a.id == request.action_id)
+                    .cloned()
+                    .ok_or_else(|| FlareError::system("page action missing"))?;
+                if action.command.is_some()
+                    && request.data.as_ref().is_none_or(|d| {
+                        d["_session"]["tenantId"] != self.default_tenant_id
+                            || d["_session"]["userId"].as_str() != user_id.as_deref()
+                    })
+                {
+                    return Err(FlareError::localized(
+                        ErrorCode::NotConnected,
+                        "sdk.plugin_command.session_changed",
+                    ));
+                }
                 match ui_page::prepare_page_action(&self.default_tenant_id, &catalog, &request)? {
                     PreparedAction::FormErrors(errors) => {
                         Ok(serde_json::json!({"kind":"formErrors","errors":errors}))
@@ -181,24 +237,60 @@ impl CapabilityApi {
                         payload,
                         ..
                     } => {
-                        let response = match self
-                            .dispatch_with(
-                                &operation,
+                        let conversation = request.conversation_id.as_deref().or_else(|| {
+                            request
+                                .data
+                                .as_ref()
+                                .and_then(|v| v["conversationId"].as_str())
+                        });
+                        let (response, continuation) = if let Some(policy) = &action.command {
+                            self.page_command(crate::client::api::page_command::PageCommandCall {
+                                plugin: &request.page.plugin_id,
+                                viewer: user_id.as_deref().unwrap_or_default(),
+                                operation: &operation,
                                 payload,
-                                request.conversation_id.as_deref(),
-                                Some(&self.default_tenant_id),
-                                user_id.as_deref(),
-                                None,
-                            )
-                            .await
-                        {
-                            Ok(response) => response,
-                            Err(error) => {
-                                self.after_plugin_error(&error, &request.page.plugin_id)
-                                    .await;
-                                return Err(error);
-                            }
+                                conversation,
+                                policy,
+                                continuation: action.continuation.clone(),
+                            })
+                            .await?
+                        } else {
+                            let response = match self
+                                .dispatch_with(
+                                    &operation,
+                                    payload,
+                                    conversation,
+                                    Some(&self.default_tenant_id),
+                                    user_id.as_deref(),
+                                    None,
+                                )
+                                .await
+                            {
+                                Ok(response) => response,
+                                Err(error) => {
+                                    self.after_plugin_error(&error, &request.page.plugin_id)
+                                        .await;
+                                    return Err(error);
+                                }
+                            };
+                            (response, action.continuation.clone())
                         };
+                        if response.success
+                            && let Some(next) = continuation
+                                .and_then(|t| t.resolve(&response.data).ok())
+                                .flatten()
+                        {
+                            let target_plugin = next["target"]["pluginId"]
+                                .as_str()
+                                .unwrap_or(&request.page.plugin_id);
+                            let target_page = next["target"]["page"].as_str().unwrap_or_default();
+                            if catalog.page(target_plugin, target_page, &context).is_ok()
+                                && (target_plugin != request.page.plugin_id
+                                    || target_page != request.page.page)
+                            {
+                                return Ok(next);
+                            }
+                        }
                         Ok(serde_json::json!({"kind":"operation","response":response}))
                     }
                     PreparedAction::Ready {

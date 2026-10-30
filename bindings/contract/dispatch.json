@@ -992,21 +992,6 @@
             ]
           ],
           "result": "json"
-        },
-        {
-          "op": "create_plugin_message",
-          "method": "create_plugin_message",
-          "args": [
-            [
-              "conversation_id",
-              "conversation_id"
-            ],
-            [
-              "payload",
-              "json_null_default"
-            ]
-          ],
-          "result": "json"
         }
       ]
     },

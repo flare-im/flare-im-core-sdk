@@ -311,7 +311,7 @@ pub(crate) fn account_entries(
                 .filter_map(move |c| {
                     let page = match c.schema.actions.as_slice() {
                         [action] => match &action.target {
-                            UiActionTarget::Page { page } => page,
+                            UiActionTarget::Page { page, .. } => page,
                             _ => return None,
                         },
                         _ => return None,
@@ -631,11 +631,21 @@ pub(crate) fn prepare_action(
         .find(|a| a.id == request.action_id)
         .ok_or_else(invalid)?;
     let entity = contribution.entity_of(&message.payload);
-    let data = plugin.document_data(
+    let mut data = plugin.document_data(
         contribution,
         &message.payload,
         CardState::of(stored, entity.as_deref()).layers(),
     );
+    // Composer documents use tenant configuration, never arbitrary envelope
+    // payload. Their navigation may also bind the conversation the host is in.
+    // Take that single context field from the request, so a page workflow can
+    // open without allowing the envelope to replace configuration or identity.
+    if contribution.kind == UiContributionKind::ComposerAction
+        && let Some(conversation) = request.conversation_id.as_deref()
+        && let Some(object) = data.as_object_mut()
+    {
+        object.insert("conversationId".into(), Value::String(conversation.into()));
+    }
     let mut extra = Map::new();
     if !action.form.is_empty() || request.form_values.is_some() {
         let values = request.form_values.as_ref().unwrap_or(&Value::Null);

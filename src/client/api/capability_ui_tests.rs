@@ -25,6 +25,9 @@ struct Fixture {
     business_error: Arc<SyncMutex<Option<String>>>,
     #[cfg_attr(not(feature = "storage-sqlite"), allow(dead_code))]
     observation: Arc<SyncMutex<Option<Value>>>,
+    /// The next call is refused by the plugin: Core answers HTTP 422 with this code.
+    #[cfg_attr(not(feature = "storage-sqlite"), allow(dead_code))]
+    rejection: Arc<SyncMutex<Option<String>>>,
     vote_result: Arc<SyncMutex<Value>>,
     server: tokio::task::JoinHandle<()>,
 }
@@ -65,6 +68,8 @@ impl Fixture {
         let next_error = business_error.clone();
         let observation = Arc::new(SyncMutex::new(None::<Value>));
         let observed = observation.clone();
+        let rejection = Arc::new(SyncMutex::new(None::<String>));
+        let refused = rejection.clone();
         let vote_result = Arc::new(SyncMutex::new(json!({"status":"recorded"})));
         let voted = vote_result.clone();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -105,6 +110,21 @@ impl Fixture {
                 if body["capabilityId"] != flare_plugin_protocol::ui::UI_CATALOG_OPERATION
                     && drop_response.swap(false, Ordering::SeqCst)
                 {
+                    continue;
+                }
+                let refusal = refused.lock().unwrap().take();
+                if let Some(code) = refusal {
+                    let raw = serde_json::to_vec(
+                        &json!({"code": 42200, "reason": code, "message": "refused by the plugin"}),
+                    )
+                    .unwrap();
+                    let mut socket = reader.into_inner();
+                    let header = format!(
+                        "HTTP/1.1 422 Unprocessable Entity\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        raw.len()
+                    );
+                    let _ = socket.write_all(header.as_bytes()).await;
+                    let _ = socket.write_all(&raw).await;
                     continue;
                 }
                 let data = if body["capabilityId"]
@@ -165,11 +185,74 @@ impl Fixture {
             drop_next,
             business_error,
             observation,
+            rejection,
             vote_result,
             server,
         }
     }
 }
+#[cfg(feature = "storage-sqlite")]
+#[tokio::test]
+async fn page_acknowledging_a_known_refusal_succeeds_without_repeating_the_command() {
+    use crate::client::api::page_command::PageCommandCall;
+    use crate::infrastructure::persistence::sqlite::{SqlitePluginCommandRepo, init_schema};
+    use flare_plugin_protocol::ui::UiPageCommand;
+    let mut f = Fixture::new().await;
+    let pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .unwrap();
+    init_schema(&pool).await.unwrap();
+    f.api = f
+        .api
+        .clone()
+        .with_plugin_command_store(Some(Arc::new(SqlitePluginCommandRepo::new(pool))));
+    f.api.prepare_plugin_command(json!({"slot":"example.poll.workflow","command":{"commandId":"stable","capabilityId":"example.poll.vote","conversationId":"conversation-1","payload":{"pollId":"poll-1"},"terminalErrorCodes":["INSUFFICIENT_FUNDS"]}})).await.unwrap();
+    let ack: UiPageCommand =
+        serde_json::from_value(json!({"slot":"example.poll.workflow","mode":"acknowledge"}))
+            .unwrap();
+    let call = || PageCommandCall {
+        plugin: "example.poll",
+        viewer: "u1",
+        operation: "example.poll.wallet",
+        payload: json!({}),
+        conversation: None,
+        policy: &ack,
+        continuation: None,
+    };
+    assert!(
+        f.api.page_command(call()).await.is_err(),
+        "unknown outcomes must remain pending"
+    );
+    *f.business_error.lock().unwrap() = Some("INSUFFICIENT_FUNDS".into());
+    f.api
+        .submit_plugin_command(json!({"slot":"example.poll.workflow","commandId":"stable"}))
+        .await
+        .unwrap();
+    let calls_before = f.calls.lock().unwrap().len();
+    let (result, continuation) = f.api.page_command(call()).await.unwrap();
+    assert!(
+        result.success,
+        "acknowledgement succeeded even though the money command was refused"
+    );
+    assert_eq!(result.data["originalResponse"]["success"], false);
+    assert_eq!(result.data["commandId"], "stable");
+    assert!(continuation.is_none());
+    assert!(
+        f.api
+            .pending_plugin_command(json!({"slot":"example.poll.workflow"}))
+            .await
+            .unwrap()["record"]
+            .is_null()
+    );
+    assert_eq!(
+        f.calls.lock().unwrap().len(),
+        calls_before,
+        "acknowledgement performs no financial dispatch"
+    );
+}
+
 #[cfg(feature = "storage-sqlite")]
 #[tokio::test]
 async fn plugin_command_public_api_reconciles_lost_response_without_replacing_intent() {
@@ -184,6 +267,7 @@ async fn plugin_command_public_api_reconciles_lost_response_without_replacing_in
     init_schema(&pool).await.unwrap();
     let store = Arc::new(SqlitePluginCommandRepo::new(pool));
     f.api = f.api.clone().with_plugin_command_store(Some(store.clone()));
+    assert!(f.api.prepare_plugin_command(json!({"slot":"other","expectedTenantId":"wrong","expectedUserId":"u1","command":{"commandId":"one","capabilityId":"example.create","payload":{}}})).await.is_err());
     assert!(f.api.prepare_plugin_command(json!({"slot":"other","expectedUserId":"other-user","command":{"commandId":"one","capabilityId":"example.create","conversationId":null,"payload":{}}})).await.is_err());
     assert!(
         f.api
@@ -285,6 +369,7 @@ async fn plugin_command_keeps_captured_identity_across_a_storage_await() {
             *self.0.write().await = "u2".into();
             Ok(Some(PluginCommandRecord {
                 command: PluginCommand {
+                    continuation: None,
                     reconciliation_capability_id: None,
                     command_id: "stable".into(),
                     capability_id: "example.poll.vote".into(),
@@ -349,6 +434,50 @@ fn message() -> Value {
 }
 fn invoke(platform: &str) -> Value {
     json!({"message":message(),"platform":platform,"actionId":"vote","userGesture":true,"conversationId":"conversation-1","nativeAllowlist":[]})
+}
+#[tokio::test]
+async fn composer_navigation_binds_host_conversation_without_trusting_envelope_config() {
+    use crate::extension::capability::ui;
+    let f = Fixture::new().await;
+    {
+        let mut catalog = f.catalog.lock().unwrap();
+        let plugin = &mut catalog.plugins[0];
+        plugin.configuration.insert("mode".into(), json!("sandbox"));
+        plugin.extensions.contributions.push(serde_json::from_value(json!({
+            "id":"example.poll.compose", "kind":"composer-action", "schemaVersion":1,
+            "requiredPermissions":[], "schema":{"title":"Compose", "actions":[{
+                "id":"open", "label":"Open", "target":{"kind":"operation","operation":"example.poll.vote"},
+                "input":{"conversationId":"/conversationId", "mode":"/config/mode"}
+            }]}
+        })).unwrap());
+    }
+    for platform in ["web", "tauri", "android", "ios", "flutter"] {
+        let request = json!({"message":{"pluginId":"example.poll","contributionId":"example.poll.compose",
+            "schemaVersion":1,"summary":"Compose","payload":{"conversationId":"forged","config":{"mode":"production"}}},
+            "platform":platform,"actionId":"open","userGesture":true,"conversationId":"conversation-1"});
+        let parsed = serde_json::from_value(request.clone()).unwrap();
+        let catalog = f.catalog.lock().unwrap();
+        let ui::PreparedAction::Ready { payload, .. } =
+            ui::prepare_action("201", &catalog, &parsed, None).unwrap()
+        else {
+            panic!("composer action should be ready")
+        };
+        assert_eq!(
+            payload,
+            json!({"conversationId":"conversation-1","mode":"sandbox"})
+        );
+        let mut missing = request;
+        missing.as_object_mut().unwrap().remove("conversationId");
+        assert!(
+            ui::prepare_action(
+                "201",
+                &catalog,
+                &serde_json::from_value(missing).unwrap(),
+                None
+            )
+            .is_err()
+        );
+    }
 }
 #[tokio::test]
 async fn plugin_ui_native_orchestration_is_identical_and_conversation_bound_on_six_platforms() {
@@ -488,6 +617,77 @@ async fn plugin_command_transient_business_failure_remains_reconcilable() {
     f.api.acknowledge_plugin_command(submit).await.unwrap();
     assert!(f.api.pending_plugin_command(slot).await.unwrap()["record"].is_null());
     assert_eq!(f.calls.lock().unwrap().len(), 2);
+}
+
+#[cfg(feature = "storage-sqlite")]
+#[tokio::test]
+async fn plugin_command_refused_with_a_terminal_code_ends_and_any_other_refusal_stays() {
+    use crate::infrastructure::persistence::sqlite::{SqlitePluginCommandRepo, init_schema};
+    let mut f = Fixture::new().await;
+    let pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .unwrap();
+    init_schema(&pool).await.unwrap();
+    f.api = f
+        .api
+        .clone()
+        .with_plugin_command_store(Some(Arc::new(SqlitePluginCommandRepo::new(pool))));
+    let slot = json!({"slot":"example.create"});
+    let submit = json!({"slot":"example.create","commandId":"stable"});
+    // A whole rejection table, as the red packet contract declares for create.
+    let terminal = [
+        "INSUFFICIENT_FUNDS",
+        "INVALID_REQUEST",
+        "ACCESS_DENIED",
+        "NOT_CONVERSATION_MEMBER",
+        "NOT_DESIGNATED_RECIPIENT",
+        "HOST_RESOURCE_UNAVAILABLE",
+        "INCOMPATIBLE_DATA_SCHEMA",
+        "DAILY_LIMIT_EXCEEDED",
+        "RATE_LIMITED",
+    ];
+    f.api.prepare_plugin_command(json!({"slot":"example.create","command":{"commandId":"stable","capabilityId":"example.poll.vote","conversationId":"conversation-1","payload":{"pollId":"poll-1"},"terminalErrorCodes":terminal}})).await.unwrap();
+
+    // A refusal the command does not declare terminal may sit on a committed command:
+    // the plugin's answer comes back as it is and the intent stays.
+    *f.rejection.lock().unwrap() = Some("COMMAND_CONFLICT".into());
+    let error = f
+        .api
+        .submit_plugin_command(submit.clone())
+        .await
+        .unwrap_err();
+    match &error {
+        FlareError::Localized { reason, .. } => assert_eq!(reason, "sdk.plugin.rejected"),
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(
+        crate::extension::capability::plugin_errors::machine_reason(&error),
+        Some("COMMAND_CONFLICT")
+    );
+    assert!(
+        f.api.pending_plugin_command(slot.clone()).await.unwrap()["record"]["response"].is_null()
+    );
+    assert!(
+        f.api
+            .acknowledge_plugin_command(submit.clone())
+            .await
+            .is_err()
+    );
+
+    // The last declared code ends the command like a `success: false` answer would.
+    *f.rejection.lock().unwrap() = Some("RATE_LIMITED".into());
+    let result = f.api.submit_plugin_command(submit.clone()).await.unwrap();
+    assert_eq!(result["response"]["success"], false);
+    assert_eq!(result["response"]["data"]["errorCode"], "RATE_LIMITED");
+    assert_eq!(result["response"]["capabilityId"], "example.poll.vote");
+    // Settled: a further submit answers the record without calling the plugin again.
+    let again = f.api.submit_plugin_command(submit.clone()).await.unwrap();
+    assert_eq!(again["response"], result["response"]);
+    assert_eq!(f.calls.lock().unwrap().len(), 2);
+    f.api.acknowledge_plugin_command(submit).await.unwrap();
+    assert!(f.api.pending_plugin_command(slot).await.unwrap()["record"].is_null());
 }
 
 #[cfg(feature = "storage-sqlite")]

@@ -48,8 +48,9 @@ impl IMClient {
         g.connect_token.clone().filter(|t| !t.trim().is_empty())
     }
 
-    /// 将 IM 会话 token 写入共享 HTTP 上下文（Social Gateway / 媒体 / 能力 API 的 Bearer）。
-    pub async fn sync_gateway_http_context(&self, tenant_id: Option<&str>) -> Result<()> {
+    /// Refresh Core HTTP (media/presence/capabilities) with the IM bearer.
+    /// A host-owned BFF bearer has a separate purpose and must remain untouched.
+    pub async fn sync_core_http_context(&self, tenant_id: Option<&str>) -> Result<()> {
         let g = self.inner.read().await;
         if !self.inner_session_active(&g)
             || !matches!(
@@ -80,7 +81,8 @@ impl IMClient {
             )
         })?;
         drop(g);
-        http.set_gateway_context(token, tenant, user_id, None).await;
+        http.set_auth_context(token, None).await;
+        http.ensure_identity(&user_id, &tenant).await;
         Ok(())
     }
 
@@ -123,7 +125,7 @@ impl IMClient {
             let mut g = self.inner.write().await;
             g.connect_token = Some(token.clone());
         }
-        self.sync_gateway_http_context(tenant_id).await?;
+        self.sync_core_http_context(tenant_id).await?;
         self.attach_push_session().await;
         Ok(())
     }

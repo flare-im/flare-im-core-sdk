@@ -1208,7 +1208,6 @@ fn method_by_op(op: &str) -> Result<&'static str> {
         "create_announcement" => "buildAnnouncement",
         "create_custom" => "buildCustom",
         "create_placeholder" => "buildPlaceholder",
-        "create_plugin_message" => "buildPluginMessage",
         "create_with_content" => "buildWithContent",
         _ => bail!("unknown message build op: {op}"),
     })
@@ -1240,7 +1239,6 @@ fn request_by_op(op: &str) -> Result<&'static str> {
         "create_announcement" => "BuildAnnouncementMessageRequest",
         "create_custom" => "BuildCustomMessageRequest",
         "create_placeholder" => "BuildPlaceholderMessageRequest",
-        "create_plugin_message" => "BuildPluginMessageRequest",
         "create_with_content" => "BuildWithContentMessageRequest",
         _ => bail!("unknown message build op: {op}"),
     })
@@ -1270,7 +1268,6 @@ fn content_type_by_op(op: &str) -> Result<&'static str> {
         "create_task" => "task",
         "create_schedule" => "schedule",
         "create_announcement" => "announcement",
-        "create_plugin_message" => "custom",
         "create_custom" | "create_with_content" => "custom",
         "create_placeholder" => "placeholder",
         _ => bail!("unknown message build op: {op}"),
@@ -1301,7 +1298,6 @@ fn message_type_by_op(op: &str) -> Result<i64> {
         "create_task" => 81,
         "create_schedule" => 82,
         "create_announcement" => 83,
-        "create_plugin_message" => 14,
         "create_custom" | "create_with_content" => 100,
         "create_placeholder" => 111,
         _ => bail!("unknown message build op: {op}"),

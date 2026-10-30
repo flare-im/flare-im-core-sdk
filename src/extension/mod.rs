@@ -4,6 +4,7 @@
 //! boundary: register sync tasks, interceptors, capability plugins, profile
 //! providers, or notification handlers without changing the IM core API.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -274,6 +275,9 @@ pub trait ExtensionStore: Send + Sync {
     async fn save_user_profiles(&self, profiles: &[UserProfile]) -> Result<()>;
 
     async fn apply_user_profile(&self, profile: &UserProfile) -> Result<Vec<String>>;
+
+    /// The identity cache's profiles of [user_ids], by user id; a user it does not hold is left out.
+    async fn get_user_profiles(&self, user_ids: &[String]) -> Result<HashMap<String, UserProfile>>;
 }
 
 #[derive(Clone)]
@@ -429,6 +433,13 @@ impl ExtensionStore for CoreExtensionStore {
 
     async fn apply_user_profile(&self, profile: &UserProfile) -> Result<Vec<String>> {
         self.stores.apply_user_profile(profile).await
+    }
+
+    async fn get_user_profiles(&self, user_ids: &[String]) -> Result<HashMap<String, UserProfile>> {
+        self.stores
+            .user_profiles_or_memory()
+            .get_many(user_ids)
+            .await
     }
 }
 

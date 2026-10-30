@@ -73,8 +73,9 @@ impl MessageApi {
     /// `{conversationId, serverMsgId, available, summary?, userIds, nextCursor?,
     /// hasMore}` out, user ids ascending. `available: false` (no list) for a
     /// conversation that is not a group or is above the large-group threshold.
-    /// Core refuses another sender's message (`MESSAGE_READ_RECEIPT_NOT_SENDER`)
-    /// and one not in the conversation. A summary in the page refreshes the
+    /// Core answers another sender's message the same as one that is not in the
+    /// conversation, recalled or deleted (`NOT_FOUND`), so the answer does not
+    /// tell whether such a message exists. A summary in the page refreshes the
     /// message's `receipt.readSummary` in open views.
     pub async fn read_receipt_members(
         &self,

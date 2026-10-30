@@ -681,7 +681,7 @@ private func dispatchToListener(_ listener: any FlareImEventListener, event: Any
         case .received, .receivedBatch, .sendAck, .sendFailed,
              .typing, .typingAggregate, .reactionChanged, .readReceipt, .burnScheduled,
              .hardDeleted, .marked, .unmarked, .retentionScheduled,
-             .presenceChanged, .custom:
+             .presenceChanged, .custom, .readSummariesChanged:
             break
         }
         return

@@ -159,10 +159,6 @@ pub const C_DISPATCH_OPS: &[(&str, &str)] = &[
     ("message_builder.create_mini_program", "create_mini_program"),
     ("message_builder.create_notification", "create_notification"),
     ("message_builder.create_placeholder", "create_placeholder"),
-    (
-        "message_builder.create_plugin_message",
-        "create_plugin_message",
-    ),
     ("message_builder.create_quote", "create_quote"),
     ("message_builder.create_rich_doc", "create_rich_doc"),
     ("message_builder.create_schedule", "create_schedule"),
@@ -209,6 +205,7 @@ pub const EVENT_CODES: &[(&str, i32)] = &[
     ("message.presence_changed", 2019),
     ("message.custom", 2020),
     ("message.plugin_state_changed", 2022),
+    ("message.read_summaries_changed", 2023),
     ("conversation.synced", 3001),
     ("conversation.created", 3002),
     ("conversation.updated", 3003),

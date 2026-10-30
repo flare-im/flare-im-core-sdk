@@ -382,7 +382,7 @@ impl ReadSummaryService {
             conversation.in_flight = true;
             pass
         };
-        let mut changed = false;
+        let mut changed: Vec<String> = Vec::new();
         let mut outcome: std::result::Result<(), FlareError> = Ok(());
         let mut unavailable = false;
         for batch in pass.chunks(MAX_SUMMARY_BATCH) {
@@ -395,7 +395,7 @@ impl ReadSummaryService {
                 Ok(page) => {
                     let found: HashMap<String, MessageReadSummary> =
                         page.summaries.into_iter().collect();
-                    changed |= self.store(conversation_id, user, batch, &found);
+                    changed.extend(self.store(conversation_id, user, batch, &found));
                 }
                 Err(error) => {
                     outcome = Err(error);
@@ -417,7 +417,13 @@ impl ReadSummaryService {
                 _ if unavailable => {
                     conversation.unavailable_until_ms = now + UNAVAILABLE_TTL_MS;
                     conversation.wanted.clear();
-                    changed |= conversation.entries.values().any(|e| e.summary.is_some());
+                    changed.extend(
+                        conversation
+                            .entries
+                            .iter()
+                            .filter(|(_, e)| e.summary.is_some())
+                            .map(|(id, _)| id.clone()),
+                    );
                     conversation.entries.clear();
                 }
                 Ok(()) => {
@@ -443,30 +449,33 @@ impl ReadSummaryService {
                 }
             }
         }
-        if changed {
+        if !changed.is_empty() {
+            changed.sort();
+            changed.dedup();
             self.bus
                 .publish(SdkEvent::Message(MessageEvent::ReadSummariesChanged {
                     conversation_id: conversation_id.to_owned(),
+                    message_ids: changed,
                 }));
         }
         self.schedule(conversation_id, user, 0);
     }
 
-    /// 写入一批结果；返回有没有摘要变化。
+    /// 写入一批结果；返回摘要变了的消息。
     fn store(
         &self,
         conversation_id: &str,
         user: &str,
         batch: &[(String, u64)],
         found: &HashMap<String, MessageReadSummary>,
-    ) -> bool {
+    ) -> Vec<String> {
         let now = now_millis();
         let mut state = self.state();
         if state.user != user {
-            return false;
+            return Vec::new();
         }
         let conversation = state.conversation(conversation_id, now);
-        let mut changed = false;
+        let mut changed = Vec::new();
         for (id, seq) in batch {
             let summary = found
                 .get(id)
@@ -482,7 +491,9 @@ impl ReadSummaryService {
                     used_at_ms: now,
                 },
             );
-            changed |= previous.and_then(|p| p.summary) != summary;
+            if previous.and_then(|p| p.summary) != summary {
+                changed.push(id.clone());
+            }
         }
         conversation.trim();
         changed
@@ -588,15 +599,17 @@ impl ReadSummaryService {
             };
             if let Some(seq) = seq {
                 let found = HashMap::from([(request.server_msg_id.clone(), summary)]);
-                if self.store(
+                let changed = self.store(
                     &request.conversation_id,
                     &user,
                     &[(request.server_msg_id.clone(), seq)],
                     &found,
-                ) {
+                );
+                if !changed.is_empty() {
                     self.bus
                         .publish(SdkEvent::Message(MessageEvent::ReadSummariesChanged {
                             conversation_id: request.conversation_id.clone(),
+                            message_ids: changed,
                         }));
                 }
             }
@@ -730,16 +743,27 @@ mod tests {
                 .any(|id| id == "peer" || id == "single"),
             "only own group messages"
         );
-        let mut announced = false;
+        let mut announced = Vec::new();
         while let Ok(Ok(event)) =
             tokio::time::timeout(Duration::from_millis(100), changes.recv()).await
         {
-            announced |= matches!(
-                event,
-                SdkEvent::Message(MessageEvent::ReadSummariesChanged { .. })
-            );
+            if let SdkEvent::Message(MessageEvent::ReadSummariesChanged {
+                conversation_id,
+                message_ids,
+            }) = event
+            {
+                assert_eq!(conversation_id, "group-1");
+                announced.extend(message_ids);
+            }
         }
-        assert!(announced, "views are told to read again");
+        assert!(
+            announced.iter().any(|id| id == "s60"),
+            "views are told to read again, naming the messages: {announced:?}"
+        );
+        assert!(
+            !announced.iter().any(|id| id == "peer" || id == "single"),
+            "only messages whose summary moved are named"
+        );
         service.decorate(&mut messages).await;
         assert_eq!(
             messages[0].receipt_view().read_summary,

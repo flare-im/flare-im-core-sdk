@@ -34,9 +34,6 @@ fun pluginCommandRequestToMap(request: PluginCommandRequest): Map<String, Any?> 
 fun messageReadReceiptMembersRequestToMap(request: MessageReadReceiptMembersRequest): Map<String, Any?> =
     mapOf("payload" to request.payload)
 
-fun buildPluginMessageRequestToMap(request: BuildPluginMessageRequest): Map<String, Any?> =
-    mapOf("conversationId" to request.conversationId, "payload" to request.payload)
-
 @Suppress("UNCHECKED_CAST")
 
 

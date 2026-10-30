@@ -22,9 +22,17 @@
 - 扩展门面补齐两项：`prelude::TlsConfig`（`HttpClient::with_tls` 与 `SdkConfig::ca_trust_tls_config`
   的参数和返回类型）与 `spi::delay`（跨平台异步延时）。业务 SDK 只允许经 `spi` / `model` / `prelude`
   调用 Core SDK，此前要用这两项只能越过门面。
+- `spi::ExtensionStore::get_user_profiles`：按 user_id 读身份缓存。业务 SDK 补缓存时可以只补缺、不覆盖资料变更
+  投影写下的条目。`ExtensionStore` 的实现者需要补上这个方法。
 
 ### 修复
 
+- 合并转发条目的 `plain_text` 改为可读文字：这条消息不随读者语言变化的那段（正文、标题、说明，插件卡的
+  「[插件名] 卡片摘要」，不读卡片数据），与会话列表摘要同一套规则；只能用类型词表达的消息（无说明的图片、
+  文件、贴纸、投票等）为空串，展示端按条目里的完整内容在读者语言里补。此前写的是会话列表的存储预览 JSON，
+  界面原样画出 `{"k":"im.preview.custom"}`。
+- 转发记录给源消息的发送者署名：先取宿主交来的消息上的显示名（身份缓存的当前名字），再取发送时的快照名，
+  仍缺的按 sender_id 查身份缓存；账号 id 不当名字。此前只读快照名，服务端不填它，记录里一律「未知发送者」。
 - 登出时的在线状态登出不再必然失败：网关回的是 `{"success": bool}`，SDK 却按空体解码，
   每次都记「parse http json failed: error decoding response body」再退回直接断开传输。
   `success: false`（Online 没结束会话）现在按失败处理。

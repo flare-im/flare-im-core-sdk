@@ -64,6 +64,47 @@ impl PreviewStoragePayload {
             .map(|s| s.trim().is_empty())
             .unwrap_or(true)
     }
+
+    /// 这条摘要里不随读者语言变化的文字：正文、标题、说明、插件卡的「[插件名] 卡片摘要」（`d`）等，与会话
+    /// 列表展示这条摘要时照原样画出的那段一致。只能用读者语言的类型词表达的摘要（无说明的图片、文件、位置、
+    /// 名片、表情、贴纸、投票、多条转发，以及按 `ik` 翻译的系统/通知）为空串，由展示端按消息内容补上。
+    pub fn verbatim_text(&self) -> String {
+        let arg = |key: &str| {
+            self.a
+                .get(key)
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_owned)
+        };
+        let text = match self.k.as_str() {
+            keys::USER_TEXT
+            | keys::LINK
+            | keys::THREAD
+            | keys::MINI_PROGRAM
+            | keys::TASK
+            | keys::ANNOUNCEMENT
+            | keys::PLACEHOLDER => arg("t"),
+            keys::RICH_TEXT => match (arg("title"), arg("body")) {
+                (Some(title), Some(body)) => Some(format!("{title} {body}")),
+                (title, body) => title.or(body),
+            },
+            keys::IMAGE | keys::VIDEO | keys::AUDIO | keys::CUSTOM => arg("d"),
+            keys::QUOTE => self
+                .a
+                .get("inner")
+                .and_then(|inner| {
+                    serde_json::from_value::<PreviewStoragePayload>(inner.clone()).ok()
+                })
+                .map(|inner| inner.verbatim_text())
+                .filter(|text| !text.is_empty()),
+            keys::SYSTEM | keys::NOTIFICATION if !self.a.contains_key("ik") => {
+                arg("t").or_else(|| arg("body")).or_else(|| arg("title"))
+            }
+            _ => None,
+        };
+        text.unwrap_or_default()
+    }
 }
 
 /// 若已是合法 JSON 载荷则解析；否则视为用户可见原文。
@@ -233,6 +274,67 @@ mod tests {
             p.a.get("fb").and_then(|v| v.as_str()),
             Some("你们已成为好友")
         );
+    }
+
+    /// What a preview reads the same in every language, and what only a reader's own words can say.
+    #[test]
+    fn verbatim_text_keeps_the_words_and_leaves_type_words_to_the_reader() {
+        let payload = |k: &str, a: serde_json::Value| PreviewStoragePayload {
+            k: k.to_string(),
+            a: a.as_object().cloned().unwrap_or_default(),
+        };
+        assert_eq!(
+            payload(keys::USER_TEXT, json!({"t": " 今晚七点见 "})).verbatim_text(),
+            "今晚七点见"
+        );
+        assert_eq!(
+            payload(
+                keys::RICH_TEXT,
+                json!({"title": "周报", "body": "进度正常"})
+            )
+            .verbatim_text(),
+            "周报 进度正常"
+        );
+        assert_eq!(
+            payload(keys::RICH_TEXT, json!({"body": "进度正常"})).verbatim_text(),
+            "进度正常"
+        );
+        assert_eq!(
+            payload(keys::CUSTOM, json!({"d": "[红包] 恭喜发财"})).verbatim_text(),
+            "[红包] 恭喜发财"
+        );
+        assert_eq!(
+            payload(keys::IMAGE, json!({"d": "海边"})).verbatim_text(),
+            "海边"
+        );
+        let quote = payload(
+            keys::QUOTE,
+            json!({"inner": {"k": keys::USER_TEXT, "a": {"t": "好的"}}}),
+        );
+        assert_eq!(quote.verbatim_text(), "好的");
+        assert_eq!(
+            payload(keys::SYSTEM, json!({"t": "群名已修改"})).verbatim_text(),
+            "群名已修改"
+        );
+        // Only a reader's own words can say these: the record leaves them to the client.
+        for empty in [
+            payload(keys::IMAGE, json!({"m": true})),
+            payload(keys::FILE, json!({"n": "report.pdf"})),
+            payload(keys::LOCATION, json!({"label": "西站"})),
+            payload(keys::CARD, json!({"label": "林夏"})),
+            payload(keys::EMOJI, json!({"e": "hundred_points"})),
+            payload(keys::STICKER, json!({})),
+            payload(keys::VOTE, json!({})),
+            payload(keys::FORWARD_MANY, json!({"n": 3})),
+            payload(keys::CUSTOM, json!({})),
+            payload(
+                keys::SYSTEM,
+                json!({"ik": "social.group.created", "fb": "群已创建"}),
+            ),
+            payload(keys::QUOTE, json!({"inner": {"k": keys::IMAGE}})),
+        ] {
+            assert_eq!(empty.verbatim_text(), "", "{empty:?}");
+        }
     }
 
     #[test]

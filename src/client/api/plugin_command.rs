@@ -1,7 +1,8 @@
 //! Session-scoped orchestration. Storage commits before any network call. Only
 //! an explicit submit replays; the server must enforce command idempotency.
-use super::capability::CapabilityApi;
+use super::capability::{CapabilityApi, CapabilityDispatchResult};
 use crate::domain::{PluginCommand, PluginCommandScope};
+use crate::extension::capability::plugin_errors::plugin_rejection_code;
 use crate::{ErrorCode, FlareError, Result};
 use serde::Deserialize;
 use serde_json::Value;
@@ -11,6 +12,7 @@ use serde_json::Value;
 struct Slot {
     slot: String,
     expected_user_id: Option<String>,
+    expected_tenant_id: Option<String>,
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -18,6 +20,7 @@ struct Prepare {
     slot: String,
     command: PluginCommand,
     expected_user_id: Option<String>,
+    expected_tenant_id: Option<String>,
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -25,6 +28,7 @@ struct Submit {
     slot: String,
     command_id: String,
     expected_user_id: Option<String>,
+    expected_tenant_id: Option<String>,
 }
 fn parse<T: serde::de::DeserializeOwned>(v: Value) -> Result<T> {
     serde_json::from_value(v).map_err(|_| {
@@ -39,6 +43,7 @@ impl CapabilityApi {
         &self,
         slot: String,
         expected_user_id: Option<&str>,
+        expected_tenant_id: Option<&str>,
         user_id: Option<String>,
     ) -> Result<PluginCommandScope> {
         let user_id = user_id.ok_or_else(|| {
@@ -47,7 +52,9 @@ impl CapabilityApi {
                 "sdk.plugin_command.session_required",
             )
         })?;
-        if expected_user_id.is_some_and(|expected| expected != user_id) {
+        if expected_tenant_id.is_some_and(|t| t != self.default_tenant_id)
+            || expected_user_id.is_some_and(|expected| expected != user_id)
+        {
             return Err(FlareError::localized(
                 ErrorCode::NotConnected,
                 "sdk.plugin_command.session_changed",
@@ -73,8 +80,12 @@ impl CapabilityApi {
         let request: Prepare = parse(request)?;
         self.session_guard
             .run_with_user(|user_id| async {
-                let scope =
-                    self.command_scope(request.slot, request.expected_user_id.as_deref(), user_id)?;
+                let scope = self.command_scope(
+                    request.slot,
+                    request.expected_user_id.as_deref(),
+                    request.expected_tenant_id.as_deref(),
+                    user_id,
+                )?;
                 let record = self
                     .command_store()?
                     .prepare(&scope, &request.command)
@@ -88,8 +99,12 @@ impl CapabilityApi {
         let request: Slot = parse(request)?;
         self.session_guard
             .run_with_user(|user_id| async {
-                let scope =
-                    self.command_scope(request.slot, request.expected_user_id.as_deref(), user_id)?;
+                let scope = self.command_scope(
+                    request.slot,
+                    request.expected_user_id.as_deref(),
+                    request.expected_tenant_id.as_deref(),
+                    user_id,
+                )?;
                 let record = self.command_store()?.pending(&scope).await?;
                 Ok(serde_json::json!({"record":record}))
             })
@@ -106,8 +121,12 @@ impl CapabilityApi {
         let request: Submit = parse(request)?;
         self.session_guard
             .run_with_user(|user_id| async {
-                let scope =
-                    self.command_scope(request.slot, request.expected_user_id.as_deref(), user_id)?;
+                let scope = self.command_scope(
+                    request.slot,
+                    request.expected_user_id.as_deref(),
+                    request.expected_tenant_id.as_deref(),
+                    user_id,
+                )?;
                 let store = self.command_store()?;
                 let record = store
                     .pending(&scope)
@@ -201,8 +220,12 @@ impl CapabilityApi {
         let request: Submit = parse(request)?;
         self.session_guard
             .run_with_user(|user_id| async {
-                let scope =
-                    self.command_scope(request.slot, request.expected_user_id.as_deref(), user_id)?;
+                let scope = self.command_scope(
+                    request.slot,
+                    request.expected_user_id.as_deref(),
+                    request.expected_tenant_id.as_deref(),
+                    user_id,
+                )?;
                 let store = self.command_store()?;
                 let record = store
                     .pending(&scope)
@@ -219,7 +242,7 @@ impl CapabilityApi {
                         .map_err(|_| FlareError::system("plugin command encoding"));
                 }
                 let c = &record.command;
-                let response = self
+                let response = match self
                     .dispatch(
                         &c.capability_id,
                         c.payload.clone(),
@@ -227,7 +250,28 @@ impl CapabilityApi {
                         Some(&scope.tenant_id),
                         Some(&scope.user_id),
                     )
-                    .await?;
+                    .await
+                {
+                    Ok(response) => response,
+                    // Core answers a plugin's own refusal with HTTP 422 and the plugin's
+                    // code. A code the command declares terminal committed nothing: it is
+                    // recorded as that rejection, as an answer with `success: false` would
+                    // be. Any other refusal comes back as it is (`sdk.plugin.rejected` with
+                    // the code in `machineReason`) and the intent stays.
+                    Err(error) => match plugin_rejection_code(&error) {
+                        Some(code) if c.terminal_error_codes.iter().any(|known| known == code) => {
+                            CapabilityDispatchResult {
+                                request_id: String::new(),
+                                success: false,
+                                plugin_id: String::new(),
+                                capability_id: c.capability_id.clone(),
+                                data: serde_json::json!({ "errorCode": code }),
+                                error: None,
+                            }
+                        }
+                        _ => return Err(error),
+                    },
+                };
                 let response = serde_json::to_value(response)
                     .map_err(|_| FlareError::system("plugin response encoding"))?;
                 if !c.accepts_response(&response) {
@@ -246,8 +290,12 @@ impl CapabilityApi {
         let request: Submit = parse(request)?;
         self.session_guard
             .run_with_user(|user_id| async {
-                let scope =
-                    self.command_scope(request.slot, request.expected_user_id.as_deref(), user_id)?;
+                let scope = self.command_scope(
+                    request.slot,
+                    request.expected_user_id.as_deref(),
+                    request.expected_tenant_id.as_deref(),
+                    user_id,
+                )?;
                 self.command_store()?
                     .acknowledge(&scope, &request.command_id)
                     .await?;

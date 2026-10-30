@@ -1,7 +1,7 @@
 //! 消息构建服务：封装 `ContentBuilder + MessageBuilder` 组合，产出 `IMMessage`。
 
 use crate::content::MessageBuilder;
-use crate::content::message_elem::{elem_plain_summary, elem_to_message_content};
+use crate::content::message_elem::{elem_plain_text, elem_to_message_content};
 use crate::content::url_safety::is_safe_remote_url;
 use crate::content::{BuiltContent, ContentBuilder, DEFAULT_STICKER_DISPLAY_SIDE};
 use crate::model::message::IMMessage;
@@ -216,6 +216,20 @@ impl MessageBuilderService {
             .content(content)
             .build()?;
         Ok(IMMessage::new(message))
+    }
+
+    /// 转发记录里源消息的发送者名：读到这条消息时的显示名（身份缓存的当前名字），否则发送时的快照名；账号 id
+    /// 不是名字（身份缓存缺名时会以 id 充当显示名），两者都没有就不写，由展示端写「未知发送者」。
+    pub fn forward_sender_name(source: &IMMessage) -> Option<String> {
+        let sender_id = source.sender_id.trim();
+        [
+            source.sender_display_name.as_str(),
+            source.sender_name.as_str(),
+        ]
+        .into_iter()
+        .map(str::trim)
+        .find(|name| !name.is_empty() && *name != sender_id)
+        .map(str::to_owned)
     }
 
     /// `merge == false` 时必须恰好一条源消息（单条转发，`ForwardMode::Single`）。
@@ -737,7 +751,7 @@ fn forward_item_from_source(source: &IMMessage) -> Result<ForwardItem> {
         )
     })?;
     let inner_mc = elem_to_message_content(elem);
-    let plain = elem_plain_summary(elem);
+    let plain = elem_plain_text(elem);
     let stable_id = {
         let sid = source.server_id.trim();
         if !sid.is_empty() {
@@ -750,11 +764,7 @@ fn forward_item_from_source(source: &IMMessage) -> Result<ForwardItem> {
         source_message_id: Some(stable_id),
         source_conversation_id: Some(source.conversation_id.clone()),
         source_sender_id: Some(source.sender_id.clone()),
-        source_sender_name: if source.sender_name.trim().is_empty() {
-            None
-        } else {
-            Some(source.sender_name.clone())
-        },
+        source_sender_name: MessageBuilderService::forward_sender_name(source),
         source_message_created_at: Some(i64::try_from(source.created_at).unwrap_or(i64::MAX)),
         message_type: source.message_type,
         plain_text: plain,
@@ -1286,6 +1296,71 @@ mod tests {
         )
         .expect_err("single forward requires exactly one source");
         assert_eq!(bad_forward.code(), Some(ErrorCode::InvalidParameter));
+    }
+
+    /// A forward record carries each message's readable words and its sender's name: the words the conversation
+    /// list shows as they are (a plugin card as `[plugin] summary`, never its data), nothing for a message only a
+    /// type word can name, and the name the forwarder sees — never the account id.
+    #[test]
+    fn a_forward_record_carries_readable_words_and_sender_names() {
+        use crate::content::message_elem::{CustomElem, PLUGIN_MESSAGE_CARD_TYPE};
+        let text = |display: &str, snapshot: &str| {
+            let mut source = MessageBuilderService::build_text(
+                "conv-src",
+                "u-bob",
+                "今晚七点见",
+                None,
+                false,
+                &[],
+            )
+            .expect("text source");
+            source.sender_display_name = display.into();
+            source.sender_name = snapshot.into();
+            source
+        };
+        let image = MessageBuilderService::build_image("conv-src", "u-bob", "image-1", None)
+            .expect("image source");
+        let mut card = text("Lab Bob", "");
+        card.content = Some(Elem::Custom(CustomElem {
+            r#type: PLUGIN_MESSAGE_CARD_TYPE.into(),
+            payload: serde_json::to_vec(&serde_json::json!({
+                "pluginId": "flare.redpacket", "contributionId": "flare.redpacket.card",
+                "schemaVersion": 1, "summary": "恭喜发财", "displayName": "红包",
+                "payload": {"packetId": "p1", "amountMinor": "8888", "amountText": "¥88.88"}
+            }))
+            .expect("envelope"),
+            description: String::new(),
+            metadata: Default::default(),
+        }));
+        let sources = [
+            text("Lab Bob", "Bob"),
+            text("u-bob", "Bob"),
+            text(" ", "u-bob"),
+            image,
+            card,
+        ];
+        let record = MessageBuilderService::build_forward("conv-1", "sender-1", true, "", &sources)
+            .expect("forward");
+        let Some(Elem::Forward(forward)) = record.content else {
+            panic!("a forward elem");
+        };
+        let items: Vec<(Option<&str>, &str)> = forward
+            .items
+            .iter()
+            .map(|item| (item.source_sender_name.as_deref(), item.plain_text.as_str()))
+            .collect();
+        assert_eq!(
+            items,
+            vec![
+                (Some("Lab Bob"), "今晚七点见"),
+                (Some("Bob"), "今晚七点见"),
+                (None, "今晚七点见"),
+                (None, ""),
+                (Some("Lab Bob"), "[红包] 恭喜发财"),
+            ]
+        );
+        assert!(forward.items.iter().all(|item| item.content.is_some()));
+        assert!(!forward.items[4].plain_text.contains("88"));
     }
 
     #[test]

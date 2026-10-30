@@ -179,6 +179,16 @@ pub fn sdk_event_payload(ev: &SdkEvent) -> Option<(&'static str, Value)> {
                 "version": version
             }),
         ),
+        SdkEvent::Message(MessageEvent::ReadSummariesChanged {
+            conversation_id,
+            message_ids,
+        }) => (
+            "message.read_summaries_changed",
+            json!({
+                "conversationId": conversation_id,
+                "messageIds": message_ids
+            }),
+        ),
         SdkEvent::Message(MessageEvent::ReactionChanged {
             conversation_id,
             server_msg_id,
@@ -533,6 +543,27 @@ mod tests {
                 "deliveryId": "d-1",
                 "expiresAtMs": 1_730_000_000_000_u64
             })
+        );
+    }
+
+    #[test]
+    fn read_summaries_changed_names_the_conversation_and_its_messages() {
+        let event = SdkEvent::Message(MessageEvent::ReadSummariesChanged {
+            conversation_id: "group-1".to_string(),
+            message_ids: vec!["s-1".to_string(), "s-2".to_string()],
+        });
+        let (channel, payload) =
+            sdk_event_channel_payload(&event).expect("read summaries should map to channel");
+
+        assert_eq!(channel, "im://message_read_summaries_changed");
+        assert_eq!(sdk_event_code(&event), 2023);
+        assert_eq!(
+            payload,
+            json!({"conversationId": "group-1", "messageIds": ["s-1", "s-2"]})
+        );
+        assert_eq!(
+            sdk_event_web_payload(&event).expect("web payload")["channel"],
+            "im://message_read_summaries_changed"
         );
     }
 

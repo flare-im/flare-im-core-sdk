@@ -617,15 +617,6 @@ pub const API_OPERATIONS: &[ApiOperation] = &[
         dev_only: false,
     },
     ApiOperation {
-        id: "message_builder.create_plugin_message",
-        module: "message_builder",
-        core: Some("MessageBuildApi::create_plugin_message"),
-        c_symbol: Some("flare_message_build_json"),
-        c_dispatch_op: Some("create_plugin_message"),
-        tauri: Some("sdk_message_build_json"),
-        dev_only: false,
-    },
-    ApiOperation {
         id: "message.create_text",
         module: "message",
         core: Some("MessageBuildApi::create_text"),
@@ -1496,12 +1487,6 @@ pub const MESSAGE_BUILD_OPS: &[MessageBuildCatalogEntry] = &[
         source_operation: "message_builder.create_placeholder",
     },
     MessageBuildCatalogEntry {
-        op: "create_plugin_message",
-        method: "buildPluginMessage",
-        stability: "stable",
-        source_operation: "message_builder.create_plugin_message",
-    },
-    MessageBuildCatalogEntry {
         op: "create_quote",
         method: "buildQuote",
         stability: "stable",
@@ -1743,6 +1728,12 @@ pub const EVENT_DESCRIPTORS: &[EventDescriptor] = &[
         c_code: 2022,
         c_code_name: "FLARE_EVENT_MESSAGE_PLUGIN_STATE_CHANGED",
         tauri: Some("im://message_plugin_state_changed"),
+    },
+    EventDescriptor {
+        id: "message.read_summaries_changed",
+        c_code: 2023,
+        c_code_name: "FLARE_EVENT_MESSAGE_READ_SUMMARIES_CHANGED",
+        tauri: Some("im://message_read_summaries_changed"),
     },
     EventDescriptor {
         id: "conversation.synced",

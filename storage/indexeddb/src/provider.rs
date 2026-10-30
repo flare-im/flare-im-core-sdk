@@ -898,7 +898,13 @@ impl PendingSendWriter for PersistingPendingSendStore {
 
 pub async fn build_web_store_provider(user_id: &str) -> StoreProvider {
     if !storage_host_configured() {
-        return in_memory_im_provider();
+        let mut store = in_memory_im_provider();
+        store.plugin_commands = Some(Arc::new(
+            super::plugin_command::IndexedDbPluginCommandStore {
+                user_id: user_id.to_owned(),
+            },
+        ));
+        return store;
     }
 
     let messages = Arc::new(MemoryMessageStore::new());
@@ -932,7 +938,11 @@ pub async fn build_web_store_provider(user_id: &str) -> StoreProvider {
     let user_profiles = Arc::new(MemoryUserProfileStore::new());
 
     StoreProvider {
-        plugin_commands: None,
+        plugin_commands: Some(Arc::new(
+            super::plugin_command::IndexedDbPluginCommandStore {
+                user_id: user_id.clone(),
+            },
+        )),
         messages: Arc::new(PersistingMessageStore::new(
             user_id.clone(),
             messages.clone(),

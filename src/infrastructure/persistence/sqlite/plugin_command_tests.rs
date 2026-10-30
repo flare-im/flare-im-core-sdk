@@ -1,4 +1,5 @@
 use super::*;
+use crate::domain::MAX_TERMINAL_ERROR_CODES;
 use serde_json::json;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 
@@ -11,6 +12,7 @@ fn scope(user: &str, slot: &str) -> PluginCommandScope {
 }
 fn command(id: &str) -> PluginCommand {
     PluginCommand {
+        continuation: None,
         command_id: id.into(),
         capability_id: "example.create".into(),
         conversation_id: Some("c1".into()),
@@ -96,6 +98,14 @@ async fn plugin_command_bounds_fail_before_persistence() {
     let mut c = command("command-1");
     c.payload = json!({"value":"x".repeat(32768)});
     assert!(repo.prepare(&s, &c).await.is_err());
+    let mut c = command("command-1");
+    c.terminal_error_codes = (0..=MAX_TERMINAL_ERROR_CODES)
+        .map(|i| format!("CODE_{i}"))
+        .collect();
+    assert!(
+        repo.prepare(&s, &c).await.is_err(),
+        "too many terminal codes"
+    );
     for slot in 0..32 {
         repo.prepare(&scope("alice", &format!("slot-{slot}")), &command("c"))
             .await

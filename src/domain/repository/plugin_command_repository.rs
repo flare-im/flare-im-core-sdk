@@ -18,9 +18,17 @@ pub struct PluginCommand {
     pub reconciliation_capability_id: Option<String>,
     /// Plugin-owned error contract: only these failures guarantee no business
     /// effect. All other failures remain an unknown outcome, never ackable.
+    /// At most [`MAX_TERMINAL_ERROR_CODES`].
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub terminal_error_codes: Vec<String>,
+    /// Frozen navigation after this explicitly submitted page command.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub continuation: Option<flare_plugin_protocol::ui::UiPageTransition>,
 }
+/// Bound on a command's declared terminal codes: room for a plugin's whole
+/// rejection table (each code at most 128 bytes), well inside the 32 KiB
+/// command bound.
+pub const MAX_TERMINAL_ERROR_CODES: usize = 32;
 impl PluginCommand {
     pub fn accepts_response(&self, response: &Value) -> bool {
         response["success"] == true
@@ -41,8 +49,12 @@ impl PluginCommand {
                 .as_ref()
                 .is_some_and(|id| !valid_key(id) || id == &self.capability_id)
             || !self.payload.is_object()
-            || self.terminal_error_codes.len() > 8
+            || self.terminal_error_codes.len() > MAX_TERMINAL_ERROR_CODES
             || self.terminal_error_codes.iter().any(|s| !valid_key(s))
+            || self
+                .continuation
+                .as_ref()
+                .is_some_and(|t| t.validate().is_err())
             || serde_json::to_vec(self).map_or(true, |v| v.len() > 32768)
         {
             return Err(command_error("invalid_command"));

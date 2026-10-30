@@ -425,12 +425,6 @@
           "core": "MessageBuildApi::create_with_content",
           "c": "flare_message_build_json:create_with_content",
           "tauri": "sdk_message_build_json"
-        },
-        {
-          "id": "message_builder.create_plugin_message",
-          "core": "MessageBuildApi::create_plugin_message",
-          "c": "flare_message_build_json:create_plugin_message",
-          "tauri": "sdk_message_build_json"
         }
       ]
     },

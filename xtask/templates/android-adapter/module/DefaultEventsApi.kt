@@ -311,7 +311,8 @@ class DefaultEventsApi(
                 MessageEventName.UNMARKED,
                 MessageEventName.RETENTION_SCHEDULED,
                 MessageEventName.PRESENCE_CHANGED,
-                MessageEventName.CUSTOM -> Unit
+                MessageEventName.CUSTOM,
+                MessageEventName.READ_SUMMARIES_CHANGED -> Unit
             }
             is ReadReceiptEvent -> listener.onMessageReadReceipt(event)
             is ReactionChangedEvent -> listener.onMessageReactionChanged(event)

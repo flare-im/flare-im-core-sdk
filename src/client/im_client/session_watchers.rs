@@ -523,7 +523,7 @@ impl IMClient {
             }
         }
         // 同步 HTTP 侧 bearer（媒体等）。
-        let _ = self.sync_gateway_http_context(Some(&tenant_id)).await;
+        let _ = self.sync_core_http_context(Some(&tenant_id)).await;
         Ok(issued)
     }
 

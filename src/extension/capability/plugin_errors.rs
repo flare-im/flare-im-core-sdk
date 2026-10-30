@@ -125,6 +125,19 @@ pub fn machine_reason(error: &FlareError) -> Option<&str> {
     }
 }
 
+/// The plugin's own code of a business rejection: `sdk.plugin.rejected` with
+/// the plugin's code in `machineReason`. `None` for anything else, including a
+/// rejection Core rewrote to `PLUGIN_REJECTED` (a code in the platform's
+/// namespace).
+pub fn plugin_rejection_code(error: &FlareError) -> Option<&str> {
+    match error {
+        FlareError::Localized { reason, .. } if reason == PLUGIN_REJECTED_KEY => {
+            machine_reason(error).filter(|code| *code != PLUGIN_REJECTED)
+        }
+        _ => None,
+    }
+}
+
 fn http_status(error: &FlareError) -> Option<u16> {
     match error {
         FlareError::Localized {

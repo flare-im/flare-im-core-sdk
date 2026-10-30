@@ -401,7 +401,7 @@ pub fn elem_preview_storage_payload(elem: &Elem) -> PreviewStoragePayload {
                 if let Some(ref c) = f.items[0].content {
                     elem_preview_storage_payload(c)
                 } else {
-                    decode_or_user_text(&f.items[0].plain_text)
+                    user_text_preview(&f.items[0].plain_text)
                 }
             } else {
                 let mut a = Map::new();
@@ -412,7 +412,7 @@ pub fn elem_preview_storage_payload(elem: &Elem) -> PreviewStoragePayload {
                         a.insert("first".into(), v);
                     }
                 } else if !f.items[0].plain_text.is_empty() {
-                    let first = decode_or_user_text(&f.items[0].plain_text);
+                    let first = user_text_preview(&f.items[0].plain_text);
                     if let Ok(v) = serde_json::to_value(&first) {
                         a.insert("first".into(), v);
                     }
@@ -481,8 +481,9 @@ pub fn elem_preview_storage_payload(elem: &Elem) -> PreviewStoragePayload {
         }
         Custom(c) => {
             let mut a = Map::new();
-            if !c.description.trim().is_empty() {
-                a.insert("d".into(), Value::String(c.description.clone()));
+            let text = plugin_card_preview(c).unwrap_or_else(|| c.description.trim().to_owned());
+            if !text.is_empty() {
+                a.insert("d".into(), Value::String(text));
             }
             PreviewStoragePayload {
                 k: keys::CUSTOM.to_string(),
@@ -502,9 +503,53 @@ pub fn elem_preview_storage_payload(elem: &Elem) -> PreviewStoragePayload {
     }
 }
 
-/// 列表/转发条目摘要：JSON 字符串形态，与 [`elem_preview_storage_payload`] 一致；供 `ForwardItem.plain_text`、`quote_preview` 等持久化。
+/// 插件卡的摘要：`[插件名] 卡片摘要`，都取自卡片信封——卡片摘要是插件为卡片声明的回退文本，插件名是平台
+/// 代发时写入的清单名称；缺哪个就只用另一个。信封无效时为 `None`（按普通自定义消息处理）。信封里的卡片
+/// 数据（`payload`）与状态层都不读，所以摘要里只有插件自己公开的文字。
+fn plugin_card_preview(custom: &CustomElem) -> Option<String> {
+    if custom.r#type != PLUGIN_MESSAGE_CARD_TYPE || custom.payload.len() > 65536 {
+        return None;
+    }
+    let envelope =
+        serde_json::from_slice::<flare_plugin_protocol::ui::PluginMessage>(&custom.payload)
+            .ok()
+            .filter(|message| message.validate().is_ok())?;
+    let name = envelope
+        .display_name
+        .as_deref()
+        .map(str::trim)
+        .unwrap_or_default();
+    let summary = envelope.summary.trim();
+    Some(match (name.is_empty(), summary.is_empty()) {
+        (false, false) => format!("[{name}] {summary}"),
+        (false, true) => format!("[{name}]"),
+        (true, _) => summary.to_owned(),
+    })
+}
+
+/// 列表摘要：JSON 字符串形态，与 [`elem_preview_storage_payload`] 一致；供 `messages.text`、`quote_preview` 等持久化，
+/// 由展示端按读者语言翻译。
 pub fn elem_plain_summary(elem: &Elem) -> String {
     serde_json::to_string(&elem_preview_storage_payload(elem)).unwrap_or_default()
+}
+
+/// 转发条目的 `plain_text`：这条消息不随读者语言变化的可读文字，与会话列表摘要同一套规则
+/// （[`PreviewStoragePayload::verbatim_text`]）。插件卡是「[插件名] 卡片摘要」，不读卡片数据，红包金额不会进来；
+/// 只能用类型词表达的消息（无说明的图片、文件、贴纸、投票…）为空串，展示端按条目里的完整内容在读者语言里补。
+pub fn elem_plain_text(elem: &Elem) -> String {
+    elem_preview_storage_payload(elem).verbatim_text()
+}
+
+/// 转发条目已有的可读文字作为正文摘要（条目没有内容时用）。
+fn user_text_preview(text: &str) -> PreviewStoragePayload {
+    let mut a = Map::new();
+    if !text.trim().is_empty() {
+        a.insert("t".into(), Value::String(text.to_string()));
+    }
+    PreviewStoragePayload {
+        k: keys::USER_TEXT.to_string(),
+        a,
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -1473,5 +1518,64 @@ mod tests {
 
         let roundtrip = image_info_out(Some(&proto)).expect("image info");
         assert_eq!(roundtrip.blurhash, elem.blurhash);
+    }
+
+    /// The platform's card as the conversation list sums it up: `[plugin] summary` from the
+    /// envelope, never anything from the card data (a red packet's amount stays out).
+    #[test]
+    fn a_platform_posted_plugin_card_previews_as_its_name_and_summary() {
+        let card = |envelope: serde_json::Value, summary: &str| {
+            proto_content_to_out(&ProtoContent::AppCard(
+                flare_proto::common::AppCardContent {
+                    app_id: "flare.redpacket".into(),
+                    card_type: PLUGIN_MESSAGE_CARD_TYPE.into(),
+                    summary: summary.into(),
+                    payload_schema: "flare.plugin.message/v1".into(),
+                    payload: serde_json::to_vec(&envelope).unwrap(),
+                    ..Default::default()
+                },
+            ))
+            .expect("projected")
+        };
+        let envelope = |display_name: Option<&str>, summary: &str| {
+            let mut value = json!({
+                "pluginId": "flare.redpacket", "contributionId": "flare.redpacket.card",
+                "schemaVersion": 1, "summary": summary,
+                "payload": {"packetId": "p1", "amountMinor": "8888", "amountText": "¥88.88"}
+            });
+            if let Some(name) = display_name {
+                value["displayName"] = json!(name);
+            }
+            value
+        };
+        let preview = |elem: &Elem| elem_preview_storage_payload(elem);
+
+        let named = preview(&card(envelope(Some("红包"), "恭喜发财"), ""));
+        assert_eq!(named.k, keys::CUSTOM);
+        assert_eq!(named.a["d"], "[红包] 恭喜发财");
+        assert!(
+            !serde_json::to_string(&named).unwrap().contains("88"),
+            "{named:?}"
+        );
+        // No name written: the summary alone; no summary: the name alone.
+        assert_eq!(
+            preview(&card(envelope(None, " 午饭吃什么？ "), "")).a["d"],
+            "午饭吃什么？"
+        );
+        assert_eq!(
+            preview(&card(envelope(Some("投票"), ""), "")).a["d"],
+            "[投票]"
+        );
+        // An envelope the SDK refuses is an ordinary custom message: its own description.
+        let broken = preview(&card(json!({"pluginId": "flare.redpacket"}), "旧摘要"));
+        assert_eq!(broken.a["d"], "旧摘要");
+        // Any other custom message keeps its description.
+        let other = Elem::Custom(CustomElem {
+            r#type: "acme.sticker".into(),
+            payload: Vec::new(),
+            description: "[贴纸]".into(),
+            metadata: Default::default(),
+        });
+        assert_eq!(preview(&other).a["d"], "[贴纸]");
     }
 }

@@ -327,7 +327,7 @@ async fn api_getters_use_session_snapshot_when_inner_lock_is_busy() {
 }
 
 #[tokio::test]
-async fn update_access_token_replaces_existing_gateway_bearer() {
+async fn update_access_token_refreshes_core_bearer_without_overwriting_bff_bearer() {
     let context = Arc::new(HttpRequestContext::new());
     context
         .set_gateway_context(
@@ -338,6 +338,9 @@ async fn update_access_token_replaces_existing_gateway_bearer() {
         )
         .await;
     let client = IMClient::new();
+    context
+        .set_auth_context("old-im-token".to_string(), None)
+        .await;
     {
         let mut inner = client.inner.write().await;
         inner.current_user_id = Some("alice".to_string());
@@ -347,20 +350,26 @@ async fn update_access_token_replaces_existing_gateway_bearer() {
     client.store_state_snapshot(SdkState::Ready);
 
     client
-        .update_access_token("new-gateway-token", Some("tenant-b"))
+        .update_access_token("new-im-token", Some("tenant-a"))
         .await
         .expect("update token");
 
     let headers = context.build_headers().await;
     assert_eq!(
         headers.get("Authorization").map(String::as_str),
-        Some("Bearer new-gateway-token")
+        Some("Bearer old-gateway-token")
     );
     assert_eq!(
         headers.get("x-tenant-id").map(String::as_str),
-        Some("tenant-b")
+        Some("tenant-a")
     );
     assert_eq!(headers.get("x-user-id").map(String::as_str), Some("alice"));
+    let core_headers = context.build_core_headers().await;
+    assert_eq!(
+        core_headers.get("Authorization").map(String::as_str),
+        Some("Bearer new-im-token")
+    );
+    assert_eq!(client.access_token().await.as_deref(), Some("new-im-token"));
 }
 
 #[tokio::test]
@@ -375,6 +384,9 @@ async fn update_access_token_rejects_prepared_but_disconnected_session() {
         )
         .await;
     let client = IMClient::new();
+    context
+        .set_auth_context("old-im-token".to_string(), None)
+        .await;
     {
         let mut inner = client.inner.write().await;
         inner.current_user_id = Some("alice".to_string());
@@ -385,7 +397,7 @@ async fn update_access_token_rejects_prepared_but_disconnected_session() {
     let err = client
         .update_access_token("new-gateway-token", Some("tenant-b"))
         .await
-        .expect_err("prepared but disconnected session must not refresh gateway auth");
+        .expect_err("prepared but disconnected session must not refresh HTTP auth");
     assert_eq!(err.code(), Some(ErrorCode::NotConnected));
 
     let headers = context.build_headers().await;
@@ -396,6 +408,14 @@ async fn update_access_token_rejects_prepared_but_disconnected_session() {
     assert_eq!(
         headers.get("x-tenant-id").map(String::as_str),
         Some("tenant-a")
+    );
+    assert_eq!(
+        context
+            .build_core_headers()
+            .await
+            .get("Authorization")
+            .map(String::as_str),
+        Some("Bearer old-im-token")
     );
 }
 

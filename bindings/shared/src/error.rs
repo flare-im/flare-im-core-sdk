@@ -14,6 +14,9 @@ pub fn binding_invalid_parameter(message: impl Into<String>) -> FlareError {
 /// - `httpStatus`: the HTTP status Core answered, 100..=599;
 /// - `remoteCode`: Core's numeric error code;
 /// - `machineReason`: Core's or the plugin's code (`PLUGIN_DISABLED`, `CALL_FULL`).
+///
+/// `remoteCode` and `machineReason` only travel with a valid `httpStatus`:
+/// without the status they do not say who answered.
 pub fn sdk_error_details(err: &FlareError) -> Value {
     let (code, params) = match err {
         FlareError::Localized { code, params, .. } => (code.as_str(), params.as_ref()),
@@ -25,12 +28,13 @@ pub fn sdk_error_details(err: &FlareError) -> Value {
         "retryable": err.is_retryable(),
     });
     let param = |name: &str| params.and_then(|params| params.get(name));
-    if let Some(status) = param("httpStatus")
+    let Some(status) = param("httpStatus")
         .and_then(|value| value.parse::<u16>().ok())
         .filter(|status| (100..=599).contains(status))
-    {
-        details["httpStatus"] = json!(status);
-    }
+    else {
+        return details;
+    };
+    details["httpStatus"] = json!(status);
     if let Some(remote) = param("remoteCode").and_then(|value| value.parse::<i32>().ok()) {
         details["remoteCode"] = json!(remote);
     }
@@ -184,6 +188,34 @@ mod tests {
         assert_eq!(keys, ["code", "reason", "retryable"]);
         assert!(!is_machine_reason(&"A".repeat(65)));
         assert!(is_machine_reason("PLUGIN_DISABLED"));
+    }
+
+    #[test]
+    fn remote_facts_need_the_http_status_that_carried_them() {
+        let contextless = localized(
+            ErrorCode::OperationFailed,
+            "sdk.plugin.rejected",
+            &[("machineReason", "PACKET_FINISHED"), ("remoteCode", "4220")],
+        );
+        let details = sdk_error_details(&contextless);
+        assert!(details.get("httpStatus").is_none(), "{details}");
+        assert!(details.get("remoteCode").is_none(), "{details}");
+        assert!(details.get("machineReason").is_none(), "{details}");
+
+        let out_of_range = localized(
+            ErrorCode::OperationFailed,
+            "sdk.plugin.rejected",
+            &[
+                ("httpStatus", "42"),
+                ("machineReason", "PACKET_FINISHED"),
+                ("remoteCode", "4220"),
+            ],
+        );
+        let details = sdk_error_value(&out_of_range, Some("capability.dispatch"));
+        assert!(details.get("remoteCode").is_none(), "{details}");
+        assert!(details.get("machineReason").is_none(), "{details}");
+        assert_eq!(details["reason"], "sdk.plugin.rejected");
+        assert_eq!(details["operation"], "capability.dispatch");
     }
 
     #[test]

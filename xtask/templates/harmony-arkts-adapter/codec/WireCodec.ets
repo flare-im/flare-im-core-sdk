@@ -1,6 +1,5 @@
 // GENERATED. Do not edit by hand.
 import {
-  BuildPluginMessageRequest,
   PluginUiEvaluationRequest,
   PluginCommandRequest,
   CloseViewRequest,
@@ -50,10 +49,6 @@ export function pluginCommandRequestToMap(request: PluginCommandRequest): Record
   return { payload: request.payload };
 }
 
-export function buildPluginMessageRequestToMap(request: BuildPluginMessageRequest): Record<string, Object> {
-  return { conversationId: request.conversationId, payload: request.payload };
-}
-
 export function enumWireIndex<T>(order: ReadonlyArray<T>, value: T): number {
   const index = order.indexOf(value);
   return index >= 0 ? index : 0;
@@ -94,7 +89,7 @@ const SDK_EVENT_KIND_WIRE_ORDER: SdkEventKind[] = [SdkEventKind.Lifecycle, SdkEv
 const LIFECYCLE_EVENT_NAME_WIRE_ORDER: LifecycleEventName[] = [LifecycleEventName.Initializing, LifecycleEventName.Initialized, LifecycleEventName.InitFailed, LifecycleEventName.LoginSucceeded, LifecycleEventName.LoginFailed, LifecycleEventName.LoggedOut, LifecycleEventName.Disposed];
 const SDK_CONNECTION_STATE_WIRE_ORDER: SdkConnectionState[] = [SdkConnectionState.Disconnected, SdkConnectionState.Connecting, SdkConnectionState.Connected, SdkConnectionState.Ready, SdkConnectionState.Reconnecting];
 const CONNECTION_EVENT_NAME_WIRE_ORDER: ConnectionEventName[] = [ConnectionEventName.Connecting, ConnectionEventName.Connected, ConnectionEventName.Ready, ConnectionEventName.Disconnected, ConnectionEventName.Reconnecting, ConnectionEventName.ReconnectFailed, ConnectionEventName.StateChanged, ConnectionEventName.SyncStateChanged, ConnectionEventName.ServerError, ConnectionEventName.KickedOff, ConnectionEventName.TokenExpired];
-const MESSAGE_EVENT_NAME_WIRE_ORDER: MessageEventName[] = [MessageEventName.Received, MessageEventName.ReceivedBatch, MessageEventName.SendAck, MessageEventName.SendFailed, MessageEventName.Recalled, MessageEventName.Typing, MessageEventName.Edited, MessageEventName.ReactionChanged, MessageEventName.Deleted, MessageEventName.ReadReceipt, MessageEventName.BurnScheduled, MessageEventName.Burned, MessageEventName.HardDeleted, MessageEventName.Pinned, MessageEventName.Unpinned, MessageEventName.Marked, MessageEventName.Unmarked, MessageEventName.RetentionScheduled, MessageEventName.RetentionExpired, MessageEventName.RetentionPurged, MessageEventName.PresenceChanged, MessageEventName.Custom, MessageEventName.PluginStateChanged];
+const MESSAGE_EVENT_NAME_WIRE_ORDER: MessageEventName[] = [MessageEventName.Received, MessageEventName.ReceivedBatch, MessageEventName.SendAck, MessageEventName.SendFailed, MessageEventName.Recalled, MessageEventName.Typing, MessageEventName.Edited, MessageEventName.ReactionChanged, MessageEventName.Deleted, MessageEventName.ReadReceipt, MessageEventName.BurnScheduled, MessageEventName.Burned, MessageEventName.HardDeleted, MessageEventName.Pinned, MessageEventName.Unpinned, MessageEventName.Marked, MessageEventName.Unmarked, MessageEventName.RetentionScheduled, MessageEventName.RetentionExpired, MessageEventName.RetentionPurged, MessageEventName.PresenceChanged, MessageEventName.Custom, MessageEventName.PluginStateChanged, MessageEventName.ReadSummariesChanged];
 const CONVERSATION_EVENT_NAME_WIRE_ORDER: ConversationEventName[] = [ConversationEventName.Synced, ConversationEventName.Created, ConversationEventName.Updated, ConversationEventName.UnreadCountChanged, ConversationEventName.Deleted];
 const SYNC_EVENT_NAME_WIRE_ORDER: SyncEventName[] = [SyncEventName.StateChanged, SyncEventName.Started, SyncEventName.Finished, SyncEventName.Failed, SyncEventName.Progress, SyncEventName.TaskCompleted, SyncEventName.ResyncNeeded];
 const PROGRESS_EVENT_NAME_WIRE_ORDER: ProgressEventName[] = [ProgressEventName.SyncProgress, ProgressEventName.UploadProgress, ProgressEventName.DownloadProgress];

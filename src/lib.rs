@@ -71,9 +71,14 @@ pub mod storage {
         SyncCursorReader, SyncCursorVo, SyncCursorWriter, UserFileDownloadStore, UserReader,
         UserWriter, set_local_cleared_through_seq,
     };
+    pub use crate::domain::{
+        PluginCommand, PluginCommandRecord, PluginCommandScope, PluginCommandStore,
+    };
     pub use crate::infrastructure::persistence::memory_im::{
         MemoryConversationStore, MemoryMessageStore,
     };
+    #[cfg(feature = "storage-sqlite")]
+    pub use crate::infrastructure::persistence::sqlite::SqlitePluginCommandRepo;
     pub use crate::infrastructure::persistence::{
         MemoryPendingSendStore, MemorySyncCursorStore, MemoryUserProfileStore, StoreProvider,
         in_memory_empty_im_provider, in_memory_im_provider,
