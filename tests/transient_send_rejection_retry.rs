@@ -80,6 +80,10 @@ impl ScriptedIngest {
     }
 }
 
+#[allow(
+    deprecated,
+    reason = "fetch_update is renamed try_update on newer toolchains, and try_update is unstable at the declared MSRV"
+)]
 #[async_trait]
 impl ServerEventHandler for ScriptedIngest {
     async fn handle_message(
