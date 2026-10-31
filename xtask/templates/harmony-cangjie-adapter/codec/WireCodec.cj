@@ -541,6 +541,26 @@ public func networkChangeResponseFromObject(object: CjJsonObject): NetworkChange
     )
 }
 
+public func serverClockResponseToJson(request: ServerClockResponse): String {
+    let json = CjJsonObject()
+    jsonPutInt(json, "offsetMs", request.offsetMs)
+    jsonPutBool(json, "estimated", request.estimated)
+    return json.toJsonString()
+}
+
+public func serverClockResponseFromJson(raw: String): ServerClockResponse {
+    return serverClockResponseFromObject(wireDecodeResponseObject(jsonObjectFromRaw(raw)))
+}
+
+public func serverClockResponseFromObject(object: CjJsonObject): ServerClockResponse {
+    let offsetMs = jsonIntField(object, "offsetMs", 0)
+    let estimated = jsonBoolField(object, "estimated", false)
+    return ServerClockResponse(
+        offsetMs: offsetMs,
+        estimated: estimated
+    )
+}
+
 public func updateConversationDraftRequestToJson(request: UpdateConversationDraftRequest): String {
     let json = CjJsonObject()
     jsonPutString(json, "conversationId", request.conversationId)

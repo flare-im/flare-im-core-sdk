@@ -73,11 +73,15 @@ impl ServerClock {
 
     /// 服务端时钟减本机时钟的估计（毫秒）；没有样本时为 0。
     pub fn offset_ms(&self) -> i64 {
+        self.estimate_ms().unwrap_or(0)
+    }
+
+    /// 同 [`Self::offset_ms`]，但还没有样本时为 `None`：交给宿主时要分清「偏差为 0」和「还不知道」。
+    pub fn estimate_ms(&self) -> Option<i64> {
         self.samples
             .lock()
             .ok()
             .and_then(|samples| samples.iter().map(|sample| sample.offset_ms).max())
-            .unwrap_or(0)
     }
 
     /// 此刻的服务端时间估计（毫秒）。
@@ -140,6 +144,7 @@ mod tests {
     fn without_samples_the_device_clock_is_used() {
         let clock = ServerClock::new();
         assert_eq!(clock.offset_ms(), 0);
+        assert_eq!(clock.estimate_ms(), None);
         assert_eq!(clock.to_local_ms(LOCAL as i64), LOCAL as i64);
     }
 
@@ -159,6 +164,14 @@ mod tests {
         let clock = ServerClock::new();
         clock.observe_at(LOCAL + 7 * 60_000, LOCAL);
         assert_eq!(clock.offset_ms(), 7 * 60_000);
+        assert_eq!(clock.estimate_ms(), Some(7 * 60_000));
+    }
+
+    #[test]
+    fn a_sample_with_no_offset_is_an_estimate() {
+        let clock = ServerClock::new();
+        clock.observe_at(LOCAL, LOCAL);
+        assert_eq!(clock.estimate_ms(), Some(0));
     }
 
     #[test]

@@ -155,6 +155,12 @@
           "tauri": "sdk_engine_state"
         },
         {
+          "id": "connection.server_clock",
+          "core": "IMClient::server_clock",
+          "c": "flare_sdk_invoke_json",
+          "tauri": "sdk_invoke_json"
+        },
+        {
           "id": "connection.disconnect",
           "core": "IMClient::disconnect",
           "c": "flare_sdk_disconnect",

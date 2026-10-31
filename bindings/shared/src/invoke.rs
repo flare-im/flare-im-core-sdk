@@ -523,6 +523,24 @@ mod tests {
         assert_eq!(value, serde_json::json!("disconnected"));
     }
 
+    /// Hosts read `{ offsetMs, estimated }`; without a session nothing is estimated yet, so the
+    /// host keeps its own clock rather than treating the offset as a measured zero.
+    #[tokio::test]
+    async fn direct_server_clock_returns_offset_and_whether_it_is_estimated() {
+        let session = DirectOnlySession::new();
+
+        let value = binding_response_to_value(
+            invoke_api_id_json(&session, "connection.server_clock", "{}")
+                .await
+                .expect("server clock"),
+        );
+
+        assert_eq!(
+            value,
+            serde_json::json!({ "offsetMs": 0, "estimated": false })
+        );
+    }
+
     #[tokio::test]
     async fn direct_boolean_routes_return_bare_booleans() {
         let session = DirectOnlySession::new();

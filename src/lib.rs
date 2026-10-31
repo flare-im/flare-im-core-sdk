@@ -118,8 +118,8 @@ pub mod prelude {
         ConversationApi, CoreTokenConfig, CreateLocationRequest, CreateRichDocRequest,
         CreateStickerRequest, EditRichDocRequest, IMClient, IMClientBuilder, LoginDbKind, MediaApi,
         MessageApi, MessageBuildApi, NetworkChangeEvent, RuntimeHealthSnapshot, SdkConfig,
-        SdkConfigBuilder, SdkConfigOverlay, SdkResourceProfile, SdkRuntimeResources, TlsConfig,
-        TransportKind, TransportPolicy, UserCapabilityGrantDto,
+        SdkConfigBuilder, SdkConfigOverlay, SdkResourceProfile, SdkRuntimeResources,
+        ServerClockEstimate, TlsConfig, TransportKind, TransportPolicy, UserCapabilityGrantDto,
     };
     pub use crate::domain::{
         ConversationStore, DEFAULT_MEDIA_CACHE_MAX_BYTES, MediaCacheEntryVo, MediaCacheStatsVo,

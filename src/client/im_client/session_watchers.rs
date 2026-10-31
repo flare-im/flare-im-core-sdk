@@ -811,7 +811,7 @@ pub(super) fn is_auth_reconnect_failure(err: &crate::shared::error::FlareError) 
 
 /// The server clock estimate of the session's engine; without an engine, an
 /// empty estimate (the device clock).
-fn server_clock_of(inner: &super::IMClientInner) -> crate::kernel::ServerClock {
+pub(super) fn server_clock_of(inner: &super::IMClientInner) -> crate::kernel::ServerClock {
     inner
         .engine
         .as_ref()

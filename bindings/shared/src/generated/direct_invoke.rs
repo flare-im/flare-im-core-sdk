@@ -23,6 +23,7 @@ pub const DIRECT_INVOKE_ROUTES: &[&str] = &[
     "presence.batch_get",
     "presence.subscribe",
     "connection.get_state",
+    "connection.server_clock",
     "connection.disconnect",
     "sdk.is_connected",
     "sdk.session_active",
@@ -67,6 +68,7 @@ pub fn is_direct_invoke_route(route: &str) -> bool {
         "presence.batch_get" => true,
         "presence.subscribe" => true,
         "connection.get_state" => true,
+        "connection.server_clock" => true,
         "connection.disconnect" => true,
         "sdk.is_connected" => true,
         "sdk.session_active" => true,
@@ -218,6 +220,14 @@ pub async fn dispatch_direct(
             let state = client.state();
             let (name, _code) = sdk_state_json(state);
             dispatch_support::json(serde_json::json!(name))
+        }
+        "connection.server_clock" => {
+            let client = session.client();
+            let clock = client.server_clock().await;
+            dispatch_support::json(serde_json::json!({
+                "offsetMs": clock.offset_ms,
+                "estimated": clock.estimated
+            }))
         }
         "connection.disconnect" => {
             let client = session.client();

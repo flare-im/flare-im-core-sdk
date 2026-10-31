@@ -225,6 +225,14 @@ final class _DefaultConnectionApi implements ConnectionApi {
       _bridge.invoke<void>(NativeCallMap.connectionDisconnect);
 
   @override
+  Future<ServerClockResponse> getServerClock() async {
+    final raw = await _bridge.invoke<Map<String, Object?>>(
+      NativeCallMap.connectionServerClock,
+    );
+    return serverClockResponseFromJson(raw);
+  }
+
+  @override
   Future<NetworkChangeResponse> notifyNetworkChange(
     NetworkChangeRequest request,
   ) async {

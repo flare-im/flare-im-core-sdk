@@ -891,6 +891,31 @@ private fun requiredLongField(json: Map<String, Any?>, key: String, context: Str
     )
 }
 
+private fun requiredSignedLongField(json: Map<String, Any?>, key: String, context: String): Long {
+    val value = field(json, key)
+    val number = when (value) {
+        is Byte -> value.toLong()
+        is Short -> value.toLong()
+        is Int -> value.toLong()
+        is Long -> value
+        is Float -> if (value.isFinite() && value % 1.0f == 0.0f) value.toLong() else null
+        is Double -> if (value.isFinite() && value % 1.0 == 0.0) value.toLong() else null
+        else -> null
+    }
+    if (number != null) return number
+    val message = if (value == null) {
+        "$context.$key is required"
+    } else {
+        "$context.$key must be an integer"
+    }
+    throw FlareSdkException(
+        SdkErrorCodes.INVALIDPARAMETER,
+        message,
+        operation = "wire.decode",
+        details = mapOf("field" to "$context.$key", "expected" to "integer"),
+    )
+}
+
 private fun requiredBooleanField(json: Map<String, Any?>, key: String, context: String): Boolean {
     val value = field(json, key)
     if (value is Boolean) return value
@@ -1022,6 +1047,14 @@ fun networkChangeResponseFromJson(value: Any?): NetworkChangeResponse {
     val json = mapValue(value)
     return NetworkChangeResponse(
         reconnected = requiredBooleanField(json, "reconnected", "NetworkChangeResponse"),
+    )
+}
+
+fun serverClockResponseFromJson(value: Any?): ServerClockResponse {
+    val json = mapValue(value)
+    return ServerClockResponse(
+        offsetMs = requiredSignedLongField(json, "offsetMs", "ServerClockResponse"),
+        estimated = requiredBooleanField(json, "estimated", "ServerClockResponse"),
     )
 }
 

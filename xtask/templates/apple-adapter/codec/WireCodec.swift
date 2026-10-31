@@ -990,6 +990,23 @@ func intValue(_ value: Any?) throws -> UInt64 {
     )
 }
 
+func signedIntValue(_ value: Any?) throws -> Int64 {
+    if let number = value as? Int64 { return number }
+    if let number = value as? Int { return Int64(number) }
+    if let number = value as? UInt64, number <= UInt64(Int64.max) { return Int64(number) }
+    if let number = value as? UInt, UInt64(number) <= UInt64(Int64.max) { return Int64(number) }
+    if let number = value as? Double, number.isFinite, number.rounded(.towardZero) == number,
+       number >= -9_223_372_036_854_775_808, number < 9_223_372_036_854_775_808 {
+        return Int64(number)
+    }
+    throw FlareSdkException(
+        code: SdkErrorCodes.invalidParameter,
+        message: "wire field must be an integer",
+        operation: "wire.decode",
+        details: ["expected": "integer"]
+    )
+}
+
 func listOfMaps(_ value: Any?) -> [[String: Any]] {
     guard let items = value as? [Any] else { return [] }
     return items.compactMap { $0 as? [String: Any] }
@@ -1244,6 +1261,14 @@ func heartbeatEffectiveIntervalResponseFromJson(_ value: [String: AnySendable]) 
         connected: try boolValue(json["connected"]),
         intervalMs: try optionalUInt64Value(json["intervalMs"]),
         intervalSecs: try optionalUInt64Value(json["intervalSecs"])
+    )
+}
+
+func serverClockResponseFromJson(_ value: [String: AnySendable]) throws -> ServerClockResponse {
+    let json = plainMap(value)
+    return ServerClockResponse(
+        offsetMs: try signedIntValue(json["offsetMs"]),
+        estimated: try boolValue(json["estimated"])
     )
 }
 

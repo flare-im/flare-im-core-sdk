@@ -154,6 +154,17 @@ NetworkChangeResponse networkChangeResponseFromJson(Object? value) {
   );
 }
 
+ServerClockResponse serverClockResponseFromJson(Object? value) {
+  final json = mapValue(value);
+  final offset = json['offsetMs'];
+  return ServerClockResponse(
+    offsetMs: offset is num && offset.isFinite && offset.truncateToDouble() == offset
+        ? offset.toInt()
+        : 0,
+    estimated: json['estimated'] is bool ? json['estimated'] as bool : false,
+  );
+}
+
 HeartbeatEffectiveIntervalResponse heartbeatEffectiveIntervalResponseFromJson(
   Object? value,
 ) {

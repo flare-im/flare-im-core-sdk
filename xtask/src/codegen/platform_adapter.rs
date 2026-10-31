@@ -878,7 +878,7 @@ fn emit_kotlin_connection_adapter(module: &Value, _spec: &Value) -> String {
         "import com.flare.im.contract.NativeBridge".to_string(),
         "import com.flare.im.contract.NativeCallMap".to_string(),
         "import com.flare.im.model.command.NetworkChangeRequest".to_string(),
-        "import com.flare.im.model.response.NetworkChangeResponse".to_string(),
+        "import com.flare.im.model.response.*".to_string(),
         String::new(),
         "/** GENERATED. Do not edit by hand. */".to_string(),
         "class DefaultConnectionApi(".to_string(),
@@ -921,16 +921,17 @@ fn emit_kotlin_connection_adapter(module: &Value, _spec: &Value) -> String {
                 ),
                 "    }".to_string(),
             ]),
+            // Any other response is a model read back through its codec, `<model>FromJson`.
             other => lines.extend([
                 format!(
-                    "    override suspend fun {}(): Any? {{",
+                    "    override suspend fun {}(): {other} {{",
                     str_field(method, "name")
                 ),
                 format!(
-                    "        return invokeMap(bridge, NativeCallMap.{})",
+                    "        return {}FromJson(invokeMap(bridge, NativeCallMap.{}))",
+                    lower_first(other),
                     kotlin_native_call_map_name(method)
                 ),
-                format!("        // response: {other}"),
                 "    }".to_string(),
             ]),
         }
@@ -988,16 +989,17 @@ fn emit_swift_connection_adapter(module: &Value) -> String {
                 ),
                 "    }".to_string(),
             ]),
+            // Any other response is a model read back through its codec, `<model>FromJson`.
             other => lines.extend([
                 format!(
-                    "    public func {}() async throws -> [String: AnySendable] {{",
+                    "    public func {}() async throws -> {other} {{",
                     swift_identifier(str_field(method, "name"))
                 ),
                 format!(
-                    "        return try await invokeMap(bridge, descriptor: NativeCallMap.{}, request: nil)",
+                    "        let raw = try await invokeMap(bridge, descriptor: NativeCallMap.{}, request: nil)",
                     swift_native_call_map_name(method)
                 ),
-                format!("        // response: {other}"),
+                format!("        return try {}FromJson(raw)", lower_first(other)),
                 "    }".to_string(),
             ]),
         }
@@ -1007,17 +1009,43 @@ fn emit_swift_connection_adapter(module: &Value) -> String {
 }
 
 fn emit_arkts_connection_adapter(module: &Value) -> String {
+    // Responses read back through their codec (`<model>FromJson`), besides the ones handled below.
+    let decoded = child_arr(module, "methods")
+        .iter()
+        .map(|method| str_field(method, "response"))
+        .filter(|response| {
+            !matches!(
+                *response,
+                "ConnectionStateResponse" | "Unit" | "NetworkChangeResponse"
+            )
+        })
+        .collect::<BTreeSet<_>>();
+    let model_imports = std::iter::once("NetworkChangeRequest")
+        .chain(std::iter::once("NetworkChangeResponse"))
+        .chain(decoded.iter().copied())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let codec_imports = [
+        "networkChangeRequestToMap".to_string(),
+        "networkChangeResponseFromJson".to_string(),
+    ]
+    .into_iter()
+    .chain(
+        decoded
+            .iter()
+            .map(|response| format!("{}FromJson", lower_first(response))),
+    )
+    .collect::<Vec<_>>()
+    .join(", ");
     let mut lines = vec![
         "// GENERATED. Do not edit by hand.".to_string(),
         "import { NativeBridge, NativeCallMap } from '../../contract/BridgeContract';".to_string(),
         "import type { ConnectionApi } from '../../api/modules/connection';".to_string(),
         "import type { ConnectionState } from '../../api/client';".to_string(),
-        "import type { NetworkChangeRequest, NetworkChangeResponse } from '../../model';"
-            .to_string(),
+        format!("import type {{ {model_imports} }} from '../../model';"),
         "import { invokeConnectionState, invokeMap, invokeVoid } from '../codec/NativeInvoke';"
             .to_string(),
-        "import { networkChangeRequestToMap, networkChangeResponseFromJson } from '../codec/WireCodec';"
-            .to_string(),
+        format!("import {{ {codec_imports} }} from '../codec/WireCodec';"),
         String::new(),
         "export class DefaultConnectionApi implements ConnectionApi {".to_string(),
         "  constructor(private readonly bridge: NativeBridge) {}".to_string(),
@@ -1056,15 +1084,16 @@ fn emit_arkts_connection_adapter(module: &Value) -> String {
                 "    return networkChangeResponseFromJson(raw);".to_string(),
                 "  }".to_string(),
             ]),
-            _ => lines.extend([
+            other => lines.extend([
                 format!(
-                    "  async {}(): Promise<Record<string, Object>> {{",
+                    "  async {}(): Promise<{other}> {{",
                     str_field(method, "name")
                 ),
                 format!(
-                    "    return await invokeMap(this.bridge, NativeCallMap.{});",
+                    "    const raw = await invokeMap(this.bridge, NativeCallMap.{});",
                     arkts_native_call_map_name(method)
                 ),
+                format!("    return {}FromJson(raw);", lower_first(other)),
                 "  }".to_string(),
             ]),
         }
@@ -1120,10 +1149,15 @@ fn emit_cangjie_connection_adapter(module: &Value, spec: &Value) -> String {
                 ));
                 lines.push("        return networkChangeResponseFromJson(raw)".to_string());
             }
-            _ => {
+            // Any other response is a model read back through its codec, `<model>FromJson`.
+            other => {
                 lines.push(format!(
-                    "        return bridge.invoke(descriptor: NativeCallMap.{}, requestJson: wireEncodeRequest(\"{{}}\"))",
+                    "        let raw = bridge.invoke(descriptor: NativeCallMap.{}, requestJson: wireEncodeRequest(\"{{}}\"))",
                     cangjie_native_call_map_name(method)
+                ));
+                lines.push(format!(
+                    "        return {}FromJson(raw)",
+                    lower_first(other)
                 ));
             }
         }

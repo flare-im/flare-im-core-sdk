@@ -75,6 +75,12 @@
       "json_expr": "serde_json::json!(name)"
     },
     {
+      "route": "connection.server_clock",
+      "result": "json",
+      "body": "\n            let clock = client.server_clock().await;\n        ",
+      "json_expr": "\n            serde_json::json!({\n                \"offsetMs\": clock.offset_ms,\n                \"estimated\": clock.estimated\n            })\n        "
+    },
+    {
       "route": "connection.disconnect",
       "result": "unit",
       "body": "\n            session.after_disconnect().await;\n            client.disconnect().await?;\n        "

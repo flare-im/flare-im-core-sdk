@@ -27,6 +27,7 @@ import {
   ReactionEntry,
   SendMessageRequest,
   SendMessageResponse,
+  ServerClockResponse,
   SyncConversationSummariesResponse,
   UpdateConversationDraftRequest,
   ViewDelta,
@@ -950,6 +951,14 @@ export function recordValue(value: Object | undefined): Record<string, Object> {
     return {};
   }
   return value as Record<string, Object>;
+}
+
+export function serverClockResponseFromJson(value: Object | undefined): ServerClockResponse {
+  const json = recordValue(value);
+  return {
+    offsetMs: intValue(field(json, 'offsetMs')),
+    estimated: field(json, 'estimated') === true,
+  };
 }
 
 export function networkChangeResponseFromJson(value: Object | undefined): NetworkChangeResponse {

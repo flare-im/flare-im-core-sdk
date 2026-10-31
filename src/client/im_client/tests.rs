@@ -326,6 +326,38 @@ async fn api_getters_use_session_snapshot_when_inner_lock_is_busy() {
         .expect("capability registry from snapshot");
 }
 
+/// 宿主拿到的服务端时钟就是引擎采样出来的那一份：设备快 5 分钟、慢 3 分钟都照实给出，还没有样本时
+/// 说「还不知道」而不是「偏差为 0」。
+#[tokio::test]
+async fn the_server_clock_handed_to_hosts_is_the_engine_estimate() {
+    for ahead_ms in [5 * 60_000_i64, -3 * 60_000] {
+        let client = IMClient::builder()
+            .stores(in_memory_empty_im_provider())
+            .build()
+            .expect("build client");
+        let estimate = client.server_clock().await;
+        assert_eq!((estimate.offset_ms, estimate.estimated), (0, false));
+
+        let device_ms = crate::shared::util::now_millis() as i64;
+        client
+            .inner
+            .read()
+            .await
+            .engine
+            .as_ref()
+            .expect("engine")
+            .server_clock()
+            .observe_server_ms((device_ms - ahead_ms) as u64);
+        let estimate = client.server_clock().await;
+        assert!(estimate.estimated);
+        assert!(
+            (estimate.offset_ms + ahead_ms).abs() < 1_000,
+            "device ahead by {ahead_ms} ms gave offset {} ms",
+            estimate.offset_ms
+        );
+    }
+}
+
 #[tokio::test]
 async fn update_access_token_refreshes_core_bearer_without_overwriting_bff_bearer() {
     let context = Arc::new(HttpRequestContext::new());

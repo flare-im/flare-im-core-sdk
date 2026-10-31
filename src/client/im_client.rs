@@ -62,6 +62,15 @@ pub struct NetworkChangeEvent {
     pub reason: Option<String>,
 }
 
+/// 服务端时钟的估计（[`IMClient::server_clock`]）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ServerClockEstimate {
+    /// 服务端时钟减本机时钟（毫秒）；还没有估计时为 0，即本机时钟。
+    pub offset_ms: i64,
+    /// 是否已有估计：本次会话收到过服务端打了时间戳的载荷帧。
+    pub estimated: bool,
+}
+
 #[derive(Debug, Clone)]
 pub struct RuntimeHealthSnapshot {
     pub metrics_enabled: bool,
@@ -609,6 +618,21 @@ impl IMClient {
             session_generation: g.session_generation,
             raw_subscriber_dropped_total: EventBus::raw_subscriber_dropped_total(),
             metrics: g.metrics.snapshot(),
+        }
+    }
+
+    /// 服务端时钟的估计，从长连接下行帧的服务端时间戳得来（见 [`crate::kernel::ServerClock`]）。
+    ///
+    /// 服务端签发的时刻（截止时间、倒计时的终点、冷却结束的时刻）是服务端时钟上的值：宿主拿它们和
+    /// 「本机时间 + `offset_ms`」比，而不是和本机时间比，设备时钟快了慢了都不会提前或推迟到点。
+    /// 没有会话、或本次会话还没收到服务端的载荷帧时 `estimated` 为 false、`offset_ms` 为 0；宿主此时
+    /// 沿用自己上一次拿到的估计，没有就用本机时钟。
+    pub async fn server_clock(&self) -> ServerClockEstimate {
+        let g = self.inner.read().await;
+        let estimate = session_watchers::server_clock_of(&g).estimate_ms();
+        ServerClockEstimate {
+            offset_ms: estimate.unwrap_or(0),
+            estimated: estimate.is_some(),
         }
     }
 

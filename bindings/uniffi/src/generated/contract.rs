@@ -29,6 +29,7 @@ pub const UNIFFI_CANONICAL_OPERATIONS: &[&str] = &[
     "sdk.session_active",
     "sdk.current_user_id",
     "connection.get_state",
+    "connection.server_clock",
     "connection.disconnect",
     "sdk.update_push_token",
     "sdk.clear_push_token",
