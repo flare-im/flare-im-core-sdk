@@ -102,8 +102,6 @@ struct QueueState {
     awaiting_durable: HashMap<String, AwaitingDurableAck>,
     /// client_msg_id -> 已重试次数
     retry_count: HashMap<String, u32>,
-    /// 提前/乱序到达的 ACK，等待对应 pending 成为当前处理项后再收敛
-    pending_acks: HashMap<String, SendAck>,
     /// 被服务端暂时性拒绝、正在退避等待重发的消息：client_msg_id -> 排定重发时的重试次数。
     /// 退避期间不占发送窗口，也不会被 `try_send_next` 提前捡起。
     retry_backoff: HashMap<String, u32>,
@@ -224,7 +222,6 @@ impl ReliableSendQueue {
             in_flight: HashMap::new(),
             awaiting_durable: HashMap::new(),
             retry_count: HashMap::new(),
-            pending_acks: HashMap::new(),
             retry_backoff: HashMap::new(),
             metrics,
         };
@@ -440,8 +437,34 @@ async fn handle_command(st: &mut QueueState, cmd: QueueCommand) -> Result<()> {
                         );
                     }
                 }
-            } else if st.pending_reader.get(&ack.client_msg_id).await?.is_some() {
-                st.pending_acks.insert(ack.client_msg_id.clone(), ack);
+            } else if let Some(entry) = st.pending_reader.get(&ack.client_msg_id).await? {
+                // Still queued but not in flight: waiting out a retry backoff, or for a free send
+                // slot. Settling it takes no slot, so it happens now rather than when the entry
+                // would next be picked to send; until then the message would show as sending
+                // although the server already answered for it.
+                st.retry_backoff.remove(&entry.client_msg_id);
+                match apply_ack_and_publish(st, &entry, ack).await {
+                    AckApplyResult::Terminal | AckApplyResult::RetryScheduled => {}
+                    AckApplyResult::KeepInFlight => {
+                        st.in_flight.insert(
+                            entry.client_msg_id.clone(),
+                            InFlightSend {
+                                entry,
+                                deadline_ms: deadline_after(st.timeout_duration),
+                                send_failed: false,
+                            },
+                        );
+                    }
+                    AckApplyResult::AwaitDurable => {
+                        st.awaiting_durable.insert(
+                            entry.client_msg_id.clone(),
+                            AwaitingDurableAck {
+                                entry,
+                                deadline_ms: deadline_after(st.timeout_duration),
+                            },
+                        );
+                    }
+                }
             } else if MessageDeliveryService::accepted_from_ack(&ack).is_some()
                 || MessageDeliveryService::error_message_from_ack(&ack).is_some()
             {
@@ -500,8 +523,6 @@ fn record_queue_health(st: &QueueState) {
         "reliable_queue.awaiting_durable",
         st.awaiting_durable.len() as i64,
     );
-    st.metrics
-        .gauge("reliable_queue.pending_acks", st.pending_acks.len() as i64);
     st.metrics.gauge(
         "reliable_queue.retry_backoff",
         st.retry_backoff.len() as i64,
@@ -658,7 +679,6 @@ async fn handle_send_attempt_finished(
 
 async fn reset_pending_on_login(st: &mut QueueState) -> Result<Vec<String>> {
     let mut dropped = Vec::new();
-    st.pending_acks.clear();
     // 退避中的条目仍在 pending 里，下面按 pending 一并判失败；这里只撤掉它们的重发排期。
     st.retry_backoff.clear();
 
@@ -730,7 +750,6 @@ async fn recover_pending_for_current_user(st: &mut QueueState) -> Result<Vec<Str
     for client_msg_id in &cross_account_ids {
         let _ = st.pending_writer.pop(client_msg_id).await?;
         st.retry_count.remove(client_msg_id);
-        st.pending_acks.remove(client_msg_id);
         st.retry_backoff.remove(client_msg_id);
         st.bus.publish(SdkEvent::Message(MessageEvent::SendFailed {
             client_msg_id: client_msg_id.clone(),
@@ -1161,32 +1180,6 @@ async fn try_send_next(st: &mut QueueState) -> Result<()> {
                 }
                 PendingDispatchDecision::SendNow => {}
             }
-            if let Some(ack) = st.pending_acks.remove(&entry.client_msg_id) {
-                match apply_ack_and_publish(st, &entry, ack).await {
-                    AckApplyResult::Terminal | AckApplyResult::RetryScheduled => {}
-                    AckApplyResult::KeepInFlight => {
-                        st.in_flight.insert(
-                            entry.client_msg_id.clone(),
-                            InFlightSend {
-                                entry,
-                                deadline_ms: deadline_after(st.timeout_duration),
-                                send_failed: false,
-                            },
-                        );
-                    }
-                    AckApplyResult::AwaitDurable => {
-                        st.awaiting_durable.insert(
-                            entry.client_msg_id.clone(),
-                            AwaitingDurableAck {
-                                entry,
-                                deadline_ms: deadline_after(st.timeout_duration),
-                            },
-                        );
-                    }
-                }
-                made_progress = true;
-                continue;
-            }
             dispatch_send_attempt(st, entry, retries);
             made_progress = true;
         }
@@ -1413,7 +1406,10 @@ mod tests {
     use crate::model::message::MessageStatus;
     use crate::model::{Conversation, IMMessage};
     use crate::spi::metrics::MetricsRecorder;
-    use flare_proto::common::{SendAccepted, SendAck, SendAckDurability, send_ack};
+    use flare_proto::common::{
+        ErrorCode as ProtoErrorCode, ErrorDetail, SendAccepted, SendAck, SendAckDurability,
+        send_ack,
+    };
     use sqlx::SqlitePool;
     use std::sync::Arc;
     use tokio::sync::{Mutex, RwLock, oneshot};
@@ -1973,6 +1969,104 @@ mod tests {
         assert!(
             pending_store.get("client-pipe-2").await.unwrap().is_none(),
             "second in-flight message should be independently cleared"
+        );
+    }
+
+    /// A message the server turned away for now waits out a backoff: still queued, no longer in
+    /// flight. If the ack of an earlier attempt then arrives (the server persisted it after
+    /// all), it settles the message at once: settling takes no send slot, and the message would
+    /// otherwise show as sending until the backoff ran out and a slot was free.
+    #[cfg(feature = "storage-sqlite")]
+    #[tokio::test]
+    async fn an_ack_for_a_message_waiting_to_be_resent_settles_it_at_once() {
+        let bus = EventBus::new();
+        let mut receiver = bus.subscribe_raw();
+        let metrics = MetricsRecorder::enabled(None);
+        let current_user_id: CurrentUserIdStore = Arc::new(RwLock::new("u1".to_string()));
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        sqlite_init_schema(&pool).await.unwrap();
+        let pending_store = Arc::new(SqlitePendingSendRepo::new(pool.clone()));
+        let message_store = Arc::new(SqliteMessageRepo::new(pool.clone()));
+        let conversation_store = Arc::new(SqliteConversationRepo::new(pool));
+        let queue = ReliableSendQueue::new(ReliableSendQueueConfig {
+            pending_reader: pending_store.clone(),
+            pending_writer: pending_store.clone(),
+            sender: dummy_sender(),
+            message_store: message_store.clone(),
+            conversation_store,
+            current_user_id,
+            bus,
+            timeout_secs: Some(60),
+            max_retries: Some(3),
+            max_in_flight: Some(32),
+            metrics: metrics.clone(),
+        });
+        let mut message = IMMessage::new(flare_proto::common::Message::default());
+        message.client_msg_id = "client-late".to_string();
+        message.server_id = "client-late".to_string();
+        message.conversation_id = "conv-late".to_string();
+        message.sender_id = "u1".to_string();
+        queue.enqueue(message).await.unwrap();
+        assert!(matches!(
+            published(&mut receiver, "optimistic message event"),
+            SdkEvent::Message(MessageEvent::ReceivedBatch { .. })
+        ));
+
+        // Both acks reach the queue before it handles the first, so the backoff (a second or
+        // more) cannot run out in between.
+        queue
+            .on_ack(SendAck {
+                client_msg_id: "client-late".to_string(),
+                conversation_id: "conv-late".to_string(),
+                result: Some(send_ack::Result::Error(ErrorDetail {
+                    code: ProtoErrorCode::Unavailable as i32,
+                    reason: "overloaded".to_string(),
+                    message: "try again later".to_string(),
+                    track: String::new(),
+                })),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        queue
+            .on_ack(SendAck {
+                client_msg_id: "client-late".to_string(),
+                conversation_id: "conv-late".to_string(),
+                result: Some(send_ack::Result::Accepted(SendAccepted {
+                    server_msg_id: "server-late".to_string(),
+                    conversation_seq: 3,
+                    server_time: 0,
+                    durability: SendAckDurability::Persisted as i32,
+                })),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        handled(&queue).await;
+
+        match published(&mut receiver, "send ack of the earlier attempt") {
+            SdkEvent::Message(MessageEvent::SendAck { ack }) => {
+                assert_eq!(ack.client_msg_id, "client-late");
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+        assert!(
+            pending_store.get("client-late").await.unwrap().is_none(),
+            "the persisted message leaves the queue"
+        );
+        let stored = message_store
+            .get_by_client_msg_id("client-late")
+            .await
+            .unwrap()
+            .expect("message stays stored");
+        assert_eq!(stored.server_id, "server-late");
+        assert_eq!(stored.conversation_seq, 3);
+        let gauges = metrics.snapshot().gauges;
+        assert_eq!(gauges.get("reliable_queue.retry_backoff"), Some(&0));
+        assert_eq!(gauges.get("reliable_queue.in_flight"), Some(&0));
+        assert!(
+            receiver.try_recv().is_err(),
+            "nothing else is published for the message"
         );
     }
 
