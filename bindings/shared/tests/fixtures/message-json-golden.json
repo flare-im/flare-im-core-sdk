@@ -1,0 +1,1093 @@
+{
+  "contents": [
+    {
+      "built content": "ok Text {\"contentType\":\"text\",\"mentions\":[],\"text\":\"hi\"}",
+      "input": "{\"contentType\":\"text\",\"text\":\"hi\",\"mentions\":[]}",
+      "name": "text",
+      "text": "ok {\"contentType\":\"text\",\"mentions\":[],\"text\":\"hi\"}",
+      "value": "= text"
+    },
+    {
+      "built content": "ok Text {\"contentType\":\"text\",\"mentions\":[{\"length\":2,\"roleId\":\"\",\"start\":0,\"type\":1,\"userId\":\"b\",\"userIds\":[\"b\"]}],\"text\":\"@b hi\"}",
+      "input": "{\"contentType\":\"text\",\"text\":\"@b hi\",\"mentions\":[{\"type\":1,\"userId\":\"b\",\"userIds\":[\"b\"],\"roleId\":\"\",\"start\":0,\"length\":2}]}",
+      "name": "text with a mention",
+      "text": "ok {\"contentType\":\"text\",\"mentions\":[{\"length\":2,\"roleId\":\"\",\"start\":0,\"type\":1,\"userId\":\"b\",\"userIds\":[\"b\"]}],\"text\":\"@b hi\"}",
+      "value": "= text"
+    },
+    {
+      "built content": "ok Text {\"contentType\":\"text\",\"mentions\":[],\"text\":\"hi\"}",
+      "input": "{\"text\":\"hi\",\"mentions\":[],\"contentType\":\"text\"}",
+      "name": "text, tag last",
+      "text": "ok {\"contentType\":\"text\",\"mentions\":[],\"text\":\"hi\"}",
+      "value": "= text"
+    },
+    {
+      "built content": "ok Text {\"contentType\":\"text\",\"mentions\":[],\"text\":\"hi\"}",
+      "input": "{\"text\":\"hi\",\"contentType\":\"text\",\"mentions\":[]}",
+      "name": "text, tag in the middle",
+      "text": "ok {\"contentType\":\"text\",\"mentions\":[],\"text\":\"hi\"}",
+      "value": "= text"
+    },
+    {
+      "built content": "ok Text {\"contentType\":\"text\",\"mentions\":[],\"text\":\"你好 \\\"q\\\" \\\\ \\n 🙂\"}",
+      "input": "{\"contentType\":\"text\",\"text\":\"你好 \\\"q\\\" \\\\ \\n 🙂\",\"mentions\":[]}",
+      "name": "text, unicode and escapes",
+      "text": "ok {\"contentType\":\"text\",\"mentions\":[],\"text\":\"你好 \\\"q\\\" \\\\ \\n 🙂\"}",
+      "value": "= text"
+    },
+    {
+      "built content": "ok Text {\"contentType\":\"text\",\"mentions\":[],\"text\":\"hi\"}",
+      "input": "{\"contentType\":\"text\",\"text\":\"hi\",\"mentions\":[]}",
+      "name": "text, escaped tag key",
+      "text": "ok {\"contentType\":\"text\",\"mentions\":[],\"text\":\"hi\"}",
+      "value": "= text"
+    },
+    {
+      "built content": "ok Text {\"contentType\":\"text\",\"mentions\":[],\"text\":\"hi\"}",
+      "input": "{\"contentType\":\"text\",\"text\":\"hi\",\"mentions\":[],\"extra\":{\"a\":[1,2]}}",
+      "name": "text, unknown field",
+      "text": "ok {\"contentType\":\"text\",\"mentions\":[],\"text\":\"hi\"}",
+      "value": "= text"
+    },
+    {
+      "built content": "ok Image {\"contentType\":\"image\",\"description\":\"d\",\"durationMs\":40,\"source\":{\"animated\":false,\"blurhash\":\"LEHV6n\",\"format\":1,\"height\":3,\"imageId\":\"img-1\",\"mimeType\":\"image/png\",\"size\":10,\"url\":\"https://x/a.png\",\"uuid\":\"u\",\"width\":2},\"thumbnail\":{\"animated\":false,\"format\":0,\"height\":1,\"imageId\":\"\",\"mimeType\":\"image/png\",\"size\":1,\"url\":\"\",\"uuid\":\"t\",\"width\":1}}",
+      "input": "{\"contentType\":\"image\",\"source\":{\"uuid\":\"u\",\"imageId\":\"img-1\",\"url\":\"https://x/a.png\",\"mimeType\":\"image/png\",\"size\":10,\"width\":2,\"height\":3,\"format\":1,\"animated\":false,\"blurhash\":\"LEHV6n\"},\"thumbnail\":{\"uuid\":\"t\",\"url\":\"\",\"mimeType\":\"image/png\",\"size\":1,\"width\":1,\"height\":1},\"description\":\"d\",\"durationMs\":40}",
+      "name": "image, full",
+      "text": "ok {\"contentType\":\"image\",\"description\":\"d\",\"durationMs\":40,\"source\":{\"animated\":false,\"blurhash\":\"LEHV6n\",\"format\":1,\"height\":3,\"imageId\":\"img-1\",\"mimeType\":\"image/png\",\"size\":10,\"url\":\"https://x/a.png\",\"uuid\":\"u\",\"width\":2},\"thumbnail\":{\"animated\":false,\"format\":0,\"height\":1,\"imageId\":\"\",\"mimeType\":\"image/png\",\"size\":1,\"url\":\"\",\"uuid\":\"t\",\"width\":1}}",
+      "value": "= text"
+    },
+    {
+      "built content": "ok Image {\"contentType\":\"image\",\"description\":\"\",\"source\":null,\"thumbnail\":null}",
+      "input": "{\"contentType\":\"image\",\"source\":null,\"thumbnail\":null,\"description\":\"\"}",
+      "name": "image, null parts",
+      "text": "ok {\"contentType\":\"image\",\"description\":\"\",\"source\":null,\"thumbnail\":null}",
+      "value": "= text"
+    },
+    {
+      "built content": "ok Image {\"contentType\":\"image\",\"description\":\"\",\"source\":{\"animated\":false,\"format\":0,\"height\":1,\"imageId\":\"\",\"mimeType\":\"\",\"size\":1,\"url\":\"\",\"uuid\":\"v\",\"width\":1},\"thumbnail\":null}",
+      "input": "{\"contentType\":\"image\",\"source\":{\"uuid\":\"u\",\"uuid\":\"v\",\"url\":\"\",\"mimeType\":\"\",\"size\":1,\"width\":1,\"height\":1},\"thumbnail\":null,\"description\":\"\"}",
+      "name": "image, duplicate field in a nested struct",
+      "text": "err Data: duplicate field `uuid`",
+      "value": "ok {\"contentType\":\"image\",\"description\":\"\",\"source\":{\"animated\":false,\"format\":0,\"height\":1,\"imageId\":\"\",\"mimeType\":\"\",\"size\":1,\"url\":\"\",\"uuid\":\"v\",\"width\":1},\"thumbnail\":null}"
+    },
+    {
+      "built content": "err 错误 [INVALID_PARAMETER] invalid built content: invalid type: floating point `1.5`, expected i64",
+      "input": "{\"contentType\":\"image\",\"source\":{\"uuid\":\"u\",\"url\":\"\",\"mimeType\":\"\",\"size\":1.5,\"width\":1,\"height\":1},\"thumbnail\":null,\"description\":\"\"}",
+      "name": "image, size as a float",
+      "text": "err Data: invalid type: floating point `1.5`, expected i64",
+      "value": "= text"
+    },
+    {
+      "built content": "err 错误 [INVALID_PARAMETER] invalid built content: invalid value: integer `3000000000`, expected i32",
+      "input": "{\"contentType\":\"image\",\"source\":{\"uuid\":\"u\",\"url\":\"\",\"mimeType\":\"\",\"size\":1,\"width\":3000000000,\"height\":1},\"thumbnail\":null,\"description\":\"\"}",
+      "name": "image, width out of range",
+      "text": "err Data: invalid value: integer `3000000000`, expected i32",
+      "value": "= text"
+    },
+    {
+      "built content": "ok Video {\"contentType\":\"video\",\"cover\":null,\"description\":\"\",\"source\":{\"durationMs\":1000,\"height\":3,\"mimeType\":\"video/mp4\",\"size\":9,\"url\":\"\",\"uuid\":\"u\",\"width\":4},\"videoId\":\"v1\"}",
+      "input": "{\"contentType\":\"video\",\"videoId\":\"v1\",\"source\":{\"uuid\":\"u\",\"url\":\"\",\"mimeType\":\"video/mp4\",\"size\":9,\"durationMs\":1000,\"width\":4,\"height\":3},\"cover\":null,\"description\":\"\"}",
+      "name": "video",
+      "text": "ok {\"contentType\":\"video\",\"cover\":null,\"description\":\"\",\"source\":{\"durationMs\":1000,\"height\":3,\"mimeType\":\"video/mp4\",\"size\":9,\"url\":\"\",\"uuid\":\"u\",\"width\":4},\"videoId\":\"v1\"}",
+      "value": "= text"
+    },
+    {
+      "built content": "ok Audio {\"audioId\":\"a1\",\"contentType\":\"audio\",\"description\":\"\",\"source\":{\"durationMs\":1000,\"mimeType\":\"audio/aac\",\"size\":9,\"url\":\"\",\"uuid\":\"u\"}}",
+      "input": "{\"contentType\":\"audio\",\"audioId\":\"a1\",\"source\":{\"uuid\":\"u\",\"url\":\"\",\"mimeType\":\"audio/aac\",\"size\":9,\"durationMs\":1000},\"description\":\"\"}",
+      "name": "audio",
+      "text": "ok {\"audioId\":\"a1\",\"contentType\":\"audio\",\"description\":\"\",\"source\":{\"durationMs\":1000,\"mimeType\":\"audio/aac\",\"size\":9,\"url\":\"\",\"uuid\":\"u\"}}",
+      "value": "= text"
+    },
+    {
+      "built content": "ok File {\"contentType\":\"file\",\"description\":\"\",\"fileId\":\"f1\",\"fileName\":\"a.pdf\",\"fileSize\":12,\"mimeType\":\"application/pdf\",\"url\":\"\"}",
+      "input": "{\"contentType\":\"file\",\"fileId\":\"f1\",\"fileName\":\"a.pdf\",\"mimeType\":\"application/pdf\",\"fileSize\":12,\"url\":\"\",\"description\":\"\"}",
+      "name": "file",
+      "text": "ok {\"contentType\":\"file\",\"description\":\"\",\"fileId\":\"f1\",\"fileName\":\"a.pdf\",\"fileSize\":12,\"mimeType\":\"application/pdf\",\"url\":\"\"}",
+      "value": "= text"
+    },
+    {
+      "built content": "ok Location {\"address\":\"a\",\"contentType\":\"location\",\"latitude\":1.5,\"longitude\":-2.0,\"snapshotUrl\":\"https://x/s.png\",\"title\":\"t\",\"zoom\":12}",
+      "input": "{\"contentType\":\"location\",\"latitude\":1.5,\"longitude\":-2,\"title\":\"t\",\"address\":\"a\",\"zoom\":12,\"snapshotUrl\":\"https://x/s.png\"}",
+      "name": "location, optional parts",
+      "text": "ok {\"address\":\"a\",\"contentType\":\"location\",\"latitude\":1.5,\"longitude\":-2.0,\"snapshotUrl\":\"https://x/s.png\",\"title\":\"t\",\"zoom\":12}",
+      "value": "= text"
+    },
+    {
+      "built content": "err 错误 [INVALID_PARAMETER] invalid built content: invalid value: integer `300`, expected u8",
+      "input": "{\"contentType\":\"location\",\"latitude\":1.5,\"longitude\":2,\"title\":\"t\",\"address\":\"a\",\"zoom\":300}",
+      "name": "location, zoom out of range",
+      "text": "err Data: invalid value: integer `300`, expected u8",
+      "value": "= text"
+    },
+    {
+      "built content": "ok Card {\"avatar\":\"\",\"cardType\":\"user\",\"contentType\":\"card\",\"extra\":{\"k\":\"2\"},\"id\":\"u2\",\"subtitle\":\"\",\"title\":\"B\"}",
+      "input": "{\"contentType\":\"card\",\"cardType\":\"user\",\"id\":\"u2\",\"title\":\"B\",\"subtitle\":\"\",\"avatar\":\"\",\"extra\":{\"k\":\"1\",\"k\":\"2\"}}",
+      "name": "card, map with a duplicate key",
+      "text": "ok {\"avatar\":\"\",\"cardType\":\"user\",\"contentType\":\"card\",\"extra\":{\"k\":\"2\"},\"id\":\"u2\",\"subtitle\":\"\",\"title\":\"B\"}",
+      "value": "= text"
+    },
+    {
+      "built content": "ok Sticker {\"contentType\":\"sticker\",\"extra\":{},\"format\":\"\",\"height\":1,\"packageId\":\"\",\"stickerId\":\"s\",\"url\":\"https://x/s.webp\",\"width\":1}",
+      "input": "{\"contentType\":\"sticker\",\"stickerId\":\"s\",\"url\":\"https://x/s.webp\",\"width\":1,\"height\":1}",
+      "name": "sticker, defaults",
+      "text": "ok {\"contentType\":\"sticker\",\"extra\":{},\"format\":\"\",\"height\":1,\"packageId\":\"\",\"stickerId\":\"s\",\"url\":\"https://x/s.webp\",\"width\":1}",
+      "value": "= text"
+    },
+    {
+      "built content": "ok Emoji {\"contentType\":\"emoji\",\"description\":\"smile\",\"emoji\":\"🙂\",\"extra\":{}}",
+      "input": "{\"contentType\":\"emoji\",\"emoji\":\"🙂\",\"description\":\"smile\",\"extra\":{}}",
+      "name": "emoji",
+      "text": "ok {\"contentType\":\"emoji\",\"description\":\"smile\",\"emoji\":\"🙂\",\"extra\":{}}",
+      "value": "= text"
+    },
+    {
+      "built content": "ok Quote {\"contentType\":\"quote\",\"currentContent\":null,\"quotedContent\":{\"contentType\":\"text\",\"mentions\":[],\"text\":\"hi\"},\"quotedMessageId\":\"m1\",\"quotedSenderId\":\"b\",\"quotedTextPreview\":\"hi\"}",
+      "input": "{\"contentType\":\"quote\",\"quotedMessageId\":\"m1\",\"quotedSenderId\":\"b\",\"quotedTextPreview\":\"hi\",\"quotedContent\":{\"contentType\":\"text\",\"text\":\"hi\",\"mentions\":[]},\"currentContent\":null}",
+      "name": "quote, nested content",
+      "text": "ok {\"contentType\":\"quote\",\"currentContent\":null,\"quotedContent\":{\"contentType\":\"text\",\"mentions\":[],\"text\":\"hi\"},\"quotedMessageId\":\"m1\",\"quotedSenderId\":\"b\",\"quotedTextPreview\":\"hi\"}",
+      "value": "= text"
+    },
+    {
+      "built content": "err 错误 [INVALID_PARAMETER] invalid built content: missing field `contentType`",
+      "input": "{\"contentType\":\"quote\",\"quotedMessageId\":\"m1\",\"quotedSenderId\":\"b\",\"quotedTextPreview\":\"hi\",\"quotedContent\":{\"text\":\"hi\",\"mentions\":[]},\"currentContent\":null}",
+      "name": "quote, nested content without a tag",
+      "text": "err Data: missing field `contentType`",
+      "value": "= text"
+    },
+    {
+      "built content": "ok LinkCard {\"contentType\":\"link_card\",\"description\":\"d\",\"siteName\":\"x\",\"thumbnailUrl\":\"\",\"title\":\"t\",\"url\":\"https://x\"}",
+      "input": "{\"contentType\":\"link_card\",\"url\":\"https://x\",\"title\":\"t\",\"description\":\"d\",\"thumbnailUrl\":\"\",\"siteName\":\"x\"}",
+      "name": "link card",
+      "text": "ok {\"contentType\":\"link_card\",\"description\":\"d\",\"siteName\":\"x\",\"thumbnailUrl\":\"\",\"title\":\"t\",\"url\":\"https://x\"}",
+      "value": "= text"
+    },
+    {
+      "built content": "ok Forward {\"contentType\":\"forward\",\"items\":[{\"content\":{\"contentType\":\"text\",\"mentions\":[],\"text\":\"hi\"},\"messageType\":1,\"plainText\":\"hi\",\"sourceMessageId\":\"m1\",\"sourceMessageTimeMs\":5,\"sourceSenderName\":\"B\"},{\"messageType\":2,\"plainText\":\"[image]\"}],\"mode\":1,\"title\":\"chat\"}",
+      "input": "{\"contentType\":\"forward\",\"mode\":1,\"title\":\"chat\",\"items\":[{\"sourceMessageId\":\"m1\",\"sourceSenderName\":\"B\",\"sourceMessageTimeMs\":5,\"messageType\":1,\"plainText\":\"hi\",\"content\":{\"contentType\":\"text\",\"text\":\"hi\",\"mentions\":[]}},{\"messageType\":2,\"plainText\":\"[image]\"}]}",
+      "name": "forward, nested items",
+      "text": "ok {\"contentType\":\"forward\",\"items\":[{\"content\":{\"contentType\":\"text\",\"mentions\":[],\"text\":\"hi\"},\"messageType\":1,\"plainText\":\"hi\",\"sourceMessageId\":\"m1\",\"sourceMessageTimeMs\":5,\"sourceSenderName\":\"B\"},{\"messageType\":2,\"plainText\":\"[image]\"}],\"mode\":1,\"title\":\"chat\"}",
+      "value": "= text"
+    },
+    {
+      "built content": "ok Thread {\"contentType\":\"thread\",\"metadata\":{\"a\":\"b\"},\"rootContent\":{\"contentType\":\"quote\",\"currentContent\":null,\"quotedContent\":{\"contentType\":\"text\",\"mentions\":[],\"text\":\"x\"},\"quotedMessageId\":\"m\",\"quotedSenderId\":\"b\",\"quotedTextPreview\":\"\"},\"threadId\":\"t1\",\"threadTitle\":\"T\"}",
+      "input": "{\"contentType\":\"thread\",\"threadId\":\"t1\",\"threadTitle\":\"T\",\"rootContent\":{\"contentType\":\"quote\",\"quotedMessageId\":\"m\",\"quotedSenderId\":\"b\",\"quotedTextPreview\":\"\",\"quotedContent\":{\"contentType\":\"text\",\"text\":\"x\",\"mentions\":[]},\"currentContent\":null},\"metadata\":{\"a\":\"b\"}}",
+      "name": "thread, two levels of nesting",
+      "text": "ok {\"contentType\":\"thread\",\"metadata\":{\"a\":\"b\"},\"rootContent\":{\"contentType\":\"quote\",\"currentContent\":null,\"quotedContent\":{\"contentType\":\"text\",\"mentions\":[],\"text\":\"x\"},\"quotedMessageId\":\"m\",\"quotedSenderId\":\"b\",\"quotedTextPreview\":\"\"},\"threadId\":\"t1\",\"threadTitle\":\"T\"}",
+      "value": "= text"
+    },
+    {
+      "built content": "ok AppCard {\"appId\":\"app\",\"contentType\":\"mini_program\",\"extra\":{},\"pagePath\":\"/p\",\"thumbnailUrl\":\"\",\"title\":\"t\"}",
+      "input": "{\"contentType\":\"mini_program\",\"appId\":\"app\",\"title\":\"t\",\"pagePath\":\"/p\",\"thumbnailUrl\":\"\",\"extra\":{}}",
+      "name": "mini program",
+      "text": "ok {\"appId\":\"app\",\"contentType\":\"mini_program\",\"extra\":{},\"pagePath\":\"/p\",\"thumbnailUrl\":\"\",\"title\":\"t\"}",
+      "value": "= text"
+    },
+    {
+      "built content": "ok RichText {\"contentSchema\":\"flare.richdoc.v2\",\"contentType\":\"rich_text\",\"docJson\":\"{}\",\"inputFormat\":\"markdown\",\"inputFormatVersion\":1,\"plainText\":\"p\",\"renderHintsJson\":\"{}\",\"searchText\":\"p\",\"sourcePayload\":{\"m\":\"*p*\"},\"title\":\"T\"}",
+      "input": "{\"contentType\":\"rich_text\",\"docJson\":\"{}\",\"contentSchema\":\"flare.richdoc.v2\",\"plainText\":\"p\",\"inputFormat\":\"markdown\",\"inputFormatVersion\":1,\"sourcePayload\":{\"m\":\"*p*\"},\"title\":\"T\",\"searchText\":\"p\",\"renderHintsJson\":\"{}\"}",
+      "name": "rich text, optional parts",
+      "text": "ok {\"contentSchema\":\"flare.richdoc.v2\",\"contentType\":\"rich_text\",\"docJson\":\"{}\",\"inputFormat\":\"markdown\",\"inputFormatVersion\":1,\"plainText\":\"p\",\"renderHintsJson\":\"{}\",\"searchText\":\"p\",\"sourcePayload\":{\"m\":\"*p*\"},\"title\":\"T\"}",
+      "value": "= text"
+    },
+    {
+      "built content": "ok ImageGroup {\"contentType\":\"image_group\",\"description\":\"\",\"images\":[{\"animated\":false,\"format\":0,\"height\":1,\"imageId\":\"\",\"mimeType\":\"\",\"size\":1,\"url\":\"\",\"uuid\":\"u\",\"width\":1}],\"metadata\":{}}",
+      "input": "{\"contentType\":\"image_group\",\"images\":[{\"uuid\":\"u\",\"url\":\"\",\"mimeType\":\"\",\"size\":1,\"width\":1,\"height\":1}],\"description\":\"\",\"metadata\":{}}",
+      "name": "image group",
+      "text": "ok {\"contentType\":\"image_group\",\"description\":\"\",\"images\":[{\"animated\":false,\"format\":0,\"height\":1,\"imageId\":\"\",\"mimeType\":\"\",\"size\":1,\"url\":\"\",\"uuid\":\"u\",\"width\":1}],\"metadata\":{}}",
+      "value": "= text"
+    },
+    {
+      "built content": "ok System {\"body\":\"b\",\"contentType\":\"system\",\"data\":{\"u\":\"1\"},\"eventKind\":\"member_joined\",\"payload\":[1,2,255]}",
+      "input": "{\"contentType\":\"system\",\"eventKind\":\"member_joined\",\"body\":\"b\",\"data\":{\"u\":\"1\"},\"payload\":[1,2,255]}",
+      "name": "system, payload bytes",
+      "text": "ok {\"body\":\"b\",\"contentType\":\"system\",\"data\":{\"u\":\"1\"},\"eventKind\":\"member_joined\",\"payload\":[1,2,255]}",
+      "value": "= text"
+    },
+    {
+      "built content": "err 错误 [INVALID_PARAMETER] invalid built content: invalid type: string \"AQI=\", expected a sequence",
+      "input": "{\"contentType\":\"system\",\"eventKind\":\"k\",\"body\":\"b\",\"data\":{},\"payload\":\"AQI=\"}",
+      "name": "system, payload as a string",
+      "text": "err Data: invalid type: string \"AQI=\", expected a sequence",
+      "value": "= text"
+    },
+    {
+      "built content": "err 错误 [INVALID_PARAMETER] invalid built content: invalid value: integer `256`, expected u8",
+      "input": "{\"contentType\":\"system\",\"eventKind\":\"k\",\"body\":\"b\",\"data\":{},\"payload\":[256]}",
+      "name": "system, payload byte out of range",
+      "text": "err Data: invalid value: integer `256`, expected u8",
+      "value": "= text"
+    },
+    {
+      "built content": "ok Notification {\"body\":\"b\",\"contentType\":\"notification\",\"data\":{},\"notificationType\":\"n\",\"notifyAll\":false,\"persistent\":true,\"playSound\":false,\"showBadge\":false,\"showInList\":true,\"targetRoleId\":\"\",\"targetUserIds\":[\"u\"],\"title\":\"t\"}",
+      "input": "{\"contentType\":\"notification\",\"title\":\"t\",\"body\":\"b\",\"notificationType\":\"n\",\"data\":{},\"targetUserIds\":[\"u\"],\"targetRoleId\":\"\",\"notifyAll\":false,\"persistent\":true,\"showInList\":true,\"showBadge\":false,\"playSound\":false}",
+      "name": "notification",
+      "text": "ok {\"body\":\"b\",\"contentType\":\"notification\",\"data\":{},\"notificationType\":\"n\",\"notifyAll\":false,\"persistent\":true,\"playSound\":false,\"showBadge\":false,\"showInList\":true,\"targetRoleId\":\"\",\"targetUserIds\":[\"u\"],\"title\":\"t\"}",
+      "value": "= text"
+    },
+    {
+      "built content": "ok AppCard {\"contentType\":\"vote\",\"metadata\":{},\"options\":[\"a\",\"b\"],\"participantUserIds\":[\"u\"],\"title\":\"t\",\"voteId\":\"v\"}",
+      "input": "{\"contentType\":\"vote\",\"voteId\":\"v\",\"title\":\"t\",\"options\":[\"a\",\"b\"],\"metadata\":{},\"participantUserIds\":[\"u\"]}",
+      "name": "vote",
+      "text": "ok {\"contentType\":\"vote\",\"metadata\":{},\"options\":[\"a\",\"b\"],\"participantUserIds\":[\"u\"],\"title\":\"t\",\"voteId\":\"v\"}",
+      "value": "= text"
+    },
+    {
+      "built content": "ok AppCard {\"contentType\":\"task\",\"metadata\":{},\"status\":\"open\",\"taskId\":\"t\",\"title\":\"t\"}",
+      "input": "{\"contentType\":\"task\",\"taskId\":\"t\",\"title\":\"t\",\"status\":\"open\",\"metadata\":{}}",
+      "name": "task",
+      "text": "ok {\"contentType\":\"task\",\"metadata\":{},\"status\":\"open\",\"taskId\":\"t\",\"title\":\"t\"}",
+      "value": "= text"
+    },
+    {
+      "built content": "ok AppCard {\"contentType\":\"schedule\",\"endTime\":2,\"metadata\":{},\"scheduleId\":\"s\",\"startTime\":1,\"title\":\"t\"}",
+      "input": "{\"contentType\":\"schedule\",\"scheduleId\":\"s\",\"title\":\"t\",\"startTime\":1,\"endTime\":2,\"metadata\":{}}",
+      "name": "schedule",
+      "text": "ok {\"contentType\":\"schedule\",\"endTime\":2,\"metadata\":{},\"scheduleId\":\"s\",\"startTime\":1,\"title\":\"t\"}",
+      "value": "= text"
+    },
+    {
+      "built content": "err 错误 [INVALID_PARAMETER] invalid built content: invalid value: integer `-1`, expected u64",
+      "input": "{\"contentType\":\"schedule\",\"scheduleId\":\"s\",\"title\":\"t\",\"startTime\":-1,\"endTime\":2,\"metadata\":{}}",
+      "name": "schedule, negative time",
+      "text": "err Data: invalid value: integer `-1`, expected u64",
+      "value": "= text"
+    },
+    {
+      "built content": "ok AppCard {\"body\":\"b\",\"contentType\":\"announcement\",\"metadata\":{},\"pinned\":true,\"title\":\"t\"}",
+      "input": "{\"contentType\":\"announcement\",\"title\":\"t\",\"body\":\"b\",\"pinned\":true,\"metadata\":{}}",
+      "name": "announcement",
+      "text": "ok {\"body\":\"b\",\"contentType\":\"announcement\",\"metadata\":{},\"pinned\":true,\"title\":\"t\"}",
+      "value": "= text"
+    },
+    {
+      "built content": "ok Custom {\"contentType\":\"custom\",\"description\":\"d\",\"metadata\":{\"k\":\"v\"},\"payload\":[7],\"type\":\"x.y\"}",
+      "input": "{\"contentType\":\"custom\",\"type\":\"x.y\",\"payload\":[7],\"description\":\"d\",\"metadata\":{\"k\":\"v\"}}",
+      "name": "custom, payload",
+      "text": "ok {\"contentType\":\"custom\",\"description\":\"d\",\"metadata\":{\"k\":\"v\"},\"payload\":[7],\"type\":\"x.y\"}",
+      "value": "= text"
+    },
+    {
+      "built content": "ok Placeholder {\"contentType\":\"placeholder\",\"fallbackText\":\"?\",\"metadata\":{},\"reason\":\"unsupported\"}",
+      "input": "{\"contentType\":\"placeholder\",\"reason\":\"unsupported\",\"fallbackText\":\"?\",\"metadata\":{}}",
+      "name": "placeholder",
+      "text": "ok {\"contentType\":\"placeholder\",\"fallbackText\":\"?\",\"metadata\":{},\"reason\":\"unsupported\"}",
+      "value": "= text"
+    },
+    {
+      "built content": "err 错误 [INVALID_PARAMETER] invalid built content: missing field `contentType`",
+      "input": "{\"text\":\"hi\",\"mentions\":[]}",
+      "name": "tag missing",
+      "text": "err Data: missing field `contentType` at line 1 column 27",
+      "value": "err Data: missing field `contentType`"
+    },
+    {
+      "built content": "err 错误 [INVALID_PARAMETER] invalid built content: unknown variant `nope`, expected one of `text`, `image`, `video`, `audio`, `file`, `location`, `card`, `sticker`, `emoji`, `quote`, `link_card`, `forward`, `thread`, `mini_program`, `rich_text`, `image_group`, `system`, `notification`, `vote`, `task`, `schedule`, `announcement`, `custom`, `placeholder`",
+      "input": "{\"contentType\":\"nope\",\"text\":\"hi\",\"mentions\":[]}",
+      "name": "tag unknown",
+      "text": "err Data: unknown variant `nope`, expected one of `text`, `image`, `video`, `audio`, `file`, `location`, `card`, `sticker`, `emoji`, `quote`, `link_card`, `forward`, `thread`, `mini_program`, `rich_text`, `image_group`, `system`, `notification`, `vote`, `task`, `schedule`, `announcement`, `custom`, `placeholder` at line 1 column 21",
+      "value": "err Data: unknown variant `nope`, expected one of `text`, `image`, `video`, `audio`, `file`, `location`, `card`, `sticker`, `emoji`, `quote`, `link_card`, `forward`, `thread`, `mini_program`, `rich_text`, `image_group`, `system`, `notification`, `vote`, `task`, `schedule`, `announcement`, `custom`, `placeholder`"
+    },
+    {
+      "built content": "err 错误 [INVALID_PARAMETER] invalid built content: unknown variant `Text`, expected one of `text`, `image`, `video`, `audio`, `file`, `location`, `card`, `sticker`, `emoji`, `quote`, `link_card`, `forward`, `thread`, `mini_program`, `rich_text`, `image_group`, `system`, `notification`, `vote`, `task`, `schedule`, `announcement`, `custom`, `placeholder`",
+      "input": "{\"contentType\":\"Text\",\"text\":\"hi\",\"mentions\":[]}",
+      "name": "tag in another case",
+      "text": "err Data: unknown variant `Text`, expected one of `text`, `image`, `video`, `audio`, `file`, `location`, `card`, `sticker`, `emoji`, `quote`, `link_card`, `forward`, `thread`, `mini_program`, `rich_text`, `image_group`, `system`, `notification`, `vote`, `task`, `schedule`, `announcement`, `custom`, `placeholder` at line 1 column 21",
+      "value": "err Data: unknown variant `Text`, expected one of `text`, `image`, `video`, `audio`, `file`, `location`, `card`, `sticker`, `emoji`, `quote`, `link_card`, `forward`, `thread`, `mini_program`, `rich_text`, `image_group`, `system`, `notification`, `vote`, `task`, `schedule`, `announcement`, `custom`, `placeholder`"
+    },
+    {
+      "built content": "err 错误 [INVALID_PARAMETER] invalid built content: invalid type: integer `0`, expected variant identifier",
+      "input": "{\"contentType\":0,\"text\":\"hi\",\"mentions\":[]}",
+      "name": "tag as a number",
+      "text": "err Data: invalid type: integer `0`, expected variant identifier at line 1 column 16",
+      "value": "err Data: invalid type: integer `0`, expected variant identifier"
+    },
+    {
+      "built content": "err 错误 [INVALID_PARAMETER] invalid built content: invalid type: null, expected variant identifier",
+      "input": "{\"contentType\":null,\"text\":\"hi\",\"mentions\":[]}",
+      "name": "tag as null",
+      "text": "err Data: invalid type: null, expected variant identifier at line 1 column 19",
+      "value": "err Data: invalid type: null, expected variant identifier"
+    },
+    {
+      "built content": "err 错误 [INVALID_PARAMETER] invalid built content: invalid type: map, expected variant identifier",
+      "input": "{\"contentType\":{\"text\":null},\"text\":\"hi\",\"mentions\":[]}",
+      "name": "tag as an object",
+      "text": "err Data: invalid type: map, expected variant identifier at line 1 column 15",
+      "value": "err Data: invalid type: map, expected variant identifier"
+    },
+    {
+      "built content": "err 错误 [INVALID_PARAMETER] invalid built content: missing field `description`",
+      "input": "{\"contentType\":\"text\",\"contentType\":\"image\",\"text\":\"hi\",\"mentions\":[]}",
+      "name": "tag twice",
+      "text": "err Data: duplicate field `contentType` at line 1 column 35",
+      "value": "err Data: missing field `description`"
+    },
+    {
+      "built content": "ok Text {\"contentType\":\"text\",\"mentions\":[],\"text\":\"b\"}",
+      "input": "{\"contentType\":\"text\",\"text\":\"a\",\"text\":\"b\",\"mentions\":[]}",
+      "name": "field twice",
+      "text": "err Data: duplicate field `text`",
+      "value": "ok {\"contentType\":\"text\",\"mentions\":[],\"text\":\"b\"}"
+    },
+    {
+      "built content": "ok Text {\"contentType\":\"text\",\"mentions\":[],\"text\":\"b\"}",
+      "input": "{\"text\":\"a\",\"text\":\"b\",\"contentType\":\"text\",\"mentions\":[]}",
+      "name": "field twice before the tag",
+      "text": "err Data: duplicate field `text`",
+      "value": "ok {\"contentType\":\"text\",\"mentions\":[],\"text\":\"b\"}"
+    },
+    {
+      "built content": "err 错误 [INVALID_PARAMETER] invalid built content: invalid type: integer `5`, expected a string",
+      "input": "{\"contentType\":\"text\",\"text\":5,\"mentions\":[]}",
+      "name": "field of the wrong type",
+      "text": "err Data: invalid type: integer `5`, expected a string",
+      "value": "= text"
+    },
+    {
+      "built content": "err 错误 [INVALID_PARAMETER] invalid built content: missing field `mentions`",
+      "input": "{\"contentType\":\"text\",\"text\":\"hi\"}",
+      "name": "required field missing",
+      "text": "err Data: missing field `mentions`",
+      "value": "= text"
+    },
+    {
+      "built content": "err 错误 [INVALID_PARAMETER] invalid built content: invalid type: null, expected a sequence",
+      "input": "{\"contentType\":\"text\",\"text\":\"hi\",\"mentions\":null}",
+      "name": "null for a required list",
+      "text": "err Data: invalid type: null, expected a sequence",
+      "value": "= text"
+    },
+    {
+      "built content": "ok Text {\"contentType\":\"text\",\"mentions\":[],\"text\":\"hi\"}",
+      "input": "[\"text\",\"hi\",[]]",
+      "name": "array form",
+      "text": "ok {\"contentType\":\"text\",\"mentions\":[],\"text\":\"hi\"}",
+      "value": "= text"
+    },
+    {
+      "built content": "err 错误 [INVALID_PARAMETER] invalid built content: invalid length 3, expected 2 elements in sequence",
+      "input": "[\"text\",\"hi\",[],1]",
+      "name": "array form with an extra element",
+      "text": "err Data: invalid length 3, expected 2 elements in sequence",
+      "value": "= text"
+    },
+    {
+      "built content": "err 错误 [INVALID_PARAMETER] invalid built content: missing field `contentType`",
+      "input": "[]",
+      "name": "array form, empty",
+      "text": "err Data: missing field `contentType` at line 1 column 2",
+      "value": "err Data: missing field `contentType`"
+    },
+    {
+      "built content": "err 错误 [INVALID_PARAMETER] invalid built content: missing field `contentType`",
+      "input": "{}",
+      "name": "empty object",
+      "text": "err Data: missing field `contentType` at line 1 column 2",
+      "value": "err Data: missing field `contentType`"
+    },
+    {
+      "built content": "err 错误 [INVALID_PARAMETER] invalid built content: invalid type: string \"text\", expected internally tagged enum Elem",
+      "input": "\"text\"",
+      "name": "a string",
+      "text": "err Data: invalid type: string \"text\", expected internally tagged enum Elem at line 1 column 6",
+      "value": "err Data: invalid type: string \"text\", expected internally tagged enum Elem"
+    },
+    {
+      "built content": "err 错误 [INVALID_PARAMETER] invalid built content: invalid type: null, expected internally tagged enum Elem",
+      "input": "null",
+      "name": "null",
+      "text": "err Data: invalid type: null, expected internally tagged enum Elem at line 1 column 4",
+      "value": "err Data: invalid type: null, expected internally tagged enum Elem"
+    },
+    {
+      "input": "{\"contentType\":\"text\",\"text\":\"hi\"",
+      "name": "truncated",
+      "text": "err Eof: EOF while parsing an object at line 1 column 33"
+    },
+    {
+      "input": "{\"contentType\":\"text\",\"text\":\"hi\",\"mentions\":[]} x",
+      "name": "trailing characters",
+      "text": "err Syntax: trailing characters at line 1 column 50"
+    },
+    {
+      "input": "{\"contentType\":\"text\",\"text\":\"hi\",\"mentions\":[],}",
+      "name": "trailing comma",
+      "text": "err Syntax: trailing comma at line 1 column 49"
+    },
+    {
+      "input": "{\"contentType\":\"nope\",\"text\":",
+      "name": "unknown tag, then a syntax error",
+      "text": "err Data: unknown variant `nope`, expected one of `text`, `image`, `video`, `audio`, `file`, `location`, `card`, `sticker`, `emoji`, `quote`, `link_card`, `forward`, `thread`, `mini_program`, `rich_text`, `image_group`, `system`, `notification`, `vote`, `task`, `schedule`, `announcement`, `custom`, `placeholder` at line 1 column 21"
+    },
+    {
+      "input": "{\"contentType\":\"text\",\"text\":5,",
+      "name": "type error, then a syntax error",
+      "text": "err Eof: EOF while parsing a value at line 1 column 31"
+    }
+  ],
+  "messages": [
+    {
+      "binding list": "= value",
+      "binding params": "= value",
+      "binding text": "= text",
+      "input": "{\"serverId\":\"s1\",\"clientMsgId\":\"c1\",\"conversationId\":\"conv-1\",\"conversationType\":1,\"channelId\":\"\",\"senderId\":\"u1\",\"source\":0,\"conversationSeq\":7,\"createdAt\":1700000000000,\"clientCreatedAt\":1700000000001,\"messageType\":1,\"senderName\":\"A\",\"senderAvatar\":\"\",\"senderDisplayName\":\"A\",\"status\":2,\"isRead\":false,\"isRecalled\":false,\"isEdited\":false,\"mentionUsers\":[],\"mentionAll\":false,\"attributes\":{\"k\":\"v\"},\"version\":1,\"updatedAt\":1700000000002}",
+      "name": "no content",
+      "text": "ok {\"attributes\":{\"k\":\"v\"},\"channelId\":\"\",\"clientCreatedAt\":1700000000001,\"clientMsgId\":\"c1\",\"conversationId\":\"conv-1\",\"conversationSeq\":7,\"conversationType\":1,\"createdAt\":1700000000000,\"extensions\":{},\"isEdited\":false,\"isRead\":false,\"isRecalled\":false,\"localState\":{\"failed\":false,\"isLocal\":false,\"sending\":false,\"sortTs\":0,\"uploadProgress\":0,\"uploading\":false},\"mentionAll\":false,\"mentionUsers\":[],\"messageType\":1,\"reactions\":[],\"receipt\":{\"status\":\"sent\"},\"senderAvatar\":\"\",\"senderDisplayName\":\"A\",\"senderId\":\"u1\",\"senderName\":\"A\",\"serverId\":\"s1\",\"source\":0,\"status\":2,\"textPreview\":\"\",\"timelineKey\":\"server:s1\",\"timelineSortTs\":1700000000000,\"updatedAt\":1700000000002,\"version\":1}",
+      "value": "= text"
+    },
+    {
+      "binding list": "= value",
+      "binding params": "= value",
+      "binding text": "= text",
+      "input": "{\"serverId\":\"s1\",\"clientMsgId\":\"c1\",\"conversationId\":\"conv-1\",\"conversationType\":1,\"channelId\":\"\",\"senderId\":\"u1\",\"source\":0,\"conversationSeq\":7,\"createdAt\":1700000000000,\"clientCreatedAt\":1700000000001,\"messageType\":1,\"senderName\":\"A\",\"senderAvatar\":\"\",\"senderDisplayName\":\"A\",\"status\":2,\"isRead\":false,\"isRecalled\":false,\"isEdited\":false,\"mentionUsers\":[],\"mentionAll\":false,\"attributes\":{\"k\":\"v\"},\"version\":1,\"updatedAt\":1700000000002,\"content\":null}",
+      "name": "content null",
+      "text": "ok {\"attributes\":{\"k\":\"v\"},\"channelId\":\"\",\"clientCreatedAt\":1700000000001,\"clientMsgId\":\"c1\",\"conversationId\":\"conv-1\",\"conversationSeq\":7,\"conversationType\":1,\"createdAt\":1700000000000,\"extensions\":{},\"isEdited\":false,\"isRead\":false,\"isRecalled\":false,\"localState\":{\"failed\":false,\"isLocal\":false,\"sending\":false,\"sortTs\":0,\"uploadProgress\":0,\"uploading\":false},\"mentionAll\":false,\"mentionUsers\":[],\"messageType\":1,\"reactions\":[],\"receipt\":{\"status\":\"sent\"},\"senderAvatar\":\"\",\"senderDisplayName\":\"A\",\"senderId\":\"u1\",\"senderName\":\"A\",\"serverId\":\"s1\",\"source\":0,\"status\":2,\"textPreview\":\"\",\"timelineKey\":\"server:s1\",\"timelineSortTs\":1700000000000,\"updatedAt\":1700000000002,\"version\":1}",
+      "value": "= text"
+    },
+    {
+      "binding list": "= value",
+      "binding params": "= value",
+      "binding text": "= text",
+      "input": "{\"serverId\":\"s1\",\"clientMsgId\":\"c1\",\"conversationId\":\"conv-1\",\"conversationType\":1,\"channelId\":\"\",\"senderId\":\"u1\",\"source\":0,\"conversationSeq\":7,\"createdAt\":1700000000000,\"clientCreatedAt\":1700000000001,\"messageType\":1,\"senderName\":\"A\",\"senderAvatar\":\"\",\"senderDisplayName\":\"A\",\"status\":2,\"isRead\":false,\"isRecalled\":false,\"isEdited\":false,\"mentionUsers\":[],\"mentionAll\":false,\"attributes\":{\"k\":\"v\"},\"version\":1,\"updatedAt\":1700000000002,\"unknownField\":[1,{\"a\":2}]}",
+      "name": "message, unknown field",
+      "text": "ok {\"attributes\":{\"k\":\"v\"},\"channelId\":\"\",\"clientCreatedAt\":1700000000001,\"clientMsgId\":\"c1\",\"conversationId\":\"conv-1\",\"conversationSeq\":7,\"conversationType\":1,\"createdAt\":1700000000000,\"extensions\":{},\"isEdited\":false,\"isRead\":false,\"isRecalled\":false,\"localState\":{\"failed\":false,\"isLocal\":false,\"sending\":false,\"sortTs\":0,\"uploadProgress\":0,\"uploading\":false},\"mentionAll\":false,\"mentionUsers\":[],\"messageType\":1,\"reactions\":[],\"receipt\":{\"status\":\"sent\"},\"senderAvatar\":\"\",\"senderDisplayName\":\"A\",\"senderId\":\"u1\",\"senderName\":\"A\",\"serverId\":\"s1\",\"source\":0,\"status\":2,\"textPreview\":\"\",\"timelineKey\":\"server:s1\",\"timelineSortTs\":1700000000000,\"updatedAt\":1700000000002,\"version\":1}",
+      "value": "= text"
+    },
+    {
+      "binding list": "= value",
+      "binding params": "= value",
+      "binding text": "err 错误 [INVALID_PARAMETER] missing or invalid JSON message: duplicate field `clientMsgId` at line 1 column 451; missing message",
+      "input": "{\"serverId\":\"s1\",\"clientMsgId\":\"c1\",\"conversationId\":\"conv-1\",\"conversationType\":1,\"channelId\":\"\",\"senderId\":\"u1\",\"source\":0,\"conversationSeq\":7,\"createdAt\":1700000000000,\"clientCreatedAt\":1700000000001,\"messageType\":1,\"senderName\":\"A\",\"senderAvatar\":\"\",\"senderDisplayName\":\"A\",\"status\":2,\"isRead\":false,\"isRecalled\":false,\"isEdited\":false,\"mentionUsers\":[],\"mentionAll\":false,\"attributes\":{\"k\":\"v\"},\"version\":1,\"updatedAt\":1700000000002,\"clientMsgId\":\"c2\"}",
+      "name": "message, field twice",
+      "text": "err Data: duplicate field `clientMsgId` at line 1 column 451",
+      "value": "ok {\"attributes\":{\"k\":\"v\"},\"channelId\":\"\",\"clientCreatedAt\":1700000000001,\"clientMsgId\":\"c2\",\"conversationId\":\"conv-1\",\"conversationSeq\":7,\"conversationType\":1,\"createdAt\":1700000000000,\"extensions\":{},\"isEdited\":false,\"isRead\":false,\"isRecalled\":false,\"localState\":{\"failed\":false,\"isLocal\":false,\"sending\":false,\"sortTs\":0,\"uploadProgress\":0,\"uploading\":false},\"mentionAll\":false,\"mentionUsers\":[],\"messageType\":1,\"reactions\":[],\"receipt\":{\"status\":\"sent\"},\"senderAvatar\":\"\",\"senderDisplayName\":\"A\",\"senderId\":\"u1\",\"senderName\":\"A\",\"serverId\":\"s1\",\"source\":0,\"status\":2,\"textPreview\":\"\",\"timelineKey\":\"server:s1\",\"timelineSortTs\":1700000000000,\"updatedAt\":1700000000002,\"version\":1}"
+    },
+    {
+      "binding list": "= value",
+      "binding params": "= value",
+      "binding text": "= text",
+      "input": "{\"serverId\":\"s1\",\"clientMsgId\":\"c1\",\"conversationId\":\"conv-1\",\"conversationType\":1,\"channelId\":\"\",\"senderId\":\"u1\",\"source\":0,\"conversationSeq\":7,\"createdAt\":1700000000000,\"clientCreatedAt\":1700000000001,\"messageType\":1,\"senderName\":\"A\",\"senderAvatar\":\"\",\"senderDisplayName\":\"A\",\"status\":2,\"isRead\":false,\"isRecalled\":false,\"isEdited\":false,\"mentionUsers\":[],\"mentionAll\":false,\"attributes\":{\"k\":\"v\",\"k\":\"w\"},\"version\":1,\"updatedAt\":1700000000002}",
+      "name": "message, map with a duplicate key",
+      "text": "ok {\"attributes\":{\"k\":\"w\"},\"channelId\":\"\",\"clientCreatedAt\":1700000000001,\"clientMsgId\":\"c1\",\"conversationId\":\"conv-1\",\"conversationSeq\":7,\"conversationType\":1,\"createdAt\":1700000000000,\"extensions\":{},\"isEdited\":false,\"isRead\":false,\"isRecalled\":false,\"localState\":{\"failed\":false,\"isLocal\":false,\"sending\":false,\"sortTs\":0,\"uploadProgress\":0,\"uploading\":false},\"mentionAll\":false,\"mentionUsers\":[],\"messageType\":1,\"reactions\":[],\"receipt\":{\"status\":\"sent\"},\"senderAvatar\":\"\",\"senderDisplayName\":\"A\",\"senderId\":\"u1\",\"senderName\":\"A\",\"serverId\":\"s1\",\"source\":0,\"status\":2,\"textPreview\":\"\",\"timelineKey\":\"server:s1\",\"timelineSortTs\":1700000000000,\"updatedAt\":1700000000002,\"version\":1}",
+      "value": "= text"
+    },
+    {
+      "binding list": "err 错误 [INVALID_PARAMETER] invalid sourceMessages: invalid type: string \"7\", expected u64",
+      "binding params": "err 错误 [INVALID_PARAMETER] missing or invalid JSON message: invalid type: string \"7\", expected u64; missing message",
+      "binding text": "err 错误 [INVALID_PARAMETER] missing or invalid JSON message: invalid type: string \"7\", expected u64 at line 1 column 146; missing message",
+      "input": "{\"serverId\":\"s1\",\"clientMsgId\":\"c1\",\"conversationId\":\"conv-1\",\"conversationType\":1,\"channelId\":\"\",\"senderId\":\"u1\",\"source\":0,\"conversationSeq\":\"7\",\"createdAt\":1700000000000,\"clientCreatedAt\":1700000000001,\"messageType\":1,\"senderName\":\"A\",\"senderAvatar\":\"\",\"senderDisplayName\":\"A\",\"status\":2,\"isRead\":false,\"isRecalled\":false,\"isEdited\":false,\"mentionUsers\":[],\"mentionAll\":false,\"attributes\":{\"k\":\"v\"},\"version\":1,\"updatedAt\":1700000000002}",
+      "name": "message, field of the wrong type",
+      "text": "err Data: invalid type: string \"7\", expected u64 at line 1 column 146",
+      "value": "err Data: invalid type: string \"7\", expected u64"
+    },
+    {
+      "binding list": "err 错误 [INVALID_PARAMETER] invalid sourceMessages: missing field `serverId`",
+      "binding params": "err 错误 [INVALID_PARAMETER] missing or invalid JSON message: missing field `serverId`; missing message",
+      "binding text": "err 错误 [INVALID_PARAMETER] missing or invalid JSON message: missing field `serverId` at line 1 column 422; missing message",
+      "input": "{\"clientMsgId\":\"c1\",\"conversationId\":\"conv-1\",\"conversationType\":1,\"channelId\":\"\",\"senderId\":\"u1\",\"source\":0,\"conversationSeq\":7,\"createdAt\":1700000000000,\"clientCreatedAt\":1700000000001,\"messageType\":1,\"senderName\":\"A\",\"senderAvatar\":\"\",\"senderDisplayName\":\"A\",\"status\":2,\"isRead\":false,\"isRecalled\":false,\"isEdited\":false,\"mentionUsers\":[],\"mentionAll\":false,\"attributes\":{\"k\":\"v\"},\"version\":1,\"updatedAt\":1700000000002}",
+      "name": "message, required field missing",
+      "text": "err Data: missing field `serverId` at line 1 column 422",
+      "value": "err Data: missing field `serverId`"
+    },
+    {
+      "binding list": "= value",
+      "binding params": "= value",
+      "binding text": "= text",
+      "input": "{\"serverId\":\"s1\",\"clientMsgId\":\"c1\",\"conversationId\":\"conv-1\",\"conversationType\":1,\"channelId\":\"\",\"senderId\":\"u1\",\"source\":0,\"conversationSeq\":7,\"createdAt\":1700000000000,\"clientCreatedAt\":1700000000001,\"messageType\":1,\"senderName\":\"A\",\"senderAvatar\":\"\",\"senderDisplayName\":\"A\",\"status\":2,\"isRead\":false,\"isRecalled\":false,\"isEdited\":false,\"mentionUsers\":[],\"mentionAll\":false,\"attributes\":{\"k\":\"v\"},\"version\":1,\"updatedAt\":1700000000002,\"localState\":{\"sending\":true,\"failed\":false,\"isLocal\":true,\"uploading\":false,\"uploadProgress\":0,\"sortTs\":9},\"reactions\":[{\"emoji\":\"👍\",\"count\":1,\"user_ids\":[\"u2\"]}],\"extensions\":{\"x\":[1,2]}}",
+      "name": "message, local state and reactions",
+      "text": "ok {\"attributes\":{\"k\":\"v\"},\"channelId\":\"\",\"clientCreatedAt\":1700000000001,\"clientMsgId\":\"c1\",\"conversationId\":\"conv-1\",\"conversationSeq\":7,\"conversationType\":1,\"createdAt\":1700000000000,\"extensions\":{\"x\":[1,2]},\"isEdited\":false,\"isRead\":false,\"isRecalled\":false,\"localState\":{\"failed\":false,\"isLocal\":true,\"sending\":true,\"sortTs\":9,\"uploadProgress\":0,\"uploading\":false},\"mentionAll\":false,\"mentionUsers\":[],\"messageType\":1,\"reactions\":[{\"count\":1,\"emoji\":\"👍\",\"userIds\":[\"u2\"]}],\"receipt\":{\"status\":\"sent\"},\"senderAvatar\":\"\",\"senderDisplayName\":\"A\",\"senderId\":\"u1\",\"senderName\":\"A\",\"serverId\":\"s1\",\"source\":0,\"status\":2,\"textPreview\":\"\",\"timelineKey\":\"server:s1\",\"timelineSortTs\":1700000000000,\"updatedAt\":1700000000002,\"version\":1}",
+      "value": "= text"
+    },
+    {
+      "binding text": "err 错误 [INVALID_PARAMETER] missing or invalid JSON message: EOF while parsing an object at line 1 column 437; invalid params JSON: EOF while parsing an object at line 1 column 437",
+      "input": "{\"serverId\":\"s1\",\"clientMsgId\":\"c1\",\"conversationId\":\"conv-1\",\"conversationType\":1,\"channelId\":\"\",\"senderId\":\"u1\",\"source\":0,\"conversationSeq\":7,\"createdAt\":1700000000000,\"clientCreatedAt\":1700000000001,\"messageType\":1,\"senderName\":\"A\",\"senderAvatar\":\"\",\"senderDisplayName\":\"A\",\"status\":2,\"isRead\":false,\"isRecalled\":false,\"isEdited\":false,\"mentionUsers\":[],\"mentionAll\":false,\"attributes\":{\"k\":\"v\"},\"version\":1,\"updatedAt\":1700000000002",
+      "name": "message, truncated",
+      "text": "err Eof: EOF while parsing an object at line 1 column 437"
+    },
+    {
+      "binding list": "err 错误 [INVALID_PARAMETER] invalid sourceMessages: invalid length 0, expected struct IMMessage with 31 elements",
+      "binding params": "err 错误 [INVALID_PARAMETER] missing or invalid JSON message: invalid length 0, expected struct IMMessage with 31 elements; missing message",
+      "binding text": "err 错误 [INVALID_PARAMETER] missing or invalid JSON message: invalid length 0, expected struct IMMessage with 31 elements at line 1 column 2; missing message",
+      "input": "[]",
+      "name": "message, an array",
+      "text": "err Data: invalid length 0, expected struct IMMessage with 31 elements at line 1 column 2",
+      "value": "err Data: invalid length 0, expected struct IMMessage with 31 elements"
+    },
+    {
+      "binding text": "err 错误 [INVALID_PARAMETER] missing or invalid JSON message: expected value at line 1 column 1; invalid params JSON: expected value at line 1 column 1",
+      "input": "message",
+      "name": "message, not JSON",
+      "text": "err Syntax: expected value at line 1 column 1"
+    },
+    {
+      "binding list": "err 错误 [INVALID_PARAMETER] invalid sourceMessages: missing field `serverId`",
+      "binding params": "ok {\"attributes\":{\"k\":\"v\"},\"channelId\":\"\",\"clientCreatedAt\":1700000000001,\"clientMsgId\":\"c1\",\"content\":{\"contentType\":\"text\",\"mentions\":[],\"text\":\"hi\"},\"conversationId\":\"conv-1\",\"conversationSeq\":7,\"conversationType\":1,\"createdAt\":1700000000000,\"extensions\":{},\"isEdited\":false,\"isRead\":false,\"isRecalled\":false,\"localState\":{\"failed\":false,\"isLocal\":false,\"sending\":false,\"sortTs\":0,\"uploadProgress\":0,\"uploading\":false},\"mentionAll\":false,\"mentionUsers\":[],\"messageType\":1,\"reactions\":[],\"receipt\":{\"status\":\"sent\"},\"senderAvatar\":\"\",\"senderDisplayName\":\"A\",\"senderId\":\"u1\",\"senderName\":\"A\",\"serverId\":\"s1\",\"source\":0,\"status\":2,\"textPreview\":\"\",\"timelineKey\":\"server:s1\",\"timelineSortTs\":1700000000000,\"updatedAt\":1700000000002,\"version\":1}",
+      "binding text": "ok {\"attributes\":{\"k\":\"v\"},\"channelId\":\"\",\"clientCreatedAt\":1700000000001,\"clientMsgId\":\"c1\",\"content\":{\"contentType\":\"text\",\"mentions\":[],\"text\":\"hi\"},\"conversationId\":\"conv-1\",\"conversationSeq\":7,\"conversationType\":1,\"createdAt\":1700000000000,\"extensions\":{},\"isEdited\":false,\"isRead\":false,\"isRecalled\":false,\"localState\":{\"failed\":false,\"isLocal\":false,\"sending\":false,\"sortTs\":0,\"uploadProgress\":0,\"uploading\":false},\"mentionAll\":false,\"mentionUsers\":[],\"messageType\":1,\"reactions\":[],\"receipt\":{\"status\":\"sent\"},\"senderAvatar\":\"\",\"senderDisplayName\":\"A\",\"senderId\":\"u1\",\"senderName\":\"A\",\"serverId\":\"s1\",\"source\":0,\"status\":2,\"textPreview\":\"\",\"timelineKey\":\"server:s1\",\"timelineSortTs\":1700000000000,\"updatedAt\":1700000000002,\"version\":1}",
+      "input": "{\"message\":{\"serverId\":\"s1\",\"clientMsgId\":\"c1\",\"conversationId\":\"conv-1\",\"conversationType\":1,\"channelId\":\"\",\"senderId\":\"u1\",\"source\":0,\"conversationSeq\":7,\"createdAt\":1700000000000,\"clientCreatedAt\":1700000000001,\"messageType\":1,\"senderName\":\"A\",\"senderAvatar\":\"\",\"senderDisplayName\":\"A\",\"status\":2,\"isRead\":false,\"isRecalled\":false,\"isEdited\":false,\"mentionUsers\":[],\"mentionAll\":false,\"attributes\":{\"k\":\"v\"},\"version\":1,\"updatedAt\":1700000000002,\"content\":{\"contentType\":\"text\",\"text\":\"hi\",\"mentions\":[]}}}",
+      "name": "wrapped message",
+      "text": "err Data: missing field `serverId` at line 1 column 509",
+      "value": "err Data: missing field `serverId`"
+    },
+    {
+      "binding list": "err 错误 [INVALID_PARAMETER] invalid sourceMessages: missing field `serverId`",
+      "binding params": "err 错误 [INVALID_PARAMETER] missing or invalid JSON message: unknown variant `nope`, expected one of `text`, `image`, `video`, `audio`, `file`, `location`, `card`, `sticker`, `emoji`, `quote`, `link_card`, `forward`, `thread`, `mini_program`, `rich_text`, `image_group`, `system`, `notification`, `vote`, `task`, `schedule`, `announcement`, `custom`, `placeholder`; wrapper: missing field `serverId`",
+      "binding text": "err 错误 [INVALID_PARAMETER] missing or invalid JSON message: unknown variant `nope`, expected one of `text`, `image`, `video`, `audio`, `file`, `location`, `card`, `sticker`, `emoji`, `quote`, `link_card`, `forward`, `thread`, `mini_program`, `rich_text`, `image_group`, `system`, `notification`, `vote`, `task`, `schedule`, `announcement`, `custom`, `placeholder`; wrapper: missing field `serverId` at line 1 column 483",
+      "input": "{\"message\":{\"serverId\":\"s1\",\"clientMsgId\":\"c1\",\"conversationId\":\"conv-1\",\"conversationType\":1,\"channelId\":\"\",\"senderId\":\"u1\",\"source\":0,\"conversationSeq\":7,\"createdAt\":1700000000000,\"clientCreatedAt\":1700000000001,\"messageType\":1,\"senderName\":\"A\",\"senderAvatar\":\"\",\"senderDisplayName\":\"A\",\"status\":2,\"isRead\":false,\"isRecalled\":false,\"isEdited\":false,\"mentionUsers\":[],\"mentionAll\":false,\"attributes\":{\"k\":\"v\"},\"version\":1,\"updatedAt\":1700000000002,\"content\":{\"contentType\":\"nope\"}}}",
+      "name": "wrapped message, invalid",
+      "text": "err Data: missing field `serverId` at line 1 column 483",
+      "value": "err Data: missing field `serverId`"
+    },
+    {
+      "binding list": "err 错误 [INVALID_PARAMETER] invalid sourceMessages: missing field `serverId`",
+      "binding params": "err 错误 [INVALID_PARAMETER] missing or invalid JSON message: missing field `serverId`; missing message",
+      "binding text": "err 错误 [INVALID_PARAMETER] missing or invalid JSON message: missing field `serverId` at line 1 column 11; missing message",
+      "input": "{\"other\":1}",
+      "name": "wrapper without a message",
+      "text": "err Data: missing field `serverId` at line 1 column 11",
+      "value": "err Data: missing field `serverId`"
+    },
+    {
+      "binding list": "= value",
+      "binding params": "= value",
+      "binding text": "= text",
+      "input": "{\"serverId\":\"s1\",\"clientMsgId\":\"c1\",\"conversationId\":\"conv-1\",\"conversationType\":1,\"channelId\":\"\",\"senderId\":\"u1\",\"source\":0,\"conversationSeq\":7,\"createdAt\":1700000000000,\"clientCreatedAt\":1700000000001,\"messageType\":1,\"senderName\":\"A\",\"senderAvatar\":\"\",\"senderDisplayName\":\"A\",\"status\":2,\"isRead\":false,\"isRecalled\":false,\"isEdited\":false,\"mentionUsers\":[],\"mentionAll\":false,\"attributes\":{\"k\":\"v\"},\"version\":1,\"updatedAt\":1700000000002,\"content\":{\"contentType\":\"text\",\"text\":\"hi\",\"mentions\":[]}}",
+      "name": "content: text",
+      "text": "ok {\"attributes\":{\"k\":\"v\"},\"channelId\":\"\",\"clientCreatedAt\":1700000000001,\"clientMsgId\":\"c1\",\"content\":{\"contentType\":\"text\",\"mentions\":[],\"text\":\"hi\"},\"conversationId\":\"conv-1\",\"conversationSeq\":7,\"conversationType\":1,\"createdAt\":1700000000000,\"extensions\":{},\"isEdited\":false,\"isRead\":false,\"isRecalled\":false,\"localState\":{\"failed\":false,\"isLocal\":false,\"sending\":false,\"sortTs\":0,\"uploadProgress\":0,\"uploading\":false},\"mentionAll\":false,\"mentionUsers\":[],\"messageType\":1,\"reactions\":[],\"receipt\":{\"status\":\"sent\"},\"senderAvatar\":\"\",\"senderDisplayName\":\"A\",\"senderId\":\"u1\",\"senderName\":\"A\",\"serverId\":\"s1\",\"source\":0,\"status\":2,\"textPreview\":\"\",\"timelineKey\":\"server:s1\",\"timelineSortTs\":1700000000000,\"updatedAt\":1700000000002,\"version\":1}",
+      "value": "= text"
+    },
+    {
+      "binding list": "= value",
+      "binding params": "= value",
+      "binding text": "= text",
+      "input": "{\"serverId\":\"s1\",\"clientMsgId\":\"c1\",\"conversationId\":\"conv-1\",\"conversationType\":1,\"channelId\":\"\",\"senderId\":\"u1\",\"source\":0,\"conversationSeq\":7,\"createdAt\":1700000000000,\"clientCreatedAt\":1700000000001,\"messageType\":1,\"senderName\":\"A\",\"senderAvatar\":\"\",\"senderDisplayName\":\"A\",\"status\":2,\"isRead\":false,\"isRecalled\":false,\"isEdited\":false,\"mentionUsers\":[],\"mentionAll\":false,\"attributes\":{\"k\":\"v\"},\"version\":1,\"updatedAt\":1700000000002,\"content\":{\"contentType\":\"text\",\"text\":\"@b hi\",\"mentions\":[{\"type\":1,\"userId\":\"b\",\"userIds\":[\"b\"],\"roleId\":\"\",\"start\":0,\"length\":2}]}}",
+      "name": "content: text with a mention",
+      "text": "ok {\"attributes\":{\"k\":\"v\"},\"channelId\":\"\",\"clientCreatedAt\":1700000000001,\"clientMsgId\":\"c1\",\"content\":{\"contentType\":\"text\",\"mentions\":[{\"length\":2,\"roleId\":\"\",\"start\":0,\"type\":1,\"userId\":\"b\",\"userIds\":[\"b\"]}],\"text\":\"@b hi\"},\"conversationId\":\"conv-1\",\"conversationSeq\":7,\"conversationType\":1,\"createdAt\":1700000000000,\"extensions\":{},\"isEdited\":false,\"isRead\":false,\"isRecalled\":false,\"localState\":{\"failed\":false,\"isLocal\":false,\"sending\":false,\"sortTs\":0,\"uploadProgress\":0,\"uploading\":false},\"mentionAll\":false,\"mentionUsers\":[],\"messageType\":1,\"reactions\":[],\"receipt\":{\"status\":\"sent\"},\"senderAvatar\":\"\",\"senderDisplayName\":\"A\",\"senderId\":\"u1\",\"senderName\":\"A\",\"serverId\":\"s1\",\"source\":0,\"status\":2,\"textPreview\":\"\",\"timelineKey\":\"server:s1\",\"timelineSortTs\":1700000000000,\"updatedAt\":1700000000002,\"version\":1}",
+      "value": "= text"
+    },
+    {
+      "binding list": "= value",
+      "binding params": "= value",
+      "binding text": "= text",
+      "input": "{\"serverId\":\"s1\",\"clientMsgId\":\"c1\",\"conversationId\":\"conv-1\",\"conversationType\":1,\"channelId\":\"\",\"senderId\":\"u1\",\"source\":0,\"conversationSeq\":7,\"createdAt\":1700000000000,\"clientCreatedAt\":1700000000001,\"messageType\":1,\"senderName\":\"A\",\"senderAvatar\":\"\",\"senderDisplayName\":\"A\",\"status\":2,\"isRead\":false,\"isRecalled\":false,\"isEdited\":false,\"mentionUsers\":[],\"mentionAll\":false,\"attributes\":{\"k\":\"v\"},\"version\":1,\"updatedAt\":1700000000002,\"content\":{\"text\":\"hi\",\"mentions\":[],\"contentType\":\"text\"}}",
+      "name": "content: text, tag last",
+      "text": "ok {\"attributes\":{\"k\":\"v\"},\"channelId\":\"\",\"clientCreatedAt\":1700000000001,\"clientMsgId\":\"c1\",\"content\":{\"contentType\":\"text\",\"mentions\":[],\"text\":\"hi\"},\"conversationId\":\"conv-1\",\"conversationSeq\":7,\"conversationType\":1,\"createdAt\":1700000000000,\"extensions\":{},\"isEdited\":false,\"isRead\":false,\"isRecalled\":false,\"localState\":{\"failed\":false,\"isLocal\":false,\"sending\":false,\"sortTs\":0,\"uploadProgress\":0,\"uploading\":false},\"mentionAll\":false,\"mentionUsers\":[],\"messageType\":1,\"reactions\":[],\"receipt\":{\"status\":\"sent\"},\"senderAvatar\":\"\",\"senderDisplayName\":\"A\",\"senderId\":\"u1\",\"senderName\":\"A\",\"serverId\":\"s1\",\"source\":0,\"status\":2,\"textPreview\":\"\",\"timelineKey\":\"server:s1\",\"timelineSortTs\":1700000000000,\"updatedAt\":1700000000002,\"version\":1}",
+      "value": "= text"
+    },
+    {
+      "binding list": "= value",
+      "binding params": "= value",
+      "binding text": "= text",
+      "input": "{\"serverId\":\"s1\",\"clientMsgId\":\"c1\",\"conversationId\":\"conv-1\",\"conversationType\":1,\"channelId\":\"\",\"senderId\":\"u1\",\"source\":0,\"conversationSeq\":7,\"createdAt\":1700000000000,\"clientCreatedAt\":1700000000001,\"messageType\":1,\"senderName\":\"A\",\"senderAvatar\":\"\",\"senderDisplayName\":\"A\",\"status\":2,\"isRead\":false,\"isRecalled\":false,\"isEdited\":false,\"mentionUsers\":[],\"mentionAll\":false,\"attributes\":{\"k\":\"v\"},\"version\":1,\"updatedAt\":1700000000002,\"content\":{\"text\":\"hi\",\"contentType\":\"text\",\"mentions\":[]}}",
+      "name": "content: text, tag in the middle",
+      "text": "ok {\"attributes\":{\"k\":\"v\"},\"channelId\":\"\",\"clientCreatedAt\":1700000000001,\"clientMsgId\":\"c1\",\"content\":{\"contentType\":\"text\",\"mentions\":[],\"text\":\"hi\"},\"conversationId\":\"conv-1\",\"conversationSeq\":7,\"conversationType\":1,\"createdAt\":1700000000000,\"extensions\":{},\"isEdited\":false,\"isRead\":false,\"isRecalled\":false,\"localState\":{\"failed\":false,\"isLocal\":false,\"sending\":false,\"sortTs\":0,\"uploadProgress\":0,\"uploading\":false},\"mentionAll\":false,\"mentionUsers\":[],\"messageType\":1,\"reactions\":[],\"receipt\":{\"status\":\"sent\"},\"senderAvatar\":\"\",\"senderDisplayName\":\"A\",\"senderId\":\"u1\",\"senderName\":\"A\",\"serverId\":\"s1\",\"source\":0,\"status\":2,\"textPreview\":\"\",\"timelineKey\":\"server:s1\",\"timelineSortTs\":1700000000000,\"updatedAt\":1700000000002,\"version\":1}",
+      "value": "= text"
+    },
+    {
+      "binding list": "= value",
+      "binding params": "= value",
+      "binding text": "= text",
+      "input": "{\"serverId\":\"s1\",\"clientMsgId\":\"c1\",\"conversationId\":\"conv-1\",\"conversationType\":1,\"channelId\":\"\",\"senderId\":\"u1\",\"source\":0,\"conversationSeq\":7,\"createdAt\":1700000000000,\"clientCreatedAt\":1700000000001,\"messageType\":1,\"senderName\":\"A\",\"senderAvatar\":\"\",\"senderDisplayName\":\"A\",\"status\":2,\"isRead\":false,\"isRecalled\":false,\"isEdited\":false,\"mentionUsers\":[],\"mentionAll\":false,\"attributes\":{\"k\":\"v\"},\"version\":1,\"updatedAt\":1700000000002,\"content\":{\"contentType\":\"text\",\"text\":\"你好 \\\"q\\\" \\\\ \\n 🙂\",\"mentions\":[]}}",
+      "name": "content: text, unicode and escapes",
+      "text": "ok {\"attributes\":{\"k\":\"v\"},\"channelId\":\"\",\"clientCreatedAt\":1700000000001,\"clientMsgId\":\"c1\",\"content\":{\"contentType\":\"text\",\"mentions\":[],\"text\":\"你好 \\\"q\\\" \\\\ \\n 🙂\"},\"conversationId\":\"conv-1\",\"conversationSeq\":7,\"conversationType\":1,\"createdAt\":1700000000000,\"extensions\":{},\"isEdited\":false,\"isRead\":false,\"isRecalled\":false,\"localState\":{\"failed\":false,\"isLocal\":false,\"sending\":false,\"sortTs\":0,\"uploadProgress\":0,\"uploading\":false},\"mentionAll\":false,\"mentionUsers\":[],\"messageType\":1,\"reactions\":[],\"receipt\":{\"status\":\"sent\"},\"senderAvatar\":\"\",\"senderDisplayName\":\"A\",\"senderId\":\"u1\",\"senderName\":\"A\",\"serverId\":\"s1\",\"source\":0,\"status\":2,\"textPreview\":\"\",\"timelineKey\":\"server:s1\",\"timelineSortTs\":1700000000000,\"updatedAt\":1700000000002,\"version\":1}",
+      "value": "= text"
+    },
+    {
+      "binding list": "= value",
+      "binding params": "= value",
+      "binding text": "= text",
+      "input": "{\"serverId\":\"s1\",\"clientMsgId\":\"c1\",\"conversationId\":\"conv-1\",\"conversationType\":1,\"channelId\":\"\",\"senderId\":\"u1\",\"source\":0,\"conversationSeq\":7,\"createdAt\":1700000000000,\"clientCreatedAt\":1700000000001,\"messageType\":1,\"senderName\":\"A\",\"senderAvatar\":\"\",\"senderDisplayName\":\"A\",\"status\":2,\"isRead\":false,\"isRecalled\":false,\"isEdited\":false,\"mentionUsers\":[],\"mentionAll\":false,\"attributes\":{\"k\":\"v\"},\"version\":1,\"updatedAt\":1700000000002,\"content\":{\"contentType\":\"text\",\"text\":\"hi\",\"mentions\":[]}}",
+      "name": "content: text, escaped tag key",
+      "text": "ok {\"attributes\":{\"k\":\"v\"},\"channelId\":\"\",\"clientCreatedAt\":1700000000001,\"clientMsgId\":\"c1\",\"content\":{\"contentType\":\"text\",\"mentions\":[],\"text\":\"hi\"},\"conversationId\":\"conv-1\",\"conversationSeq\":7,\"conversationType\":1,\"createdAt\":1700000000000,\"extensions\":{},\"isEdited\":false,\"isRead\":false,\"isRecalled\":false,\"localState\":{\"failed\":false,\"isLocal\":false,\"sending\":false,\"sortTs\":0,\"uploadProgress\":0,\"uploading\":false},\"mentionAll\":false,\"mentionUsers\":[],\"messageType\":1,\"reactions\":[],\"receipt\":{\"status\":\"sent\"},\"senderAvatar\":\"\",\"senderDisplayName\":\"A\",\"senderId\":\"u1\",\"senderName\":\"A\",\"serverId\":\"s1\",\"source\":0,\"status\":2,\"textPreview\":\"\",\"timelineKey\":\"server:s1\",\"timelineSortTs\":1700000000000,\"updatedAt\":1700000000002,\"version\":1}",
+      "value": "= text"
+    },
+    {
+      "binding list": "= value",
+      "binding params": "= value",
+      "binding text": "= text",
+      "input": "{\"serverId\":\"s1\",\"clientMsgId\":\"c1\",\"conversationId\":\"conv-1\",\"conversationType\":1,\"channelId\":\"\",\"senderId\":\"u1\",\"source\":0,\"conversationSeq\":7,\"createdAt\":1700000000000,\"clientCreatedAt\":1700000000001,\"messageType\":1,\"senderName\":\"A\",\"senderAvatar\":\"\",\"senderDisplayName\":\"A\",\"status\":2,\"isRead\":false,\"isRecalled\":false,\"isEdited\":false,\"mentionUsers\":[],\"mentionAll\":false,\"attributes\":{\"k\":\"v\"},\"version\":1,\"updatedAt\":1700000000002,\"content\":{\"contentType\":\"text\",\"text\":\"hi\",\"mentions\":[],\"extra\":{\"a\":[1,2]}}}",
+      "name": "content: text, unknown field",
+      "text": "ok {\"attributes\":{\"k\":\"v\"},\"channelId\":\"\",\"clientCreatedAt\":1700000000001,\"clientMsgId\":\"c1\",\"content\":{\"contentType\":\"text\",\"mentions\":[],\"text\":\"hi\"},\"conversationId\":\"conv-1\",\"conversationSeq\":7,\"conversationType\":1,\"createdAt\":1700000000000,\"extensions\":{},\"isEdited\":false,\"isRead\":false,\"isRecalled\":false,\"localState\":{\"failed\":false,\"isLocal\":false,\"sending\":false,\"sortTs\":0,\"uploadProgress\":0,\"uploading\":false},\"mentionAll\":false,\"mentionUsers\":[],\"messageType\":1,\"reactions\":[],\"receipt\":{\"status\":\"sent\"},\"senderAvatar\":\"\",\"senderDisplayName\":\"A\",\"senderId\":\"u1\",\"senderName\":\"A\",\"serverId\":\"s1\",\"source\":0,\"status\":2,\"textPreview\":\"\",\"timelineKey\":\"server:s1\",\"timelineSortTs\":1700000000000,\"updatedAt\":1700000000002,\"version\":1}",
+      "value": "= text"
+    },
+    {
+      "binding list": "= value",
+      "binding params": "= value",
+      "binding text": "= text",
+      "input": "{\"serverId\":\"s1\",\"clientMsgId\":\"c1\",\"conversationId\":\"conv-1\",\"conversationType\":1,\"channelId\":\"\",\"senderId\":\"u1\",\"source\":0,\"conversationSeq\":7,\"createdAt\":1700000000000,\"clientCreatedAt\":1700000000001,\"messageType\":1,\"senderName\":\"A\",\"senderAvatar\":\"\",\"senderDisplayName\":\"A\",\"status\":2,\"isRead\":false,\"isRecalled\":false,\"isEdited\":false,\"mentionUsers\":[],\"mentionAll\":false,\"attributes\":{\"k\":\"v\"},\"version\":1,\"updatedAt\":1700000000002,\"content\":{\"contentType\":\"image\",\"source\":{\"uuid\":\"u\",\"imageId\":\"img-1\",\"url\":\"https://x/a.png\",\"mimeType\":\"image/png\",\"size\":10,\"width\":2,\"height\":3,\"format\":1,\"animated\":false,\"blurhash\":\"LEHV6n\"},\"thumbnail\":{\"uuid\":\"t\",\"url\":\"\",\"mimeType\":\"image/png\",\"size\":1,\"width\":1,\"height\":1},\"description\":\"d\",\"durationMs\":40}}",
+      "name": "content: image, full",
+      "text": "ok {\"attributes\":{\"k\":\"v\"},\"channelId\":\"\",\"clientCreatedAt\":1700000000001,\"clientMsgId\":\"c1\",\"content\":{\"contentType\":\"image\",\"description\":\"d\",\"durationMs\":40,\"source\":{\"animated\":false,\"blurhash\":\"LEHV6n\",\"format\":1,\"height\":3,\"imageId\":\"img-1\",\"mimeType\":\"image/png\",\"size\":10,\"url\":\"https://x/a.png\",\"uuid\":\"u\",\"width\":2},\"thumbnail\":{\"animated\":false,\"format\":0,\"height\":1,\"imageId\":\"\",\"mimeType\":\"image/png\",\"size\":1,\"url\":\"\",\"uuid\":\"t\",\"width\":1}},\"conversationId\":\"conv-1\",\"conversationSeq\":7,\"conversationType\":1,\"createdAt\":1700000000000,\"extensions\":{},\"isEdited\":false,\"isRead\":false,\"isRecalled\":false,\"localState\":{\"failed\":false,\"isLocal\":false,\"sending\":false,\"sortTs\":0,\"uploadProgress\":0,\"uploading\":false},\"mentionAll\":false,\"mentionUsers\":[],\"messageType\":1,\"reactions\":[],\"receipt\":{\"status\":\"sent\"},\"senderAvatar\":\"\",\"senderDisplayName\":\"A\",\"senderId\":\"u1\",\"senderName\":\"A\",\"serverId\":\"s1\",\"source\":0,\"status\":2,\"textPreview\":\"\",\"timelineKey\":\"server:s1\",\"timelineSortTs\":1700000000000,\"updatedAt\":1700000000002,\"version\":1}",
+      "value": "= text"
+    },
+    {
+      "binding list": "= value",
+      "binding params": "= value",
+      "binding text": "= text",
+      "input": "{\"serverId\":\"s1\",\"clientMsgId\":\"c1\",\"conversationId\":\"conv-1\",\"conversationType\":1,\"channelId\":\"\",\"senderId\":\"u1\",\"source\":0,\"conversationSeq\":7,\"createdAt\":1700000000000,\"clientCreatedAt\":1700000000001,\"messageType\":1,\"senderName\":\"A\",\"senderAvatar\":\"\",\"senderDisplayName\":\"A\",\"status\":2,\"isRead\":false,\"isRecalled\":false,\"isEdited\":false,\"mentionUsers\":[],\"mentionAll\":false,\"attributes\":{\"k\":\"v\"},\"version\":1,\"updatedAt\":1700000000002,\"content\":{\"contentType\":\"image\",\"source\":null,\"thumbnail\":null,\"description\":\"\"}}",
+      "name": "content: image, null parts",
+      "text": "ok {\"attributes\":{\"k\":\"v\"},\"channelId\":\"\",\"clientCreatedAt\":1700000000001,\"clientMsgId\":\"c1\",\"content\":{\"contentType\":\"image\",\"description\":\"\",\"source\":null,\"thumbnail\":null},\"conversationId\":\"conv-1\",\"conversationSeq\":7,\"conversationType\":1,\"createdAt\":1700000000000,\"extensions\":{},\"isEdited\":false,\"isRead\":false,\"isRecalled\":false,\"localState\":{\"failed\":false,\"isLocal\":false,\"sending\":false,\"sortTs\":0,\"uploadProgress\":0,\"uploading\":false},\"mentionAll\":false,\"mentionUsers\":[],\"messageType\":1,\"reactions\":[],\"receipt\":{\"status\":\"sent\"},\"senderAvatar\":\"\",\"senderDisplayName\":\"A\",\"senderId\":\"u1\",\"senderName\":\"A\",\"serverId\":\"s1\",\"source\":0,\"status\":2,\"textPreview\":\"\",\"timelineKey\":\"server:s1\",\"timelineSortTs\":1700000000000,\"updatedAt\":1700000000002,\"version\":1}",
+      "value": "= text"
+    },
+    {
+      "binding list": "= value",
+      "binding params": "= value",
+      "binding text": "err 错误 [INVALID_PARAMETER] missing or invalid JSON message: duplicate field `uuid` at line 1 column 592; missing message",
+      "input": "{\"serverId\":\"s1\",\"clientMsgId\":\"c1\",\"conversationId\":\"conv-1\",\"conversationType\":1,\"channelId\":\"\",\"senderId\":\"u1\",\"source\":0,\"conversationSeq\":7,\"createdAt\":1700000000000,\"clientCreatedAt\":1700000000001,\"messageType\":1,\"senderName\":\"A\",\"senderAvatar\":\"\",\"senderDisplayName\":\"A\",\"status\":2,\"isRead\":false,\"isRecalled\":false,\"isEdited\":false,\"mentionUsers\":[],\"mentionAll\":false,\"attributes\":{\"k\":\"v\"},\"version\":1,\"updatedAt\":1700000000002,\"content\":{\"contentType\":\"image\",\"source\":{\"uuid\":\"u\",\"uuid\":\"v\",\"url\":\"\",\"mimeType\":\"\",\"size\":1,\"width\":1,\"height\":1},\"thumbnail\":null,\"description\":\"\"}}",
+      "name": "content: image, duplicate field in a nested struct",
+      "text": "err Data: duplicate field `uuid` at line 1 column 592",
+      "value": "ok {\"attributes\":{\"k\":\"v\"},\"channelId\":\"\",\"clientCreatedAt\":1700000000001,\"clientMsgId\":\"c1\",\"content\":{\"contentType\":\"image\",\"description\":\"\",\"source\":{\"animated\":false,\"format\":0,\"height\":1,\"imageId\":\"\",\"mimeType\":\"\",\"size\":1,\"url\":\"\",\"uuid\":\"v\",\"width\":1},\"thumbnail\":null},\"conversationId\":\"conv-1\",\"conversationSeq\":7,\"conversationType\":1,\"createdAt\":1700000000000,\"extensions\":{},\"isEdited\":false,\"isRead\":false,\"isRecalled\":false,\"localState\":{\"failed\":false,\"isLocal\":false,\"sending\":false,\"sortTs\":0,\"uploadProgress\":0,\"uploading\":false},\"mentionAll\":false,\"mentionUsers\":[],\"messageType\":1,\"reactions\":[],\"receipt\":{\"status\":\"sent\"},\"senderAvatar\":\"\",\"senderDisplayName\":\"A\",\"senderId\":\"u1\",\"senderName\":\"A\",\"serverId\":\"s1\",\"source\":0,\"status\":2,\"textPreview\":\"\",\"timelineKey\":\"server:s1\",\"timelineSortTs\":1700000000000,\"updatedAt\":1700000000002,\"version\":1}"
+    },
+    {
+      "binding list": "err 错误 [INVALID_PARAMETER] invalid sourceMessages: invalid type: floating point `1.5`, expected i64",
+      "binding params": "err 错误 [INVALID_PARAMETER] missing or invalid JSON message: invalid type: floating point `1.5`, expected i64; missing message",
+      "binding text": "err 错误 [INVALID_PARAMETER] missing or invalid JSON message: invalid type: floating point `1.5`, expected i64 at line 1 column 583; missing message",
+      "input": "{\"serverId\":\"s1\",\"clientMsgId\":\"c1\",\"conversationId\":\"conv-1\",\"conversationType\":1,\"channelId\":\"\",\"senderId\":\"u1\",\"source\":0,\"conversationSeq\":7,\"createdAt\":1700000000000,\"clientCreatedAt\":1700000000001,\"messageType\":1,\"senderName\":\"A\",\"senderAvatar\":\"\",\"senderDisplayName\":\"A\",\"status\":2,\"isRead\":false,\"isRecalled\":false,\"isEdited\":false,\"mentionUsers\":[],\"mentionAll\":false,\"attributes\":{\"k\":\"v\"},\"version\":1,\"updatedAt\":1700000000002,\"content\":{\"contentType\":\"image\",\"source\":{\"uuid\":\"u\",\"url\":\"\",\"mimeType\":\"\",\"size\":1.5,\"width\":1,\"height\":1},\"thumbnail\":null,\"description\":\"\"}}",
+      "name": "content: image, size as a float",
+      "text": "err Data: invalid type: floating point `1.5`, expected i64 at line 1 column 583",
+      "value": "err Data: invalid type: floating point `1.5`, expected i64"
+    },
+    {
+      "binding list": "err 错误 [INVALID_PARAMETER] invalid sourceMessages: invalid value: integer `3000000000`, expected i32",
+      "binding params": "err 错误 [INVALID_PARAMETER] missing or invalid JSON message: invalid value: integer `3000000000`, expected i32; missing message",
+      "binding text": "err 错误 [INVALID_PARAMETER] missing or invalid JSON message: invalid value: integer `3000000000`, expected i32 at line 1 column 590; missing message",
+      "input": "{\"serverId\":\"s1\",\"clientMsgId\":\"c1\",\"conversationId\":\"conv-1\",\"conversationType\":1,\"channelId\":\"\",\"senderId\":\"u1\",\"source\":0,\"conversationSeq\":7,\"createdAt\":1700000000000,\"clientCreatedAt\":1700000000001,\"messageType\":1,\"senderName\":\"A\",\"senderAvatar\":\"\",\"senderDisplayName\":\"A\",\"status\":2,\"isRead\":false,\"isRecalled\":false,\"isEdited\":false,\"mentionUsers\":[],\"mentionAll\":false,\"attributes\":{\"k\":\"v\"},\"version\":1,\"updatedAt\":1700000000002,\"content\":{\"contentType\":\"image\",\"source\":{\"uuid\":\"u\",\"url\":\"\",\"mimeType\":\"\",\"size\":1,\"width\":3000000000,\"height\":1},\"thumbnail\":null,\"description\":\"\"}}",
+      "name": "content: image, width out of range",
+      "text": "err Data: invalid value: integer `3000000000`, expected i32 at line 1 column 590",
+      "value": "err Data: invalid value: integer `3000000000`, expected i32"
+    },
+    {
+      "binding list": "= value",
+      "binding params": "= value",
+      "binding text": "= text",
+      "input": "{\"serverId\":\"s1\",\"clientMsgId\":\"c1\",\"conversationId\":\"conv-1\",\"conversationType\":1,\"channelId\":\"\",\"senderId\":\"u1\",\"source\":0,\"conversationSeq\":7,\"createdAt\":1700000000000,\"clientCreatedAt\":1700000000001,\"messageType\":1,\"senderName\":\"A\",\"senderAvatar\":\"\",\"senderDisplayName\":\"A\",\"status\":2,\"isRead\":false,\"isRecalled\":false,\"isEdited\":false,\"mentionUsers\":[],\"mentionAll\":false,\"attributes\":{\"k\":\"v\"},\"version\":1,\"updatedAt\":1700000000002,\"content\":{\"contentType\":\"video\",\"videoId\":\"v1\",\"source\":{\"uuid\":\"u\",\"url\":\"\",\"mimeType\":\"video/mp4\",\"size\":9,\"durationMs\":1000,\"width\":4,\"height\":3},\"cover\":null,\"description\":\"\"}}",
+      "name": "content: video",
+      "text": "ok {\"attributes\":{\"k\":\"v\"},\"channelId\":\"\",\"clientCreatedAt\":1700000000001,\"clientMsgId\":\"c1\",\"content\":{\"contentType\":\"video\",\"cover\":null,\"description\":\"\",\"source\":{\"durationMs\":1000,\"height\":3,\"mimeType\":\"video/mp4\",\"size\":9,\"url\":\"\",\"uuid\":\"u\",\"width\":4},\"videoId\":\"v1\"},\"conversationId\":\"conv-1\",\"conversationSeq\":7,\"conversationType\":1,\"createdAt\":1700000000000,\"extensions\":{},\"isEdited\":false,\"isRead\":false,\"isRecalled\":false,\"localState\":{\"failed\":false,\"isLocal\":false,\"sending\":false,\"sortTs\":0,\"uploadProgress\":0,\"uploading\":false},\"mentionAll\":false,\"mentionUsers\":[],\"messageType\":1,\"reactions\":[],\"receipt\":{\"status\":\"sent\"},\"senderAvatar\":\"\",\"senderDisplayName\":\"A\",\"senderId\":\"u1\",\"senderName\":\"A\",\"serverId\":\"s1\",\"source\":0,\"status\":2,\"textPreview\":\"\",\"timelineKey\":\"server:s1\",\"timelineSortTs\":1700000000000,\"updatedAt\":1700000000002,\"version\":1}",
+      "value": "= text"
+    },
+    {
+      "binding list": "= value",
+      "binding params": "= value",
+      "binding text": "= text",
+      "input": "{\"serverId\":\"s1\",\"clientMsgId\":\"c1\",\"conversationId\":\"conv-1\",\"conversationType\":1,\"channelId\":\"\",\"senderId\":\"u1\",\"source\":0,\"conversationSeq\":7,\"createdAt\":1700000000000,\"clientCreatedAt\":1700000000001,\"messageType\":1,\"senderName\":\"A\",\"senderAvatar\":\"\",\"senderDisplayName\":\"A\",\"status\":2,\"isRead\":false,\"isRecalled\":false,\"isEdited\":false,\"mentionUsers\":[],\"mentionAll\":false,\"attributes\":{\"k\":\"v\"},\"version\":1,\"updatedAt\":1700000000002,\"content\":{\"contentType\":\"audio\",\"audioId\":\"a1\",\"source\":{\"uuid\":\"u\",\"url\":\"\",\"mimeType\":\"audio/aac\",\"size\":9,\"durationMs\":1000},\"description\":\"\"}}",
+      "name": "content: audio",
+      "text": "ok {\"attributes\":{\"k\":\"v\"},\"channelId\":\"\",\"clientCreatedAt\":1700000000001,\"clientMsgId\":\"c1\",\"content\":{\"audioId\":\"a1\",\"contentType\":\"audio\",\"description\":\"\",\"source\":{\"durationMs\":1000,\"mimeType\":\"audio/aac\",\"size\":9,\"url\":\"\",\"uuid\":\"u\"}},\"conversationId\":\"conv-1\",\"conversationSeq\":7,\"conversationType\":1,\"createdAt\":1700000000000,\"extensions\":{},\"isEdited\":false,\"isRead\":false,\"isRecalled\":false,\"localState\":{\"failed\":false,\"isLocal\":false,\"sending\":false,\"sortTs\":0,\"uploadProgress\":0,\"uploading\":false},\"mentionAll\":false,\"mentionUsers\":[],\"messageType\":1,\"reactions\":[],\"receipt\":{\"status\":\"sent\"},\"senderAvatar\":\"\",\"senderDisplayName\":\"A\",\"senderId\":\"u1\",\"senderName\":\"A\",\"serverId\":\"s1\",\"source\":0,\"status\":2,\"textPreview\":\"\",\"timelineKey\":\"server:s1\",\"timelineSortTs\":1700000000000,\"updatedAt\":1700000000002,\"version\":1}",
+      "value": "= text"
+    },
+    {
+      "binding list": "= value",
+      "binding params": "= value",
+      "binding text": "= text",
+      "input": "{\"serverId\":\"s1\",\"clientMsgId\":\"c1\",\"conversationId\":\"conv-1\",\"conversationType\":1,\"channelId\":\"\",\"senderId\":\"u1\",\"source\":0,\"conversationSeq\":7,\"createdAt\":1700000000000,\"clientCreatedAt\":1700000000001,\"messageType\":1,\"senderName\":\"A\",\"senderAvatar\":\"\",\"senderDisplayName\":\"A\",\"status\":2,\"isRead\":false,\"isRecalled\":false,\"isEdited\":false,\"mentionUsers\":[],\"mentionAll\":false,\"attributes\":{\"k\":\"v\"},\"version\":1,\"updatedAt\":1700000000002,\"content\":{\"contentType\":\"file\",\"fileId\":\"f1\",\"fileName\":\"a.pdf\",\"mimeType\":\"application/pdf\",\"fileSize\":12,\"url\":\"\",\"description\":\"\"}}",
+      "name": "content: file",
+      "text": "ok {\"attributes\":{\"k\":\"v\"},\"channelId\":\"\",\"clientCreatedAt\":1700000000001,\"clientMsgId\":\"c1\",\"content\":{\"contentType\":\"file\",\"description\":\"\",\"fileId\":\"f1\",\"fileName\":\"a.pdf\",\"fileSize\":12,\"mimeType\":\"application/pdf\",\"url\":\"\"},\"conversationId\":\"conv-1\",\"conversationSeq\":7,\"conversationType\":1,\"createdAt\":1700000000000,\"extensions\":{},\"isEdited\":false,\"isRead\":false,\"isRecalled\":false,\"localState\":{\"failed\":false,\"isLocal\":false,\"sending\":false,\"sortTs\":0,\"uploadProgress\":0,\"uploading\":false},\"mentionAll\":false,\"mentionUsers\":[],\"messageType\":1,\"reactions\":[],\"receipt\":{\"status\":\"sent\"},\"senderAvatar\":\"\",\"senderDisplayName\":\"A\",\"senderId\":\"u1\",\"senderName\":\"A\",\"serverId\":\"s1\",\"source\":0,\"status\":2,\"textPreview\":\"\",\"timelineKey\":\"server:s1\",\"timelineSortTs\":1700000000000,\"updatedAt\":1700000000002,\"version\":1}",
+      "value": "= text"
+    },
+    {
+      "binding list": "= value",
+      "binding params": "= value",
+      "binding text": "= text",
+      "input": "{\"serverId\":\"s1\",\"clientMsgId\":\"c1\",\"conversationId\":\"conv-1\",\"conversationType\":1,\"channelId\":\"\",\"senderId\":\"u1\",\"source\":0,\"conversationSeq\":7,\"createdAt\":1700000000000,\"clientCreatedAt\":1700000000001,\"messageType\":1,\"senderName\":\"A\",\"senderAvatar\":\"\",\"senderDisplayName\":\"A\",\"status\":2,\"isRead\":false,\"isRecalled\":false,\"isEdited\":false,\"mentionUsers\":[],\"mentionAll\":false,\"attributes\":{\"k\":\"v\"},\"version\":1,\"updatedAt\":1700000000002,\"content\":{\"contentType\":\"location\",\"latitude\":1.5,\"longitude\":-2,\"title\":\"t\",\"address\":\"a\",\"zoom\":12,\"snapshotUrl\":\"https://x/s.png\"}}",
+      "name": "content: location, optional parts",
+      "text": "ok {\"attributes\":{\"k\":\"v\"},\"channelId\":\"\",\"clientCreatedAt\":1700000000001,\"clientMsgId\":\"c1\",\"content\":{\"address\":\"a\",\"contentType\":\"location\",\"latitude\":1.5,\"longitude\":-2.0,\"snapshotUrl\":\"https://x/s.png\",\"title\":\"t\",\"zoom\":12},\"conversationId\":\"conv-1\",\"conversationSeq\":7,\"conversationType\":1,\"createdAt\":1700000000000,\"extensions\":{},\"isEdited\":false,\"isRead\":false,\"isRecalled\":false,\"localState\":{\"failed\":false,\"isLocal\":false,\"sending\":false,\"sortTs\":0,\"uploadProgress\":0,\"uploading\":false},\"mentionAll\":false,\"mentionUsers\":[],\"messageType\":1,\"reactions\":[],\"receipt\":{\"status\":\"sent\"},\"senderAvatar\":\"\",\"senderDisplayName\":\"A\",\"senderId\":\"u1\",\"senderName\":\"A\",\"serverId\":\"s1\",\"source\":0,\"status\":2,\"textPreview\":\"\",\"timelineKey\":\"server:s1\",\"timelineSortTs\":1700000000000,\"updatedAt\":1700000000002,\"version\":1}",
+      "value": "= text"
+    },
+    {
+      "binding list": "err 错误 [INVALID_PARAMETER] invalid sourceMessages: invalid value: integer `300`, expected u8",
+      "binding params": "err 错误 [INVALID_PARAMETER] missing or invalid JSON message: invalid value: integer `300`, expected u8; missing message",
+      "binding text": "err 错误 [INVALID_PARAMETER] missing or invalid JSON message: invalid value: integer `300`, expected u8 at line 1 column 541; missing message",
+      "input": "{\"serverId\":\"s1\",\"clientMsgId\":\"c1\",\"conversationId\":\"conv-1\",\"conversationType\":1,\"channelId\":\"\",\"senderId\":\"u1\",\"source\":0,\"conversationSeq\":7,\"createdAt\":1700000000000,\"clientCreatedAt\":1700000000001,\"messageType\":1,\"senderName\":\"A\",\"senderAvatar\":\"\",\"senderDisplayName\":\"A\",\"status\":2,\"isRead\":false,\"isRecalled\":false,\"isEdited\":false,\"mentionUsers\":[],\"mentionAll\":false,\"attributes\":{\"k\":\"v\"},\"version\":1,\"updatedAt\":1700000000002,\"content\":{\"contentType\":\"location\",\"latitude\":1.5,\"longitude\":2,\"title\":\"t\",\"address\":\"a\",\"zoom\":300}}",
+      "name": "content: location, zoom out of range",
+      "text": "err Data: invalid value: integer `300`, expected u8 at line 1 column 541",
+      "value": "err Data: invalid value: integer `300`, expected u8"
+    },
+    {
+      "binding list": "= value",
+      "binding params": "= value",
+      "binding text": "= text",
+      "input": "{\"serverId\":\"s1\",\"clientMsgId\":\"c1\",\"conversationId\":\"conv-1\",\"conversationType\":1,\"channelId\":\"\",\"senderId\":\"u1\",\"source\":0,\"conversationSeq\":7,\"createdAt\":1700000000000,\"clientCreatedAt\":1700000000001,\"messageType\":1,\"senderName\":\"A\",\"senderAvatar\":\"\",\"senderDisplayName\":\"A\",\"status\":2,\"isRead\":false,\"isRecalled\":false,\"isEdited\":false,\"mentionUsers\":[],\"mentionAll\":false,\"attributes\":{\"k\":\"v\"},\"version\":1,\"updatedAt\":1700000000002,\"content\":{\"contentType\":\"card\",\"cardType\":\"user\",\"id\":\"u2\",\"title\":\"B\",\"subtitle\":\"\",\"avatar\":\"\",\"extra\":{\"k\":\"1\",\"k\":\"2\"}}}",
+      "name": "content: card, map with a duplicate key",
+      "text": "ok {\"attributes\":{\"k\":\"v\"},\"channelId\":\"\",\"clientCreatedAt\":1700000000001,\"clientMsgId\":\"c1\",\"content\":{\"avatar\":\"\",\"cardType\":\"user\",\"contentType\":\"card\",\"extra\":{\"k\":\"2\"},\"id\":\"u2\",\"subtitle\":\"\",\"title\":\"B\"},\"conversationId\":\"conv-1\",\"conversationSeq\":7,\"conversationType\":1,\"createdAt\":1700000000000,\"extensions\":{},\"isEdited\":false,\"isRead\":false,\"isRecalled\":false,\"localState\":{\"failed\":false,\"isLocal\":false,\"sending\":false,\"sortTs\":0,\"uploadProgress\":0,\"uploading\":false},\"mentionAll\":false,\"mentionUsers\":[],\"messageType\":1,\"reactions\":[],\"receipt\":{\"status\":\"sent\"},\"senderAvatar\":\"\",\"senderDisplayName\":\"A\",\"senderId\":\"u1\",\"senderName\":\"A\",\"serverId\":\"s1\",\"source\":0,\"status\":2,\"textPreview\":\"\",\"timelineKey\":\"server:s1\",\"timelineSortTs\":1700000000000,\"updatedAt\":1700000000002,\"version\":1}",
+      "value": "= text"
+    },
+    {
+      "binding list": "= value",
+      "binding params": "= value",
+      "binding text": "= text",
+      "input": "{\"serverId\":\"s1\",\"clientMsgId\":\"c1\",\"conversationId\":\"conv-1\",\"conversationType\":1,\"channelId\":\"\",\"senderId\":\"u1\",\"source\":0,\"conversationSeq\":7,\"createdAt\":1700000000000,\"clientCreatedAt\":1700000000001,\"messageType\":1,\"senderName\":\"A\",\"senderAvatar\":\"\",\"senderDisplayName\":\"A\",\"status\":2,\"isRead\":false,\"isRecalled\":false,\"isEdited\":false,\"mentionUsers\":[],\"mentionAll\":false,\"attributes\":{\"k\":\"v\"},\"version\":1,\"updatedAt\":1700000000002,\"content\":{\"contentType\":\"sticker\",\"stickerId\":\"s\",\"url\":\"https://x/s.webp\",\"width\":1,\"height\":1}}",
+      "name": "content: sticker, defaults",
+      "text": "ok {\"attributes\":{\"k\":\"v\"},\"channelId\":\"\",\"clientCreatedAt\":1700000000001,\"clientMsgId\":\"c1\",\"content\":{\"contentType\":\"sticker\",\"extra\":{},\"format\":\"\",\"height\":1,\"packageId\":\"\",\"stickerId\":\"s\",\"url\":\"https://x/s.webp\",\"width\":1},\"conversationId\":\"conv-1\",\"conversationSeq\":7,\"conversationType\":1,\"createdAt\":1700000000000,\"extensions\":{},\"isEdited\":false,\"isRead\":false,\"isRecalled\":false,\"localState\":{\"failed\":false,\"isLocal\":false,\"sending\":false,\"sortTs\":0,\"uploadProgress\":0,\"uploading\":false},\"mentionAll\":false,\"mentionUsers\":[],\"messageType\":1,\"reactions\":[],\"receipt\":{\"status\":\"sent\"},\"senderAvatar\":\"\",\"senderDisplayName\":\"A\",\"senderId\":\"u1\",\"senderName\":\"A\",\"serverId\":\"s1\",\"source\":0,\"status\":2,\"textPreview\":\"\",\"timelineKey\":\"server:s1\",\"timelineSortTs\":1700000000000,\"updatedAt\":1700000000002,\"version\":1}",
+      "value": "= text"
+    },
+    {
+      "binding list": "= value",
+      "binding params": "= value",
+      "binding text": "= text",
+      "input": "{\"serverId\":\"s1\",\"clientMsgId\":\"c1\",\"conversationId\":\"conv-1\",\"conversationType\":1,\"channelId\":\"\",\"senderId\":\"u1\",\"source\":0,\"conversationSeq\":7,\"createdAt\":1700000000000,\"clientCreatedAt\":1700000000001,\"messageType\":1,\"senderName\":\"A\",\"senderAvatar\":\"\",\"senderDisplayName\":\"A\",\"status\":2,\"isRead\":false,\"isRecalled\":false,\"isEdited\":false,\"mentionUsers\":[],\"mentionAll\":false,\"attributes\":{\"k\":\"v\"},\"version\":1,\"updatedAt\":1700000000002,\"content\":{\"contentType\":\"emoji\",\"emoji\":\"🙂\",\"description\":\"smile\",\"extra\":{}}}",
+      "name": "content: emoji",
+      "text": "ok {\"attributes\":{\"k\":\"v\"},\"channelId\":\"\",\"clientCreatedAt\":1700000000001,\"clientMsgId\":\"c1\",\"content\":{\"contentType\":\"emoji\",\"description\":\"smile\",\"emoji\":\"🙂\",\"extra\":{}},\"conversationId\":\"conv-1\",\"conversationSeq\":7,\"conversationType\":1,\"createdAt\":1700000000000,\"extensions\":{},\"isEdited\":false,\"isRead\":false,\"isRecalled\":false,\"localState\":{\"failed\":false,\"isLocal\":false,\"sending\":false,\"sortTs\":0,\"uploadProgress\":0,\"uploading\":false},\"mentionAll\":false,\"mentionUsers\":[],\"messageType\":1,\"reactions\":[],\"receipt\":{\"status\":\"sent\"},\"senderAvatar\":\"\",\"senderDisplayName\":\"A\",\"senderId\":\"u1\",\"senderName\":\"A\",\"serverId\":\"s1\",\"source\":0,\"status\":2,\"textPreview\":\"\",\"timelineKey\":\"server:s1\",\"timelineSortTs\":1700000000000,\"updatedAt\":1700000000002,\"version\":1}",
+      "value": "= text"
+    },
+    {
+      "binding list": "= value",
+      "binding params": "= value",
+      "binding text": "= text",
+      "input": "{\"serverId\":\"s1\",\"clientMsgId\":\"c1\",\"conversationId\":\"conv-1\",\"conversationType\":1,\"channelId\":\"\",\"senderId\":\"u1\",\"source\":0,\"conversationSeq\":7,\"createdAt\":1700000000000,\"clientCreatedAt\":1700000000001,\"messageType\":1,\"senderName\":\"A\",\"senderAvatar\":\"\",\"senderDisplayName\":\"A\",\"status\":2,\"isRead\":false,\"isRecalled\":false,\"isEdited\":false,\"mentionUsers\":[],\"mentionAll\":false,\"attributes\":{\"k\":\"v\"},\"version\":1,\"updatedAt\":1700000000002,\"content\":{\"contentType\":\"quote\",\"quotedMessageId\":\"m1\",\"quotedSenderId\":\"b\",\"quotedTextPreview\":\"hi\",\"quotedContent\":{\"contentType\":\"text\",\"text\":\"hi\",\"mentions\":[]},\"currentContent\":null}}",
+      "name": "content: quote, nested content",
+      "text": "ok {\"attributes\":{\"k\":\"v\"},\"channelId\":\"\",\"clientCreatedAt\":1700000000001,\"clientMsgId\":\"c1\",\"content\":{\"contentType\":\"quote\",\"currentContent\":null,\"quotedContent\":{\"contentType\":\"text\",\"mentions\":[],\"text\":\"hi\"},\"quotedMessageId\":\"m1\",\"quotedSenderId\":\"b\",\"quotedTextPreview\":\"hi\"},\"conversationId\":\"conv-1\",\"conversationSeq\":7,\"conversationType\":1,\"createdAt\":1700000000000,\"extensions\":{},\"isEdited\":false,\"isRead\":false,\"isRecalled\":false,\"localState\":{\"failed\":false,\"isLocal\":false,\"sending\":false,\"sortTs\":0,\"uploadProgress\":0,\"uploading\":false},\"mentionAll\":false,\"mentionUsers\":[],\"messageType\":1,\"reactions\":[],\"receipt\":{\"status\":\"sent\"},\"senderAvatar\":\"\",\"senderDisplayName\":\"A\",\"senderId\":\"u1\",\"senderName\":\"A\",\"serverId\":\"s1\",\"source\":0,\"status\":2,\"textPreview\":\"\",\"timelineKey\":\"server:s1\",\"timelineSortTs\":1700000000000,\"updatedAt\":1700000000002,\"version\":1}",
+      "value": "= text"
+    },
+    {
+      "binding list": "err 错误 [INVALID_PARAMETER] invalid sourceMessages: missing field `contentType`",
+      "binding params": "err 错误 [INVALID_PARAMETER] missing or invalid JSON message: missing field `contentType`; missing message",
+      "binding text": "err 错误 [INVALID_PARAMETER] missing or invalid JSON message: missing field `contentType` at line 1 column 607; missing message",
+      "input": "{\"serverId\":\"s1\",\"clientMsgId\":\"c1\",\"conversationId\":\"conv-1\",\"conversationType\":1,\"channelId\":\"\",\"senderId\":\"u1\",\"source\":0,\"conversationSeq\":7,\"createdAt\":1700000000000,\"clientCreatedAt\":1700000000001,\"messageType\":1,\"senderName\":\"A\",\"senderAvatar\":\"\",\"senderDisplayName\":\"A\",\"status\":2,\"isRead\":false,\"isRecalled\":false,\"isEdited\":false,\"mentionUsers\":[],\"mentionAll\":false,\"attributes\":{\"k\":\"v\"},\"version\":1,\"updatedAt\":1700000000002,\"content\":{\"contentType\":\"quote\",\"quotedMessageId\":\"m1\",\"quotedSenderId\":\"b\",\"quotedTextPreview\":\"hi\",\"quotedContent\":{\"text\":\"hi\",\"mentions\":[]},\"currentContent\":null}}",
+      "name": "content: quote, nested content without a tag",
+      "text": "err Data: missing field `contentType` at line 1 column 607",
+      "value": "err Data: missing field `contentType`"
+    },
+    {
+      "binding list": "= value",
+      "binding params": "= value",
+      "binding text": "= text",
+      "input": "{\"serverId\":\"s1\",\"clientMsgId\":\"c1\",\"conversationId\":\"conv-1\",\"conversationType\":1,\"channelId\":\"\",\"senderId\":\"u1\",\"source\":0,\"conversationSeq\":7,\"createdAt\":1700000000000,\"clientCreatedAt\":1700000000001,\"messageType\":1,\"senderName\":\"A\",\"senderAvatar\":\"\",\"senderDisplayName\":\"A\",\"status\":2,\"isRead\":false,\"isRecalled\":false,\"isEdited\":false,\"mentionUsers\":[],\"mentionAll\":false,\"attributes\":{\"k\":\"v\"},\"version\":1,\"updatedAt\":1700000000002,\"content\":{\"contentType\":\"link_card\",\"url\":\"https://x\",\"title\":\"t\",\"description\":\"d\",\"thumbnailUrl\":\"\",\"siteName\":\"x\"}}",
+      "name": "content: link card",
+      "text": "ok {\"attributes\":{\"k\":\"v\"},\"channelId\":\"\",\"clientCreatedAt\":1700000000001,\"clientMsgId\":\"c1\",\"content\":{\"contentType\":\"link_card\",\"description\":\"d\",\"siteName\":\"x\",\"thumbnailUrl\":\"\",\"title\":\"t\",\"url\":\"https://x\"},\"conversationId\":\"conv-1\",\"conversationSeq\":7,\"conversationType\":1,\"createdAt\":1700000000000,\"extensions\":{},\"isEdited\":false,\"isRead\":false,\"isRecalled\":false,\"localState\":{\"failed\":false,\"isLocal\":false,\"sending\":false,\"sortTs\":0,\"uploadProgress\":0,\"uploading\":false},\"mentionAll\":false,\"mentionUsers\":[],\"messageType\":1,\"reactions\":[],\"receipt\":{\"status\":\"sent\"},\"senderAvatar\":\"\",\"senderDisplayName\":\"A\",\"senderId\":\"u1\",\"senderName\":\"A\",\"serverId\":\"s1\",\"source\":0,\"status\":2,\"textPreview\":\"\",\"timelineKey\":\"server:s1\",\"timelineSortTs\":1700000000000,\"updatedAt\":1700000000002,\"version\":1}",
+      "value": "= text"
+    },
+    {
+      "binding list": "= value",
+      "binding params": "= value",
+      "binding text": "= text",
+      "input": "{\"serverId\":\"s1\",\"clientMsgId\":\"c1\",\"conversationId\":\"conv-1\",\"conversationType\":1,\"channelId\":\"\",\"senderId\":\"u1\",\"source\":0,\"conversationSeq\":7,\"createdAt\":1700000000000,\"clientCreatedAt\":1700000000001,\"messageType\":1,\"senderName\":\"A\",\"senderAvatar\":\"\",\"senderDisplayName\":\"A\",\"status\":2,\"isRead\":false,\"isRecalled\":false,\"isEdited\":false,\"mentionUsers\":[],\"mentionAll\":false,\"attributes\":{\"k\":\"v\"},\"version\":1,\"updatedAt\":1700000000002,\"content\":{\"contentType\":\"forward\",\"mode\":1,\"title\":\"chat\",\"items\":[{\"sourceMessageId\":\"m1\",\"sourceSenderName\":\"B\",\"sourceMessageTimeMs\":5,\"messageType\":1,\"plainText\":\"hi\",\"content\":{\"contentType\":\"text\",\"text\":\"hi\",\"mentions\":[]}},{\"messageType\":2,\"plainText\":\"[image]\"}]}}",
+      "name": "content: forward, nested items",
+      "text": "ok {\"attributes\":{\"k\":\"v\"},\"channelId\":\"\",\"clientCreatedAt\":1700000000001,\"clientMsgId\":\"c1\",\"content\":{\"contentType\":\"forward\",\"items\":[{\"content\":{\"contentType\":\"text\",\"mentions\":[],\"text\":\"hi\"},\"messageType\":1,\"plainText\":\"hi\",\"sourceMessageId\":\"m1\",\"sourceMessageTimeMs\":5,\"sourceSenderName\":\"B\"},{\"messageType\":2,\"plainText\":\"[image]\"}],\"mode\":1,\"title\":\"chat\"},\"conversationId\":\"conv-1\",\"conversationSeq\":7,\"conversationType\":1,\"createdAt\":1700000000000,\"extensions\":{},\"isEdited\":false,\"isRead\":false,\"isRecalled\":false,\"localState\":{\"failed\":false,\"isLocal\":false,\"sending\":false,\"sortTs\":0,\"uploadProgress\":0,\"uploading\":false},\"mentionAll\":false,\"mentionUsers\":[],\"messageType\":1,\"reactions\":[],\"receipt\":{\"status\":\"sent\"},\"senderAvatar\":\"\",\"senderDisplayName\":\"A\",\"senderId\":\"u1\",\"senderName\":\"A\",\"serverId\":\"s1\",\"source\":0,\"status\":2,\"textPreview\":\"\",\"timelineKey\":\"server:s1\",\"timelineSortTs\":1700000000000,\"updatedAt\":1700000000002,\"version\":1}",
+      "value": "= text"
+    },
+    {
+      "binding list": "= value",
+      "binding params": "= value",
+      "binding text": "= text",
+      "input": "{\"serverId\":\"s1\",\"clientMsgId\":\"c1\",\"conversationId\":\"conv-1\",\"conversationType\":1,\"channelId\":\"\",\"senderId\":\"u1\",\"source\":0,\"conversationSeq\":7,\"createdAt\":1700000000000,\"clientCreatedAt\":1700000000001,\"messageType\":1,\"senderName\":\"A\",\"senderAvatar\":\"\",\"senderDisplayName\":\"A\",\"status\":2,\"isRead\":false,\"isRecalled\":false,\"isEdited\":false,\"mentionUsers\":[],\"mentionAll\":false,\"attributes\":{\"k\":\"v\"},\"version\":1,\"updatedAt\":1700000000002,\"content\":{\"contentType\":\"thread\",\"threadId\":\"t1\",\"threadTitle\":\"T\",\"rootContent\":{\"contentType\":\"quote\",\"quotedMessageId\":\"m\",\"quotedSenderId\":\"b\",\"quotedTextPreview\":\"\",\"quotedContent\":{\"contentType\":\"text\",\"text\":\"x\",\"mentions\":[]},\"currentContent\":null},\"metadata\":{\"a\":\"b\"}}}",
+      "name": "content: thread, two levels of nesting",
+      "text": "ok {\"attributes\":{\"k\":\"v\"},\"channelId\":\"\",\"clientCreatedAt\":1700000000001,\"clientMsgId\":\"c1\",\"content\":{\"contentType\":\"thread\",\"metadata\":{\"a\":\"b\"},\"rootContent\":{\"contentType\":\"quote\",\"currentContent\":null,\"quotedContent\":{\"contentType\":\"text\",\"mentions\":[],\"text\":\"x\"},\"quotedMessageId\":\"m\",\"quotedSenderId\":\"b\",\"quotedTextPreview\":\"\"},\"threadId\":\"t1\",\"threadTitle\":\"T\"},\"conversationId\":\"conv-1\",\"conversationSeq\":7,\"conversationType\":1,\"createdAt\":1700000000000,\"extensions\":{},\"isEdited\":false,\"isRead\":false,\"isRecalled\":false,\"localState\":{\"failed\":false,\"isLocal\":false,\"sending\":false,\"sortTs\":0,\"uploadProgress\":0,\"uploading\":false},\"mentionAll\":false,\"mentionUsers\":[],\"messageType\":1,\"reactions\":[],\"receipt\":{\"status\":\"sent\"},\"senderAvatar\":\"\",\"senderDisplayName\":\"A\",\"senderId\":\"u1\",\"senderName\":\"A\",\"serverId\":\"s1\",\"source\":0,\"status\":2,\"textPreview\":\"\",\"timelineKey\":\"server:s1\",\"timelineSortTs\":1700000000000,\"updatedAt\":1700000000002,\"version\":1}",
+      "value": "= text"
+    },
+    {
+      "binding list": "= value",
+      "binding params": "= value",
+      "binding text": "= text",
+      "input": "{\"serverId\":\"s1\",\"clientMsgId\":\"c1\",\"conversationId\":\"conv-1\",\"conversationType\":1,\"channelId\":\"\",\"senderId\":\"u1\",\"source\":0,\"conversationSeq\":7,\"createdAt\":1700000000000,\"clientCreatedAt\":1700000000001,\"messageType\":1,\"senderName\":\"A\",\"senderAvatar\":\"\",\"senderDisplayName\":\"A\",\"status\":2,\"isRead\":false,\"isRecalled\":false,\"isEdited\":false,\"mentionUsers\":[],\"mentionAll\":false,\"attributes\":{\"k\":\"v\"},\"version\":1,\"updatedAt\":1700000000002,\"content\":{\"contentType\":\"mini_program\",\"appId\":\"app\",\"title\":\"t\",\"pagePath\":\"/p\",\"thumbnailUrl\":\"\",\"extra\":{}}}",
+      "name": "content: mini program",
+      "text": "ok {\"attributes\":{\"k\":\"v\"},\"channelId\":\"\",\"clientCreatedAt\":1700000000001,\"clientMsgId\":\"c1\",\"content\":{\"appId\":\"app\",\"contentType\":\"mini_program\",\"extra\":{},\"pagePath\":\"/p\",\"thumbnailUrl\":\"\",\"title\":\"t\"},\"conversationId\":\"conv-1\",\"conversationSeq\":7,\"conversationType\":1,\"createdAt\":1700000000000,\"extensions\":{},\"isEdited\":false,\"isRead\":false,\"isRecalled\":false,\"localState\":{\"failed\":false,\"isLocal\":false,\"sending\":false,\"sortTs\":0,\"uploadProgress\":0,\"uploading\":false},\"mentionAll\":false,\"mentionUsers\":[],\"messageType\":1,\"reactions\":[],\"receipt\":{\"status\":\"sent\"},\"senderAvatar\":\"\",\"senderDisplayName\":\"A\",\"senderId\":\"u1\",\"senderName\":\"A\",\"serverId\":\"s1\",\"source\":0,\"status\":2,\"textPreview\":\"\",\"timelineKey\":\"server:s1\",\"timelineSortTs\":1700000000000,\"updatedAt\":1700000000002,\"version\":1}",
+      "value": "= text"
+    },
+    {
+      "binding list": "= value",
+      "binding params": "= value",
+      "binding text": "= text",
+      "input": "{\"serverId\":\"s1\",\"clientMsgId\":\"c1\",\"conversationId\":\"conv-1\",\"conversationType\":1,\"channelId\":\"\",\"senderId\":\"u1\",\"source\":0,\"conversationSeq\":7,\"createdAt\":1700000000000,\"clientCreatedAt\":1700000000001,\"messageType\":1,\"senderName\":\"A\",\"senderAvatar\":\"\",\"senderDisplayName\":\"A\",\"status\":2,\"isRead\":false,\"isRecalled\":false,\"isEdited\":false,\"mentionUsers\":[],\"mentionAll\":false,\"attributes\":{\"k\":\"v\"},\"version\":1,\"updatedAt\":1700000000002,\"content\":{\"contentType\":\"rich_text\",\"docJson\":\"{}\",\"contentSchema\":\"flare.richdoc.v2\",\"plainText\":\"p\",\"inputFormat\":\"markdown\",\"inputFormatVersion\":1,\"sourcePayload\":{\"m\":\"*p*\"},\"title\":\"T\",\"searchText\":\"p\",\"renderHintsJson\":\"{}\"}}",
+      "name": "content: rich text, optional parts",
+      "text": "ok {\"attributes\":{\"k\":\"v\"},\"channelId\":\"\",\"clientCreatedAt\":1700000000001,\"clientMsgId\":\"c1\",\"content\":{\"contentSchema\":\"flare.richdoc.v2\",\"contentType\":\"rich_text\",\"docJson\":\"{}\",\"inputFormat\":\"markdown\",\"inputFormatVersion\":1,\"plainText\":\"p\",\"renderHintsJson\":\"{}\",\"searchText\":\"p\",\"sourcePayload\":{\"m\":\"*p*\"},\"title\":\"T\"},\"conversationId\":\"conv-1\",\"conversationSeq\":7,\"conversationType\":1,\"createdAt\":1700000000000,\"extensions\":{},\"isEdited\":false,\"isRead\":false,\"isRecalled\":false,\"localState\":{\"failed\":false,\"isLocal\":false,\"sending\":false,\"sortTs\":0,\"uploadProgress\":0,\"uploading\":false},\"mentionAll\":false,\"mentionUsers\":[],\"messageType\":1,\"reactions\":[],\"receipt\":{\"status\":\"sent\"},\"senderAvatar\":\"\",\"senderDisplayName\":\"A\",\"senderId\":\"u1\",\"senderName\":\"A\",\"serverId\":\"s1\",\"source\":0,\"status\":2,\"textPreview\":\"\",\"timelineKey\":\"server:s1\",\"timelineSortTs\":1700000000000,\"updatedAt\":1700000000002,\"version\":1}",
+      "value": "= text"
+    },
+    {
+      "binding list": "= value",
+      "binding params": "= value",
+      "binding text": "= text",
+      "input": "{\"serverId\":\"s1\",\"clientMsgId\":\"c1\",\"conversationId\":\"conv-1\",\"conversationType\":1,\"channelId\":\"\",\"senderId\":\"u1\",\"source\":0,\"conversationSeq\":7,\"createdAt\":1700000000000,\"clientCreatedAt\":1700000000001,\"messageType\":1,\"senderName\":\"A\",\"senderAvatar\":\"\",\"senderDisplayName\":\"A\",\"status\":2,\"isRead\":false,\"isRecalled\":false,\"isEdited\":false,\"mentionUsers\":[],\"mentionAll\":false,\"attributes\":{\"k\":\"v\"},\"version\":1,\"updatedAt\":1700000000002,\"content\":{\"contentType\":\"image_group\",\"images\":[{\"uuid\":\"u\",\"url\":\"\",\"mimeType\":\"\",\"size\":1,\"width\":1,\"height\":1}],\"description\":\"\",\"metadata\":{}}}",
+      "name": "content: image group",
+      "text": "ok {\"attributes\":{\"k\":\"v\"},\"channelId\":\"\",\"clientCreatedAt\":1700000000001,\"clientMsgId\":\"c1\",\"content\":{\"contentType\":\"image_group\",\"description\":\"\",\"images\":[{\"animated\":false,\"format\":0,\"height\":1,\"imageId\":\"\",\"mimeType\":\"\",\"size\":1,\"url\":\"\",\"uuid\":\"u\",\"width\":1}],\"metadata\":{}},\"conversationId\":\"conv-1\",\"conversationSeq\":7,\"conversationType\":1,\"createdAt\":1700000000000,\"extensions\":{},\"isEdited\":false,\"isRead\":false,\"isRecalled\":false,\"localState\":{\"failed\":false,\"isLocal\":false,\"sending\":false,\"sortTs\":0,\"uploadProgress\":0,\"uploading\":false},\"mentionAll\":false,\"mentionUsers\":[],\"messageType\":1,\"reactions\":[],\"receipt\":{\"status\":\"sent\"},\"senderAvatar\":\"\",\"senderDisplayName\":\"A\",\"senderId\":\"u1\",\"senderName\":\"A\",\"serverId\":\"s1\",\"source\":0,\"status\":2,\"textPreview\":\"\",\"timelineKey\":\"server:s1\",\"timelineSortTs\":1700000000000,\"updatedAt\":1700000000002,\"version\":1}",
+      "value": "= text"
+    },
+    {
+      "binding list": "= value",
+      "binding params": "= value",
+      "binding text": "= text",
+      "input": "{\"serverId\":\"s1\",\"clientMsgId\":\"c1\",\"conversationId\":\"conv-1\",\"conversationType\":1,\"channelId\":\"\",\"senderId\":\"u1\",\"source\":0,\"conversationSeq\":7,\"createdAt\":1700000000000,\"clientCreatedAt\":1700000000001,\"messageType\":1,\"senderName\":\"A\",\"senderAvatar\":\"\",\"senderDisplayName\":\"A\",\"status\":2,\"isRead\":false,\"isRecalled\":false,\"isEdited\":false,\"mentionUsers\":[],\"mentionAll\":false,\"attributes\":{\"k\":\"v\"},\"version\":1,\"updatedAt\":1700000000002,\"content\":{\"contentType\":\"system\",\"eventKind\":\"member_joined\",\"body\":\"b\",\"data\":{\"u\":\"1\"},\"payload\":[1,2,255]}}",
+      "name": "content: system, payload bytes",
+      "text": "ok {\"attributes\":{\"k\":\"v\"},\"channelId\":\"\",\"clientCreatedAt\":1700000000001,\"clientMsgId\":\"c1\",\"content\":{\"body\":\"b\",\"contentType\":\"system\",\"data\":{\"u\":\"1\"},\"eventKind\":\"member_joined\",\"payload\":[1,2,255]},\"conversationId\":\"conv-1\",\"conversationSeq\":7,\"conversationType\":1,\"createdAt\":1700000000000,\"extensions\":{},\"isEdited\":false,\"isRead\":false,\"isRecalled\":false,\"localState\":{\"failed\":false,\"isLocal\":false,\"sending\":false,\"sortTs\":0,\"uploadProgress\":0,\"uploading\":false},\"mentionAll\":false,\"mentionUsers\":[],\"messageType\":1,\"reactions\":[],\"receipt\":{\"status\":\"sent\"},\"senderAvatar\":\"\",\"senderDisplayName\":\"A\",\"senderId\":\"u1\",\"senderName\":\"A\",\"serverId\":\"s1\",\"source\":0,\"status\":2,\"textPreview\":\"\",\"timelineKey\":\"server:s1\",\"timelineSortTs\":1700000000000,\"updatedAt\":1700000000002,\"version\":1}",
+      "value": "= text"
+    },
+    {
+      "binding list": "err 错误 [INVALID_PARAMETER] invalid sourceMessages: invalid type: string \"AQI=\", expected a sequence",
+      "binding params": "err 错误 [INVALID_PARAMETER] missing or invalid JSON message: invalid type: string \"AQI=\", expected a sequence; missing message",
+      "binding text": "err 错误 [INVALID_PARAMETER] missing or invalid JSON message: invalid type: string \"AQI=\", expected a sequence at line 1 column 527; missing message",
+      "input": "{\"serverId\":\"s1\",\"clientMsgId\":\"c1\",\"conversationId\":\"conv-1\",\"conversationType\":1,\"channelId\":\"\",\"senderId\":\"u1\",\"source\":0,\"conversationSeq\":7,\"createdAt\":1700000000000,\"clientCreatedAt\":1700000000001,\"messageType\":1,\"senderName\":\"A\",\"senderAvatar\":\"\",\"senderDisplayName\":\"A\",\"status\":2,\"isRead\":false,\"isRecalled\":false,\"isEdited\":false,\"mentionUsers\":[],\"mentionAll\":false,\"attributes\":{\"k\":\"v\"},\"version\":1,\"updatedAt\":1700000000002,\"content\":{\"contentType\":\"system\",\"eventKind\":\"k\",\"body\":\"b\",\"data\":{},\"payload\":\"AQI=\"}}",
+      "name": "content: system, payload as a string",
+      "text": "err Data: invalid type: string \"AQI=\", expected a sequence at line 1 column 527",
+      "value": "err Data: invalid type: string \"AQI=\", expected a sequence"
+    },
+    {
+      "binding list": "err 错误 [INVALID_PARAMETER] invalid sourceMessages: invalid value: integer `256`, expected u8",
+      "binding params": "err 错误 [INVALID_PARAMETER] missing or invalid JSON message: invalid value: integer `256`, expected u8; missing message",
+      "binding text": "err 错误 [INVALID_PARAMETER] missing or invalid JSON message: invalid value: integer `256`, expected u8 at line 1 column 526; missing message",
+      "input": "{\"serverId\":\"s1\",\"clientMsgId\":\"c1\",\"conversationId\":\"conv-1\",\"conversationType\":1,\"channelId\":\"\",\"senderId\":\"u1\",\"source\":0,\"conversationSeq\":7,\"createdAt\":1700000000000,\"clientCreatedAt\":1700000000001,\"messageType\":1,\"senderName\":\"A\",\"senderAvatar\":\"\",\"senderDisplayName\":\"A\",\"status\":2,\"isRead\":false,\"isRecalled\":false,\"isEdited\":false,\"mentionUsers\":[],\"mentionAll\":false,\"attributes\":{\"k\":\"v\"},\"version\":1,\"updatedAt\":1700000000002,\"content\":{\"contentType\":\"system\",\"eventKind\":\"k\",\"body\":\"b\",\"data\":{},\"payload\":[256]}}",
+      "name": "content: system, payload byte out of range",
+      "text": "err Data: invalid value: integer `256`, expected u8 at line 1 column 526",
+      "value": "err Data: invalid value: integer `256`, expected u8"
+    },
+    {
+      "binding list": "= value",
+      "binding params": "= value",
+      "binding text": "= text",
+      "input": "{\"serverId\":\"s1\",\"clientMsgId\":\"c1\",\"conversationId\":\"conv-1\",\"conversationType\":1,\"channelId\":\"\",\"senderId\":\"u1\",\"source\":0,\"conversationSeq\":7,\"createdAt\":1700000000000,\"clientCreatedAt\":1700000000001,\"messageType\":1,\"senderName\":\"A\",\"senderAvatar\":\"\",\"senderDisplayName\":\"A\",\"status\":2,\"isRead\":false,\"isRecalled\":false,\"isEdited\":false,\"mentionUsers\":[],\"mentionAll\":false,\"attributes\":{\"k\":\"v\"},\"version\":1,\"updatedAt\":1700000000002,\"content\":{\"contentType\":\"notification\",\"title\":\"t\",\"body\":\"b\",\"notificationType\":\"n\",\"data\":{},\"targetUserIds\":[\"u\"],\"targetRoleId\":\"\",\"notifyAll\":false,\"persistent\":true,\"showInList\":true,\"showBadge\":false,\"playSound\":false}}",
+      "name": "content: notification",
+      "text": "ok {\"attributes\":{\"k\":\"v\"},\"channelId\":\"\",\"clientCreatedAt\":1700000000001,\"clientMsgId\":\"c1\",\"content\":{\"body\":\"b\",\"contentType\":\"notification\",\"data\":{},\"notificationType\":\"n\",\"notifyAll\":false,\"persistent\":true,\"playSound\":false,\"showBadge\":false,\"showInList\":true,\"targetRoleId\":\"\",\"targetUserIds\":[\"u\"],\"title\":\"t\"},\"conversationId\":\"conv-1\",\"conversationSeq\":7,\"conversationType\":1,\"createdAt\":1700000000000,\"extensions\":{},\"isEdited\":false,\"isRead\":false,\"isRecalled\":false,\"localState\":{\"failed\":false,\"isLocal\":false,\"sending\":false,\"sortTs\":0,\"uploadProgress\":0,\"uploading\":false},\"mentionAll\":false,\"mentionUsers\":[],\"messageType\":1,\"reactions\":[],\"receipt\":{\"status\":\"sent\"},\"senderAvatar\":\"\",\"senderDisplayName\":\"A\",\"senderId\":\"u1\",\"senderName\":\"A\",\"serverId\":\"s1\",\"source\":0,\"status\":2,\"textPreview\":\"\",\"timelineKey\":\"server:s1\",\"timelineSortTs\":1700000000000,\"updatedAt\":1700000000002,\"version\":1}",
+      "value": "= text"
+    },
+    {
+      "binding list": "= value",
+      "binding params": "= value",
+      "binding text": "= text",
+      "input": "{\"serverId\":\"s1\",\"clientMsgId\":\"c1\",\"conversationId\":\"conv-1\",\"conversationType\":1,\"channelId\":\"\",\"senderId\":\"u1\",\"source\":0,\"conversationSeq\":7,\"createdAt\":1700000000000,\"clientCreatedAt\":1700000000001,\"messageType\":1,\"senderName\":\"A\",\"senderAvatar\":\"\",\"senderDisplayName\":\"A\",\"status\":2,\"isRead\":false,\"isRecalled\":false,\"isEdited\":false,\"mentionUsers\":[],\"mentionAll\":false,\"attributes\":{\"k\":\"v\"},\"version\":1,\"updatedAt\":1700000000002,\"content\":{\"contentType\":\"vote\",\"voteId\":\"v\",\"title\":\"t\",\"options\":[\"a\",\"b\"],\"metadata\":{},\"participantUserIds\":[\"u\"]}}",
+      "name": "content: vote",
+      "text": "ok {\"attributes\":{\"k\":\"v\"},\"channelId\":\"\",\"clientCreatedAt\":1700000000001,\"clientMsgId\":\"c1\",\"content\":{\"contentType\":\"vote\",\"metadata\":{},\"options\":[\"a\",\"b\"],\"participantUserIds\":[\"u\"],\"title\":\"t\",\"voteId\":\"v\"},\"conversationId\":\"conv-1\",\"conversationSeq\":7,\"conversationType\":1,\"createdAt\":1700000000000,\"extensions\":{},\"isEdited\":false,\"isRead\":false,\"isRecalled\":false,\"localState\":{\"failed\":false,\"isLocal\":false,\"sending\":false,\"sortTs\":0,\"uploadProgress\":0,\"uploading\":false},\"mentionAll\":false,\"mentionUsers\":[],\"messageType\":1,\"reactions\":[],\"receipt\":{\"status\":\"sent\"},\"senderAvatar\":\"\",\"senderDisplayName\":\"A\",\"senderId\":\"u1\",\"senderName\":\"A\",\"serverId\":\"s1\",\"source\":0,\"status\":2,\"textPreview\":\"\",\"timelineKey\":\"server:s1\",\"timelineSortTs\":1700000000000,\"updatedAt\":1700000000002,\"version\":1}",
+      "value": "= text"
+    },
+    {
+      "binding list": "= value",
+      "binding params": "= value",
+      "binding text": "= text",
+      "input": "{\"serverId\":\"s1\",\"clientMsgId\":\"c1\",\"conversationId\":\"conv-1\",\"conversationType\":1,\"channelId\":\"\",\"senderId\":\"u1\",\"source\":0,\"conversationSeq\":7,\"createdAt\":1700000000000,\"clientCreatedAt\":1700000000001,\"messageType\":1,\"senderName\":\"A\",\"senderAvatar\":\"\",\"senderDisplayName\":\"A\",\"status\":2,\"isRead\":false,\"isRecalled\":false,\"isEdited\":false,\"mentionUsers\":[],\"mentionAll\":false,\"attributes\":{\"k\":\"v\"},\"version\":1,\"updatedAt\":1700000000002,\"content\":{\"contentType\":\"task\",\"taskId\":\"t\",\"title\":\"t\",\"status\":\"open\",\"metadata\":{}}}",
+      "name": "content: task",
+      "text": "ok {\"attributes\":{\"k\":\"v\"},\"channelId\":\"\",\"clientCreatedAt\":1700000000001,\"clientMsgId\":\"c1\",\"content\":{\"contentType\":\"task\",\"metadata\":{},\"status\":\"open\",\"taskId\":\"t\",\"title\":\"t\"},\"conversationId\":\"conv-1\",\"conversationSeq\":7,\"conversationType\":1,\"createdAt\":1700000000000,\"extensions\":{},\"isEdited\":false,\"isRead\":false,\"isRecalled\":false,\"localState\":{\"failed\":false,\"isLocal\":false,\"sending\":false,\"sortTs\":0,\"uploadProgress\":0,\"uploading\":false},\"mentionAll\":false,\"mentionUsers\":[],\"messageType\":1,\"reactions\":[],\"receipt\":{\"status\":\"sent\"},\"senderAvatar\":\"\",\"senderDisplayName\":\"A\",\"senderId\":\"u1\",\"senderName\":\"A\",\"serverId\":\"s1\",\"source\":0,\"status\":2,\"textPreview\":\"\",\"timelineKey\":\"server:s1\",\"timelineSortTs\":1700000000000,\"updatedAt\":1700000000002,\"version\":1}",
+      "value": "= text"
+    },
+    {
+      "binding list": "= value",
+      "binding params": "= value",
+      "binding text": "= text",
+      "input": "{\"serverId\":\"s1\",\"clientMsgId\":\"c1\",\"conversationId\":\"conv-1\",\"conversationType\":1,\"channelId\":\"\",\"senderId\":\"u1\",\"source\":0,\"conversationSeq\":7,\"createdAt\":1700000000000,\"clientCreatedAt\":1700000000001,\"messageType\":1,\"senderName\":\"A\",\"senderAvatar\":\"\",\"senderDisplayName\":\"A\",\"status\":2,\"isRead\":false,\"isRecalled\":false,\"isEdited\":false,\"mentionUsers\":[],\"mentionAll\":false,\"attributes\":{\"k\":\"v\"},\"version\":1,\"updatedAt\":1700000000002,\"content\":{\"contentType\":\"schedule\",\"scheduleId\":\"s\",\"title\":\"t\",\"startTime\":1,\"endTime\":2,\"metadata\":{}}}",
+      "name": "content: schedule",
+      "text": "ok {\"attributes\":{\"k\":\"v\"},\"channelId\":\"\",\"clientCreatedAt\":1700000000001,\"clientMsgId\":\"c1\",\"content\":{\"contentType\":\"schedule\",\"endTime\":2,\"metadata\":{},\"scheduleId\":\"s\",\"startTime\":1,\"title\":\"t\"},\"conversationId\":\"conv-1\",\"conversationSeq\":7,\"conversationType\":1,\"createdAt\":1700000000000,\"extensions\":{},\"isEdited\":false,\"isRead\":false,\"isRecalled\":false,\"localState\":{\"failed\":false,\"isLocal\":false,\"sending\":false,\"sortTs\":0,\"uploadProgress\":0,\"uploading\":false},\"mentionAll\":false,\"mentionUsers\":[],\"messageType\":1,\"reactions\":[],\"receipt\":{\"status\":\"sent\"},\"senderAvatar\":\"\",\"senderDisplayName\":\"A\",\"senderId\":\"u1\",\"senderName\":\"A\",\"serverId\":\"s1\",\"source\":0,\"status\":2,\"textPreview\":\"\",\"timelineKey\":\"server:s1\",\"timelineSortTs\":1700000000000,\"updatedAt\":1700000000002,\"version\":1}",
+      "value": "= text"
+    },
+    {
+      "binding list": "err 错误 [INVALID_PARAMETER] invalid sourceMessages: invalid value: integer `-1`, expected u64",
+      "binding params": "err 错误 [INVALID_PARAMETER] missing or invalid JSON message: invalid value: integer `-1`, expected u64; missing message",
+      "binding text": "err 错误 [INVALID_PARAMETER] missing or invalid JSON message: invalid value: integer `-1`, expected u64 at line 1 column 545; missing message",
+      "input": "{\"serverId\":\"s1\",\"clientMsgId\":\"c1\",\"conversationId\":\"conv-1\",\"conversationType\":1,\"channelId\":\"\",\"senderId\":\"u1\",\"source\":0,\"conversationSeq\":7,\"createdAt\":1700000000000,\"clientCreatedAt\":1700000000001,\"messageType\":1,\"senderName\":\"A\",\"senderAvatar\":\"\",\"senderDisplayName\":\"A\",\"status\":2,\"isRead\":false,\"isRecalled\":false,\"isEdited\":false,\"mentionUsers\":[],\"mentionAll\":false,\"attributes\":{\"k\":\"v\"},\"version\":1,\"updatedAt\":1700000000002,\"content\":{\"contentType\":\"schedule\",\"scheduleId\":\"s\",\"title\":\"t\",\"startTime\":-1,\"endTime\":2,\"metadata\":{}}}",
+      "name": "content: schedule, negative time",
+      "text": "err Data: invalid value: integer `-1`, expected u64 at line 1 column 545",
+      "value": "err Data: invalid value: integer `-1`, expected u64"
+    },
+    {
+      "binding list": "= value",
+      "binding params": "= value",
+      "binding text": "= text",
+      "input": "{\"serverId\":\"s1\",\"clientMsgId\":\"c1\",\"conversationId\":\"conv-1\",\"conversationType\":1,\"channelId\":\"\",\"senderId\":\"u1\",\"source\":0,\"conversationSeq\":7,\"createdAt\":1700000000000,\"clientCreatedAt\":1700000000001,\"messageType\":1,\"senderName\":\"A\",\"senderAvatar\":\"\",\"senderDisplayName\":\"A\",\"status\":2,\"isRead\":false,\"isRecalled\":false,\"isEdited\":false,\"mentionUsers\":[],\"mentionAll\":false,\"attributes\":{\"k\":\"v\"},\"version\":1,\"updatedAt\":1700000000002,\"content\":{\"contentType\":\"announcement\",\"title\":\"t\",\"body\":\"b\",\"pinned\":true,\"metadata\":{}}}",
+      "name": "content: announcement",
+      "text": "ok {\"attributes\":{\"k\":\"v\"},\"channelId\":\"\",\"clientCreatedAt\":1700000000001,\"clientMsgId\":\"c1\",\"content\":{\"body\":\"b\",\"contentType\":\"announcement\",\"metadata\":{},\"pinned\":true,\"title\":\"t\"},\"conversationId\":\"conv-1\",\"conversationSeq\":7,\"conversationType\":1,\"createdAt\":1700000000000,\"extensions\":{},\"isEdited\":false,\"isRead\":false,\"isRecalled\":false,\"localState\":{\"failed\":false,\"isLocal\":false,\"sending\":false,\"sortTs\":0,\"uploadProgress\":0,\"uploading\":false},\"mentionAll\":false,\"mentionUsers\":[],\"messageType\":1,\"reactions\":[],\"receipt\":{\"status\":\"sent\"},\"senderAvatar\":\"\",\"senderDisplayName\":\"A\",\"senderId\":\"u1\",\"senderName\":\"A\",\"serverId\":\"s1\",\"source\":0,\"status\":2,\"textPreview\":\"\",\"timelineKey\":\"server:s1\",\"timelineSortTs\":1700000000000,\"updatedAt\":1700000000002,\"version\":1}",
+      "value": "= text"
+    },
+    {
+      "binding list": "= value",
+      "binding params": "= value",
+      "binding text": "= text",
+      "input": "{\"serverId\":\"s1\",\"clientMsgId\":\"c1\",\"conversationId\":\"conv-1\",\"conversationType\":1,\"channelId\":\"\",\"senderId\":\"u1\",\"source\":0,\"conversationSeq\":7,\"createdAt\":1700000000000,\"clientCreatedAt\":1700000000001,\"messageType\":1,\"senderName\":\"A\",\"senderAvatar\":\"\",\"senderDisplayName\":\"A\",\"status\":2,\"isRead\":false,\"isRecalled\":false,\"isEdited\":false,\"mentionUsers\":[],\"mentionAll\":false,\"attributes\":{\"k\":\"v\"},\"version\":1,\"updatedAt\":1700000000002,\"content\":{\"contentType\":\"custom\",\"type\":\"x.y\",\"payload\":[7],\"description\":\"d\",\"metadata\":{\"k\":\"v\"}}}",
+      "name": "content: custom, payload",
+      "text": "ok {\"attributes\":{\"k\":\"v\"},\"channelId\":\"\",\"clientCreatedAt\":1700000000001,\"clientMsgId\":\"c1\",\"content\":{\"contentType\":\"custom\",\"description\":\"d\",\"metadata\":{\"k\":\"v\"},\"payload\":[7],\"type\":\"x.y\"},\"conversationId\":\"conv-1\",\"conversationSeq\":7,\"conversationType\":1,\"createdAt\":1700000000000,\"extensions\":{},\"isEdited\":false,\"isRead\":false,\"isRecalled\":false,\"localState\":{\"failed\":false,\"isLocal\":false,\"sending\":false,\"sortTs\":0,\"uploadProgress\":0,\"uploading\":false},\"mentionAll\":false,\"mentionUsers\":[],\"messageType\":1,\"reactions\":[],\"receipt\":{\"status\":\"sent\"},\"senderAvatar\":\"\",\"senderDisplayName\":\"A\",\"senderId\":\"u1\",\"senderName\":\"A\",\"serverId\":\"s1\",\"source\":0,\"status\":2,\"textPreview\":\"\",\"timelineKey\":\"server:s1\",\"timelineSortTs\":1700000000000,\"updatedAt\":1700000000002,\"version\":1}",
+      "value": "= text"
+    },
+    {
+      "binding list": "= value",
+      "binding params": "= value",
+      "binding text": "= text",
+      "input": "{\"serverId\":\"s1\",\"clientMsgId\":\"c1\",\"conversationId\":\"conv-1\",\"conversationType\":1,\"channelId\":\"\",\"senderId\":\"u1\",\"source\":0,\"conversationSeq\":7,\"createdAt\":1700000000000,\"clientCreatedAt\":1700000000001,\"messageType\":1,\"senderName\":\"A\",\"senderAvatar\":\"\",\"senderDisplayName\":\"A\",\"status\":2,\"isRead\":false,\"isRecalled\":false,\"isEdited\":false,\"mentionUsers\":[],\"mentionAll\":false,\"attributes\":{\"k\":\"v\"},\"version\":1,\"updatedAt\":1700000000002,\"content\":{\"contentType\":\"placeholder\",\"reason\":\"unsupported\",\"fallbackText\":\"?\",\"metadata\":{}}}",
+      "name": "content: placeholder",
+      "text": "ok {\"attributes\":{\"k\":\"v\"},\"channelId\":\"\",\"clientCreatedAt\":1700000000001,\"clientMsgId\":\"c1\",\"content\":{\"contentType\":\"placeholder\",\"fallbackText\":\"?\",\"metadata\":{},\"reason\":\"unsupported\"},\"conversationId\":\"conv-1\",\"conversationSeq\":7,\"conversationType\":1,\"createdAt\":1700000000000,\"extensions\":{},\"isEdited\":false,\"isRead\":false,\"isRecalled\":false,\"localState\":{\"failed\":false,\"isLocal\":false,\"sending\":false,\"sortTs\":0,\"uploadProgress\":0,\"uploading\":false},\"mentionAll\":false,\"mentionUsers\":[],\"messageType\":1,\"reactions\":[],\"receipt\":{\"status\":\"sent\"},\"senderAvatar\":\"\",\"senderDisplayName\":\"A\",\"senderId\":\"u1\",\"senderName\":\"A\",\"serverId\":\"s1\",\"source\":0,\"status\":2,\"textPreview\":\"\",\"timelineKey\":\"server:s1\",\"timelineSortTs\":1700000000000,\"updatedAt\":1700000000002,\"version\":1}",
+      "value": "= text"
+    },
+    {
+      "binding list": "err 错误 [INVALID_PARAMETER] invalid sourceMessages: missing field `contentType`",
+      "binding params": "err 错误 [INVALID_PARAMETER] missing or invalid JSON message: missing field `contentType`; missing message",
+      "binding text": "err 错误 [INVALID_PARAMETER] missing or invalid JSON message: missing field `contentType` at line 1 column 475; missing message",
+      "input": "{\"serverId\":\"s1\",\"clientMsgId\":\"c1\",\"conversationId\":\"conv-1\",\"conversationType\":1,\"channelId\":\"\",\"senderId\":\"u1\",\"source\":0,\"conversationSeq\":7,\"createdAt\":1700000000000,\"clientCreatedAt\":1700000000001,\"messageType\":1,\"senderName\":\"A\",\"senderAvatar\":\"\",\"senderDisplayName\":\"A\",\"status\":2,\"isRead\":false,\"isRecalled\":false,\"isEdited\":false,\"mentionUsers\":[],\"mentionAll\":false,\"attributes\":{\"k\":\"v\"},\"version\":1,\"updatedAt\":1700000000002,\"content\":{\"text\":\"hi\",\"mentions\":[]}}",
+      "name": "content: tag missing",
+      "text": "err Data: missing field `contentType` at line 1 column 475",
+      "value": "err Data: missing field `contentType`"
+    },
+    {
+      "binding list": "err 错误 [INVALID_PARAMETER] invalid sourceMessages: unknown variant `nope`, expected one of `text`, `image`, `video`, `audio`, `file`, `location`, `card`, `sticker`, `emoji`, `quote`, `link_card`, `forward`, `thread`, `mini_program`, `rich_text`, `image_group`, `system`, `notification`, `vote`, `task`, `schedule`, `announcement`, `custom`, `placeholder`",
+      "binding params": "err 错误 [INVALID_PARAMETER] missing or invalid JSON message: unknown variant `nope`, expected one of `text`, `image`, `video`, `audio`, `file`, `location`, `card`, `sticker`, `emoji`, `quote`, `link_card`, `forward`, `thread`, `mini_program`, `rich_text`, `image_group`, `system`, `notification`, `vote`, `task`, `schedule`, `announcement`, `custom`, `placeholder`; missing message",
+      "binding text": "err 错误 [INVALID_PARAMETER] missing or invalid JSON message: unknown variant `nope`, expected one of `text`, `image`, `video`, `audio`, `file`, `location`, `card`, `sticker`, `emoji`, `quote`, `link_card`, `forward`, `thread`, `mini_program`, `rich_text`, `image_group`, `system`, `notification`, `vote`, `task`, `schedule`, `announcement`, `custom`, `placeholder` at line 1 column 469; missing message",
+      "input": "{\"serverId\":\"s1\",\"clientMsgId\":\"c1\",\"conversationId\":\"conv-1\",\"conversationType\":1,\"channelId\":\"\",\"senderId\":\"u1\",\"source\":0,\"conversationSeq\":7,\"createdAt\":1700000000000,\"clientCreatedAt\":1700000000001,\"messageType\":1,\"senderName\":\"A\",\"senderAvatar\":\"\",\"senderDisplayName\":\"A\",\"status\":2,\"isRead\":false,\"isRecalled\":false,\"isEdited\":false,\"mentionUsers\":[],\"mentionAll\":false,\"attributes\":{\"k\":\"v\"},\"version\":1,\"updatedAt\":1700000000002,\"content\":{\"contentType\":\"nope\",\"text\":\"hi\",\"mentions\":[]}}",
+      "name": "content: tag unknown",
+      "text": "err Data: unknown variant `nope`, expected one of `text`, `image`, `video`, `audio`, `file`, `location`, `card`, `sticker`, `emoji`, `quote`, `link_card`, `forward`, `thread`, `mini_program`, `rich_text`, `image_group`, `system`, `notification`, `vote`, `task`, `schedule`, `announcement`, `custom`, `placeholder` at line 1 column 469",
+      "value": "err Data: unknown variant `nope`, expected one of `text`, `image`, `video`, `audio`, `file`, `location`, `card`, `sticker`, `emoji`, `quote`, `link_card`, `forward`, `thread`, `mini_program`, `rich_text`, `image_group`, `system`, `notification`, `vote`, `task`, `schedule`, `announcement`, `custom`, `placeholder`"
+    },
+    {
+      "binding list": "err 错误 [INVALID_PARAMETER] invalid sourceMessages: unknown variant `Text`, expected one of `text`, `image`, `video`, `audio`, `file`, `location`, `card`, `sticker`, `emoji`, `quote`, `link_card`, `forward`, `thread`, `mini_program`, `rich_text`, `image_group`, `system`, `notification`, `vote`, `task`, `schedule`, `announcement`, `custom`, `placeholder`",
+      "binding params": "err 错误 [INVALID_PARAMETER] missing or invalid JSON message: unknown variant `Text`, expected one of `text`, `image`, `video`, `audio`, `file`, `location`, `card`, `sticker`, `emoji`, `quote`, `link_card`, `forward`, `thread`, `mini_program`, `rich_text`, `image_group`, `system`, `notification`, `vote`, `task`, `schedule`, `announcement`, `custom`, `placeholder`; missing message",
+      "binding text": "err 错误 [INVALID_PARAMETER] missing or invalid JSON message: unknown variant `Text`, expected one of `text`, `image`, `video`, `audio`, `file`, `location`, `card`, `sticker`, `emoji`, `quote`, `link_card`, `forward`, `thread`, `mini_program`, `rich_text`, `image_group`, `system`, `notification`, `vote`, `task`, `schedule`, `announcement`, `custom`, `placeholder` at line 1 column 469; missing message",
+      "input": "{\"serverId\":\"s1\",\"clientMsgId\":\"c1\",\"conversationId\":\"conv-1\",\"conversationType\":1,\"channelId\":\"\",\"senderId\":\"u1\",\"source\":0,\"conversationSeq\":7,\"createdAt\":1700000000000,\"clientCreatedAt\":1700000000001,\"messageType\":1,\"senderName\":\"A\",\"senderAvatar\":\"\",\"senderDisplayName\":\"A\",\"status\":2,\"isRead\":false,\"isRecalled\":false,\"isEdited\":false,\"mentionUsers\":[],\"mentionAll\":false,\"attributes\":{\"k\":\"v\"},\"version\":1,\"updatedAt\":1700000000002,\"content\":{\"contentType\":\"Text\",\"text\":\"hi\",\"mentions\":[]}}",
+      "name": "content: tag in another case",
+      "text": "err Data: unknown variant `Text`, expected one of `text`, `image`, `video`, `audio`, `file`, `location`, `card`, `sticker`, `emoji`, `quote`, `link_card`, `forward`, `thread`, `mini_program`, `rich_text`, `image_group`, `system`, `notification`, `vote`, `task`, `schedule`, `announcement`, `custom`, `placeholder` at line 1 column 469",
+      "value": "err Data: unknown variant `Text`, expected one of `text`, `image`, `video`, `audio`, `file`, `location`, `card`, `sticker`, `emoji`, `quote`, `link_card`, `forward`, `thread`, `mini_program`, `rich_text`, `image_group`, `system`, `notification`, `vote`, `task`, `schedule`, `announcement`, `custom`, `placeholder`"
+    },
+    {
+      "binding list": "err 错误 [INVALID_PARAMETER] invalid sourceMessages: invalid type: integer `0`, expected variant identifier",
+      "binding params": "err 错误 [INVALID_PARAMETER] missing or invalid JSON message: invalid type: integer `0`, expected variant identifier; missing message",
+      "binding text": "err 错误 [INVALID_PARAMETER] missing or invalid JSON message: invalid type: integer `0`, expected variant identifier at line 1 column 464; missing message",
+      "input": "{\"serverId\":\"s1\",\"clientMsgId\":\"c1\",\"conversationId\":\"conv-1\",\"conversationType\":1,\"channelId\":\"\",\"senderId\":\"u1\",\"source\":0,\"conversationSeq\":7,\"createdAt\":1700000000000,\"clientCreatedAt\":1700000000001,\"messageType\":1,\"senderName\":\"A\",\"senderAvatar\":\"\",\"senderDisplayName\":\"A\",\"status\":2,\"isRead\":false,\"isRecalled\":false,\"isEdited\":false,\"mentionUsers\":[],\"mentionAll\":false,\"attributes\":{\"k\":\"v\"},\"version\":1,\"updatedAt\":1700000000002,\"content\":{\"contentType\":0,\"text\":\"hi\",\"mentions\":[]}}",
+      "name": "content: tag as a number",
+      "text": "err Data: invalid type: integer `0`, expected variant identifier at line 1 column 464",
+      "value": "err Data: invalid type: integer `0`, expected variant identifier"
+    },
+    {
+      "binding list": "err 错误 [INVALID_PARAMETER] invalid sourceMessages: invalid type: null, expected variant identifier",
+      "binding params": "err 错误 [INVALID_PARAMETER] missing or invalid JSON message: invalid type: null, expected variant identifier; missing message",
+      "binding text": "err 错误 [INVALID_PARAMETER] missing or invalid JSON message: invalid type: null, expected variant identifier at line 1 column 467; missing message",
+      "input": "{\"serverId\":\"s1\",\"clientMsgId\":\"c1\",\"conversationId\":\"conv-1\",\"conversationType\":1,\"channelId\":\"\",\"senderId\":\"u1\",\"source\":0,\"conversationSeq\":7,\"createdAt\":1700000000000,\"clientCreatedAt\":1700000000001,\"messageType\":1,\"senderName\":\"A\",\"senderAvatar\":\"\",\"senderDisplayName\":\"A\",\"status\":2,\"isRead\":false,\"isRecalled\":false,\"isEdited\":false,\"mentionUsers\":[],\"mentionAll\":false,\"attributes\":{\"k\":\"v\"},\"version\":1,\"updatedAt\":1700000000002,\"content\":{\"contentType\":null,\"text\":\"hi\",\"mentions\":[]}}",
+      "name": "content: tag as null",
+      "text": "err Data: invalid type: null, expected variant identifier at line 1 column 467",
+      "value": "err Data: invalid type: null, expected variant identifier"
+    },
+    {
+      "binding list": "err 错误 [INVALID_PARAMETER] invalid sourceMessages: invalid type: map, expected variant identifier",
+      "binding params": "err 错误 [INVALID_PARAMETER] missing or invalid JSON message: invalid type: map, expected variant identifier; missing message",
+      "binding text": "err 错误 [INVALID_PARAMETER] missing or invalid JSON message: invalid type: map, expected variant identifier at line 1 column 463; missing message",
+      "input": "{\"serverId\":\"s1\",\"clientMsgId\":\"c1\",\"conversationId\":\"conv-1\",\"conversationType\":1,\"channelId\":\"\",\"senderId\":\"u1\",\"source\":0,\"conversationSeq\":7,\"createdAt\":1700000000000,\"clientCreatedAt\":1700000000001,\"messageType\":1,\"senderName\":\"A\",\"senderAvatar\":\"\",\"senderDisplayName\":\"A\",\"status\":2,\"isRead\":false,\"isRecalled\":false,\"isEdited\":false,\"mentionUsers\":[],\"mentionAll\":false,\"attributes\":{\"k\":\"v\"},\"version\":1,\"updatedAt\":1700000000002,\"content\":{\"contentType\":{\"text\":null},\"text\":\"hi\",\"mentions\":[]}}",
+      "name": "content: tag as an object",
+      "text": "err Data: invalid type: map, expected variant identifier at line 1 column 463",
+      "value": "err Data: invalid type: map, expected variant identifier"
+    },
+    {
+      "binding list": "err 错误 [INVALID_PARAMETER] invalid sourceMessages: missing field `description`",
+      "binding params": "err 错误 [INVALID_PARAMETER] missing or invalid JSON message: missing field `description`; missing message",
+      "binding text": "err 错误 [INVALID_PARAMETER] missing or invalid JSON message: duplicate field `contentType` at line 1 column 483; missing message",
+      "input": "{\"serverId\":\"s1\",\"clientMsgId\":\"c1\",\"conversationId\":\"conv-1\",\"conversationType\":1,\"channelId\":\"\",\"senderId\":\"u1\",\"source\":0,\"conversationSeq\":7,\"createdAt\":1700000000000,\"clientCreatedAt\":1700000000001,\"messageType\":1,\"senderName\":\"A\",\"senderAvatar\":\"\",\"senderDisplayName\":\"A\",\"status\":2,\"isRead\":false,\"isRecalled\":false,\"isEdited\":false,\"mentionUsers\":[],\"mentionAll\":false,\"attributes\":{\"k\":\"v\"},\"version\":1,\"updatedAt\":1700000000002,\"content\":{\"contentType\":\"text\",\"contentType\":\"image\",\"text\":\"hi\",\"mentions\":[]}}",
+      "name": "content: tag twice",
+      "text": "err Data: duplicate field `contentType` at line 1 column 483",
+      "value": "err Data: missing field `description`"
+    },
+    {
+      "binding list": "= value",
+      "binding params": "= value",
+      "binding text": "err 错误 [INVALID_PARAMETER] missing or invalid JSON message: duplicate field `text` at line 1 column 507; missing message",
+      "input": "{\"serverId\":\"s1\",\"clientMsgId\":\"c1\",\"conversationId\":\"conv-1\",\"conversationType\":1,\"channelId\":\"\",\"senderId\":\"u1\",\"source\":0,\"conversationSeq\":7,\"createdAt\":1700000000000,\"clientCreatedAt\":1700000000001,\"messageType\":1,\"senderName\":\"A\",\"senderAvatar\":\"\",\"senderDisplayName\":\"A\",\"status\":2,\"isRead\":false,\"isRecalled\":false,\"isEdited\":false,\"mentionUsers\":[],\"mentionAll\":false,\"attributes\":{\"k\":\"v\"},\"version\":1,\"updatedAt\":1700000000002,\"content\":{\"contentType\":\"text\",\"text\":\"a\",\"text\":\"b\",\"mentions\":[]}}",
+      "name": "content: field twice",
+      "text": "err Data: duplicate field `text` at line 1 column 507",
+      "value": "ok {\"attributes\":{\"k\":\"v\"},\"channelId\":\"\",\"clientCreatedAt\":1700000000001,\"clientMsgId\":\"c1\",\"content\":{\"contentType\":\"text\",\"mentions\":[],\"text\":\"b\"},\"conversationId\":\"conv-1\",\"conversationSeq\":7,\"conversationType\":1,\"createdAt\":1700000000000,\"extensions\":{},\"isEdited\":false,\"isRead\":false,\"isRecalled\":false,\"localState\":{\"failed\":false,\"isLocal\":false,\"sending\":false,\"sortTs\":0,\"uploadProgress\":0,\"uploading\":false},\"mentionAll\":false,\"mentionUsers\":[],\"messageType\":1,\"reactions\":[],\"receipt\":{\"status\":\"sent\"},\"senderAvatar\":\"\",\"senderDisplayName\":\"A\",\"senderId\":\"u1\",\"senderName\":\"A\",\"serverId\":\"s1\",\"source\":0,\"status\":2,\"textPreview\":\"\",\"timelineKey\":\"server:s1\",\"timelineSortTs\":1700000000000,\"updatedAt\":1700000000002,\"version\":1}"
+    },
+    {
+      "binding list": "= value",
+      "binding params": "= value",
+      "binding text": "err 错误 [INVALID_PARAMETER] missing or invalid JSON message: duplicate field `text` at line 1 column 507; missing message",
+      "input": "{\"serverId\":\"s1\",\"clientMsgId\":\"c1\",\"conversationId\":\"conv-1\",\"conversationType\":1,\"channelId\":\"\",\"senderId\":\"u1\",\"source\":0,\"conversationSeq\":7,\"createdAt\":1700000000000,\"clientCreatedAt\":1700000000001,\"messageType\":1,\"senderName\":\"A\",\"senderAvatar\":\"\",\"senderDisplayName\":\"A\",\"status\":2,\"isRead\":false,\"isRecalled\":false,\"isEdited\":false,\"mentionUsers\":[],\"mentionAll\":false,\"attributes\":{\"k\":\"v\"},\"version\":1,\"updatedAt\":1700000000002,\"content\":{\"text\":\"a\",\"text\":\"b\",\"contentType\":\"text\",\"mentions\":[]}}",
+      "name": "content: field twice before the tag",
+      "text": "err Data: duplicate field `text` at line 1 column 507",
+      "value": "ok {\"attributes\":{\"k\":\"v\"},\"channelId\":\"\",\"clientCreatedAt\":1700000000001,\"clientMsgId\":\"c1\",\"content\":{\"contentType\":\"text\",\"mentions\":[],\"text\":\"b\"},\"conversationId\":\"conv-1\",\"conversationSeq\":7,\"conversationType\":1,\"createdAt\":1700000000000,\"extensions\":{},\"isEdited\":false,\"isRead\":false,\"isRecalled\":false,\"localState\":{\"failed\":false,\"isLocal\":false,\"sending\":false,\"sortTs\":0,\"uploadProgress\":0,\"uploading\":false},\"mentionAll\":false,\"mentionUsers\":[],\"messageType\":1,\"reactions\":[],\"receipt\":{\"status\":\"sent\"},\"senderAvatar\":\"\",\"senderDisplayName\":\"A\",\"senderId\":\"u1\",\"senderName\":\"A\",\"serverId\":\"s1\",\"source\":0,\"status\":2,\"textPreview\":\"\",\"timelineKey\":\"server:s1\",\"timelineSortTs\":1700000000000,\"updatedAt\":1700000000002,\"version\":1}"
+    },
+    {
+      "binding list": "err 错误 [INVALID_PARAMETER] invalid sourceMessages: invalid type: integer `5`, expected a string",
+      "binding params": "err 错误 [INVALID_PARAMETER] missing or invalid JSON message: invalid type: integer `5`, expected a string; missing message",
+      "binding text": "err 错误 [INVALID_PARAMETER] missing or invalid JSON message: invalid type: integer `5`, expected a string at line 1 column 494; missing message",
+      "input": "{\"serverId\":\"s1\",\"clientMsgId\":\"c1\",\"conversationId\":\"conv-1\",\"conversationType\":1,\"channelId\":\"\",\"senderId\":\"u1\",\"source\":0,\"conversationSeq\":7,\"createdAt\":1700000000000,\"clientCreatedAt\":1700000000001,\"messageType\":1,\"senderName\":\"A\",\"senderAvatar\":\"\",\"senderDisplayName\":\"A\",\"status\":2,\"isRead\":false,\"isRecalled\":false,\"isEdited\":false,\"mentionUsers\":[],\"mentionAll\":false,\"attributes\":{\"k\":\"v\"},\"version\":1,\"updatedAt\":1700000000002,\"content\":{\"contentType\":\"text\",\"text\":5,\"mentions\":[]}}",
+      "name": "content: field of the wrong type",
+      "text": "err Data: invalid type: integer `5`, expected a string at line 1 column 494",
+      "value": "err Data: invalid type: integer `5`, expected a string"
+    },
+    {
+      "binding list": "err 错误 [INVALID_PARAMETER] invalid sourceMessages: missing field `mentions`",
+      "binding params": "err 错误 [INVALID_PARAMETER] missing or invalid JSON message: missing field `mentions`; missing message",
+      "binding text": "err 错误 [INVALID_PARAMETER] missing or invalid JSON message: missing field `mentions` at line 1 column 483; missing message",
+      "input": "{\"serverId\":\"s1\",\"clientMsgId\":\"c1\",\"conversationId\":\"conv-1\",\"conversationType\":1,\"channelId\":\"\",\"senderId\":\"u1\",\"source\":0,\"conversationSeq\":7,\"createdAt\":1700000000000,\"clientCreatedAt\":1700000000001,\"messageType\":1,\"senderName\":\"A\",\"senderAvatar\":\"\",\"senderDisplayName\":\"A\",\"status\":2,\"isRead\":false,\"isRecalled\":false,\"isEdited\":false,\"mentionUsers\":[],\"mentionAll\":false,\"attributes\":{\"k\":\"v\"},\"version\":1,\"updatedAt\":1700000000002,\"content\":{\"contentType\":\"text\",\"text\":\"hi\"}}",
+      "name": "content: required field missing",
+      "text": "err Data: missing field `mentions` at line 1 column 483",
+      "value": "err Data: missing field `mentions`"
+    },
+    {
+      "binding list": "err 错误 [INVALID_PARAMETER] invalid sourceMessages: invalid type: null, expected a sequence",
+      "binding params": "err 错误 [INVALID_PARAMETER] missing or invalid JSON message: invalid type: null, expected a sequence; missing message",
+      "binding text": "err 错误 [INVALID_PARAMETER] missing or invalid JSON message: invalid type: null, expected a sequence at line 1 column 499; missing message",
+      "input": "{\"serverId\":\"s1\",\"clientMsgId\":\"c1\",\"conversationId\":\"conv-1\",\"conversationType\":1,\"channelId\":\"\",\"senderId\":\"u1\",\"source\":0,\"conversationSeq\":7,\"createdAt\":1700000000000,\"clientCreatedAt\":1700000000001,\"messageType\":1,\"senderName\":\"A\",\"senderAvatar\":\"\",\"senderDisplayName\":\"A\",\"status\":2,\"isRead\":false,\"isRecalled\":false,\"isEdited\":false,\"mentionUsers\":[],\"mentionAll\":false,\"attributes\":{\"k\":\"v\"},\"version\":1,\"updatedAt\":1700000000002,\"content\":{\"contentType\":\"text\",\"text\":\"hi\",\"mentions\":null}}",
+      "name": "content: null for a required list",
+      "text": "err Data: invalid type: null, expected a sequence at line 1 column 499",
+      "value": "err Data: invalid type: null, expected a sequence"
+    },
+    {
+      "binding list": "= value",
+      "binding params": "= value",
+      "binding text": "= text",
+      "input": "{\"serverId\":\"s1\",\"clientMsgId\":\"c1\",\"conversationId\":\"conv-1\",\"conversationType\":1,\"channelId\":\"\",\"senderId\":\"u1\",\"source\":0,\"conversationSeq\":7,\"createdAt\":1700000000000,\"clientCreatedAt\":1700000000001,\"messageType\":1,\"senderName\":\"A\",\"senderAvatar\":\"\",\"senderDisplayName\":\"A\",\"status\":2,\"isRead\":false,\"isRecalled\":false,\"isEdited\":false,\"mentionUsers\":[],\"mentionAll\":false,\"attributes\":{\"k\":\"v\"},\"version\":1,\"updatedAt\":1700000000002,\"content\":[\"text\",\"hi\",[]]}",
+      "name": "content: array form",
+      "text": "ok {\"attributes\":{\"k\":\"v\"},\"channelId\":\"\",\"clientCreatedAt\":1700000000001,\"clientMsgId\":\"c1\",\"content\":{\"contentType\":\"text\",\"mentions\":[],\"text\":\"hi\"},\"conversationId\":\"conv-1\",\"conversationSeq\":7,\"conversationType\":1,\"createdAt\":1700000000000,\"extensions\":{},\"isEdited\":false,\"isRead\":false,\"isRecalled\":false,\"localState\":{\"failed\":false,\"isLocal\":false,\"sending\":false,\"sortTs\":0,\"uploadProgress\":0,\"uploading\":false},\"mentionAll\":false,\"mentionUsers\":[],\"messageType\":1,\"reactions\":[],\"receipt\":{\"status\":\"sent\"},\"senderAvatar\":\"\",\"senderDisplayName\":\"A\",\"senderId\":\"u1\",\"senderName\":\"A\",\"serverId\":\"s1\",\"source\":0,\"status\":2,\"textPreview\":\"\",\"timelineKey\":\"server:s1\",\"timelineSortTs\":1700000000000,\"updatedAt\":1700000000002,\"version\":1}",
+      "value": "= text"
+    },
+    {
+      "binding list": "err 错误 [INVALID_PARAMETER] invalid sourceMessages: invalid length 3, expected 2 elements in sequence",
+      "binding params": "err 错误 [INVALID_PARAMETER] missing or invalid JSON message: invalid length 3, expected 2 elements in sequence; missing message",
+      "binding text": "err 错误 [INVALID_PARAMETER] missing or invalid JSON message: invalid length 3, expected 2 elements in sequence at line 1 column 467; missing message",
+      "input": "{\"serverId\":\"s1\",\"clientMsgId\":\"c1\",\"conversationId\":\"conv-1\",\"conversationType\":1,\"channelId\":\"\",\"senderId\":\"u1\",\"source\":0,\"conversationSeq\":7,\"createdAt\":1700000000000,\"clientCreatedAt\":1700000000001,\"messageType\":1,\"senderName\":\"A\",\"senderAvatar\":\"\",\"senderDisplayName\":\"A\",\"status\":2,\"isRead\":false,\"isRecalled\":false,\"isEdited\":false,\"mentionUsers\":[],\"mentionAll\":false,\"attributes\":{\"k\":\"v\"},\"version\":1,\"updatedAt\":1700000000002,\"content\":[\"text\",\"hi\",[],1]}",
+      "name": "content: array form with an extra element",
+      "text": "err Data: invalid length 3, expected 2 elements in sequence at line 1 column 467",
+      "value": "err Data: invalid length 3, expected 2 elements in sequence"
+    },
+    {
+      "binding list": "err 错误 [INVALID_PARAMETER] invalid sourceMessages: missing field `contentType`",
+      "binding params": "err 错误 [INVALID_PARAMETER] missing or invalid JSON message: missing field `contentType`; missing message",
+      "binding text": "err 错误 [INVALID_PARAMETER] missing or invalid JSON message: missing field `contentType` at line 1 column 450; missing message",
+      "input": "{\"serverId\":\"s1\",\"clientMsgId\":\"c1\",\"conversationId\":\"conv-1\",\"conversationType\":1,\"channelId\":\"\",\"senderId\":\"u1\",\"source\":0,\"conversationSeq\":7,\"createdAt\":1700000000000,\"clientCreatedAt\":1700000000001,\"messageType\":1,\"senderName\":\"A\",\"senderAvatar\":\"\",\"senderDisplayName\":\"A\",\"status\":2,\"isRead\":false,\"isRecalled\":false,\"isEdited\":false,\"mentionUsers\":[],\"mentionAll\":false,\"attributes\":{\"k\":\"v\"},\"version\":1,\"updatedAt\":1700000000002,\"content\":[]}",
+      "name": "content: array form, empty",
+      "text": "err Data: missing field `contentType` at line 1 column 450",
+      "value": "err Data: missing field `contentType`"
+    },
+    {
+      "binding list": "err 错误 [INVALID_PARAMETER] invalid sourceMessages: missing field `contentType`",
+      "binding params": "err 错误 [INVALID_PARAMETER] missing or invalid JSON message: missing field `contentType`; missing message",
+      "binding text": "err 错误 [INVALID_PARAMETER] missing or invalid JSON message: missing field `contentType` at line 1 column 450; missing message",
+      "input": "{\"serverId\":\"s1\",\"clientMsgId\":\"c1\",\"conversationId\":\"conv-1\",\"conversationType\":1,\"channelId\":\"\",\"senderId\":\"u1\",\"source\":0,\"conversationSeq\":7,\"createdAt\":1700000000000,\"clientCreatedAt\":1700000000001,\"messageType\":1,\"senderName\":\"A\",\"senderAvatar\":\"\",\"senderDisplayName\":\"A\",\"status\":2,\"isRead\":false,\"isRecalled\":false,\"isEdited\":false,\"mentionUsers\":[],\"mentionAll\":false,\"attributes\":{\"k\":\"v\"},\"version\":1,\"updatedAt\":1700000000002,\"content\":{}}",
+      "name": "content: empty object",
+      "text": "err Data: missing field `contentType` at line 1 column 450",
+      "value": "err Data: missing field `contentType`"
+    },
+    {
+      "binding list": "err 错误 [INVALID_PARAMETER] invalid sourceMessages: invalid type: string \"text\", expected internally tagged enum Elem",
+      "binding params": "err 错误 [INVALID_PARAMETER] missing or invalid JSON message: invalid type: string \"text\", expected internally tagged enum Elem; missing message",
+      "binding text": "err 错误 [INVALID_PARAMETER] missing or invalid JSON message: invalid type: string \"text\", expected internally tagged enum Elem at line 1 column 454; missing message",
+      "input": "{\"serverId\":\"s1\",\"clientMsgId\":\"c1\",\"conversationId\":\"conv-1\",\"conversationType\":1,\"channelId\":\"\",\"senderId\":\"u1\",\"source\":0,\"conversationSeq\":7,\"createdAt\":1700000000000,\"clientCreatedAt\":1700000000001,\"messageType\":1,\"senderName\":\"A\",\"senderAvatar\":\"\",\"senderDisplayName\":\"A\",\"status\":2,\"isRead\":false,\"isRecalled\":false,\"isEdited\":false,\"mentionUsers\":[],\"mentionAll\":false,\"attributes\":{\"k\":\"v\"},\"version\":1,\"updatedAt\":1700000000002,\"content\":\"text\"}",
+      "name": "content: a string",
+      "text": "err Data: invalid type: string \"text\", expected internally tagged enum Elem at line 1 column 454",
+      "value": "err Data: invalid type: string \"text\", expected internally tagged enum Elem"
+    },
+    {
+      "binding list": "= value",
+      "binding params": "= value",
+      "binding text": "= text",
+      "input": "{\"serverId\":\"s1\",\"clientMsgId\":\"c1\",\"conversationId\":\"conv-1\",\"conversationType\":1,\"channelId\":\"\",\"senderId\":\"u1\",\"source\":0,\"conversationSeq\":7,\"createdAt\":1700000000000,\"clientCreatedAt\":1700000000001,\"messageType\":1,\"senderName\":\"A\",\"senderAvatar\":\"\",\"senderDisplayName\":\"A\",\"status\":2,\"isRead\":false,\"isRecalled\":false,\"isEdited\":false,\"mentionUsers\":[],\"mentionAll\":false,\"attributes\":{\"k\":\"v\"},\"version\":1,\"updatedAt\":1700000000002,\"content\":null}",
+      "name": "content: null",
+      "text": "ok {\"attributes\":{\"k\":\"v\"},\"channelId\":\"\",\"clientCreatedAt\":1700000000001,\"clientMsgId\":\"c1\",\"conversationId\":\"conv-1\",\"conversationSeq\":7,\"conversationType\":1,\"createdAt\":1700000000000,\"extensions\":{},\"isEdited\":false,\"isRead\":false,\"isRecalled\":false,\"localState\":{\"failed\":false,\"isLocal\":false,\"sending\":false,\"sortTs\":0,\"uploadProgress\":0,\"uploading\":false},\"mentionAll\":false,\"mentionUsers\":[],\"messageType\":1,\"reactions\":[],\"receipt\":{\"status\":\"sent\"},\"senderAvatar\":\"\",\"senderDisplayName\":\"A\",\"senderId\":\"u1\",\"senderName\":\"A\",\"serverId\":\"s1\",\"source\":0,\"status\":2,\"textPreview\":\"\",\"timelineKey\":\"server:s1\",\"timelineSortTs\":1700000000000,\"updatedAt\":1700000000002,\"version\":1}",
+      "value": "= text"
+    },
+    {
+      "binding text": "err 错误 [INVALID_PARAMETER] missing or invalid JSON message: missing field `mentions` at line 1 column 482; invalid params JSON: EOF while parsing an object at line 1 column 482",
+      "input": "{\"serverId\":\"s1\",\"clientMsgId\":\"c1\",\"conversationId\":\"conv-1\",\"conversationType\":1,\"channelId\":\"\",\"senderId\":\"u1\",\"source\":0,\"conversationSeq\":7,\"createdAt\":1700000000000,\"clientCreatedAt\":1700000000001,\"messageType\":1,\"senderName\":\"A\",\"senderAvatar\":\"\",\"senderDisplayName\":\"A\",\"status\":2,\"isRead\":false,\"isRecalled\":false,\"isEdited\":false,\"mentionUsers\":[],\"mentionAll\":false,\"attributes\":{\"k\":\"v\"},\"version\":1,\"updatedAt\":1700000000002,\"content\":{\"contentType\":\"text\",\"text\":\"hi\"}",
+      "name": "content: truncated",
+      "text": "err Data: missing field `mentions` at line 1 column 482"
+    },
+    {
+      "binding text": "err 错误 [INVALID_PARAMETER] missing or invalid JSON message: expected `,` or `}` at line 1 column 498; invalid params JSON: expected `,` or `}` at line 1 column 498",
+      "input": "{\"serverId\":\"s1\",\"clientMsgId\":\"c1\",\"conversationId\":\"conv-1\",\"conversationType\":1,\"channelId\":\"\",\"senderId\":\"u1\",\"source\":0,\"conversationSeq\":7,\"createdAt\":1700000000000,\"clientCreatedAt\":1700000000001,\"messageType\":1,\"senderName\":\"A\",\"senderAvatar\":\"\",\"senderDisplayName\":\"A\",\"status\":2,\"isRead\":false,\"isRecalled\":false,\"isEdited\":false,\"mentionUsers\":[],\"mentionAll\":false,\"attributes\":{\"k\":\"v\"},\"version\":1,\"updatedAt\":1700000000002,\"content\":{\"contentType\":\"text\",\"text\":\"hi\",\"mentions\":[]} x}",
+      "name": "content: trailing characters",
+      "text": "err Syntax: expected `,` or `}` at line 1 column 498"
+    },
+    {
+      "binding text": "err 错误 [INVALID_PARAMETER] missing or invalid JSON message: trailing comma at line 1 column 497; invalid params JSON: trailing comma at line 1 column 497",
+      "input": "{\"serverId\":\"s1\",\"clientMsgId\":\"c1\",\"conversationId\":\"conv-1\",\"conversationType\":1,\"channelId\":\"\",\"senderId\":\"u1\",\"source\":0,\"conversationSeq\":7,\"createdAt\":1700000000000,\"clientCreatedAt\":1700000000001,\"messageType\":1,\"senderName\":\"A\",\"senderAvatar\":\"\",\"senderDisplayName\":\"A\",\"status\":2,\"isRead\":false,\"isRecalled\":false,\"isEdited\":false,\"mentionUsers\":[],\"mentionAll\":false,\"attributes\":{\"k\":\"v\"},\"version\":1,\"updatedAt\":1700000000002,\"content\":{\"contentType\":\"text\",\"text\":\"hi\",\"mentions\":[],}}",
+      "name": "content: trailing comma",
+      "text": "err Syntax: trailing comma at line 1 column 497"
+    },
+    {
+      "binding text": "err 错误 [INVALID_PARAMETER] missing or invalid JSON message: unknown variant `nope`, expected one of `text`, `image`, `video`, `audio`, `file`, `location`, `card`, `sticker`, `emoji`, `quote`, `link_card`, `forward`, `thread`, `mini_program`, `rich_text`, `image_group`, `system`, `notification`, `vote`, `task`, `schedule`, `announcement`, `custom`, `placeholder` at line 1 column 469; invalid params JSON: expected value at line 1 column 478",
+      "input": "{\"serverId\":\"s1\",\"clientMsgId\":\"c1\",\"conversationId\":\"conv-1\",\"conversationType\":1,\"channelId\":\"\",\"senderId\":\"u1\",\"source\":0,\"conversationSeq\":7,\"createdAt\":1700000000000,\"clientCreatedAt\":1700000000001,\"messageType\":1,\"senderName\":\"A\",\"senderAvatar\":\"\",\"senderDisplayName\":\"A\",\"status\":2,\"isRead\":false,\"isRecalled\":false,\"isEdited\":false,\"mentionUsers\":[],\"mentionAll\":false,\"attributes\":{\"k\":\"v\"},\"version\":1,\"updatedAt\":1700000000002,\"content\":{\"contentType\":\"nope\",\"text\":}",
+      "name": "content: unknown tag, then a syntax error",
+      "text": "err Data: unknown variant `nope`, expected one of `text`, `image`, `video`, `audio`, `file`, `location`, `card`, `sticker`, `emoji`, `quote`, `link_card`, `forward`, `thread`, `mini_program`, `rich_text`, `image_group`, `system`, `notification`, `vote`, `task`, `schedule`, `announcement`, `custom`, `placeholder` at line 1 column 469"
+    },
+    {
+      "binding text": "err 错误 [INVALID_PARAMETER] missing or invalid JSON message: trailing comma at line 1 column 480; invalid params JSON: trailing comma at line 1 column 480",
+      "input": "{\"serverId\":\"s1\",\"clientMsgId\":\"c1\",\"conversationId\":\"conv-1\",\"conversationType\":1,\"channelId\":\"\",\"senderId\":\"u1\",\"source\":0,\"conversationSeq\":7,\"createdAt\":1700000000000,\"clientCreatedAt\":1700000000001,\"messageType\":1,\"senderName\":\"A\",\"senderAvatar\":\"\",\"senderDisplayName\":\"A\",\"status\":2,\"isRead\":false,\"isRecalled\":false,\"isEdited\":false,\"mentionUsers\":[],\"mentionAll\":false,\"attributes\":{\"k\":\"v\"},\"version\":1,\"updatedAt\":1700000000002,\"content\":{\"contentType\":\"text\",\"text\":5,}",
+      "name": "content: type error, then a syntax error",
+      "text": "err Syntax: trailing comma at line 1 column 480"
+    }
+  ]
+}
