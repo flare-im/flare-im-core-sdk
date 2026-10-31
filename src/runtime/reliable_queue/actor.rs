@@ -57,6 +57,10 @@ enum QueueCommand {
     },
     /// 暂时性拒绝的退避到期，该条消息可以重发了（`retries` 用来识别过期的到期通知）。
     RetryBackoffElapsed { client_msg_id: String, retries: u32 },
+    /// Answered once every command sent before it has been handled: the actor handles commands
+    /// one at a time, in the order they were sent. Lets tests wait for the queue, not the clock.
+    #[cfg(all(test, feature = "storage-sqlite"))]
+    Handled(oneshot::Sender<()>),
 }
 
 /// 可靠发送队列句柄（发命令 + 持有 actor 所需依赖）
@@ -479,6 +483,10 @@ async fn handle_command(st: &mut QueueState, cmd: QueueCommand) -> Result<()> {
                 debug!(%client_msg_id, retries, "reliable queue retry backoff elapsed");
             }
             try_send_next(st).await?;
+        }
+        #[cfg(all(test, feature = "storage-sqlite"))]
+        QueueCommand::Handled(done) => {
+            let _ = done.send(());
         }
     }
     record_queue_health(st);
@@ -1390,7 +1398,7 @@ fn orphan_durable_ack_should_update(local: &IMMessage, client_msg_id: &str, ack_
 
 #[cfg(all(test, feature = "storage-sqlite"))]
 mod tests {
-    use super::{ReliableSendQueue, ReliableSendQueueConfig};
+    use super::{QueueCommand, ReliableSendQueue, ReliableSendQueueConfig};
     use crate::domain::{
         ConversationReader, ConversationWriter, MessageReader, MessageWriter, PendingSendReader,
         PendingSendVo, PendingSendWriter,
@@ -1401,15 +1409,36 @@ mod tests {
     };
     use crate::infrastructure::protocol::{Codec, PacketSender, ProtobufCodec};
     use crate::kernel::CurrentUserIdStore;
-    use crate::kernel::event::{EventBus, MessageEvent, SdkEvent};
+    use crate::kernel::event::{EventBus, EventReceiver, MessageEvent, SdkEvent};
     use crate::model::message::MessageStatus;
     use crate::model::{Conversation, IMMessage};
     use crate::spi::metrics::MetricsRecorder;
     use flare_proto::common::{SendAccepted, SendAck, SendAckDurability, send_ack};
     use sqlx::SqlitePool;
     use std::sync::Arc;
-    use tokio::sync::{Mutex, RwLock};
-    use tokio::time::{Duration, timeout};
+    use tokio::sync::{Mutex, RwLock, oneshot};
+
+    /// Resolves once the queue has handled every command sent before this call, including
+    /// publishing whatever events handling them produced.
+    async fn handled(queue: &ReliableSendQueue) {
+        let (done, handled) = oneshot::channel();
+        queue
+            .tx
+            .send(QueueCommand::Handled(done))
+            .await
+            .expect("reliable queue closed");
+        handled.await.expect("reliable queue dropped the request");
+    }
+
+    /// The next event the queue published. The queue publishes while it handles a command, so
+    /// the caller first awaits that command's response, or [`handled`] for a command without
+    /// one: the event is then already there, and a missing event fails at once instead of being
+    /// waited out.
+    fn published(receiver: &mut EventReceiver, what: &str) -> SdkEvent {
+        receiver
+            .try_recv()
+            .unwrap_or_else(|error| panic!("expected {what}, nothing was published: {error:?}"))
+    }
 
     fn dummy_sender() -> Arc<PacketSender> {
         Arc::new(PacketSender::new(
@@ -1458,10 +1487,7 @@ mod tests {
         assert!(stored.local_state.sending);
         assert!(stored.local_state.is_local);
 
-        let event = timeout(Duration::from_millis(200), receiver.recv())
-            .await
-            .expect("expected optimistic message event")
-            .expect("bus closed");
+        let event = published(&mut receiver, "optimistic message event");
         match event {
             SdkEvent::Message(MessageEvent::ReceivedBatch { messages }) => {
                 let optimistic = messages
@@ -1518,15 +1544,11 @@ mod tests {
         message.sender_id = "u1".to_string();
 
         queue.enqueue(message).await.unwrap();
-        let optimistic_event = timeout(Duration::from_millis(200), receiver.recv())
-            .await
-            .expect("expected optimistic message event")
-            .expect("bus closed");
+        let optimistic_event = published(&mut receiver, "optimistic message event");
         assert!(matches!(
             optimistic_event,
             SdkEvent::Message(MessageEvent::ReceivedBatch { .. })
         ));
-        tokio::time::sleep(Duration::from_millis(20)).await;
         queue
             .on_ack(SendAck {
                 client_msg_id: "client-ack".to_string(),
@@ -1541,11 +1563,9 @@ mod tests {
             })
             .await
             .unwrap();
+        handled(&queue).await;
 
-        let event = timeout(Duration::from_millis(200), receiver.recv())
-            .await
-            .expect("expected send ack")
-            .expect("bus closed");
+        let event = published(&mut receiver, "send ack");
         assert!(matches!(
             event,
             SdkEvent::Message(MessageEvent::SendAck { .. })
@@ -1593,15 +1613,11 @@ mod tests {
         message.sender_id = "u1".to_string();
 
         queue.enqueue(message).await.unwrap();
-        let optimistic_event = timeout(Duration::from_millis(200), receiver.recv())
-            .await
-            .expect("expected optimistic message event")
-            .expect("bus closed");
+        let optimistic_event = published(&mut receiver, "optimistic message event");
         assert!(matches!(
             optimistic_event,
             SdkEvent::Message(MessageEvent::ReceivedBatch { .. })
         ));
-        tokio::time::sleep(Duration::from_millis(20)).await;
         queue
             .on_ack(SendAck {
                 client_msg_id: "client-broker".to_string(),
@@ -1616,11 +1632,9 @@ mod tests {
             })
             .await
             .unwrap();
+        handled(&queue).await;
 
-        let event = timeout(Duration::from_millis(200), receiver.recv())
-            .await
-            .expect("expected broker send ack")
-            .expect("bus closed");
+        let event = published(&mut receiver, "broker send ack");
         assert!(matches!(
             event,
             SdkEvent::Message(MessageEvent::SendAck { .. })
@@ -1674,10 +1688,7 @@ mod tests {
             queue.enqueue(message).await.unwrap();
         }
         for _ in 0..2 {
-            let optimistic_event = timeout(Duration::from_millis(200), receiver.recv())
-                .await
-                .expect("expected optimistic message event")
-                .expect("bus closed");
+            let optimistic_event = published(&mut receiver, "optimistic message event");
             assert!(matches!(
                 optimistic_event,
                 SdkEvent::Message(MessageEvent::ReceivedBatch { .. })
@@ -1698,11 +1709,9 @@ mod tests {
             })
             .await
             .unwrap();
+        handled(&queue).await;
 
-        let broker_event = timeout(Duration::from_millis(200), receiver.recv())
-            .await
-            .expect("expected broker send ack")
-            .expect("bus closed");
+        let broker_event = published(&mut receiver, "broker send ack");
         assert!(matches!(
             broker_event,
             SdkEvent::Message(MessageEvent::SendAck { .. })
@@ -1730,11 +1739,12 @@ mod tests {
             })
             .await
             .unwrap();
+        handled(&queue).await;
 
-        let persisted_event = timeout(Duration::from_millis(200), receiver.recv())
-            .await
-            .expect("expected second persisted send ack after broker window release")
-            .expect("bus closed");
+        let persisted_event = published(
+            &mut receiver,
+            "second persisted send ack after broker window release",
+        );
         match persisted_event {
             SdkEvent::Message(MessageEvent::SendAck { ack }) => {
                 assert_eq!(ack.client_msg_id, "client-broker-window-2");
@@ -1790,11 +1800,9 @@ mod tests {
             })
             .await
             .unwrap();
+        handled(&queue).await;
 
-        let event = timeout(Duration::from_millis(200), receiver.recv())
-            .await
-            .expect("expected orphan durable send ack")
-            .expect("bus closed");
+        let event = published(&mut receiver, "orphan durable send ack");
         match event {
             SdkEvent::Message(MessageEvent::SendAck { ack }) => {
                 assert_eq!(ack.client_msg_id, "client-orphan");
@@ -1851,11 +1859,9 @@ mod tests {
             })
             .await
             .unwrap();
+        handled(&queue).await;
 
-        let event = timeout(Duration::from_millis(200), receiver.recv())
-            .await
-            .expect("expected orphan persisted send ack")
-            .expect("bus closed");
+        let event = published(&mut receiver, "orphan persisted send ack");
         assert!(matches!(
             event,
             SdkEvent::Message(MessageEvent::SendAck { .. })
@@ -1874,6 +1880,7 @@ mod tests {
     #[tokio::test]
     async fn pipelined_queue_accepts_out_of_order_durable_acks() {
         let bus = EventBus::new();
+        let metrics = MetricsRecorder::enabled(None);
         let mut receiver = bus.subscribe_raw();
         let current_user_id: CurrentUserIdStore = Arc::new(RwLock::new("u1".to_string()));
         let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
@@ -1892,28 +1899,50 @@ mod tests {
             timeout_secs: Some(60),
             max_retries: Some(3),
             max_in_flight: Some(2),
-            metrics: MetricsRecorder::disabled(),
+            metrics: metrics.clone(),
         });
+        // Both enqueue commands are queued before the actor handles the first. The dummy sender
+        // is never connected, so a send attempt fails at once and its failure halves the window;
+        // queued this way, the second message is handled before the first attempt's failure can
+        // shrink the window, however the runtime schedules the actor and the failing send.
+        let mut responses = Vec::new();
         for client_msg_id in ["client-pipe-1", "client-pipe-2"] {
             let mut message = IMMessage::new(flare_proto::common::Message::default());
             message.client_msg_id = client_msg_id.to_string();
             message.server_id = client_msg_id.to_string();
             message.conversation_id = "conv-pipe".to_string();
             message.sender_id = "u1".to_string();
-            queue.enqueue(message).await.unwrap();
+            let (resp, response) = oneshot::channel();
+            queue
+                .tx
+                .try_send(QueueCommand::Enqueue {
+                    message: Box::new(message),
+                    resp,
+                })
+                .expect("the command channel has room");
+            responses.push(response);
+        }
+        for response in responses {
+            response.await.expect("queue answered").expect("enqueued");
         }
         for _ in 0..2 {
-            let optimistic_event = timeout(Duration::from_millis(200), receiver.recv())
-                .await
-                .expect("expected optimistic message event")
-                .expect("bus closed");
+            let optimistic_event = published(&mut receiver, "optimistic message event");
             assert!(matches!(
                 optimistic_event,
                 SdkEvent::Message(MessageEvent::ReceivedBatch { .. })
             ));
         }
+        handled(&queue).await;
+        assert_eq!(
+            metrics
+                .snapshot()
+                .counters
+                .get("reliable_queue.send_attempt_total{retry=0}")
+                .copied(),
+            Some(2),
+            "both messages are in flight before their acks arrive"
+        );
 
-        tokio::time::sleep(Duration::from_millis(20)).await;
         queue
             .on_ack(SendAck {
                 client_msg_id: "client-pipe-2".to_string(),
@@ -1928,11 +1957,9 @@ mod tests {
             })
             .await
             .unwrap();
+        handled(&queue).await;
 
-        let event = timeout(Duration::from_millis(200), receiver.recv())
-            .await
-            .expect("expected second send ack")
-            .expect("bus closed");
+        let event = published(&mut receiver, "second send ack");
         match event {
             SdkEvent::Message(MessageEvent::SendAck { ack }) => {
                 assert_eq!(ack.client_msg_id, "client-pipe-2");
@@ -1995,10 +2022,7 @@ mod tests {
         assert_eq!(affected, vec!["c1".to_string()]);
         assert!(pending_store.list().await.unwrap().is_empty());
 
-        let event = timeout(Duration::from_millis(200), receiver.recv())
-            .await
-            .expect("expected send failed")
-            .expect("bus closed");
+        let event = published(&mut receiver, "send failed");
         match event {
             SdkEvent::Message(MessageEvent::SendFailed { client_msg_id, .. }) => {
                 assert_eq!(client_msg_id, "c1");
@@ -2043,10 +2067,7 @@ mod tests {
         let affected = queue.recover_pending_for_current_user().await.unwrap();
         assert_eq!(affected, vec!["orphan-1".to_string()]);
 
-        let event = timeout(Duration::from_millis(200), receiver.recv())
-            .await
-            .expect("expected orphan send failed")
-            .expect("bus closed");
+        let event = published(&mut receiver, "orphan send failed");
         match event {
             SdkEvent::Message(MessageEvent::SendFailed {
                 client_msg_id,
