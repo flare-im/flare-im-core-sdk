@@ -423,6 +423,38 @@ mod auth_overlay_tests {
         assert!(!merge_sdk_config("ws://x", Some(&none)).auth.sdk_managed());
     }
 
+    /// 设备只来自宿主：overlay 没给就一直不给，登录重建（以构建期配置作底再叠 overlay）也
+    /// 不会凭空多出一台设备；给了就原样带过去，构建期的值也不被没有设备的 overlay 抹掉。
+    #[test]
+    fn a_device_comes_only_from_the_host() {
+        let none: SdkConfigOverlay = serde_json::from_str(r#"{"wsUrl":"ws://h/ws"}"#).unwrap();
+        let first = merge_sdk_config("ws://x", Some(&none));
+        let rebuilt = merge_sdk_config_onto(first.clone(), "ws://x", Some(&none));
+        assert_eq!(first.device_id, None);
+        assert_eq!(rebuilt.device_id, None);
+        assert_eq!(
+            first.effective_device_id(),
+            rebuilt.effective_device_id(),
+            "one process without a device of the host's is one device"
+        );
+
+        let named: SdkConfigOverlay =
+            serde_json::from_str(r#"{"wsUrl":"ws://h/ws","deviceId":"device-a"}"#).unwrap();
+        assert_eq!(
+            merge_sdk_config("ws://x", Some(&named))
+                .device_id
+                .as_deref(),
+            Some("device-a")
+        );
+        let built = SdkConfig::builder().device_id("device-b").build();
+        assert_eq!(
+            merge_sdk_config_onto(built, "ws://x", Some(&none))
+                .device_id
+                .as_deref(),
+            Some("device-b")
+        );
+    }
+
     /// 没有显式 token、没配网关、没有环境变量：明确报配置错误，绝不本地签发。
     #[test]
     fn no_token_source_is_a_configuration_error_not_a_local_mint() {

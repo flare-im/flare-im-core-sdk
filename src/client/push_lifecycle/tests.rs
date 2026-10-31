@@ -470,3 +470,29 @@ async fn revoke_capability_is_not_forwarded_on_http_redirect() {
             .is_err()
     );
 }
+
+/// 宿主没给设备 id 时推送不开恢复日志：拿临时 id 去开的话，每次启动都是新 id，日志目录
+/// 一次一个堆在数据根下，里面的撤销意图下次启动谁也接不上。宿主给了设备才开。
+#[tokio::test]
+async fn a_client_without_the_hosts_device_opens_no_push_journal() {
+    let f = Fixture::new().await;
+    let client = crate::client::IMClient::new();
+    client
+        .init(
+            None,
+            Some(crate::client::lifecycle::SdkConfigOverlay {
+                data_url: Some(f.root.to_str().unwrap().into()),
+                http_url: Some(f.base.clone()),
+                ..Default::default()
+            }),
+        )
+        .await
+        .unwrap();
+    let journals = f.root.join("push-lifecycle");
+    assert!(
+        !journals.exists(),
+        "no device of the host's, no push journal"
+    );
+    client.bind_device_id(Some("device".into())).await;
+    assert!(journals.is_dir(), "the host's device opens its journal");
+}

@@ -199,8 +199,10 @@ pub struct SdkConfig {
     pub tenant_id: Option<String>,
     /// Stable client device id used by connection metadata and sync cursors.
     ///
-    /// When omitted, the SDK derives a runtime id for the current process or
-    /// web session.
+    /// Only the host's own value: `None` (the default) means the host named no
+    /// device, and [`SdkConfig::effective_device_id`] then reports the one id of
+    /// the current process or web page. Push and token binding need the host's
+    /// persisted value and read this field, so a default never stands in for it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub device_id: Option<String>,
     pub connect_timeout_secs: Option<u64>,
@@ -511,6 +513,36 @@ mod tests {
             first, second,
             "a device is one device: the fallback must not change between calls or reconnects"
         );
+        assert_eq!(first, process_fallback_device_id());
+        let blank = SdkConfig {
+            device_id: Some("   ".to_string()),
+            ..SdkConfig::default()
+        };
+        assert_eq!(blank.effective_device_id(), first);
+    }
+
+    /// 默认配置不替宿主编造设备：`device_id` 留空，连接取进程级兜底。默认值若自己铸一个 id，
+    /// 每份默认配置就是一台新设备（兜底被绕开），推送与 token 绑定还会把这个临时 id 当成宿主
+    /// 持久化的稳定值。
+    #[test]
+    fn a_default_config_names_no_device() {
+        for config in [
+            SdkConfig::default(),
+            SdkConfig::new("ws://h/ws"),
+            SdkConfig::builder().endpoint("ws://h/ws").build(),
+        ] {
+            assert_eq!(config.device_id, None);
+            assert_eq!(config.effective_device_id(), process_fallback_device_id());
+            let json = serde_json::to_value(&config).unwrap();
+            assert!(json.get("device_id").is_none(), "{json}");
+        }
+        assert_eq!(
+            SdkConfig::builder()
+                .device_id("device-42")
+                .build()
+                .effective_device_id(),
+            "device-42"
+        );
     }
 }
 
@@ -526,7 +558,10 @@ impl Default for SdkConfig {
             capability_url: Some("http://localhost:50110".into()),
             online_url: Some("http://localhost:50061".into()),
             tenant_id: Some("0".into()),
-            device_id: Some(new_default_device_id()),
+            // No device of the host's: the connection falls back to the process's id
+            // (`effective_device_id`). Minting one here made every default config a new
+            // device and passed a throwaway id off as the host's stable one.
+            device_id: None,
             connect_timeout_secs: Some(30),
             reconnect_interval_secs: Some(5),
             max_reconnect_attempts: None,
