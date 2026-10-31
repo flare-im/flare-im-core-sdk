@@ -1752,55 +1752,69 @@ impl MediaService {
         expires_in: i32,
         auto_cache: bool,
     ) -> Result<MediaResolvedAccess> {
-        let resolved = self.resolve_media_access(file_id, expires_in).await?;
-        if auto_cache
-            && resolved.local_path.is_none()
-            && let Some(remote) = &resolved.remote
-        {
-            self.spawn_auto_cache(file_id.trim(), pick_download_url(remote));
-        }
-        Ok(resolved)
+        self.resolve_media_access_caching(file_id, expires_in, auto_cache)
+            .await
+            .map(|(resolved, _)| resolved)
     }
 
-    fn spawn_auto_cache(&self, file_id: &str, url: &str) {
-        let Some(cache) = self.media_cache_store.clone() else {
-            return;
+    /// [`Self::resolve_media_access_opts`] plus the background cache task it started
+    /// (`None` when it started none), for a caller that waits for the cache.
+    async fn resolve_media_access_caching(
+        &self,
+        file_id: &str,
+        expires_in: i32,
+        auto_cache: bool,
+    ) -> Result<(MediaResolvedAccess, Option<tokio::task::JoinHandle<()>>)> {
+        let resolved = self.resolve_media_access(file_id, expires_in).await?;
+        let task = match &resolved.remote {
+            Some(remote) if auto_cache && resolved.local_path.is_none() => {
+                self.spawn_auto_cache(file_id.trim(), pick_download_url(remote))
+            }
+            _ => None,
         };
+        Ok((resolved, task))
+    }
+
+    /// Fills the cache with `file_id` in the background, at most one task per file at a time.
+    fn spawn_auto_cache(&self, file_id: &str, url: &str) -> Option<tokio::task::JoinHandle<()>> {
+        let cache = self.media_cache_store.clone()?;
         if file_id.is_empty() || url.is_empty() {
-            return;
+            return None;
         }
-        let Ok(handle) = tokio::runtime::Handle::try_current() else {
-            return;
-        };
+        let handle = tokio::runtime::Handle::try_current().ok()?;
         {
-            let Ok(mut inflight) = self.auto_cache_inflight.lock() else {
-                return;
-            };
+            let mut inflight = self.auto_cache_inflight.lock().ok()?;
             if !inflight.insert(file_id.to_string()) {
-                return;
+                return None;
             }
         }
         let http = self.http.clone();
         let inflight = self.auto_cache_inflight.clone();
         let fid = file_id.to_string();
         let url = url.to_string();
-        handle.spawn(async move {
-            if let Err(e) = fill_cache_from_url(
-                &http,
-                &cache,
-                &fid,
-                &url,
-                AUTO_CACHE_MAX_ENTRY_BYTES,
-                media_mime_of,
-            )
-            .await
+        Some(handle.spawn(async move {
+            // The caller saw no cached file, then asked the gateway for a URL: a task for the
+            // same file can finish in between and give its slot back. A task writes the cache
+            // before it gives the slot back, so holding the slot, a second look sees that
+            // file and does not fetch it again.
+            let cached = matches!(cache.get_cached(&fid).await, Ok(Some(_)));
+            if !cached
+                && let Err(e) = fill_cache_from_url(
+                    &http,
+                    &cache,
+                    &fid,
+                    &url,
+                    AUTO_CACHE_MAX_ENTRY_BYTES,
+                    media_mime_of,
+                )
+                .await
             {
                 tracing::debug!(file_id = %fid, error = %e, "media auto cache skipped");
             }
             if let Ok(mut set) = inflight.lock() {
                 set.remove(&fid);
             }
-        });
+        }))
     }
 
     /// 上传成功后把发送方手里的源文件按上传得到的 `file_id` **复制**进媒体缓存（原文件留在原处）。
@@ -2589,39 +2603,77 @@ mod download_and_cache_tests {
     #[tokio::test]
     async fn displayed_images_are_cached_in_the_background() {
         let f = fixture().await;
-        let first = f
+        let (first, task) = f
             .service
-            .resolve_media_access_opts("ok-auto", 600, true)
+            .resolve_media_access_caching("ok-auto", 600, true)
             .await
             .unwrap();
         assert!(first.local_path.is_none());
-        let mut cached = None;
-        for _ in 0..100 {
-            let again = f
-                .service
-                .resolve_media_access_opts("ok-auto", 600, true)
-                .await
-                .unwrap();
-            if again.local_path.is_some() {
-                cached = again.local_path;
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-        }
-        let local = cached.expect("自动缓存应在后台完成");
+        task.expect("an image shown before it is cached is cached in the background")
+            .await
+            .unwrap();
+        let (again, none) = f
+            .service
+            .resolve_media_access_caching("ok-auto", 600, true)
+            .await
+            .unwrap();
+        let local = again.local_path.expect("自动缓存应在后台完成");
+        assert!(none.is_none(), "a cached image starts no fetch");
         assert_eq!(std::fs::read(local).unwrap(), PNG);
         // 后台只拉一次；之后都读本地。
         assert_eq!(f.hits.load(Ordering::SeqCst), 1);
 
         // 不开自动缓存则从不落盘。
-        let plain = f
+        let (plain, none) = f
             .service
-            .resolve_media_access_opts("ok-plain", 600, false)
+            .resolve_media_access_caching("ok-plain", 600, false)
             .await
             .unwrap();
         assert!(plain.local_path.is_none());
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert!(none.is_none(), "without auto cache nothing is fetched");
         assert_eq!(f.hits.load(Ordering::SeqCst), 1);
+    }
+
+    /// 显示方先看到「没缓存」、再去网关要地址，这期间同一张图的上一次后台缓存可能刚好写完
+    /// 缓存并让出名额。此刻再排后台任务，缓存里已经有了：不能再拉一遍。
+    #[tokio::test]
+    async fn an_image_cached_while_it_was_resolved_is_not_fetched_again() {
+        let f = fixture().await;
+        let remote = f
+            .service
+            .resolve_media_access("ok-race", 600)
+            .await
+            .unwrap()
+            .remote
+            .expect("not cached yet");
+        // The earlier background task: it finished and gave its slot back.
+        f.service.cache_remote_media("ok-race", 600).await.unwrap();
+        assert_eq!(f.hits.load(Ordering::SeqCst), 1);
+
+        f.service
+            .spawn_auto_cache("ok-race", pick_download_url(&remote))
+            .expect("no task for the file is in flight")
+            .await
+            .unwrap();
+        assert_eq!(
+            f.hits.load(Ordering::SeqCst),
+            1,
+            "the cached image was fetched again"
+        );
+        // The slot is given back, and a file that is not cached is still fetched.
+        f.service
+            .spawn_auto_cache("ok-other", pick_download_url(&remote))
+            .expect("the slot is free again")
+            .await
+            .unwrap();
+        assert_eq!(f.hits.load(Ordering::SeqCst), 2);
+        assert!(
+            f.cache_admin
+                .get_cached("ok-other")
+                .await
+                .unwrap()
+                .is_some()
+        );
     }
 
     #[tokio::test]
@@ -2699,12 +2751,13 @@ mod download_and_cache_tests {
             uploaded.file_id
         );
 
-        let access = f
+        let (access, fetch) = f
             .service
-            .resolve_media_access_opts(&uploaded.file_id, 600, true)
+            .resolve_media_access_caching(&uploaded.file_id, 600, true)
             .await
             .unwrap();
         assert_eq!(access.source, "local");
+        assert!(fetch.is_none(), "a cached image starts no fetch");
         let local = PathBuf::from(
             access
                 .local_path
@@ -2742,7 +2795,6 @@ mod download_and_cache_tests {
         );
 
         // 没有为自己刚发出的图再从网络下载一遍。
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         assert_eq!(f.hits.load(Ordering::SeqCst), 0);
     }
 
