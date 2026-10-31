@@ -43,8 +43,16 @@ struct ActionRequest {
 fn invalid() -> FlareError {
     FlareError::localized(ErrorCode::InvalidParameter, "sdk.plugin.invalid_ui_request")
 }
+/// The device clock. Every catalog evaluated here has had its validity moved
+/// onto it first ([`localize_validity`]).
 fn now_ms() -> i64 {
     chrono::Utc::now().timestamp_millis()
+}
+/// Moves a catalog's `validUntilMs`, the server's clock, onto the device clock
+/// the evaluation here compares it with: a device clock running ahead of the
+/// server must not expire the catalog early, nor one behind keep it late.
+pub(crate) fn localize_validity(catalog: &mut UiCatalog, clock: &crate::kernel::ServerClock) {
+    catalog.valid_until_ms = clock.to_local_ms(catalog.valid_until_ms);
 }
 fn bounded(value: &Value) -> Result<()> {
     if serde_json::to_vec(value).map_err(|_| invalid())?.len() > 2 * 1024 * 1024 {
@@ -432,9 +440,14 @@ pub(crate) fn parse_catalog(data: &Value) -> Option<UiCatalog> {
     Some(catalog)
 }
 
-pub(crate) fn resolve(tenant: &str, request: Value) -> Result<Value> {
+pub(crate) fn resolve(
+    tenant: &str,
+    request: Value,
+    clock: &crate::kernel::ServerClock,
+) -> Result<Value> {
     bounded(&request)?;
-    let request: ResolveRequest = serde_json::from_value(request).map_err(|_| invalid())?;
+    let mut request: ResolveRequest = serde_json::from_value(request).map_err(|_| invalid())?;
+    localize_validity(&mut request.catalog, clock);
     serde_json::to_value(request.catalog.resolve_with_context(
         &request.message,
         flare_plugin_protocol::ui::UiRenderContext {
@@ -448,9 +461,14 @@ pub(crate) fn resolve(tenant: &str, request: Value) -> Result<Value> {
     ))
     .map_err(|_| invalid())
 }
-pub(crate) fn action(tenant: &str, request: Value) -> Result<Value> {
+pub(crate) fn action(
+    tenant: &str,
+    request: Value,
+    clock: &crate::kernel::ServerClock,
+) -> Result<Value> {
     bounded(&request)?;
-    let request: ActionRequest = serde_json::from_value(request).map_err(|_| invalid())?;
+    let mut request: ActionRequest = serde_json::from_value(request).map_err(|_| invalid())?;
+    localize_validity(&mut request.catalog, clock);
     let target = request
         .catalog
         .action(

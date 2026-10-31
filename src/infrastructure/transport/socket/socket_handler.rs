@@ -107,6 +107,17 @@ fn is_tenant_unavailable_kick(
 #[async_trait]
 impl MessageListener for SocketHandler {
     async fn on_message(&self, frame: &Frame) -> Result<Option<Frame>> {
+        // A payload frame was built by the server and carries its clock: a sample for the
+        // server clock estimate. System frames are left out, the local transport synthesizes
+        // some of them (a PONG for a WebSocket-level pong) with the device clock.
+        if matches!(
+            frame.command.as_ref().and_then(|cmd| cmd.r#type.as_ref()),
+            Some(CommandType::Payload(_))
+        ) {
+            self.dispatcher
+                .server_clock()
+                .observe_server_ms(frame.timestamp);
+        }
         if let Some(ref cmd) = frame.command {
             match &cmd.r#type {
                 Some(CommandType::System(sys_cmd)) => {
@@ -448,6 +459,40 @@ mod tests {
             handler.on_disconnect(Some(reason)).await.unwrap();
         }
         assert!(kicked_off_reasons(&mut rx).await.is_empty());
+    }
+
+    /// 服务端打包的载荷帧带着服务端时间戳，是服务端时钟的样本；系统帧不算（本机传输会用本机时钟
+    /// 合成 PONG），没填时间戳的帧也不算。
+    #[tokio::test]
+    async fn payload_frames_sample_the_server_clock() {
+        let bus = EventBus::new();
+        let handler = handler(&bus);
+        let device_now = crate::shared::util::now_millis();
+        let mut pong = frame_with_system_command(builder::pong(), Reliability::BestEffort);
+        pong.timestamp = device_now + 3_600_000;
+        handler.on_message(&pong).await.unwrap();
+        assert_eq!(handler.dispatcher.server_clock().offset_ms(), 0);
+
+        let mut unstamped = flare_core::common::protocol::frame_with_payload_command(
+            flare_core::common::protocol::PayloadCommand {
+                r#type: PayloadType::Data as i32,
+                ..Default::default()
+            },
+            Reliability::AtLeastOnce,
+        );
+        unstamped.timestamp = 0;
+        handler.on_message(&unstamped).await.unwrap();
+        assert_eq!(handler.dispatcher.server_clock().offset_ms(), 0);
+
+        // The server clock is five minutes behind the device.
+        let mut stamped = unstamped.clone();
+        stamped.timestamp = device_now - 300_000;
+        handler.on_message(&stamped).await.unwrap();
+        let offset = handler.dispatcher.server_clock().offset_ms();
+        assert!(
+            (-301_000..=-299_000).contains(&offset),
+            "offset {offset} ms from a frame five minutes behind"
+        );
     }
 
     /// 其他原因的踢线（运维踢线等）不走这条路：它们的去留由断开原因决定，保持原样。

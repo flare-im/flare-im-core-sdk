@@ -1211,3 +1211,66 @@ async fn composer_actions_list_authorized_entries_for_the_platform_in_order() {
         "every listing fetches a fresh catalog; bad requests fetch none"
     );
 }
+/// Core issues the catalog valid for 30 s on its own clock. A device clock
+/// minutes ahead of the server must not expire it (no entries, no "+"), nor
+/// one minutes behind keep an expired one; the same holds for a catalog the
+/// host hands back to evaluate an action.
+#[tokio::test]
+async fn catalog_validity_is_judged_on_the_server_clock() {
+    use flare_plugin_protocol::manifest::ClientPlatform;
+    for ahead_ms in [5 * 60_000_i64, -5 * 60_000] {
+        let mut f = Fixture::new().await;
+        let clock = crate::kernel::server_clock::test_support::clock_with_device_ahead_by(ahead_ms);
+        f.api = f.api.clone().with_server_clock(clock.clone());
+        f.catalog.lock().unwrap().plugins[0]
+            .extensions
+            .contributions
+            .push(composer_contribution(
+                "example.poll.create",
+                "投票",
+                json!({}),
+            ));
+
+        f.catalog.lock().unwrap().valid_until_ms = clock.now_ms() + 30_000;
+        let live = f
+            .api
+            .composer_actions(ClientPlatform::Ios, "")
+            .await
+            .unwrap();
+        assert_eq!(
+            live.iter()
+                .map(|a| a.contribution_id.as_str())
+                .collect::<Vec<_>>(),
+            ["example.poll.create"],
+            "a live catalog, device clock ahead by {ahead_ms} ms"
+        );
+        let host_catalog = f.api.plugin_ui_catalog().await.unwrap();
+        let action = json!({
+            "catalog": host_catalog, "platform": "ios", "pluginId": "example.poll",
+            "contributionId": "example.poll.card", "actionId": "vote",
+            "nativeAllowlist": [], "userGesture": true, "payload": {"pollId": "poll-1"},
+        });
+        let evaluated = f.api.plugin_ui_action(action.clone()).await;
+        assert!(
+            evaluated.is_ok(),
+            "a live host catalog, device clock ahead by {ahead_ms} ms: {evaluated:?}"
+        );
+
+        f.catalog.lock().unwrap().valid_until_ms = clock.now_ms() - 1_000;
+        let expired = f
+            .api
+            .composer_actions(ClientPlatform::Ios, "")
+            .await
+            .unwrap();
+        assert!(
+            expired.is_empty(),
+            "an expired catalog, device clock ahead by {ahead_ms} ms"
+        );
+        let mut stale = action;
+        stale["catalog"]["validUntilMs"] = json!(clock.now_ms() - 1_000);
+        assert!(
+            f.api.plugin_ui_action(stale).await.is_err(),
+            "an expired host catalog, device clock ahead by {ahead_ms} ms"
+        );
+    }
+}

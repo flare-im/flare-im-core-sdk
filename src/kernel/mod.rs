@@ -8,6 +8,7 @@ pub mod event;
 pub mod fsm;
 mod plugin_catalog;
 mod reliable_queue;
+pub mod server_clock;
 pub mod sync;
 
 use std::sync::Arc;
@@ -19,6 +20,7 @@ pub use fsm::{
 };
 pub use plugin_catalog::PluginCatalogNoticePort;
 pub use reliable_queue::ReliableSendQueuePort;
+pub use server_clock::ServerClock;
 pub use sync::{
     ApplyOutcome, AttentionRegistry, AttentionState, ConvergeTarget, ConvergenceDriver,
     ConvergencePriority, ConvergenceScheduler, ConvergenceTarget, ConversationSummarySync,

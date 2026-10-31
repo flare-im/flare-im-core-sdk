@@ -18,7 +18,7 @@ use crate::kernel::event::{
 };
 use crate::kernel::{
     ConnectionEvent, ConnectionFsm, ConnectionState, ConversationSummarySync, CurrentUserIdStore,
-    PluginCatalogNoticePort, SdkState, SessionSyncRunner, StartupClass, SyncManager,
+    PluginCatalogNoticePort, SdkState, ServerClock, SessionSyncRunner, StartupClass, SyncManager,
     SyncResponseHandler, SyncRunContext,
 };
 use crate::runtime::{ReliableSendQueue, ReliableSendQueueConfig};
@@ -50,6 +50,8 @@ pub struct SdkEngine {
     anti_entropy_probe: StdMutex<Option<BackgroundTask>>,
     /// Receives the tenant's plugin catalog-changed notices of every connection.
     plugin_catalog_notices: std::sync::OnceLock<Arc<dyn PluginCatalogNoticePort>>,
+    /// The server clock estimate, fed by the downlink frames of every connection.
+    server_clock: ServerClock,
     metrics: MetricsRecorder,
 }
 
@@ -164,8 +166,15 @@ impl SdkEngine {
             notification_pipeline,
             anti_entropy_probe: StdMutex::new(None),
             plugin_catalog_notices: std::sync::OnceLock::new(),
+            server_clock: ServerClock::new(),
             metrics,
         }
+    }
+
+    /// The estimate of the server clock, shared with whatever compares the
+    /// device clock against a deadline the server issued.
+    pub(crate) fn server_clock(&self) -> &ServerClock {
+        &self.server_clock
     }
 
     /// Hands the tenant's plugin catalog-changed notices of every later
@@ -260,7 +269,8 @@ impl SdkEngine {
                 self.notification_pipeline.clone(),
                 self.metrics.clone(),
             )
-            .with_plugin_catalog_notices(self.plugin_catalog_notices.get().cloned()),
+            .with_plugin_catalog_notices(self.plugin_catalog_notices.get().cloned())
+            .with_server_clock(self.server_clock.clone()),
         );
         // A2 win#2：建连后启动有界串行持久化 worker，使接收热路径的落盘脱离 socket 读循环。
         dispatcher.start_persist_worker();

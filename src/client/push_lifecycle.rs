@@ -18,7 +18,7 @@ use std::{
         Arc, Mutex,
         atomic::{AtomicU64, Ordering},
     },
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::Duration,
 };
 mod journal;
 #[cfg(all(test, not(target_arch = "wasm32")))]
@@ -74,6 +74,8 @@ struct Session {
     generation: Arc<AtomicU64>,
     device: String,
     http: HttpClient,
+    /// The binding's `expiresAtMs` is checked against the server's clock.
+    server_clock: crate::kernel::ServerClock,
 }
 impl Session {
     fn current(&self) -> bool {
@@ -89,6 +91,7 @@ pub(crate) struct AttachPushSession {
     pub http: HttpClient,
     pub token: String,
     pub root: PathBuf,
+    pub server_clock: crate::kernel::ServerClock,
 }
 struct Attempt {
     epoch: u64,
@@ -259,6 +262,7 @@ impl PushLifecycle {
             http,
             token,
             root,
+            server_clock,
         } = request;
         use base64::Engine;
         let claims = token
@@ -295,6 +299,7 @@ impl PushLifecycle {
             generation,
             device,
             http: pinned,
+            server_clock,
         });
         s.last_error = None;
         Ok(())
@@ -474,10 +479,8 @@ impl PushLifecycle {
                     },
                 );
             }
-            let now = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map_err(|_| failure(ErrorCode::InternalError))?
-                .as_millis() as i64;
+            // The server refuses a deadline outside its own next ten minutes: count from its clock.
+            let now = session.server_clock.now_ms();
             let body = serde_json::json!({"provider":input.provider,"platform":input.platform,"token":input.token,"bindingId":id,"expectedVersion":view.version,"expiresAtMs":now+120_000});
             let response: HttpApiResponse<Registered> =
                 io(session.http.put(&path(&session.device), &body)).await?;

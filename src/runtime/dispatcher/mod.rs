@@ -27,7 +27,8 @@ use crate::kernel::event::{
     ConversationEvent, EventBus, ExtensionEvent, MessageEvent, PluginEvent, SdkEvent,
 };
 use crate::kernel::{
-    PluginCatalogNoticePort, ReliableSendQueuePort, SessionSyncRunner, SyncResponseHandler,
+    PluginCatalogNoticePort, ReliableSendQueuePort, ServerClock, SessionSyncRunner,
+    SyncResponseHandler,
 };
 use crate::model::IMMessage;
 use crate::runtime::ReliableSendQueue;
@@ -109,6 +110,9 @@ pub struct Dispatcher {
     typing_presence: Mutex<TypingPresence>,
     /// Receives the tenant's plugin catalog-changed notices; without one they are ignored.
     plugin_catalog_notices: Option<Arc<dyn PluginCatalogNoticePort>>,
+    /// The server clock estimate: downlink frames feed it, and deadlines the server issued are
+    /// compared against it rather than against the device clock.
+    server_clock: ServerClock,
     metrics: MetricsRecorder,
 }
 
@@ -156,6 +160,7 @@ impl Dispatcher {
             persist_tx: OnceLock::new(),
             typing_presence: Mutex::new(TypingPresence::new()),
             plugin_catalog_notices: None,
+            server_clock: ServerClock::new(),
             metrics,
         }
     }
@@ -167,6 +172,16 @@ impl Dispatcher {
     ) -> Self {
         self.plugin_catalog_notices = notices;
         self
+    }
+
+    /// Shares the client's server clock estimate (a dispatcher alone keeps its own).
+    pub(crate) fn with_server_clock(mut self, clock: ServerClock) -> Self {
+        self.server_clock = clock;
+        self
+    }
+
+    pub(crate) fn server_clock(&self) -> &ServerClock {
+        &self.server_clock
     }
 
     pub fn bus(&self) -> &EventBus {

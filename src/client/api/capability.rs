@@ -136,6 +136,8 @@ pub struct CapabilityApi {
     catalog_flight: Arc<CatalogFlight>,
     /// Recent answers of composer entries' availability queries.
     entry_availability: Arc<entry_availability::EntryAvailability>,
+    /// The server clock estimate: a catalog's `validUntilMs` is the server's clock.
+    server_clock: crate::kernel::ServerClock,
     http: Option<HttpClient>,
     pub(super) session_guard: SessionGuard,
     #[cfg(not(target_arch = "wasm32"))]
@@ -166,6 +168,7 @@ impl CapabilityApi {
             viewer_state: None,
             catalog_flight: Arc::new(CatalogFlight::default()),
             entry_availability: Arc::default(),
+            server_clock: crate::kernel::ServerClock::new(),
             http: None,
             session_guard: SessionGuard::new(current_user_id.clone(), "capability"),
             #[cfg(not(target_arch = "wasm32"))]
@@ -178,6 +181,13 @@ impl CapabilityApi {
             #[cfg(not(target_arch = "wasm32"))]
             http_request_context,
         }
+    }
+    /// Shares the client's server clock estimate, so catalogs the server
+    /// issued expire on the server's clock, not the device's. Call it before
+    /// [`Self::with_viewer_state`], whose driver keeps a clone of this API.
+    pub(crate) fn with_server_clock(mut self, clock: crate::kernel::ServerClock) -> Self {
+        self.server_clock = clock;
+        self
     }
     pub fn with_plugin_command_store(
         mut self,
@@ -336,14 +346,22 @@ impl CapabilityApi {
     pub async fn resolve_plugin_message(&self, request: Value) -> Result<Value> {
         self.session_guard
             .run(async {
-                crate::extension::capability::ui::resolve(&self.default_tenant_id, request)
+                crate::extension::capability::ui::resolve(
+                    &self.default_tenant_id,
+                    request,
+                    &self.server_clock,
+                )
             })
             .await
     }
     pub async fn plugin_ui_action(&self, request: Value) -> Result<Value> {
         self.session_guard
             .run(async {
-                crate::extension::capability::ui::action(&self.default_tenant_id, request)
+                crate::extension::capability::ui::action(
+                    &self.default_tenant_id,
+                    request,
+                    &self.server_clock,
+                )
             })
             .await
     }
@@ -1027,8 +1045,10 @@ impl CapabilityApi {
         if !result.success {
             return Err(unreachable());
         }
-        let catalog = crate::extension::capability::ui::parse_catalog(&result.data)
+        let mut catalog = crate::extension::capability::ui::parse_catalog(&result.data)
             .ok_or_else(unreachable)?;
+        // Evaluated against the device clock from here on: move the server's deadline onto it.
+        crate::extension::capability::ui::localize_validity(&mut catalog, &self.server_clock);
         if catalog.plugins.len() > 128 {
             return Err(FlareError::system("plugin UI catalog limit"));
         }

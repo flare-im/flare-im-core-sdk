@@ -5,7 +5,7 @@ use crate::client::token_provider::{GatewayTokenProvider, jwt_exp_secs};
 use crate::kernel::event::{ConnectionEvent, EventBus, SdkEvent, SdkEventKind};
 use crate::kernel::{SdkState, SyncRunContext};
 use crate::shared::error::{ErrorCode, Result, TENANT_UNAVAILABLE, is_tenant_unavailable};
-use crate::shared::util::{delay, now_unix_secs};
+use crate::shared::util::delay;
 
 use super::{
     IMClient, reconnect_delay, should_skip_reconnect_for_disconnect_reason, spawn_im_background,
@@ -403,18 +403,22 @@ impl IMClient {
     ) -> Option<(String, String, u64, Option<u32>)> {
         let (user_id, mut token, interval_secs, max_attempts) =
             self.reconnect_settings(generation).await?;
-        let provider = {
+        let (provider, clock) = {
             let g = self.inner.read().await;
             if g.session_generation != generation {
                 return None;
             }
-            Self::gateway_token_provider_from_inner(&g)
+            (
+                Self::gateway_token_provider_from_inner(&g),
+                server_clock_of(&g),
+            )
         };
         // 重连前 token 已到期/临期，或上一次重连被网关按鉴权拒绝（force_refresh）：先换新，
-        // 否则带着旧 token 重连必被网关拒。force_refresh 绕过本机时钟判定，防时钟偏移死循环。
+        // 否则带着旧 token 重连必被网关拒。到期按服务端时钟判（`exp` 是服务端签发的）；
+        // force_refresh 再兜一层：时钟估计还没样本时，上一次被拒就直接换新，防时钟偏移死循环。
         // 走刷新令牌换新（接入令牌早过期也能换），是 7x24 的关键。
         if let Some(provider) = provider
-            && (force_refresh || token_needs_refresh(&token, 30))
+            && (force_refresh || token_needs_refresh(&token, 30, &clock))
         {
             match self.refresh_tokens_via_gateway(generation, &provider).await {
                 Ok(issued) => {
@@ -568,7 +572,7 @@ impl IMClient {
                 if !c.is_generation_current(generation).await {
                     break;
                 }
-                let (provider, token, lead_secs, _tenant_id) = {
+                let (provider, token, lead_secs, clock) = {
                     let g = c.inner.read().await;
                     let provider = Self::gateway_token_provider_from_inner(&g);
                     let lead = g
@@ -577,21 +581,12 @@ impl IMClient {
                         .and_then(|o| o.auth.as_ref())
                         .map(|a| a.refresh_lead().as_secs())
                         .unwrap_or(crate::client::config::SdkAuthConfig::DEFAULT_REFRESH_LEAD_SECS);
-                    (
-                        provider,
-                        g.connect_token.clone(),
-                        lead,
-                        Self::resolve_tenant_id(&g),
-                    )
+                    (provider, g.connect_token.clone(), lead, server_clock_of(&g))
                 };
                 let (Some(provider), Some(token)) = (provider, token) else {
                     break;
                 };
-                let wait_secs = match (jwt_exp_secs(&token), now_unix_secs()) {
-                    (Some(exp), Ok(now)) => exp.saturating_sub(lead_secs).saturating_sub(now),
-                    // 读不出 exp 的 token 没法安排，10 分钟后再看一眼（token 可能被应用换掉了）。
-                    _ => 600u64,
-                };
+                let wait_secs = token_refresh_wait_secs(&token, lead_secs, &clock);
                 drop(c);
                 tokio::select! {
                     () = delay(Duration::from_secs(wait_secs.max(5))) => {}
@@ -814,10 +809,38 @@ pub(super) fn is_auth_reconnect_failure(err: &crate::shared::error::FlareError) 
         || lower.contains("401")
 }
 
-pub(super) fn token_needs_refresh(token: &str, lead_secs: u64) -> bool {
-    match (jwt_exp_secs(token), now_unix_secs()) {
-        (Some(exp), Ok(now)) => exp <= now + lead_secs,
-        _ => false,
+/// The server clock estimate of the session's engine; without an engine, an
+/// empty estimate (the device clock).
+fn server_clock_of(inner: &super::IMClientInner) -> crate::kernel::ServerClock {
+    inner
+        .engine
+        .as_ref()
+        .map(|engine| engine.server_clock().clone())
+        .unwrap_or_default()
+}
+
+/// Whether `token` expires within `lead_secs`. Its `exp` is the server's
+/// clock, so it is compared with the server time estimate: a device clock
+/// running ahead would otherwise refresh every token on arrival.
+pub(super) fn token_needs_refresh(
+    token: &str,
+    lead_secs: u64,
+    clock: &crate::kernel::ServerClock,
+) -> bool {
+    jwt_exp_secs(token).is_some_and(|exp| exp <= clock.now_secs() + lead_secs)
+}
+
+/// How long the refresh watcher sleeps before refreshing `token`: until
+/// `lead_secs` before its `exp`, on the server clock (a device clock ahead of
+/// the server by more than the token's lifetime would otherwise refresh it
+/// every few seconds). A token without a readable `exp` is looked at again
+/// in ten minutes (the app may have replaced it).
+fn token_refresh_wait_secs(token: &str, lead_secs: u64, clock: &crate::kernel::ServerClock) -> u64 {
+    match jwt_exp_secs(token) {
+        Some(exp) => exp
+            .saturating_sub(lead_secs)
+            .saturating_sub(clock.now_secs()),
+        None => 600,
     }
 }
 
@@ -929,12 +952,48 @@ mod token_refresh_tests {
 
     #[test]
     fn needs_refresh_only_inside_the_lead_window() {
+        let clock = crate::kernel::ServerClock::new();
         // generate_core_token 把 ttl 抬到至少 60s：60s 内到期 + 30s 提前量 = 不该刷；提前量 120s 就该刷。
-        assert!(!token_needs_refresh(&token(60), 30));
-        assert!(token_needs_refresh(&token(60), 120));
+        assert!(!token_needs_refresh(&token(60), 30, &clock));
+        assert!(token_needs_refresh(&token(60), 120, &clock));
         assert!(
-            !token_needs_refresh("garbage", 120),
+            !token_needs_refresh("garbage", 120, &clock),
             "读不出 exp 不能误判成要刷"
         );
+    }
+
+    /// A token the server issued with `exp` fifteen minutes after its own now.
+    fn server_issued_token(clock: &crate::kernel::ServerClock, ttl_secs: u64) -> String {
+        use base64::Engine as _;
+        let payload = serde_json::json!({ "sub": "u", "exp": clock.now_secs() + ttl_secs });
+        let encode = |bytes: &[u8]| base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes);
+        format!(
+            "{}.{}.sig",
+            encode(br#"{"alg":"HS256","typ":"JWT"}"#),
+            encode(payload.to_string().as_bytes())
+        )
+    }
+
+    /// The token's `exp` is the server's clock. A device clock twenty minutes
+    /// ahead of the server must not see a fresh fifteen-minute token as
+    /// expired (refreshing it again every few seconds), and one twenty
+    /// minutes behind must still refresh it on time.
+    #[test]
+    fn token_expiry_is_judged_on_the_server_clock() {
+        for ahead_secs in [20 * 60_i64, -20 * 60] {
+            let clock = crate::kernel::server_clock::test_support::clock_with_device_ahead_by(
+                ahead_secs * 1000,
+            );
+            let token = server_issued_token(&clock, 15 * 60);
+            assert!(
+                !token_needs_refresh(&token, 30, &clock),
+                "fresh token, device ahead by {ahead_secs}s"
+            );
+            let wait = token_refresh_wait_secs(&token, 60, &clock);
+            assert!(
+                (15 * 60 - 60 - 2..=15 * 60 - 60).contains(&wait),
+                "refresh one lead before exp, device ahead by {ahead_secs}s: waits {wait}s"
+            );
+        }
     }
 }

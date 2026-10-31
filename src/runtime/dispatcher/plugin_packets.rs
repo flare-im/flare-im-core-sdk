@@ -28,7 +28,8 @@ pub(super) enum Dropped {
     Malformed(&'static str),
 }
 
-/// Reads one downlink capability packet at wall-clock `now_ms`.
+/// Reads one downlink capability packet at `now_ms`, the server time estimate
+/// (`expires_at_ms` is the server's clock).
 pub(super) fn classify(packet: CapabilityPacket, now_ms: u64) -> Result<PluginPacket, Dropped> {
     if packet.capability_id == PLUGIN_CATALOG_CAPABILITY_ID {
         return catalog_changed(&packet);
@@ -336,5 +337,46 @@ mod dispatch_tests {
         }
         assert_eq!(delivered, vec![serde_json::json!("c-1")]);
         assert_eq!(*notices.0.lock().unwrap(), vec!["9".to_string()]);
+    }
+
+    /// The packet's expiry is the server's clock. A device clock minutes ahead
+    /// of the server must not drop live packets, and one minutes behind must
+    /// not keep stale ones; the event hands the expiry over on the device clock.
+    #[tokio::test]
+    async fn packet_expiry_is_judged_on_the_server_clock() {
+        for ahead_ms in [5 * 60_000_i64, -5 * 60_000] {
+            let bus = EventBus::new();
+            let mut events = bus.subscribe();
+            let clock =
+                crate::kernel::server_clock::test_support::clock_with_device_ahead_by(ahead_ms);
+            let dispatcher =
+                dispatcher(&bus, Arc::new(Notices::default())).with_server_clock(clock.clone());
+            let server_now = clock.now_millis();
+            dispatcher
+                .dispatch(realtime(br#"{"callId":"live"}"#, server_now + 30_000))
+                .await
+                .unwrap();
+            dispatcher
+                .dispatch(realtime(br#"{"callId":"stale"}"#, server_now - 30_000))
+                .await
+                .unwrap();
+            let mut delivered = Vec::new();
+            while let Ok(event) = events.try_recv() {
+                if let SdkEvent::Plugin(PluginEvent::Realtime(realtime)) = event {
+                    let device_expiry = realtime.expires_at_ms as i64;
+                    let device_now = now_millis() as i64;
+                    assert!(
+                        (device_expiry - device_now - 30_000).abs() < 5_000,
+                        "expiry handed over on the device clock (ahead by {ahead_ms} ms)"
+                    );
+                    delivered.push(realtime.payload["callId"].clone());
+                }
+            }
+            assert_eq!(
+                delivered,
+                vec![serde_json::json!("live")],
+                "device clock ahead by {ahead_ms} ms"
+            );
+        }
     }
 }

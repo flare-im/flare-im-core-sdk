@@ -90,12 +90,16 @@ impl IMClient {
                         api.push_http(),
                         token.clone(),
                         root.clone(),
+                        g.engine
+                            .as_ref()
+                            .map(|engine| engine.server_clock().clone())
+                            .unwrap_or_default(),
                     ))
                 }
                 _ => None,
             }
         };
-        if let Some((epoch, user, app, device, http, token, root)) = capture {
+        if let Some((epoch, user, app, device, http, token, root, server_clock)) = capture {
             if self
                 .push_lifecycle
                 .attach(crate::client::push_lifecycle::AttachPushSession {
@@ -107,6 +111,7 @@ impl IMClient {
                     http,
                     token,
                     root,
+                    server_clock,
                 })
                 .await
                 .is_err()

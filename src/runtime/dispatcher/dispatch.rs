@@ -211,8 +211,13 @@ impl Dispatcher {
                     1,
                 );
                 let capability_id = packet.capability_id.clone();
-                match plugin_packets::classify(packet, now_millis()) {
-                    Ok(plugin_packets::PluginPacket::Realtime(realtime)) => {
+                // The packet's expiry is the server's clock: compare it with the server time
+                // estimate, not the device clock.
+                match plugin_packets::classify(packet, self.server_clock().now_millis()) {
+                    Ok(plugin_packets::PluginPacket::Realtime(mut realtime)) => {
+                        // Hosts compare the expiry with their own clock: hand it over on it.
+                        realtime.expires_at_ms =
+                            self.server_clock().to_local_millis(realtime.expires_at_ms);
                         self.bus
                             .publish(SdkEvent::Plugin(PluginEvent::Realtime(realtime)));
                     }

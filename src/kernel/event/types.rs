@@ -287,7 +287,9 @@ pub struct PluginRealtime {
     pub payload: serde_json::Map<String, serde_json::Value>,
     /// Core's id of this delivery.
     pub delivery_id: String,
-    /// Wall-clock milliseconds after which the packet is stale.
+    /// Milliseconds on the device clock after which the packet is stale: the
+    /// server's expiry moved by the estimated clock offset, so hosts can
+    /// compare it with their own clock.
     pub expires_at_ms: u64,
 }
 

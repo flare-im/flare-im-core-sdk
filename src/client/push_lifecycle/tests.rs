@@ -14,6 +14,7 @@ struct Model {
     offline: bool,
     hold: bool,
     journal_root: Option<PathBuf>,
+    expires_at_ms: Vec<i64>,
 }
 struct Fixture {
     base: String,
@@ -93,6 +94,7 @@ impl Fixture {
                         m.id = value["bindingId"].as_str().unwrap().into();
                         m.active = true;
                         m.puts += 1;
+                        m.expires_at_ms.push(value["expiresAtMs"].as_i64().unwrap());
                         let lost = std::mem::take(&mut m.lost_reply);
                         (200, json!({"success":true,"bindingId":m.id}), lost, m.hold)
                     } else if method == "GET" {
@@ -145,6 +147,21 @@ impl Fixture {
         user: &str,
         generation: Arc<AtomicU64>,
     ) -> Result<()> {
+        self.attach_with_clock(
+            lifecycle,
+            user,
+            generation,
+            crate::kernel::ServerClock::new(),
+        )
+        .await
+    }
+    async fn attach_with_clock(
+        &self,
+        lifecycle: &PushLifecycle,
+        user: &str,
+        generation: Arc<AtomicU64>,
+        server_clock: crate::kernel::ServerClock,
+    ) -> Result<()> {
         lifecycle
             .attach(AttachPushSession {
                 epoch: generation.load(Ordering::Acquire),
@@ -155,6 +172,7 @@ impl Fixture {
                 http: HttpClient::new(&self.base),
                 token: jwt(user),
                 root: self.root.clone(),
+                server_clock,
             })
             .await?;
         self.model.lock().unwrap().journal_root =
@@ -314,6 +332,7 @@ async fn storage_lease_endpoint_fence_and_stale_session_fail_closed() {
             http: HttpClient::new(&f.base),
             token: jwt("alice"),
             root: f.root.clone(),
+            server_clock: crate::kernel::ServerClock::new(),
         })
         .await;
     assert!(result.is_err());
@@ -495,4 +514,33 @@ async fn a_client_without_the_hosts_device_opens_no_push_journal() {
     );
     client.bind_device_id(Some("device".into())).await;
     assert!(journals.is_dir(), "the host's device opens its journal");
+}
+
+/// The server refuses a binding deadline outside its own next ten minutes.
+/// With the device clock minutes behind (or ahead of) the server, the
+/// deadline is still counted from the server's clock.
+#[tokio::test]
+async fn binding_deadline_is_counted_from_the_server_clock() {
+    for ahead_ms in [-5 * 60_000_i64, 15 * 60_000] {
+        let f = Fixture::new().await;
+        let lifecycle = PushLifecycle::default();
+        lifecycle.update(token("OS_PRIVATE_1")).unwrap();
+        lifecycle.permission(true);
+        let clock = crate::kernel::server_clock::test_support::clock_with_device_ahead_by(ahead_ms);
+        f.attach_with_clock(
+            &lifecycle,
+            "alice",
+            Arc::new(AtomicU64::new(1)),
+            clock.clone(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(lifecycle.reconcile().await.state, "registered");
+        let deadline = *f.model.lock().unwrap().expires_at_ms.last().unwrap();
+        let server_now = clock.now_ms();
+        assert!(
+            deadline > server_now && deadline <= server_now + 600_000,
+            "deadline {deadline} outside the server's window from {server_now} (device ahead by {ahead_ms} ms)"
+        );
+    }
 }
