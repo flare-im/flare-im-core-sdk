@@ -783,6 +783,18 @@ pub enum Elem {
     Placeholder(PlaceholderElem),
 }
 
+impl Elem {
+    /// Reads message content from a JSON value, exactly as `serde_json::from_value` does.
+    ///
+    /// The SDK's entry point for reading content on its own; content inside a message is read
+    /// with the message ([`IMMessage::from_json_str`](crate::model::IMMessage::from_json_str),
+    /// [`IMMessage::from_json_value`](crate::model::IMMessage::from_json_value)), which explains
+    /// why these readers are compiled in this crate.
+    pub fn from_json_value(value: Value) -> serde_json::Result<Self> {
+        serde_json::from_value(value)
+    }
+}
+
 /// 是否按「动图」展示（GIF/APNG/animated 标记等）
 pub fn image_info_elem_is_motion(s: &ImageInfoElem) -> bool {
     if s.animated {

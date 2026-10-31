@@ -578,6 +578,67 @@ fn c_typed_abi_invocations_are_callback_based_and_non_blocking() {
 }
 
 #[test]
+fn bindings_read_messages_from_json_through_the_core_readers() {
+    // `IMMessage::from_json_str` / `from_json_value` and `Elem::from_json_value` are compiled in
+    // the core crate so that every crate reading messages shares one copy of the (recursive)
+    // reader; a `serde_json` call that reads a message elsewhere compiles another copy.
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let source = fs::read_to_string(manifest.join("bindings/shared/src/dispatch_support.rs"))
+        .expect("read dispatch_support.rs");
+    let production = strip_line_comments(&strip_cfg_test_modules(&source));
+    let mut violations = Vec::new();
+    for (entry, reader) in [
+        ("pub fn message_from_params", "IMMessage::from_json_value"),
+        ("pub fn message_from_json_str", "IMMessage::from_json_str"),
+        ("pub fn json_vec_message", "IMMessage::from_json_value"),
+        ("pub fn built_content_from_value", "Elem::from_json_value"),
+    ] {
+        let body = extract_braced_body_after(&production, entry);
+        if !body.contains(reader) {
+            violations.push(format!("{entry} does not read through {reader}"));
+        }
+        // Parsing the params into a plain `Value` first is fine; reading the message is not.
+        let reads_directly = [
+            "IMMessage::from_json_str",
+            "IMMessage::from_json_value",
+            "Elem::from_json_value",
+            "serde_json::from_str::<Value>",
+        ]
+        .iter()
+        .fold(body.clone(), |rest, allowed| rest.replace(allowed, ""));
+        for needle in ["serde_json::from_", "from_value(", "from_json_str("] {
+            if reads_directly.contains(needle) {
+                violations.push(format!("{entry} reads with {needle}"));
+            }
+        }
+    }
+    for root in ["bindings", "storage"] {
+        for file in rust_files_under(&manifest.join(root)) {
+            if file.components().any(|c| c.as_os_str() == "tests") {
+                continue;
+            }
+            let source = fs::read_to_string(&file).expect("read Rust source");
+            let production = strip_line_comments(&strip_cfg_test_modules(&source));
+            for message_type in ["IMMessage", "Elem"] {
+                for form in ["from_str", "from_slice", "from_value", "from_reader"] {
+                    let needle = format!("{form}::<{message_type}>");
+                    if production.contains(&needle) {
+                        violations.push(format!("{} reads with {needle}", file.display()));
+                    }
+                }
+            }
+        }
+    }
+
+    assert!(
+        violations.is_empty(),
+        "read messages from JSON through IMMessage::from_json_str / from_json_value and \
+         Elem::from_json_value:\n{}",
+        violations.join("\n")
+    );
+}
+
+#[test]
 fn production_code_does_not_use_unbounded_channels() {
     let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
     let roots = ["src", "bindings"];

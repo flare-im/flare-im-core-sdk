@@ -270,7 +270,12 @@ pub fn json_vec_message(value: &Value, key: &str) -> Result<Vec<IMMessage>> {
     let arr = value.get(key).and_then(Value::as_array).ok_or_else(|| {
         binding_invalid_parameter(format!("missing or invalid JSON field: {key}"))
     })?;
-    arr.iter().map(|v| from_value(v.clone(), key)).collect()
+    arr.iter()
+        .map(|v| {
+            IMMessage::from_json_value(v.clone())
+                .map_err(|e| binding_invalid_parameter(format!("invalid {key}: {e}")))
+        })
+        .collect()
 }
 
 fn non_negative_i64(value: Option<i64>, label: &str) -> Result<i64> {
@@ -440,7 +445,7 @@ pub fn heartbeat_app_state(value: &Value, key: &str) -> Result<HeartbeatAppState
 }
 
 pub fn message_from_params(params: &Value) -> Result<IMMessage> {
-    match serde_json::from_value(params.clone()) {
+    match IMMessage::from_json_value(params.clone()) {
         Ok(message) => Ok(message),
         Err(top_level_error) => {
             let Some(message_value) = params.get("message").cloned() else {
@@ -448,7 +453,7 @@ pub fn message_from_params(params: &Value) -> Result<IMMessage> {
                     "missing or invalid JSON message: {top_level_error}; missing message"
                 )));
             };
-            serde_json::from_value(message_value).map_err(|wrapped_error| {
+            IMMessage::from_json_value(message_value).map_err(|wrapped_error| {
                 binding_invalid_parameter(format!(
                     "missing or invalid JSON message: {wrapped_error}; wrapper: {top_level_error}"
                 ))
@@ -458,7 +463,7 @@ pub fn message_from_params(params: &Value) -> Result<IMMessage> {
 }
 
 pub fn message_from_json_str(params_json: &str) -> Result<IMMessage> {
-    match serde_json::from_str(params_json) {
+    match IMMessage::from_json_str(params_json) {
         Ok(message) => Ok(message),
         Err(top_level_error) => {
             let params = serde_json::from_str::<Value>(params_json).map_err(|params_error| {
@@ -471,7 +476,7 @@ pub fn message_from_json_str(params_json: &str) -> Result<IMMessage> {
                     "missing or invalid JSON message: {top_level_error}; missing message"
                 )));
             };
-            serde_json::from_value(message_value).map_err(|wrapped_error| {
+            IMMessage::from_json_value(message_value).map_err(|wrapped_error| {
                 binding_invalid_parameter(format!(
                     "missing or invalid JSON message: {wrapped_error}; wrapper: {top_level_error}"
                 ))
@@ -530,7 +535,8 @@ pub fn conversation_type(value: &Value) -> Result<ConversationType> {
 }
 
 pub fn built_content_from_value(value: &Value) -> Result<BuiltContent> {
-    let elem: Elem = from_value(value.clone(), "built content")?;
+    let elem = Elem::from_json_value(value.clone())
+        .map_err(|e| binding_invalid_parameter(format!("invalid built content: {e}")))?;
     let message_type = message_type_for_elem(&elem);
     Ok(BuiltContent::new(
         message_type,

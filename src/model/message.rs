@@ -344,6 +344,31 @@ impl Serialize for IMMessage {
     }
 }
 
+/// Reading a message from JSON.
+///
+/// The SDK's entry points for reading an [`IMMessage`] from JSON: read messages through them
+/// rather than with a `serde_json` call of your own. They read exactly as `serde_json::from_str`
+/// and `serde_json::from_value` do, with the same rules and the same errors.
+///
+/// Why they live here: the reader of a message, together with the reader of its [`Elem`]
+/// content, is generic code, and every crate that instantiates it compiles a copy of its own.
+/// `Elem` contains itself (quotes, forwards, threads), so the browser bundle's optimizer cannot
+/// merge such copies; the bindings and the IndexedDB storage each used to ship one (about
+/// 130 KB). With the readers compiled here, other crates reuse this copy wherever Rust shares
+/// generic code between crates (opt-level 0, 1, `s` and `z`; the browser bundle builds at `z`),
+/// including types that only embed a message, such as a stored snapshot of messages.
+impl IMMessage {
+    /// Reads a message from JSON text.
+    pub fn from_json_str(json: &str) -> serde_json::Result<Self> {
+        serde_json::from_str(json)
+    }
+
+    /// Reads a message from a JSON value.
+    pub fn from_json_value(value: serde_json::Value) -> serde_json::Result<Self> {
+        serde_json::from_value(value)
+    }
+}
+
 impl IMMessage {
     pub fn new(message: ProtoMessage) -> Self {
         let encoded_content = message

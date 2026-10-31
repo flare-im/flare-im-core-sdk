@@ -137,6 +137,8 @@ let response = flare_im_core_sdk_bindings_runtime::invoke_json(
 
 Contract 源在 `bindings/contract/*.json`；修改后运行 `rtk cargo xtask codegen` 更新生成表。
 
+从 JSON 读消息走 `IMMessage::from_json_str` / `IMMessage::from_json_value`，单独读消息内容走 `Elem::from_json_value`，不要自己调 `serde_json`。它们的读法与 `serde_json` 完全一致；因为只在本 crate 编译一次，链接多个 crate 的产物（例如浏览器包）里消息读取器（递归结构）只保留一份。
+
 ## 事件体系
 
 事件统一使用 `SdkEvent`：

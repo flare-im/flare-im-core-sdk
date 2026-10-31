@@ -153,6 +153,13 @@ let response = flare_im_core_sdk_bindings_runtime::invoke_json(
 Contract sources live in `bindings/contract/*.json`; after editing them, run
 `rtk cargo xtask codegen` to regenerate the tables.
 
+Read messages from JSON through `IMMessage::from_json_str` /
+`IMMessage::from_json_value`, and message content on its own through
+`Elem::from_json_value`, rather than with a `serde_json` call of your own. They
+read exactly as `serde_json` does; being compiled once in this crate, they keep a
+single copy of the (recursive) message reader in builds that link several crates,
+such as the browser bundle.
+
 ## Event system
 
 Events uniformly use `SdkEvent`:

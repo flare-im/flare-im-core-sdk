@@ -1,7 +1,9 @@
 //! Pins how a message and its content read from JSON, for every input form the SDK reads them in:
-//! JSON text and a `serde_json::Value`, through `serde_json` and through the binding entry points
-//! that read a message (`message_from_json_str`, `message_from_params`), a list of messages
-//! (`json_vec_message`) or content (`built_content_from_value`).
+//! JSON text and a `serde_json::Value`, through the core readers (`IMMessage::from_json_str`,
+//! `IMMessage::from_json_value`, `Elem::from_json_value`; content on its own as text through
+//! `serde_json`, since the SDK only reads it as text inside a message) and through the binding
+//! entry points that read a message (`message_from_json_str`, `message_from_params`), a list of
+//! messages (`json_vec_message`) or content (`built_content_from_value`).
 //!
 //! Each case records what reading it gives: the read value as canonical JSON (object keys sorted),
 //! or the error's category and text. The results live in `fixtures/message-json-golden.json`; a
@@ -367,15 +369,15 @@ fn read_content_text(text: &str) -> String {
 }
 
 fn read_content_value(value: Value) -> String {
-    json_result(serde_json::from_value::<Elem>(value))
+    json_result(Elem::from_json_value(value))
 }
 
 fn read_message_text(text: &str) -> String {
-    json_result(serde_json::from_str::<IMMessage>(text))
+    json_result(IMMessage::from_json_str(text))
 }
 
 fn read_message_value(value: Value) -> String {
-    json_result(serde_json::from_value::<IMMessage>(value))
+    json_result(IMMessage::from_json_value(value))
 }
 
 fn results() -> Value {
