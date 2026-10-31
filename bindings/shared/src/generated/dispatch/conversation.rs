@@ -23,6 +23,7 @@ pub const CONVERSATION_DISPATCH_OPERATIONS: &[&str] = &[
     "get_multiple",
     "list_paginated",
     "list_raw",
+    "total_unread",
     "bootstrap_home",
     "open_timeline",
     "mark_read",
@@ -90,6 +91,10 @@ pub async fn dispatch_conversation(
         "list_raw" => {
             let conversations = api.list_raw().await?;
             json(serde_json::json!({ "conversations": conversations }))
+        }
+        "total_unread" => {
+            let total_unread = api.total_unread().await?;
+            json(serde_json::json!({ "totalUnread": total_unread }))
         }
         "bootstrap_home" => {
             let bound_value: BootstrapHomeTimelineRequest =

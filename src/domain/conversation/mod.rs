@@ -5,6 +5,7 @@ mod models;
 mod read;
 mod read_position;
 mod summary_merge;
+mod unread_total;
 
 pub use id::*;
 pub use identity::{ConversationIdRewrite, ConversationIdentityService};
@@ -18,3 +19,4 @@ pub use read_position::ReadPosition;
 pub use summary_merge::{
     merge_incoming_conversation_summary, preserve_local_remark, preserve_local_single_chat_channel,
 };
+pub use unread_total::{total_unread, unread_counted_in_total};

@@ -1126,6 +1126,15 @@
           }
         },
         {
+          "op": "total_unread",
+          "method": "total_unread",
+          "args": [],
+          "result": "json_object",
+          "fields": {
+            "totalUnread": "total_unread"
+          }
+        },
+        {
           "op": "bootstrap_home",
           "method": "bootstrap_home",
           "args": [

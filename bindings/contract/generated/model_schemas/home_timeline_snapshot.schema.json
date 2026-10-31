@@ -335,6 +335,7 @@
       "$ref": "#/$defs/TimelineSyncState"
     },
     "totalUnread": {
+      "description": "Unread total across all conversations, not only the returned ones\n(the rule of `conversation.total_unread`).",
       "format": "uint64",
       "minimum": 0,
       "type": "integer"

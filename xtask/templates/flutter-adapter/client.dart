@@ -321,6 +321,14 @@ final class _DefaultConversationsApi implements ConversationsApi {
     return _listConversations(NativeCallMap.conversationListRaw);
   }
 
+  @override
+  Future<ConversationTotalUnreadResponse> getTotalUnread() async {
+    final raw = await _bridge.invoke<Map<String, Object?>>(
+        NativeCallMap.conversationTotalUnread);
+    return ConversationTotalUnreadResponse(
+        totalUnread: intValue(raw['totalUnread']));
+  }
+
   Conversation _conversationFromResponse(
     Map<String, Object?> raw,
     String operation,

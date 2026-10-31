@@ -24,9 +24,14 @@
   调用 Core SDK，此前要用这两项只能越过门面。
 - `spi::ExtensionStore::get_user_profiles`：按 user_id 读身份缓存。业务 SDK 补缓存时可以只补缺、不覆盖资料变更
   投影写下的条目。`ExtensionStore` 的实现者需要补上这个方法。
+- `ConversationApi::total_unread`（绑定层 `conversation.total_unread`，返回 `{ totalUnread }`）：Tab 角标用的
+  未读总数，规则只在核心一处（`model::total_unread`）：对全部会话求和；已归档会话不计；免打扰会话只计「@我」
+  的条数（不超过它的未读数），列表行照旧显示自己的未读数。宿主不再自己对会话列表求和。
 
 ### 修复
 
+- 未读总数：`bootstrap_home`（及会话列表视图）的 `totalUnread` 此前先截断到首屏条数再求和，且不排除免打扰
+  会话，总数随首屏条数变化；改为对全部会话按 `total_unread` 的规则求和。
 - 合并转发条目的 `plain_text` 改为可读文字：这条消息不随读者语言变化的那段（正文、标题、说明，插件卡的
   「[插件名] 卡片摘要」，不读卡片数据），与会话列表摘要同一套规则；只能用类型词表达的消息（无说明的图片、
   文件、贴纸、投票等）为空串，展示端按条目里的完整内容在读者语言里补。此前写的是会话列表的存储预览 JSON，

@@ -17,7 +17,9 @@ pub use crate::content::{
     derive_from_json_str, derive_from_value, normalize_from_doc_json, normalize_from_html,
     normalize_from_markdown, validate_doc_json,
 };
-pub use crate::domain::{MediaCacheEntryVo, MediaCacheStatsVo};
+pub use crate::domain::{
+    MediaCacheEntryVo, MediaCacheStatsVo, total_unread, unread_counted_in_total,
+};
 pub use conversation::{Conversation, ConversationParticipant, ConversationSummary};
 pub use conversation_user_settings::{
     EXT_SETTINGS_DIRTY, EXT_USER_SETTINGS_VERSION, apply_remote_settings_version,

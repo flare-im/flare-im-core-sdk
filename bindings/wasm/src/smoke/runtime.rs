@@ -134,21 +134,21 @@ impl FlareImWasmRuntime {
             | "conversation.get_multiple" => {
                 Ok(json!({ "conversations": conversations_to_json(&self.conversations) }))
             }
+            "conversation.total_unread" => Ok(json!({
+                "totalUnread": flare_im_core_sdk::model::total_unread(&self.conversations)
+            })),
             "conversation.bootstrap_home" => {
                 let limit = request
                     .get("conversationLimit")
                     .and_then(Value::as_u64)
                     .unwrap_or(100) as usize;
+                let total_unread = flare_im_core_sdk::model::total_unread(&self.conversations);
                 let conversations = self
                     .conversations
                     .iter()
                     .take(limit)
                     .cloned()
                     .collect::<Vec<_>>();
-                let total_unread = conversations
-                    .iter()
-                    .map(|conversation| conversation.unread_count as u64)
-                    .sum::<u64>();
                 Ok(json!({
                     "conversations": conversations_to_json(&conversations),
                     "totalUnread": total_unread,
@@ -160,16 +160,13 @@ impl FlareImWasmRuntime {
                     .get("conversationLimit")
                     .and_then(Value::as_u64)
                     .unwrap_or(100) as usize;
+                let total_unread = flare_im_core_sdk::model::total_unread(&self.conversations);
                 let conversations = self
                     .conversations
                     .iter()
                     .take(limit)
                     .cloned()
                     .collect::<Vec<_>>();
-                let total_unread = conversations
-                    .iter()
-                    .map(|conversation| conversation.unread_count as u64)
-                    .sum::<u64>();
                 Ok(json!({
                     "snapshot": {
                         "conversations": conversations_to_json(&conversations),

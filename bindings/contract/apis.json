@@ -668,6 +668,12 @@
           "tauri": "sdk_invoke_json"
         },
         {
+          "id": "conversation.total_unread",
+          "core": "ConversationApi::total_unread",
+          "c": "flare_sdk_invoke_json",
+          "tauri": "sdk_invoke_json"
+        },
+        {
           "id": "conversation.mark_read",
           "core": "ConversationApi::mark_read",
           "c": "flare_sdk_invoke_json",

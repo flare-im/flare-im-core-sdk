@@ -49,6 +49,8 @@ impl Default for OpenConversationTimelineRequest {
 #[serde(rename_all = "camelCase")]
 pub struct HomeTimelineSnapshot {
     pub conversations: Vec<Conversation>,
+    /// Unread total across all conversations, not only the returned ones
+    /// (the rule of `conversation.total_unread`).
     pub total_unread: u64,
     pub sync_state: TimelineSyncState,
 }

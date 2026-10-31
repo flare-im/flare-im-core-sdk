@@ -109,6 +109,7 @@ pub const WASM_CANONICAL_OPERATIONS: &[&str] = &[
     "conversation.get_multiple",
     "conversation.list_paginated",
     "conversation.list_raw",
+    "conversation.total_unread",
     "conversation.mark_read",
     "conversation.delete",
     "conversation.set_pinned",

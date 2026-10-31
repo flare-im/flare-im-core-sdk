@@ -130,18 +130,26 @@ impl ConversationApi {
         self.view_assembler.list_raw().await
     }
 
+    /// 未读总数（Tab 角标）：全部会话按 [`crate::domain::total_unread`] 的口径求和——已归档不计，
+    /// 免打扰只计「@我」。宿主的角标只读这个数，不再自己对会话列表求和。
+    pub async fn total_unread(&self) -> Result<u64> {
+        self.ensure_session_active().await?;
+        Ok(crate::domain::total_unread(
+            &self.view_assembler.list_raw().await?,
+        ))
+    }
+
     /// SDK 统一首页快照：会话查询会在仓储层修复本地消息投影，业务端无需自行回写 lastMessage。
+    ///
+    /// `total_unread` 按全部会话计（[`crate::domain::total_unread`]），先求和再截断首屏，不随首屏条数变化。
     pub async fn bootstrap_home(
         &self,
         request: BootstrapHomeTimelineRequest,
     ) -> Result<HomeTimelineSnapshot> {
         self.ensure_session_active().await?;
         let mut conversations = self.view_assembler.list(false).await?;
+        let total_unread = crate::domain::total_unread(&conversations);
         conversations.truncate(normalized_conversation_limit(request.conversation_limit) as usize);
-        let total_unread = conversations
-            .iter()
-            .map(|conversation| conversation.unread_count as u64)
-            .sum();
         Ok(HomeTimelineSnapshot {
             conversations,
             total_unread,
@@ -358,5 +366,133 @@ mod timeline_has_more_tests {
     #[test]
     fn full_page_still_reports_more() {
         assert!(has_more(40, 40, Some(1)), "整页装满说明本地还有更多可翻");
+    }
+}
+
+#[cfg(test)]
+mod total_unread_tests {
+    use super::*;
+    use crate::domain::ConversationWriter;
+    use crate::infrastructure::persistence::MemoryUserProfileStore;
+    use crate::storage::{MemoryConversationStore, MemoryMessageStore};
+
+    fn conversation(id: &str, unread: u32, last_message_at: u64) -> Conversation {
+        Conversation {
+            conversation_id: id.to_string(),
+            channel_id: id.to_string(),
+            conversation_type: ConversationType::Single,
+            unread_count: unread,
+            max_seq: u64::from(unread),
+            last_message_at: Some(last_message_at),
+            updated_at: last_message_at,
+            ..Default::default()
+        }
+    }
+
+    async fn api_with(
+        conversations: &[Conversation],
+    ) -> (ConversationApi, Arc<MemoryConversationStore>) {
+        let store = Arc::new(MemoryConversationStore::new());
+        store.save_batch(conversations).await.unwrap();
+        let user: CurrentUserIdStore = Arc::new(tokio::sync::RwLock::new("me".to_string()));
+        let profiles = Arc::new(MemoryUserProfileStore::new());
+        let api = ConversationApi::new(
+            Arc::new(ConversationCommandUseCase::new(
+                store.clone(),
+                user.clone(),
+                None,
+                None,
+            )),
+            Arc::new(ConversationViewAssembler::new(
+                store.clone(),
+                profiles.clone(),
+            )),
+            Arc::new(MessageViewAssembler::new(
+                Arc::new(MemoryMessageStore::new()),
+                profiles,
+            )),
+            EventBus::new(),
+            user,
+        );
+        (api, store)
+    }
+
+    /// The home snapshot shows the first conversations only; its total still
+    /// counts all of them, and is the same number `total_unread` gives.
+    #[tokio::test]
+    async fn the_total_does_not_depend_on_how_many_conversations_the_home_shows() {
+        let conversations: Vec<_> = (0..5)
+            .map(|i| conversation(&format!("c{i}"), 2, 1_000 + i))
+            .collect();
+        let (api, _) = api_with(&conversations).await;
+        for limit in [1, 3, 100] {
+            let home = api
+                .bootstrap_home(BootstrapHomeTimelineRequest {
+                    conversation_limit: limit,
+                })
+                .await
+                .unwrap();
+            assert_eq!(home.conversations.len(), (limit as usize).min(5));
+            assert_eq!(home.total_unread, 10, "home showing {limit} conversations");
+        }
+        assert_eq!(api.total_unread().await.unwrap(), 10);
+    }
+
+    /// Muting a conversation takes its unread out of the total (it keeps its
+    /// own count in the list); its mentions of me still count.
+    #[tokio::test]
+    async fn muted_conversations_count_only_their_mentions() {
+        let mut mentioned = conversation("mentioned", 6, 2_000);
+        mentioned.is_muted = true;
+        mentioned.mention_count = 1;
+        mentioned.mention_me = true;
+        let (api, _) = api_with(&[conversation("plain", 3, 3_000), mentioned]).await;
+        assert_eq!(api.total_unread().await.unwrap(), 3 + 1);
+
+        api.set_muted("plain", true).await.unwrap();
+        assert_eq!(api.total_unread().await.unwrap(), 1);
+        let home = api
+            .bootstrap_home(BootstrapHomeTimelineRequest::default())
+            .await
+            .unwrap();
+        assert_eq!(home.total_unread, 1);
+        assert_eq!(
+            home.conversations
+                .iter()
+                .map(|c| c.unread_count)
+                .sum::<u32>(),
+            9,
+            "rows keep their own unread counts"
+        );
+
+        api.set_muted("plain", false).await.unwrap();
+        assert_eq!(api.total_unread().await.unwrap(), 4);
+    }
+
+    /// The total follows conversations coming and going and being read.
+    #[tokio::test]
+    async fn the_total_follows_new_deleted_and_read_conversations() {
+        let (api, store) = api_with(&[conversation("a", 2, 1_000)]).await;
+        assert_eq!(api.total_unread().await.unwrap(), 2);
+
+        store
+            .save_batch(&[conversation("b", 5, 2_000)])
+            .await
+            .unwrap();
+        assert_eq!(api.total_unread().await.unwrap(), 7);
+
+        api.mark_read("b", 5).await.unwrap();
+        assert_eq!(api.total_unread().await.unwrap(), 2);
+
+        api.delete("a").await.unwrap();
+        assert_eq!(api.total_unread().await.unwrap(), 0);
+
+        api.set_archived("b", true).await.unwrap();
+        api.mark_unread("b").await.unwrap();
+        assert_eq!(
+            api.total_unread().await.unwrap(),
+            0,
+            "archived conversations stay out of the total"
+        );
     }
 }

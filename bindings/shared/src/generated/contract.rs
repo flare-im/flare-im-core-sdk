@@ -950,6 +950,15 @@ pub const API_OPERATIONS: &[ApiOperation] = &[
         dev_only: false,
     },
     ApiOperation {
+        id: "conversation.total_unread",
+        module: "conversation",
+        core: Some("ConversationApi::total_unread"),
+        c_symbol: Some("flare_sdk_invoke_json"),
+        c_dispatch_op: None,
+        tauri: Some("sdk_invoke_json"),
+        dev_only: false,
+    },
+    ApiOperation {
         id: "conversation.mark_read",
         module: "conversation",
         core: Some("ConversationApi::mark_read"),
